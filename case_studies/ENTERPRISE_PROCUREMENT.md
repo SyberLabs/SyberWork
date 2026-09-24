@@ -6,7 +6,7 @@
 
 ## What was actually exercised
 
-Each scenario started with a new SyberWork SQLite case database and a **separate** SQLite-backed simulated ERP exposed over a real loopback HTTP server. The application fetched versioned requisition, site, quote, and budget records over HTTP, recorded observations in its case history, admitted or denied proposals, and attempted conditional HTTP writes to the ERP. The simulated ERP stored orders and debited a cost center. A case-history hash-chain check and a separate query of ERP orders followed each scenario. Scenario data and organizational identities are fictional. This exercise does not demonstrate integration with an actual enterprise ERP, supplier, identity provider, or payment system.
+Each scenario started with a new SyberWork SQLite case database and a **separate** SQLite-backed simulated ERP exposed over a real loopback HTTP server. The application fetched versioned requisition, site, quote, budget, and candidate records over HTTP, recorded observations in its case history, admitted or denied proposals, and attempted conditional HTTP writes to the ERP. Assigned logistics and procurement identities made source-system selections through separate role checked ERP endpoints with `If-Match`; those selections were verified through fresh reads before dependent actions proceeded. The simulated ERP stored orders, debited a cost center, and logged source updates. A case-history hash-chain check and separate queries of ERP orders and updates followed each scenario. Scenario data and organizational identities are fictional. This exercise does not demonstrate integration with an actual enterprise ERP, supplier, identity provider, or payment system.
 
 Run locally with Python 3.11+ and no runtime dependencies:
 
@@ -22,7 +22,9 @@ The runner is repeatable in behavior; case UUIDs, timestamps, and hash heads dif
 | Actor or system | Information or authority | What it cannot establish alone |
 | --- | --- | --- |
 | Manufacturing requester `m.liu` | Business need and requisition `REQ-4812` | A vendor selection, live budget, or an approved purchase order |
-| Procurement analyst `a.rivera` | Opens the case and reads registered systems | Independent approval; an asserted fact cannot impersonate a verified source read |
+| Procurement analyst `a.rivera` | Opens the case, reads registered systems, requests resolution tasks | Independent approval; an asserted fact cannot impersonate a verified source read |
+| Logistics owner `l.chen` | Selects a site in the simulated ERP using logistics credentials and verifies its source record | Purchase approval or a guessed site without a source update |
+| Procurement owner `p.soto` | Selects a supplier quote in the simulated ERP using procurement credentials and verifies its source record | Purchase approval or a guessed quote without a source update |
 | Compiled scheduler | Proposes the next contract action using observed values | A direct destination write or an exemption from admission |
 | Purchasing manager `d.patel` | Independent approval, permission to check destination status, final signoff | A self-authored claim that an order exists |
 | Requisition registry | Request ID, part, quantity, delivery site, cost center, approval state | Supplier price or purchase completion |
@@ -37,7 +39,7 @@ The ordinary case uses two parts at USD 1,250 each, a USD 2,500 total, selected 
 
 The contract is version 1 of `northstar-spare-procurement`, with one required case input: `request_id`. The added `input_bindings` rule ties that pinned input to the verified `request.id`; an unrelated requisition cannot be silently substituted. Both actions require source-backed request and site facts. `issue_order` additionally requires a selected supplier quote and finance record, with 15-minute freshness limits for quote and budget; it also requires a successfully recorded review. All submitted fields are bound to observed values, and the write carries the quote's ETag in `If-Match` plus a proposal-scoped `Idempotency-Key`.
 
-The contract caps the order at USD 5,000. The organization policy grants the operator role, caps the action at USD 10,000, and requires a manager approval. Both caps apply, so the effective cap is USD 5,000. The original proposer alone may commit. Completion requires an external `issue_order` success, or a destination-verified reconciliation, **followed by** a manager signoff. Initial approval does not count as completion. The destination status lookup must match the original idempotency key and canonical request digest.
+The contract declares site and quote resolution tasks with source-backed options, owners, deadlines, escalation roles, and gates for dependent actions. A recorded choice alone cannot complete a task: the authoritative source must change and a fresh observation must match the choice and case identity. The contract caps the order at USD 5,000. The organization policy grants the operator role, caps the action at USD 10,000, and requires a manager approval. Both caps apply, so the effective cap is USD 5,000. The original proposer alone may commit. Completion requires an external `issue_order` success, or a destination-verified reconciliation, **followed by** a manager signoff. Initial approval does not count as completion. The destination status lookup must match the original idempotency key and canonical request digest.
 
 These are controls in the executable code and in this particular synthetic contract. The simulated ERP supplies additional consistency checks. SyberWork's generic policy language does not yet express every cross-record business rule that the ERP enforces.
 
@@ -47,15 +49,16 @@ These are controls in the executable code and in this particular synthetic contr
 | --- | --- | --- | ---: | --- |
 | Approved, complete information | Independent approval, conditional write, subsequent signoff | `complete` | 1 | Complete |
 | Requisition ID omitted | Case creation returns `input_schema` | `input_rejected` | 0 | No case opened |
-| Delivery destination unresolved | Guessing a site yields `missing_fact:site` | `blocked_missing_site` | 0 | Incomplete |
-| Two plausible supplier quotes | Source yields options without a selected `quote`; `source_shape`, then `missing_fact:quote` | `blocked_ambiguous_quote` | 0 | Incomplete |
+| Delivery destination unresolved | Open task denies guessed site; logistics changes requisition in ERP; fresh read closes task | `resolved_site` | 1 | Complete |
+| Two plausible supplier quotes | Open task denies order; procurement selects quote in ERP; fresh quote and selection reads close task | `resolved_quote` | 1 | Complete |
 | Policy tightened after approval | Commit rechecks policy and returns `action_not_in_global_policy` | `blocked_at_commit` | 0 | Incomplete |
 | Quote changed before submit | ERP guarantees its 412 is a no-write rejection; quote refresh leads to a new approved proposal | `recovered_after_refresh` | 1 | Complete |
 | ERP wrote but response disappeared | Application records unknown; status lookup matches original idempotency key and request digest; manager signs later | `reconciled_complete` | 1 | Complete |
 | Manager supplies a fabricated order reference | Manual claim rejected; destination 404 remains pending; another proposal denied | `blocked_unproven_claim` | 0 | Incomplete |
 | Destination record has the wrong payload digest | Status lookup rejects mismatch even though an external order exists | `blocked_mismatched_record` | 1 | Incomplete |
+| Supplier qualification cannot be concluded | Quote task remains open; manager records explicit cancellation reason | `cancelled` | 0 | Cancelled, incomplete |
 
-The recorded run contained **16, 0, 4, 10, 13, 21, 16, 17, and 16 case events** respectively. The eight opened cases passed their local hash-chain checks. The missing-input scenario never created a case and has no chain to verify. The three completing scenarios each left CC-742 at USD 2,500. The mismatched-status case also debited USD 2,500 externally while remaining incomplete internally; this is intentional fail-closed behavior, not a second order.
+The recorded run contained **16, 0, 23, 22, 13, 21, 16, 17, 16, and 13 case events** respectively. All nine opened cases passed their local hash-chain checks. The missing-input scenario never created a case and has no chain to verify. The five completing scenarios each left CC-742 at USD 2,500. The mismatched-status case also debited USD 2,500 externally while remaining incomplete internally; this is intentional fail-closed behavior, not a second order.
 
 ## The operating sequence and alternate paths
 
@@ -69,11 +72,11 @@ An operator submits `{}` instead of a request ID. The case API rejects the input
 
 ### 3. An underdetermined delivery destination
 
-`REQ-4813` is approved but has no selected site. West Oakland and Boston are both plausible facilities; urgency alone does not determine the right destination. The operator reads the requisition but cannot read a site for the missing key. A proposed review that guesses `DC-WEST-4` is denied `missing_fact:site`. There is no order and no manager signoff. The needed next action is a **human amendment in the authoritative requisition system** selecting a site; the operator would then refresh it through the registered source. The application does not infer a shipping address from context.
+`REQ-4813` is approved but has no selected site. West Oakland and Boston are both plausible facilities; urgency alone does not determine the right destination. The operator reads the requisition and source-backed site options, then opens a task assigned to logistics with a 30-minute deadline. A proposed review guessing `DC-WEST-4` is denied `resolution_open:site`. An initial task check remains pending because the requisition has not changed. Logistics owner `l.chen` selects `DC-WEST-4` through the ERP's role checked, conditional update; its version advances from `req:3` to `req:4`. The owner verifies the changed record, closing the task against that requisition. The operator refreshes site, budget, and quote; the compiled review, independently approved order, and later signoff complete the case. The ERP has one source-update audit record and one purchase order. The application did not infer a shipping address from context.
 
 ### 4. An underdetermined supplier choice
 
-`REQ-4814` names an active site and budget, but the supplier system returns **Q-882A** at USD 2,500 and **Q-882B** at USD 2,640 with no selection. The configured connector requires one `quote` value and rejects the response as `source_shape`. The review can be recorded because the request and site are known, but an order proposal is denied `missing_fact:quote`. Selecting the lower price automatically would be an unauthorized procurement decision. A real integration needs a selection and qualification step in the authoritative source, followed by a fresh versioned quote read. This case remains open rather than being labeled complete.
+`REQ-4814` names an active site and budget, but the supplier system returns **Q-882A** at USD 2,500 and **Q-882B** at USD 2,640 with no selection. The configured connector requires one `quote` value and rejects the response as `source_shape`. The operator opens a procurement task using verified quote options and records the review; the order proposal is denied `resolution_open:quote`. An initial check stays pending. Procurement owner `p.soto` selects Q-882A in the ERP using its own credential and a matching selection version. Fresh quote and selection reads establish the chosen ID, case identity, and changed version; the task closes. The order receives independent approval and a later signoff and completes once. The lower price was not selected automatically by SyberWork.
 
 ### 5. A rule changes after approval
 
@@ -95,8 +98,12 @@ The simulated connection closes **before** the ERP writes. The manager submits a
 
 The ERP writes an order and loses its acknowledgement, but the status record is then altered to carry the wrong request digest. The manager's lookup returns `unverified` with `destination_record_mismatch`. The order exists in the simulated ERP, and the manager even signs; SyberWork correctly remains incomplete because it cannot establish that this order matches the approved proposal. This case requires investigation and repair of the destination evidence, not a second order.
 
+### 10. Qualification cannot be resolved
+
+The competing quote task is opened for `REQ-4814`, but no owner selection is entered into the ERP. A review may be recorded because the site is known, while the order is denied `resolution_open:quote`. Manager `d.patel` records `Supplier qualification unresolved` as a cancellation reason. The projected status is `cancelled`, the resolution task projects as cancelled, acceptance remains incomplete, and the ERP has no selection update or order. Cancellation cannot conceal a claimed external HTTP effect with an uncertain outcome.
+
 ## What this licenses, and what it does not
 
-The execution shows deterministic denial on missing or conflicting facts, commit-time policy rechecks, a conditional ERP write, independent approval, idempotent effect claims, and a destination-verified path through uncertain results in this synthetic environment. It does **not** establish enterprise deployment readiness. Remaining work before connecting a real customer includes source-specific identifier and shape validation, a deliberate quote-selection workflow, SSO and role provisioning, operational backup and restore, accounting controls for concurrent orders across cases, and adapter contracts that genuinely guarantee no-write statuses and durable idempotency lookups. A compromised or incorrect destination can still return false status data; the application is trusting that system's authenticated response.
+The execution shows source-backed resolution, role checked updates, explicit cancellation, commit-time policy rechecks, a conditional ERP write, independent approval, idempotent effect claims, and a destination-verified path through uncertain results in this synthetic environment. It does **not** establish enterprise deployment readiness. Remaining work before connecting a real customer includes source-specific identifier and shape validation, supplier qualification rules, SSO and role provisioning, operational backup and restore, deadline notifications, accounting controls for concurrent orders across cases, and adapter contracts that genuinely guarantee no-write statuses and durable idempotency lookups. A compromised or incorrect destination can still return false status data; the application is trusting that system's authenticated response.
 
-The case study also demonstrates a distinction essential to this architecture: uncertainty can legitimately keep a case open. “High realism” here means preserving that open state and its missing authority, rather than making the workflow finish by supplying a plausible answer.
+The case study preserves open cases for inconclusive effect evidence and closes unresolved qualification through explicit cancellation. The source owners resolve the two actionable ambiguities by changing authoritative records, with no fabricated answer from the workflow engine.

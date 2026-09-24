@@ -50,6 +50,7 @@ This output only creates a proposal. Admission rechecks the bound observation, g
 - `POST /api/cases`: create a case pinned to a contract version.
 - `POST /api/cases/{id}/refresh`: fetch and record a versioned fact from a configured source.
 - `POST /api/cases/{id}/facts`: record a manually asserted fact, tagged as unverified.
+- `POST /api/cases/{id}/resolution-request`, `/resolution-resolve`, `/resolution-escalate`, `/cancel`: open a source-backed decision task, verify its authoritative resolution, escalate it after its deadline, or close the case explicitly.
 - `POST /api/cases/{id}/proposals`, `/compiled`, `/suggest`: human, compiled, or model proposal.
 - `POST /api/cases/{id}/approve`, `/commit`, `/signoff`, `/reconcile`: decision operations.
 - `GET /api/cases/{id}`, `/verify`; `POST /api/cases/{id}/replay`: inspection and counterfactual comparison.
@@ -64,9 +65,13 @@ PYTHONPATH=. python -m unittest discover -s tests -v
 
 The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, and an HTTP effect with its idempotency key. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems or policies have been integrated correctly.
 
+## Resolution tasks
+
+A versioned contract can declare a resolution with an owner role, escalation role, deadline, source-backed trigger and choices, a result path tied to the case input, and actions blocked until the decision is verified. An operator refreshes the trigger and choices and requests a task. The assigned owner updates the **source system** with its own credentials; clicking **Verify source decision** reads the configured source again and closes the task only if its version changed and its selection matches one of the recorded options and the correct case. Merely choosing a candidate in the console cannot complete the task. The console shows open, overdue, escalated, completed, and cancelled tasks; a manager can escalate after the due time or cancel an unresolved case with a reason. Source-system write access is independent of the SyberWork token. See [resolution task contract](docs/RESOLUTION_TASKS.md).
+
 ## Executed enterprise case study
 
-[Case Study 001](case_studies/ENTERPRISE_PROCUREMENT.md) executes nine procurement scenarios against a separate synthetic ERP: complete information, missing intake input, unresolved delivery site, competing quotes, policy withdrawal, changed quote, a lost acknowledgement, a forged manager claim, and a mismatched destination record. The [recorded run](case_studies/results/enterprise_procurement_run_001.json) contains case events and external order snapshots. Run it yourself with `PYTHONPATH=. python -m case_studies.enterprise_procurement`. This is a simulation with fictional data, not a customer deployment.
+[Case Study 001](case_studies/ENTERPRISE_PROCUREMENT.md) executes ten procurement scenarios against a separate synthetic ERP. The missing-site and competing-quote paths now continue through role checked source-system changes to valid orders; a separate unresolved quote path ends in explicit manager cancellation. The [recorded run](case_studies/results/enterprise_procurement_run_001.json) contains case events, source updates, and external order snapshots. Run it with `PYTHONPATH=. python -m case_studies.enterprise_procurement`. This is a simulation with fictional data, not a customer deployment.
 
 ## Deployment boundary
 

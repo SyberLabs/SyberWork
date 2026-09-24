@@ -14,6 +14,7 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -26,6 +27,26 @@ CONTRACT = {
     "title": "Restore Northstar Medical Devices packaging line without ungoverned spend",
     "inputs": {"request_id": "string"},
     "input_bindings": {"request_id": "fact:request.id"},
+    "resolutions": {
+        "site": {
+            "owner_role": "logistics", "escalate_role": "manager", "due_seconds": 1800,
+            "blocks_actions": ["record_review", "issue_order"],
+            "record_key_input": "request_id",
+            "trigger": {"key": "request", "source": "requisitions", "missing_path": "site_id", "identity_path": "id"},
+            "choices": {"key": "site_options", "source": "site_options", "list_path": "ids", "identity_path": "request_id"},
+            "result": {"key": "request", "source": "requisitions", "value_path": "site_id", "identity_path": "id"},
+        },
+        "quote": {
+            "owner_role": "procurement", "escalate_role": "manager", "due_seconds": 3600,
+            "blocks_actions": ["issue_order"],
+            "record_key_input": "request_id",
+            "trigger": {"key": "quote_options", "source": "quote_options", "missing_path": "selection", "identity_path": "request_id"},
+            "choices": {"key": "quote_options", "source": "quote_options", "list_path": "ids", "identity_path": "request_id"},
+            "result": {"key": "quote", "source": "supplier", "value_path": "id", "identity_path": "request_id"},
+            "confirmation": {"key": "quote_options", "source": "quote_options", "value_path": "selection"},
+        },
+    },
+    "cancel_role": "manager",
     "actions": {
         "record_review": {
             "required_facts": [
@@ -68,6 +89,7 @@ class SimulatedERP:
         self.path = path
         self.drop_after_write = False
         self.drop_before_write = False
+        self.tokens = {role: uuid.uuid4().hex for role in ("logistics", "procurement")}
         with sqlite3.connect(path) as db:
             db.executescript("""
                 CREATE TABLE requests(id TEXT PRIMARY KEY, part TEXT, quantity INTEGER,
@@ -75,18 +97,25 @@ class SimulatedERP:
                 CREATE TABLE sites(id TEXT PRIMARY KEY, address TEXT, state TEXT, version TEXT);
                 CREATE TABLE quotes(id TEXT PRIMARY KEY, request_id TEXT, vendor TEXT,
                     unit_price INTEGER, total INTEGER, currency TEXT, version TEXT);
+                CREATE TABLE quote_selections(request_id TEXT PRIMARY KEY, quote_id TEXT, version INTEGER);
                 CREATE TABLE budgets(id TEXT PRIMARY KEY, available INTEGER, currency TEXT, version INTEGER);
                 CREATE TABLE orders(id TEXT PRIMARY KEY, request_id TEXT, quote_id TEXT,
                     site_id TEXT, amount INTEGER, idempotency_key TEXT UNIQUE,
                     request_digest TEXT NOT NULL);
+                CREATE TABLE update_audit(actor_role TEXT, target TEXT, record_key TEXT,
+                    selected TEXT, old_version TEXT, new_version TEXT);
                 INSERT INTO requests VALUES ('REQ-4812','P-104',2,'DC-WEST-4','CC-742','approved','req:6');
                 INSERT INTO requests VALUES ('REQ-4813','P-104',2,NULL,'CC-742','approved','req:3');
                 INSERT INTO requests VALUES ('REQ-4814','P-104',2,'DC-WEST-4','CC-742','approved','req:4');
                 INSERT INTO sites VALUES ('DC-WEST-4','901 Harbor Way, Oakland CA','active','site:12');
                 INSERT INTO sites VALUES ('DC-EAST-2','12 Research Road, Boston MA','active','site:7');
                 INSERT INTO quotes VALUES ('Q-881','REQ-4812','Alder Components',1250,2500,'USD','quote:3');
+                INSERT INTO quotes VALUES ('Q-883','REQ-4813','Alder Components',1250,2500,'USD','quote:2');
                 INSERT INTO quotes VALUES ('Q-882A','REQ-4814','Alder Components',1250,2500,'USD','quote:1');
                 INSERT INTO quotes VALUES ('Q-882B','REQ-4814','Beacon Parts',1320,2640,'USD','quote:1');
+                INSERT INTO quote_selections VALUES ('REQ-4812','Q-881',1);
+                INSERT INTO quote_selections VALUES ('REQ-4813','Q-883',1);
+                INSERT INTO quote_selections VALUES ('REQ-4814',NULL,1);
                 INSERT INTO budgets VALUES ('CC-742',5000,'USD',8);
             """)
 
@@ -132,15 +161,60 @@ class SimulatedERP:
                             return self.respond({"budget": {k: row[k] for k in ("id", "available", "currency")}}, version=f'budget:{row["version"]}')
                     elif table == "quotes":
                         rows = db.execute("SELECT * FROM quotes WHERE request_id=? ORDER BY id", (key,)).fetchall()
-                        if len(rows) > 1:
+                        selection = db.execute("SELECT quote_id,version FROM quote_selections WHERE request_id=?", (key,)).fetchone()
+                        if len(rows) > 1 and selection and not selection["quote_id"]:
                             return self.respond({"options": [row["id"] for row in rows], "selection": None}, version="selection:1")
                         if rows:
-                            row = rows[0]
+                            row = next((row for row in rows if selection and row["id"] == selection["quote_id"]), rows[0])
                             quote = {k: row[k] for k in ("id", "request_id", "vendor", "unit_price", "total", "currency")}
                             return self.respond({"quote": quote}, version=row["version"])
+                    elif table == "site-options":
+                        request = db.execute("SELECT id FROM requests WHERE id=?", (key,)).fetchone()
+                        if request:
+                            ids = [row["id"] for row in db.execute("SELECT id FROM sites WHERE state='active' ORDER BY id DESC")]
+                            return self.respond({"options": {"request_id": key, "ids": ids}}, version="site-options:1")
+                    elif table == "quote-options":
+                        selection = db.execute("SELECT quote_id,version FROM quote_selections WHERE request_id=?", (key,)).fetchone()
+                        if selection:
+                            ids = [row["id"] for row in db.execute("SELECT id FROM quotes WHERE request_id=? ORDER BY id", (key,))]
+                            return self.respond({"options": {"request_id": key, "ids": ids, "selection": selection["quote_id"]}}, version=f'selection:{selection["version"]}')
                 self.respond({"error": "unknown_record"}, 404)
 
             def do_POST(self):
+                parts = [unquote(p) for p in urlsplit(self.path).path.strip("/").split("/")]
+                if len(parts) == 3 and parts[2] in ("select-site", "select-quote"):
+                    role = "logistics" if parts[2] == "select-site" else "procurement"
+                    if self.headers.get("Authorization") != "Bearer " + fixture.tokens[role]:
+                        return self.respond({"error": "forbidden"}, 403)
+                    try:
+                        data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    except (ValueError, KeyError):
+                        return self.respond({"error": "invalid_body"}, 400)
+                    with sqlite3.connect(path, timeout=10) as db:
+                        db.row_factory = sqlite3.Row
+                        db.execute("BEGIN IMMEDIATE")
+                        key = parts[1]
+                        if parts[0] == "requests" and role == "logistics":
+                            request = db.execute("SELECT site_id,version FROM requests WHERE id=?", (key,)).fetchone()
+                            site = db.execute("SELECT id FROM sites WHERE id=? AND state='active'", (data.get("site_id"),)).fetchone()
+                            if not request or request["site_id"] or not site or request["version"] != self.headers.get("If-Match"):
+                                return self.respond({"error": "invalid_or_stale_site_choice"}, 412)
+                            new_version = f'req:{int(request["version"].split(":")[1]) + 1}'
+                            db.execute("UPDATE requests SET site_id=?, version=? WHERE id=?", (site["id"], new_version, key))
+                            selected, old_version = site["id"], request["version"]
+                        elif parts[0] == "quotes" and role == "procurement":
+                            selection = db.execute("SELECT quote_id,version FROM quote_selections WHERE request_id=?", (key,)).fetchone()
+                            quote = db.execute("SELECT id FROM quotes WHERE id=? AND request_id=?", (data.get("quote_id"), key)).fetchone()
+                            if not selection or selection["quote_id"] or not quote or f'selection:{selection["version"]}' != self.headers.get("If-Match"):
+                                return self.respond({"error": "invalid_or_stale_quote_choice"}, 412)
+                            new_version = f'selection:{selection["version"] + 1}'
+                            db.execute("UPDATE quote_selections SET quote_id=?,version=version+1 WHERE request_id=?", (quote["id"], key))
+                            selected, old_version = quote["id"], f'selection:{selection["version"]}'
+                        else:
+                            return self.respond({"error": "not_found"}, 404)
+                        db.execute("INSERT INTO update_audit VALUES (?,?,?,?,?,?)",
+                                   (role, parts[0], key, selected, old_version, new_version))
+                    return self.respond({"selected": selected, "version": new_version})
                 if urlsplit(self.path).path != "/orders":
                     return self.respond({"error": "not_found"}, 404)
                 if fixture.drop_before_write:
@@ -165,9 +239,11 @@ class SimulatedERP:
                     request = db.execute("SELECT * FROM requests WHERE id=?", (body.get("request", {}).get("id"),)).fetchone()
                     site = db.execute("SELECT * FROM sites WHERE id=?", (body.get("site", {}).get("id"),)).fetchone()
                     quote = db.execute("SELECT * FROM quotes WHERE id=?", (body.get("quote", {}).get("id"),)).fetchone()
+                    selection = db.execute("SELECT quote_id FROM quote_selections WHERE request_id=?", (request["id"],)).fetchone() if request else None
                     budget = db.execute("SELECT * FROM budgets WHERE id=?", (request["cost_center"],)).fetchone() if request else None
                     total = body.get("amount")
-                    valid = (request and site and quote and budget and request["state"] == "approved"
+                    valid = (request and site and quote and budget and selection and
+                             selection["quote_id"] == quote["id"] and request["state"] == "approved"
                              and request["site_id"] == site["id"] and site["state"] == "active"
                              and body["request"]["part"] == request["part"]
                              and body["request"]["quantity"] == request["quantity"]
@@ -220,12 +296,33 @@ class SimulatedERP:
         with sqlite3.connect(self.path) as db:
             return db.execute("SELECT count(*) FROM orders").fetchone()[0]
 
+    def select_site(self, role: str, request_id: str, site_id: str):
+        with sqlite3.connect(self.path) as db:
+            version = db.execute("SELECT version FROM requests WHERE id=?", (request_id,)).fetchone()[0]
+        return self._select(role, f"/requests/{request_id}/select-site", {"site_id": site_id}, version)
+
+    def select_quote(self, role: str, request_id: str, quote_id: str):
+        with sqlite3.connect(self.path) as db:
+            version = db.execute("SELECT version FROM quote_selections WHERE request_id=?", (request_id,)).fetchone()[0]
+        return self._select(role, f"/quotes/{request_id}/select-quote", {"quote_id": quote_id}, f"selection:{version}")
+
+    def _select(self, role: str, path: str, body: dict, version: str):
+        headers = {"Content-Type": "application/json", "If-Match": version,
+                   "Authorization": "Bearer " + self.tokens.get(role, "invalid")}
+        request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            raise Rejected("source_update_denied", f"source returned {error.code}") from error
+
     def snapshot(self):
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row
             return {
                 "orders": [dict(row) for row in db.execute("SELECT * FROM orders ORDER BY id")],
                 "budget": dict(db.execute("SELECT * FROM budgets WHERE id='CC-742'").fetchone()),
+                "updates": [dict(row) for row in db.execute("SELECT * FROM update_audit ORDER BY rowid")],
             }
 
 
@@ -239,8 +336,11 @@ def configure(work: Work, erp: SimulatedERP):
     for name, path, value in (("requisitions", "requests", "request"),
                               ("sites", "sites", "site"),
                               ("supplier", "quotes", "quote"),
-                              ("finance", "budgets", "budget")):
-        work.install_source(name, {"kind": "http", "url": f"{erp.base}/{path}/{{key}}", "value_path": [value], "roles": ["operator"]})
+                              ("finance", "budgets", "budget"),
+                              ("site_options", "site-options", "options"),
+                              ("quote_options", "quote-options", "options")):
+        allowed = ["operator", "logistics"] if name == "requisitions" else ["operator", "procurement"] if name in ("supplier", "quote_options") else ["operator"]
+        work.install_source(name, {"kind": "http", "url": f"{erp.base}/{path}/{{key}}", "value_path": [value], "roles": allowed})
 
 
 def run_scenario(scenario_id: str, folder: Path) -> dict:
@@ -263,22 +363,47 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
             else:
                 raise AssertionError("Missing input was accepted")
         else:
-            request_id = "REQ-4813" if scenario_id == "missing_site" else "REQ-4814" if scenario_id == "ambiguous_quote" else "REQ-4812"
+            request_id = "REQ-4813" if scenario_id == "missing_site" else "REQ-4814" if scenario_id in ("ambiguous_quote", "quote_cancelled") else "REQ-4812"
             case_id = work.create_case(CONTRACT["id"], 1, {"request_id": request_id}, "a.rivera")
             result["case_id"] = case_id
             step("create_case", requisition=request_id)
             request = work.refresh_fact(case_id, "requisitions", "request", request_id, "a.rivera", ["operator"])["body"]["value"]
-            step("read_requisition", version="req:3" if scenario_id == "missing_site" else "req:4" if scenario_id == "ambiguous_quote" else "req:6", state=request["state"])
+            step("read_requisition", version="req:3" if scenario_id == "missing_site" else "req:4" if scenario_id in ("ambiguous_quote", "quote_cancelled") else "req:6", state=request["state"])
 
             if scenario_id == "missing_site":
-                step("resolve_destination", candidates=["DC-WEST-4", "DC-EAST-2"], selected=None)
+                work.refresh_fact(case_id, "site_options", "site_options", request_id, "a.rivera", ["operator"])
+                task = work.request_resolution(case_id, "site", "a.rivera", ["operator"])
+                step("request_site_resolution", task_id=task["body"]["id"], owner_role="logistics",
+                     due_at=task["body"]["due_at"], choices=task["body"]["choices"])
                 proposal = work.propose(case_id, "record_review", {"request_id": request_id, "site_id": "DC-WEST-4"}, "a.rivera", ["operator"])
                 step("propose_review_with_guessed_site", decision=proposal["decision"])
-                result["outcome"] = "blocked_missing_site"
+                pending = work.resolve_resolution(case_id, task["body"]["id"], "l.chen", ["logistics"])
+                step("check_site_before_source_change", result=pending["status"])
+                source_change = erp.select_site("logistics", request_id, "DC-WEST-4")
+                step("logistics_selects_site_in_erp", version=source_change["version"])
+                resolved = work.resolve_resolution(case_id, task["body"]["id"], "l.chen", ["logistics"])
+                assert resolved["status"] == "completed"
+                step("verify_site_resolution", choice=resolved["choice"])
+                work.refresh_fact(case_id, "sites", "site", "DC-WEST-4", "a.rivera", ["operator"])
+                work.refresh_fact(case_id, "finance", "budget", request["cost_center"], "a.rivera", ["operator"])
+                work.refresh_fact(case_id, "supplier", "quote", request_id, "a.rivera", ["operator"])
+                review = work.compiled_propose(case_id, "scheduler", ["operator", "compiled"])
+                assert work.commit(case_id, review["proposal"]["id"], "scheduler")["status"] == "succeeded"
+                order = work.compiled_propose(case_id, "scheduler", ["operator", "compiled"])
+                work.approve(case_id, order["proposal"]["id"], "d.patel", ["manager"])
+                committed = work.commit(case_id, order["proposal"]["id"], "scheduler")
+                assert committed["status"] == "succeeded"
+                work.signoff(case_id, "d.patel", ["manager"], "manager")
+                step("place_order_after_site_resolution", result=committed["status"])
+                result["outcome"] = "resolved_site"
             else:
                 work.refresh_fact(case_id, "sites", "site", request["site_id"], "a.rivera", ["operator"])
                 work.refresh_fact(case_id, "finance", "budget", request["cost_center"], "a.rivera", ["operator"])
-                if scenario_id == "ambiguous_quote":
+                if scenario_id in ("ambiguous_quote", "quote_cancelled"):
+                    work.refresh_fact(case_id, "quote_options", "quote_options", request_id, "a.rivera", ["operator"])
+                    task = work.request_resolution(case_id, "quote", "a.rivera", ["operator"])
+                    step("request_quote_resolution", task_id=task["body"]["id"], owner_role="procurement",
+                         due_at=task["body"]["due_at"], choices=task["body"]["choices"])
                     try:
                         work.refresh_fact(case_id, "supplier", "quote", request_id, "a.rivera", ["operator"])
                     except Rejected as error:
@@ -293,10 +418,28 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
                 assert work.commit(case_id, review["proposal"]["id"], "scheduler")["status"] == "succeeded"
                 step("record_review", event="effect_succeeded")
 
-                if scenario_id == "ambiguous_quote":
+                if scenario_id in ("ambiguous_quote", "quote_cancelled"):
                     proposed = work.propose(case_id, "issue_order", {"amount": 2500}, "a.rivera", ["operator"])
                     step("propose_without_selected_quote", decision=proposed["decision"])
-                    result["outcome"] = "blocked_ambiguous_quote"
+                    if scenario_id == "quote_cancelled":
+                        work.cancel_case(case_id, "Supplier qualification unresolved", "d.patel", ["manager"])
+                        step("manager_cancels_unresolved_case", reason="Supplier qualification unresolved")
+                        result["outcome"] = "cancelled"
+                    else:
+                        pending = work.resolve_resolution(case_id, task["body"]["id"], "p.soto", ["procurement"])
+                        step("check_quote_before_source_change", result=pending["status"])
+                        source_change = erp.select_quote("procurement", request_id, "Q-882A")
+                        step("procurement_selects_quote_in_erp", version=source_change["version"])
+                        resolved = work.resolve_resolution(case_id, task["body"]["id"], "p.soto", ["procurement"])
+                        assert resolved["status"] == "completed"
+                        step("verify_quote_resolution", choice=resolved["choice"])
+                        order = work.compiled_propose(case_id, "scheduler", ["operator", "compiled"])
+                        work.approve(case_id, order["proposal"]["id"], "d.patel", ["manager"])
+                        committed = work.commit(case_id, order["proposal"]["id"], "scheduler")
+                        assert committed["status"] == "succeeded"
+                        work.signoff(case_id, "d.patel", ["manager"], "manager")
+                        step("place_order_after_quote_resolution", result=committed["status"])
+                        result["outcome"] = "resolved_quote"
                 else:
                     order = work.compiled_propose(case_id, "scheduler", ["operator", "compiled"])
                     key = order["proposal"]["id"]
@@ -370,6 +513,8 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
         result["external_state"] = erp.snapshot()
         if result["case_id"]:
             state = work.inspect(result["case_id"])
+            result["status"] = state["status"]
+            result["resolutions"] = state["resolutions"]
             result["acceptance_complete"] = state["complete"]
             result["acceptance"] = state["acceptance"]
             result["event_count"] = len(state["events"])
@@ -378,7 +523,7 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
             result["chain_head"] = state["events"][-1]["hash"]
             result["chain_valid"] = work.verify_chain(result["case_id"])
         else:
-            result.update(acceptance_complete=False, acceptance=[], event_count=0,
+            result.update(status=None, resolutions=[], acceptance_complete=False, acceptance=[], event_count=0,
                           event_kinds=[], case_events=[], chain_head=None, chain_valid=None)
         return result
     finally:
@@ -386,14 +531,14 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
 
 
 def run_study(directory: Path) -> dict:
-    """Execute nine separate cases, each with its own application and ERP databases."""
+    """Execute ten separate cases, each with its own application and ERP databases."""
     return {
         "organization": "Northstar Medical Devices (fictional)",
         "workflow": "Emergency packaging-line spare-part purchase order",
         "execution": "Local HTTP plus two isolated SQLite databases per case; no actual enterprise system",
         "scenarios": [run_scenario(sid, directory / sid) for sid in (
             "complete", "missing_input", "missing_site", "ambiguous_quote",
-            "policy_tightened", "stale_quote", "lost_ack", "forged_claim", "mismatched_status")],
+            "policy_tightened", "stale_quote", "lost_ack", "forged_claim", "mismatched_status", "quote_cancelled")],
     }
 
 

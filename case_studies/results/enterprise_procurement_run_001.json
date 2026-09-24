@@ -16,7 +16,7 @@
       "acceptance_complete": true,
       "case_events": [
         {
-          "at": 1790240378.1714628,
+          "at": 1790242643.221257,
           "body": {
             "actor": "a.rivera",
             "contract": [
@@ -27,14 +27,14 @@
               "request_id": "REQ-4812"
             }
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "817533c6147e5c28b430eefa4e59e32626dbfd835e4290439538a8534c324d43",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "0dc68bb4930eed748575946786c9482a350c1567bc6ee80ce9c5e272d8395cc7",
           "kind": "case_created",
           "previous": "0000000000000000000000000000000000000000000000000000000000000000",
           "seq": 1
         },
         {
-          "at": 1790240378.1735992,
+          "at": 1790242643.2261035,
           "body": {
             "actor": "a.rivera",
             "key": "request",
@@ -50,14 +50,14 @@
             "verified": true,
             "version": "req:6"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "28db83ba50c1b07e1779493ddfbf1f0ef1f3753e4847e5ac539d966382f211ab",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "8154c63985dbb8353fefbb08fa424cdece77f218860bef634aa271b743dddf22",
           "kind": "observed",
-          "previous": "817533c6147e5c28b430eefa4e59e32626dbfd835e4290439538a8534c324d43",
+          "previous": "0dc68bb4930eed748575946786c9482a350c1567bc6ee80ce9c5e272d8395cc7",
           "seq": 2
         },
         {
-          "at": 1790240378.175118,
+          "at": 1790242643.228912,
           "body": {
             "actor": "a.rivera",
             "key": "site",
@@ -70,14 +70,14 @@
             "verified": true,
             "version": "site:12"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "d0106cc64bc5a3dc44aae4e6ff8f84a9d20d702fb3deb924397dc3f0f0d8e8ec",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "bbe0f4a2c1b918c99b2d296a3758b91ee7603fba54be293b1ef041a0a32f7de3",
           "kind": "observed",
-          "previous": "28db83ba50c1b07e1779493ddfbf1f0ef1f3753e4847e5ac539d966382f211ab",
+          "previous": "8154c63985dbb8353fefbb08fa424cdece77f218860bef634aa271b743dddf22",
           "seq": 3
         },
         {
-          "at": 1790240378.176569,
+          "at": 1790242643.231962,
           "body": {
             "actor": "a.rivera",
             "key": "budget",
@@ -90,14 +90,14 @@
             "verified": true,
             "version": "budget:8"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "8cc09944b931d515d983a15870ec71fd73f87e9b1637f7964856d54b0199fc5e",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "e105eaa7d12c98addbae0093fc53e2ed46f9a2e7c336584127c0ea3a62152204",
           "kind": "observed",
-          "previous": "d0106cc64bc5a3dc44aae4e6ff8f84a9d20d702fb3deb924397dc3f0f0d8e8ec",
+          "previous": "bbe0f4a2c1b918c99b2d296a3758b91ee7603fba54be293b1ef041a0a32f7de3",
           "seq": 4
         },
         {
-          "at": 1790240378.1782486,
+          "at": 1790242643.2358975,
           "body": {
             "actor": "a.rivera",
             "key": "quote",
@@ -113,14 +113,14 @@
             "verified": true,
             "version": "quote:3"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "15a1658951cf942ce0dbb02445eeef3636f89a3814536ccbd7b9297d9882d851",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "fb112c8e634a542d4f3ea081e9b339c3982732f23c7062be78bf2802084ae32f",
           "kind": "observed",
-          "previous": "8cc09944b931d515d983a15870ec71fd73f87e9b1637f7964856d54b0199fc5e",
+          "previous": "e105eaa7d12c98addbae0093fc53e2ed46f9a2e7c336584127c0ea3a62152204",
           "seq": 5
         },
         {
-          "at": 1790240378.1787844,
+          "at": 1790242643.2365842,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
@@ -128,53 +128,53 @@
               "request_id": "REQ-4812",
               "site_id": "DC-WEST-4"
             },
-            "id": "7dc56c75-7a83-49c5-93f6-c98ece5decd8",
+            "id": "3f872474-e6cf-45d8-8f65-b28d0aab3443",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "381bec19be914e3b541aa53c254debc688b184820367c2a313e761df983acaad",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "211dc46290c618718a2329e6bf6bfc3fd84c4f39fd38c2f93163be3b82cf15b6",
           "kind": "proposed",
-          "previous": "15a1658951cf942ce0dbb02445eeef3636f89a3814536ccbd7b9297d9882d851",
+          "previous": "fb112c8e634a542d4f3ea081e9b339c3982732f23c7062be78bf2802084ae32f",
           "seq": 6
         },
         {
-          "at": 1790240378.1788986,
+          "at": 1790242643.2367666,
           "body": {
             "policy_version": 1,
-            "proposal_id": "7dc56c75-7a83-49c5-93f6-c98ece5decd8",
+            "proposal_id": "3f872474-e6cf-45d8-8f65-b28d0aab3443",
             "reason": "all_checks_passed",
             "status": "allowed"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "8d073ad6c2760ed884052787bbf804269380c83d864a1b146f6b1d70eadad3e8",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "d30e8a5132c07efbc88898acfcec14e02f34278b9478757135f4988859a68e4f",
           "kind": "decision",
-          "previous": "381bec19be914e3b541aa53c254debc688b184820367c2a313e761df983acaad",
+          "previous": "211dc46290c618718a2329e6bf6bfc3fd84c4f39fd38c2f93163be3b82cf15b6",
           "seq": 7
         },
         {
-          "at": 1790240378.179394,
+          "at": 1790242643.2372472,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
-            "idempotency_key": "7dc56c75-7a83-49c5-93f6-c98ece5decd8",
+            "idempotency_key": "3f872474-e6cf-45d8-8f65-b28d0aab3443",
             "policy_version": 1,
-            "proposal_id": "7dc56c75-7a83-49c5-93f6-c98ece5decd8"
+            "proposal_id": "3f872474-e6cf-45d8-8f65-b28d0aab3443"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "c4ed72ea78e609726f6ae79ccc4d46cba98cb0e4c282e34f800ea4dce8aa4812",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "2a547cf2887edb52bc8dc61948f0065966075e85de39055d60e2591ec868835a",
           "kind": "effect_started",
-          "previous": "8d073ad6c2760ed884052787bbf804269380c83d864a1b146f6b1d70eadad3e8",
+          "previous": "d30e8a5132c07efbc88898acfcec14e02f34278b9478757135f4988859a68e4f",
           "seq": 8
         },
         {
-          "at": 1790240378.1796076,
+          "at": 1790242643.2374692,
           "body": {
             "action": "record_review",
-            "claim_hash": "c4ed72ea78e609726f6ae79ccc4d46cba98cb0e4c282e34f800ea4dce8aa4812",
+            "claim_hash": "2a547cf2887edb52bc8dc61948f0065966075e85de39055d60e2591ec868835a",
             "output": {
               "args": {
                 "request_id": "REQ-4812",
@@ -182,16 +182,16 @@
               },
               "recorded": true
             },
-            "proposal_id": "7dc56c75-7a83-49c5-93f6-c98ece5decd8"
+            "proposal_id": "3f872474-e6cf-45d8-8f65-b28d0aab3443"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "bbc5bfb8bbe4e9839eceaade677964b0c1d7dd8755865062b3ca1e37f0b0e415",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "09119501916a1a13287c79de30931a77d87ec7d44cb886950106dbe8dcae7abf",
           "kind": "effect_succeeded",
-          "previous": "c4ed72ea78e609726f6ae79ccc4d46cba98cb0e4c282e34f800ea4dce8aa4812",
+          "previous": "2a547cf2887edb52bc8dc61948f0065966075e85de39055d60e2591ec868835a",
           "seq": 9
         },
         {
-          "at": 1790240378.1800914,
+          "at": 1790242643.2380593,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
@@ -225,109 +225,109 @@
                 "state": "active"
               }
             },
-            "id": "3dc6a804-14fb-46f5-9b76-eca8827ef2ea",
+            "id": "0ffb4c04-0dce-43f5-996f-d064094ebb9d",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "d91a3d7f37bf2f2551f2653d2a5b4dfb3612896a0fdc6aef01ae8e843cb086ee",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "5b0d376716523dc3e98bdcb3acb2de35a68c8a9b619fe47ba30140480d34db4c",
           "kind": "proposed",
-          "previous": "bbc5bfb8bbe4e9839eceaade677964b0c1d7dd8755865062b3ca1e37f0b0e415",
+          "previous": "09119501916a1a13287c79de30931a77d87ec7d44cb886950106dbe8dcae7abf",
           "seq": 10
         },
         {
-          "at": 1790240378.1802402,
+          "at": 1790242643.2382746,
           "body": {
             "policy_version": 1,
-            "proposal_id": "3dc6a804-14fb-46f5-9b76-eca8827ef2ea",
+            "proposal_id": "0ffb4c04-0dce-43f5-996f-d064094ebb9d",
             "reason": "approval_required:manager",
             "status": "needs_approval"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "275328142acf99714cb51f54da45378049d341d0a1b03e79a2460f9f008086d2",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "6d862e6e4a6d6584d70691f15511157338ca08c5d084ff2e7b744166db971e8f",
           "kind": "decision",
-          "previous": "d91a3d7f37bf2f2551f2653d2a5b4dfb3612896a0fdc6aef01ae8e843cb086ee",
+          "previous": "5b0d376716523dc3e98bdcb3acb2de35a68c8a9b619fe47ba30140480d34db4c",
           "seq": 11
         },
         {
-          "at": 1790240378.1806538,
+          "at": 1790242643.2386813,
           "body": {
             "phase": "commit",
             "policy_version": 1,
-            "proposal_id": "3dc6a804-14fb-46f5-9b76-eca8827ef2ea",
+            "proposal_id": "0ffb4c04-0dce-43f5-996f-d064094ebb9d",
             "reason": "approval_required:manager",
             "status": "needs_approval"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "e6fe5f235e4f3fce51c070a2110354d57100e53d05aa3a2802c698a55f969e5e",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "f8f8e44854c4b98d11cbac8815af2e7163e398bfcd0850395d5f6f7bfb877a2a",
           "kind": "decision",
-          "previous": "275328142acf99714cb51f54da45378049d341d0a1b03e79a2460f9f008086d2",
+          "previous": "6d862e6e4a6d6584d70691f15511157338ca08c5d084ff2e7b744166db971e8f",
           "seq": 12
         },
         {
-          "at": 1790240378.1809845,
+          "at": 1790242643.2390077,
           "body": {
             "actor": "d.patel",
             "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
-            "proposal_id": "3dc6a804-14fb-46f5-9b76-eca8827ef2ea",
+            "proposal_id": "0ffb4c04-0dce-43f5-996f-d064094ebb9d",
             "role": "manager"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "ee5c6c8181483a8bba2e77c814c2b43e22225e5b9ca4baf8f356e64515b172ab",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "cf4d94e9839a3ee2702801706c9bb3c611c67df297313a6a85b218dad7946dba",
           "kind": "approved",
-          "previous": "e6fe5f235e4f3fce51c070a2110354d57100e53d05aa3a2802c698a55f969e5e",
+          "previous": "f8f8e44854c4b98d11cbac8815af2e7163e398bfcd0850395d5f6f7bfb877a2a",
           "seq": 13
         },
         {
-          "at": 1790240378.181529,
+          "at": 1790242643.239424,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
-            "idempotency_key": "3dc6a804-14fb-46f5-9b76-eca8827ef2ea",
+            "idempotency_key": "0ffb4c04-0dce-43f5-996f-d064094ebb9d",
             "policy_version": 1,
-            "proposal_id": "3dc6a804-14fb-46f5-9b76-eca8827ef2ea"
+            "proposal_id": "0ffb4c04-0dce-43f5-996f-d064094ebb9d"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "ffab50e60d78a7388bf6b9a96bb16d486f6643098459be8e723d666937af1090",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "266294e77d11e07105755a2328947790d6b0b5c42eb309519f711fc334a3ad27",
           "kind": "effect_started",
-          "previous": "ee5c6c8181483a8bba2e77c814c2b43e22225e5b9ca4baf8f356e64515b172ab",
+          "previous": "cf4d94e9839a3ee2702801706c9bb3c611c67df297313a6a85b218dad7946dba",
           "seq": 14
         },
         {
-          "at": 1790240378.182993,
+          "at": 1790242643.2410655,
           "body": {
             "action": "issue_order",
-            "claim_hash": "ffab50e60d78a7388bf6b9a96bb16d486f6643098459be8e723d666937af1090",
+            "claim_hash": "266294e77d11e07105755a2328947790d6b0b5c42eb309519f711fc334a3ad27",
             "output": {
               "body": "{\"id\": \"PO-9001\", \"replayed\": false}",
               "status": 201
             },
-            "proposal_id": "3dc6a804-14fb-46f5-9b76-eca8827ef2ea"
+            "proposal_id": "0ffb4c04-0dce-43f5-996f-d064094ebb9d"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "8ecdbee388c6daf7dad089eadb9a9ed3a7d0a5bfeb06ef5f8016880cd347dfa2",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "3b23850ac36a45be410cd95509f50c9a58fd149745ebb5c648f4b8b76b9581e5",
           "kind": "effect_succeeded",
-          "previous": "ffab50e60d78a7388bf6b9a96bb16d486f6643098459be8e723d666937af1090",
+          "previous": "266294e77d11e07105755a2328947790d6b0b5c42eb309519f711fc334a3ad27",
           "seq": 15
         },
         {
-          "at": 1790240378.1832983,
+          "at": 1790242643.2414844,
           "body": {
             "actor": "d.patel",
             "role": "manager"
           },
-          "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-          "hash": "9290f97e617a2e53b095dfcfa4358f7e430b82551e88f89d69eed7f94b6a143e",
+          "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+          "hash": "a993f6ab05d7af990bc001837d89d81712f50adc394b601a23ad4bc554d69955",
           "kind": "signed",
-          "previous": "8ecdbee388c6daf7dad089eadb9a9ed3a7d0a5bfeb06ef5f8016880cd347dfa2",
+          "previous": "3b23850ac36a45be410cd95509f50c9a58fd149745ebb5c648f4b8b76b9581e5",
           "seq": 16
         }
       ],
-      "case_id": "867563d9-659e-4e53-b60e-3baabf5ba840",
-      "chain_head": "9290f97e617a2e53b095dfcfa4358f7e430b82551e88f89d69eed7f94b6a143e",
+      "case_id": "5375995f-b1a2-4005-b02c-3011b97029c4",
+      "chain_head": "a993f6ab05d7af990bc001837d89d81712f50adc394b601a23ad4bc554d69955",
       "chain_valid": true,
       "event_count": 16,
       "event_kinds": [
@@ -360,16 +360,19 @@
           {
             "amount": 2500,
             "id": "PO-9001",
-            "idempotency_key": "3dc6a804-14fb-46f5-9b76-eca8827ef2ea",
+            "idempotency_key": "0ffb4c04-0dce-43f5-996f-d064094ebb9d",
             "quote_id": "Q-881",
             "request_digest": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
             "request_id": "REQ-4812",
             "site_id": "DC-WEST-4"
           }
-        ]
+        ],
+        "updates": []
       },
       "id": "complete",
       "outcome": "complete",
+      "resolutions": [],
+      "status": "complete",
       "trace": [
         {
           "action": "create_case",
@@ -435,10 +438,13 @@
           "id": "CC-742",
           "version": 8
         },
-        "orders": []
+        "orders": [],
+        "updates": []
       },
       "id": "missing_input",
       "outcome": "input_rejected",
+      "resolutions": [],
+      "status": null,
       "trace": [
         {
           "action": "submit_incomplete_requisition",
@@ -450,17 +456,17 @@
       "acceptance": [
         {
           "id": "order_recorded",
-          "passed": false
+          "passed": true
         },
         {
           "id": "manager_signed_after_order",
-          "passed": false
+          "passed": true
         }
       ],
-      "acceptance_complete": false,
+      "acceptance_complete": true,
       "case_events": [
         {
-          "at": 1790240379.1898339,
+          "at": 1790242644.2494314,
           "body": {
             "actor": "a.rivera",
             "contract": [
@@ -471,14 +477,14 @@
               "request_id": "REQ-4813"
             }
           },
-          "case_id": "ab885acb-5dd9-441c-836c-4d6f920274d4",
-          "hash": "28ff0f64e2886ec050037e505888f1dcdfef0e4114c3766503f14c81b9e42f55",
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "3899b756045d5bdd876a14aa87d09f065affd31fd538d1c38d0410128009fb5c",
           "kind": "case_created",
           "previous": "0000000000000000000000000000000000000000000000000000000000000000",
           "seq": 1
         },
         {
-          "at": 1790240379.1916957,
+          "at": 1790242644.2514112,
           "body": {
             "actor": "a.rivera",
             "key": "request",
@@ -494,14 +500,61 @@
             "verified": true,
             "version": "req:3"
           },
-          "case_id": "ab885acb-5dd9-441c-836c-4d6f920274d4",
-          "hash": "9f812b71a2bbd81b1f0e999a3ac61b47602aae6a9d04475037c9c38a04599358",
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "9bab3e374c154acd2c33be35b5e75fb5762477ef6c44a1d17e601cbbac3a9b80",
           "kind": "observed",
-          "previous": "28ff0f64e2886ec050037e505888f1dcdfef0e4114c3766503f14c81b9e42f55",
+          "previous": "3899b756045d5bdd876a14aa87d09f065affd31fd538d1c38d0410128009fb5c",
           "seq": 2
         },
         {
-          "at": 1790240379.192104,
+          "at": 1790242644.2529144,
+          "body": {
+            "actor": "a.rivera",
+            "key": "site_options",
+            "source": "site_options",
+            "value": {
+              "ids": [
+                "DC-WEST-4",
+                "DC-EAST-2"
+              ],
+              "request_id": "REQ-4813"
+            },
+            "verified": true,
+            "version": "site-options:1"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "945880d468086c85c40b5f1e75a1a8a5ab1b2c61ff59f67e88fc464db5750ed3",
+          "kind": "observed",
+          "previous": "9bab3e374c154acd2c33be35b5e75fb5762477ef6c44a1d17e601cbbac3a9b80",
+          "seq": 3
+        },
+        {
+          "at": 1790242644.2533808,
+          "body": {
+            "actor": "a.rivera",
+            "choices": [
+              "DC-WEST-4",
+              "DC-EAST-2"
+            ],
+            "choices_hash": "945880d468086c85c40b5f1e75a1a8a5ab1b2c61ff59f67e88fc464db5750ed3",
+            "choices_version": "site-options:1",
+            "due_at": 1790244444.2533555,
+            "escalate_role": "manager",
+            "id": "a5171fc9-6cc1-4b50-bebb-9c656ccb7f0a",
+            "key": "site",
+            "owner_role": "logistics",
+            "record_key": "REQ-4813",
+            "trigger_hash": "9bab3e374c154acd2c33be35b5e75fb5762477ef6c44a1d17e601cbbac3a9b80",
+            "trigger_version": "req:3"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "8c1780189b97794cc6d0c24e7567e62db3fc38fa9cdd8dd25e110b58895f4b32",
+          "kind": "resolution_requested",
+          "previous": "945880d468086c85c40b5f1e75a1a8a5ab1b2c61ff59f67e88fc464db5750ed3",
+          "seq": 4
+        },
+        {
+          "at": 1790242644.2537115,
           "body": {
             "action": "record_review",
             "actor": "a.rivera",
@@ -509,55 +562,449 @@
               "request_id": "REQ-4813",
               "site_id": "DC-WEST-4"
             },
-            "id": "03c2d480-9beb-497e-a0b4-c9a1290c0c84",
+            "id": "c391c02c-0e85-4de4-a7e2-9e2cc85abfa7",
             "origin": "human",
             "roles": [
               "operator"
             ]
           },
-          "case_id": "ab885acb-5dd9-441c-836c-4d6f920274d4",
-          "hash": "8a74c72dc5e16fdcc55da7ecbe00c7e46cdbcd1529e4b3aa91d3ec11013d982c",
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "d606b922a4924b2f5507535e80c8227ce9510073f76b54fb86fae363a65d80b5",
           "kind": "proposed",
-          "previous": "9f812b71a2bbd81b1f0e999a3ac61b47602aae6a9d04475037c9c38a04599358",
-          "seq": 3
+          "previous": "8c1780189b97794cc6d0c24e7567e62db3fc38fa9cdd8dd25e110b58895f4b32",
+          "seq": 5
         },
         {
-          "at": 1790240379.1922026,
+          "at": 1790242644.253788,
           "body": {
             "policy_version": 1,
-            "proposal_id": "03c2d480-9beb-497e-a0b4-c9a1290c0c84",
-            "reason": "missing_fact:site",
+            "proposal_id": "c391c02c-0e85-4de4-a7e2-9e2cc85abfa7",
+            "reason": "resolution_open:site",
             "status": "denied"
           },
-          "case_id": "ab885acb-5dd9-441c-836c-4d6f920274d4",
-          "hash": "a2c44db75fafa9e14fceae70b97bcc48ac0cec89d49903935f1e27b249068ee7",
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "646d162e14068b1af733f8c68b780ebad1daf843975ba2238d8295cd5ec52956",
           "kind": "decision",
-          "previous": "8a74c72dc5e16fdcc55da7ecbe00c7e46cdbcd1529e4b3aa91d3ec11013d982c",
-          "seq": 4
+          "previous": "d606b922a4924b2f5507535e80c8227ce9510073f76b54fb86fae363a65d80b5",
+          "seq": 6
+        },
+        {
+          "at": 1790242644.2553005,
+          "body": {
+            "actor": "l.chen",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4813",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": null,
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:3"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "371f62fa912c029f08bf75cbf73536b24ec999d009fca11de8efd65acca4820c",
+          "kind": "observed",
+          "previous": "646d162e14068b1af733f8c68b780ebad1daf843975ba2238d8295cd5ec52956",
+          "seq": 7
+        },
+        {
+          "at": 1790242644.2556775,
+          "body": {
+            "actor": "l.chen",
+            "observation_hash": "371f62fa912c029f08bf75cbf73536b24ec999d009fca11de8efd65acca4820c",
+            "reason": "source_decision_unverified",
+            "status": "pending",
+            "task_id": "a5171fc9-6cc1-4b50-bebb-9c656ccb7f0a"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "64d033fe9124297f3d47f5b827a0a54d9cb10b6f9e8cb366d6551bfd3aaa85a0",
+          "kind": "resolution_checked",
+          "previous": "371f62fa912c029f08bf75cbf73536b24ec999d009fca11de8efd65acca4820c",
+          "seq": 8
+        },
+        {
+          "at": 1790242644.2603436,
+          "body": {
+            "actor": "l.chen",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4813",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": "DC-WEST-4",
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:4"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "d08dccc81f56559a5168f9184fff428e2f517ddde01dd223d159c3c3f0194909",
+          "kind": "observed",
+          "previous": "64d033fe9124297f3d47f5b827a0a54d9cb10b6f9e8cb366d6551bfd3aaa85a0",
+          "seq": 9
+        },
+        {
+          "at": 1790242644.260692,
+          "body": {
+            "actor": "l.chen",
+            "choice": "DC-WEST-4",
+            "confirmation_hash": null,
+            "key": "site",
+            "observation_hash": "d08dccc81f56559a5168f9184fff428e2f517ddde01dd223d159c3c3f0194909",
+            "source": "requisitions",
+            "task_id": "a5171fc9-6cc1-4b50-bebb-9c656ccb7f0a",
+            "version": "req:4"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "12739982b177b0684083557077b33452de384bcbc0e4c5900569c7f16a7d7eb2",
+          "kind": "resolution_completed",
+          "previous": "d08dccc81f56559a5168f9184fff428e2f517ddde01dd223d159c3c3f0194909",
+          "seq": 10
+        },
+        {
+          "at": 1790242644.2629676,
+          "body": {
+            "actor": "a.rivera",
+            "key": "site",
+            "source": "sites",
+            "value": {
+              "address": "901 Harbor Way, Oakland CA",
+              "id": "DC-WEST-4",
+              "state": "active"
+            },
+            "verified": true,
+            "version": "site:12"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "d11350d304a90e8ca867754154c0143526e11bc4945a3d4dad43004d557a562e",
+          "kind": "observed",
+          "previous": "12739982b177b0684083557077b33452de384bcbc0e4c5900569c7f16a7d7eb2",
+          "seq": 11
+        },
+        {
+          "at": 1790242644.2643573,
+          "body": {
+            "actor": "a.rivera",
+            "key": "budget",
+            "source": "finance",
+            "value": {
+              "available": 5000,
+              "currency": "USD",
+              "id": "CC-742"
+            },
+            "verified": true,
+            "version": "budget:8"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "8d8fe3aff6671d2ea42afb9327019ee18c1eb983f5cded5d9770cc51d165a400",
+          "kind": "observed",
+          "previous": "d11350d304a90e8ca867754154c0143526e11bc4945a3d4dad43004d557a562e",
+          "seq": 12
+        },
+        {
+          "at": 1790242644.2658103,
+          "body": {
+            "actor": "a.rivera",
+            "key": "quote",
+            "source": "supplier",
+            "value": {
+              "currency": "USD",
+              "id": "Q-883",
+              "request_id": "REQ-4813",
+              "total": 2500,
+              "unit_price": 1250,
+              "vendor": "Alder Components"
+            },
+            "verified": true,
+            "version": "quote:2"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "61865b6070bc42870f829e2a85fc6cb73b43339fb0107d4a51878c6c64c6e154",
+          "kind": "observed",
+          "previous": "8d8fe3aff6671d2ea42afb9327019ee18c1eb983f5cded5d9770cc51d165a400",
+          "seq": 13
+        },
+        {
+          "at": 1790242644.2664647,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "args": {
+              "request_id": "REQ-4813",
+              "site_id": "DC-WEST-4"
+            },
+            "id": "0c0d3b03-5ca0-47b9-be9d-c68dde8feace",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "ac084e725e0d58b7c7d37a4cad6846a35bc556bed9b672a1867f3c8d4e48de86",
+          "kind": "proposed",
+          "previous": "61865b6070bc42870f829e2a85fc6cb73b43339fb0107d4a51878c6c64c6e154",
+          "seq": 14
+        },
+        {
+          "at": 1790242644.2665882,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "0c0d3b03-5ca0-47b9-be9d-c68dde8feace",
+            "reason": "all_checks_passed",
+            "status": "allowed"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "788a8dd24f76687796b59cef4247f746f729b812cd0205e56e76fda6c66bb4ae",
+          "kind": "decision",
+          "previous": "ac084e725e0d58b7c7d37a4cad6846a35bc556bed9b672a1867f3c8d4e48de86",
+          "seq": 15
+        },
+        {
+          "at": 1790242644.2669375,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "idempotency_key": "0c0d3b03-5ca0-47b9-be9d-c68dde8feace",
+            "policy_version": 1,
+            "proposal_id": "0c0d3b03-5ca0-47b9-be9d-c68dde8feace"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "f89ee03bbe6d7f6c70d9899bb9c6ee4d363ead662db6c26538b2005451a460f9",
+          "kind": "effect_started",
+          "previous": "788a8dd24f76687796b59cef4247f746f729b812cd0205e56e76fda6c66bb4ae",
+          "seq": 16
+        },
+        {
+          "at": 1790242644.2671626,
+          "body": {
+            "action": "record_review",
+            "claim_hash": "f89ee03bbe6d7f6c70d9899bb9c6ee4d363ead662db6c26538b2005451a460f9",
+            "output": {
+              "args": {
+                "request_id": "REQ-4813",
+                "site_id": "DC-WEST-4"
+              },
+              "recorded": true
+            },
+            "proposal_id": "0c0d3b03-5ca0-47b9-be9d-c68dde8feace"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "8f5ce1d15693f913c87f4f23426783ff4bd84788e5a0175f213406e19ccc7f34",
+          "kind": "effect_succeeded",
+          "previous": "f89ee03bbe6d7f6c70d9899bb9c6ee4d363ead662db6c26538b2005451a460f9",
+          "seq": 17
+        },
+        {
+          "at": 1790242644.268001,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "args": {
+              "amount": 2500,
+              "budget": {
+                "available": 5000,
+                "currency": "USD",
+                "id": "CC-742"
+              },
+              "quote": {
+                "currency": "USD",
+                "id": "Q-883",
+                "request_id": "REQ-4813",
+                "total": 2500,
+                "unit_price": 1250,
+                "vendor": "Alder Components"
+              },
+              "quote_version": "quote:2",
+              "request": {
+                "cost_center": "CC-742",
+                "id": "REQ-4813",
+                "part": "P-104",
+                "quantity": 2,
+                "site_id": "DC-WEST-4",
+                "state": "approved"
+              },
+              "site": {
+                "address": "901 Harbor Way, Oakland CA",
+                "id": "DC-WEST-4",
+                "state": "active"
+              }
+            },
+            "id": "ea0a86f1-a24f-47de-978a-0408780adcba",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "f7ea8e6d92d4fe84c1ab7488ad7de5c325d1b2da440d14f75fad3aea35068236",
+          "kind": "proposed",
+          "previous": "8f5ce1d15693f913c87f4f23426783ff4bd84788e5a0175f213406e19ccc7f34",
+          "seq": 18
+        },
+        {
+          "at": 1790242644.2684693,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "ea0a86f1-a24f-47de-978a-0408780adcba",
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "44fe9afb960f2bd7dfc0f6fb3390605f0330dac5ec39e95b5ff9efe7bb3dbde9",
+          "kind": "decision",
+          "previous": "f7ea8e6d92d4fe84c1ab7488ad7de5c325d1b2da440d14f75fad3aea35068236",
+          "seq": 19
+        },
+        {
+          "at": 1790242644.2690842,
+          "body": {
+            "actor": "d.patel",
+            "args_hash": "d24833589e069429549f108b3be3397d5d2534534899d35f9cfaa5b90438d000",
+            "proposal_id": "ea0a86f1-a24f-47de-978a-0408780adcba",
+            "role": "manager"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "0e00228855d1df03d6cb879a17e249132260e7877422c5948e05431b068465f3",
+          "kind": "approved",
+          "previous": "44fe9afb960f2bd7dfc0f6fb3390605f0330dac5ec39e95b5ff9efe7bb3dbde9",
+          "seq": 20
+        },
+        {
+          "at": 1790242644.2696693,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "idempotency_key": "ea0a86f1-a24f-47de-978a-0408780adcba",
+            "policy_version": 1,
+            "proposal_id": "ea0a86f1-a24f-47de-978a-0408780adcba"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "5e6c2f1df50276df2a08250d8ce5935014876d23f2c2d2157e7b9db8148aea38",
+          "kind": "effect_started",
+          "previous": "0e00228855d1df03d6cb879a17e249132260e7877422c5948e05431b068465f3",
+          "seq": 21
+        },
+        {
+          "at": 1790242644.271145,
+          "body": {
+            "action": "issue_order",
+            "claim_hash": "5e6c2f1df50276df2a08250d8ce5935014876d23f2c2d2157e7b9db8148aea38",
+            "output": {
+              "body": "{\"id\": \"PO-9001\", \"replayed\": false}",
+              "status": 201
+            },
+            "proposal_id": "ea0a86f1-a24f-47de-978a-0408780adcba"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "bd9d20d609d59c4de1a62c4f0e49247927000d5f1d364a4d463ef12e2437de7c",
+          "kind": "effect_succeeded",
+          "previous": "5e6c2f1df50276df2a08250d8ce5935014876d23f2c2d2157e7b9db8148aea38",
+          "seq": 22
+        },
+        {
+          "at": 1790242644.271524,
+          "body": {
+            "actor": "d.patel",
+            "role": "manager"
+          },
+          "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+          "hash": "f8668629a5b43962e173136e03d6ccbc2d2a0e3f32cb4177658cde0b998bfb14",
+          "kind": "signed",
+          "previous": "bd9d20d609d59c4de1a62c4f0e49247927000d5f1d364a4d463ef12e2437de7c",
+          "seq": 23
         }
       ],
-      "case_id": "ab885acb-5dd9-441c-836c-4d6f920274d4",
-      "chain_head": "a2c44db75fafa9e14fceae70b97bcc48ac0cec89d49903935f1e27b249068ee7",
+      "case_id": "fb1db6cd-fb78-447b-aaff-b38d9e1bd313",
+      "chain_head": "f8668629a5b43962e173136e03d6ccbc2d2a0e3f32cb4177658cde0b998bfb14",
       "chain_valid": true,
-      "event_count": 4,
+      "event_count": 23,
       "event_kinds": [
         "case_created",
         "observed",
+        "observed",
+        "resolution_requested",
         "proposed",
-        "decision"
+        "decision",
+        "observed",
+        "resolution_checked",
+        "observed",
+        "resolution_completed",
+        "observed",
+        "observed",
+        "observed",
+        "proposed",
+        "decision",
+        "effect_started",
+        "effect_succeeded",
+        "proposed",
+        "decision",
+        "approved",
+        "effect_started",
+        "effect_succeeded",
+        "signed"
       ],
-      "external_orders": 0,
+      "external_orders": 1,
       "external_state": {
         "budget": {
-          "available": 5000,
+          "available": 2500,
           "currency": "USD",
           "id": "CC-742",
-          "version": 8
+          "version": 9
         },
-        "orders": []
+        "orders": [
+          {
+            "amount": 2500,
+            "id": "PO-9001",
+            "idempotency_key": "ea0a86f1-a24f-47de-978a-0408780adcba",
+            "quote_id": "Q-883",
+            "request_digest": "d24833589e069429549f108b3be3397d5d2534534899d35f9cfaa5b90438d000",
+            "request_id": "REQ-4813",
+            "site_id": "DC-WEST-4"
+          }
+        ],
+        "updates": [
+          {
+            "actor_role": "logistics",
+            "new_version": "req:4",
+            "old_version": "req:3",
+            "record_key": "REQ-4813",
+            "selected": "DC-WEST-4",
+            "target": "requests"
+          }
+        ]
       },
       "id": "missing_site",
-      "outcome": "blocked_missing_site",
+      "outcome": "resolved_site",
+      "resolutions": [
+        {
+          "actor": "a.rivera",
+          "choice": "DC-WEST-4",
+          "choices": [
+            "DC-WEST-4",
+            "DC-EAST-2"
+          ],
+          "choices_hash": "945880d468086c85c40b5f1e75a1a8a5ab1b2c61ff59f67e88fc464db5750ed3",
+          "choices_version": "site-options:1",
+          "due_at": 1790244444.2533555,
+          "escalate_role": "manager",
+          "id": "a5171fc9-6cc1-4b50-bebb-9c656ccb7f0a",
+          "key": "site",
+          "owner_role": "logistics",
+          "record_key": "REQ-4813",
+          "status": "completed",
+          "trigger_hash": "9bab3e374c154acd2c33be35b5e75fb5762477ef6c44a1d17e601cbbac3a9b80",
+          "trigger_version": "req:3"
+        }
+      ],
+      "status": "complete",
       "trace": [
         {
           "action": "create_case",
@@ -569,19 +1016,37 @@
           "version": "req:3"
         },
         {
-          "action": "resolve_destination",
-          "candidates": [
+          "action": "request_site_resolution",
+          "choices": [
             "DC-WEST-4",
             "DC-EAST-2"
           ],
-          "selected": null
+          "due_at": 1790244444.2533555,
+          "owner_role": "logistics",
+          "task_id": "a5171fc9-6cc1-4b50-bebb-9c656ccb7f0a"
         },
         {
           "action": "propose_review_with_guessed_site",
           "decision": {
-            "reason": "missing_fact:site",
+            "reason": "resolution_open:site",
             "status": "denied"
           }
+        },
+        {
+          "action": "check_site_before_source_change",
+          "result": "pending"
+        },
+        {
+          "action": "logistics_selects_site_in_erp",
+          "version": "req:4"
+        },
+        {
+          "action": "verify_site_resolution",
+          "choice": "DC-WEST-4"
+        },
+        {
+          "action": "place_order_after_site_resolution",
+          "result": "succeeded"
         }
       ]
     },
@@ -589,17 +1054,17 @@
       "acceptance": [
         {
           "id": "order_recorded",
-          "passed": false
+          "passed": true
         },
         {
           "id": "manager_signed_after_order",
-          "passed": false
+          "passed": true
         }
       ],
-      "acceptance_complete": false,
+      "acceptance_complete": true,
       "case_events": [
         {
-          "at": 1790240379.6958969,
+          "at": 1790242644.775994,
           "body": {
             "actor": "a.rivera",
             "contract": [
@@ -610,14 +1075,14 @@
               "request_id": "REQ-4814"
             }
           },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "a615af9605c6452abe787b2607b55877a65e47f3289844e1e5deafe2b21fc8de",
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "ca9ef65d7de6e04949c646d266a5092ef52840ac87b5317fb443a58d1b4b49d4",
           "kind": "case_created",
           "previous": "0000000000000000000000000000000000000000000000000000000000000000",
           "seq": 1
         },
         {
-          "at": 1790240379.6975868,
+          "at": 1790242644.777616,
           "body": {
             "actor": "a.rivera",
             "key": "request",
@@ -633,14 +1098,14 @@
             "verified": true,
             "version": "req:4"
           },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "e2a1d264be4077fb501c064c4835ea295c9a2e0cc2650c0b9635a49209026cca",
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "373d4b90936dfdde2c3b6b00839803c7606106e8eb55a75779c2c2787d38335b",
           "kind": "observed",
-          "previous": "a615af9605c6452abe787b2607b55877a65e47f3289844e1e5deafe2b21fc8de",
+          "previous": "ca9ef65d7de6e04949c646d266a5092ef52840ac87b5317fb443a58d1b4b49d4",
           "seq": 2
         },
         {
-          "at": 1790240379.6991444,
+          "at": 1790242644.7789822,
           "body": {
             "actor": "a.rivera",
             "key": "site",
@@ -653,14 +1118,14 @@
             "verified": true,
             "version": "site:12"
           },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "1ea7db25f48e2f34f799bd6e8f9a3380c8e3d49dba2425a710ed5d6495124404",
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "71d70649e6bc5abcd3c9a4ed74203d8b1ef03d73d732d2060fcab60d1bd09f7b",
           "kind": "observed",
-          "previous": "e2a1d264be4077fb501c064c4835ea295c9a2e0cc2650c0b9635a49209026cca",
+          "previous": "373d4b90936dfdde2c3b6b00839803c7606106e8eb55a75779c2c2787d38335b",
           "seq": 3
         },
         {
-          "at": 1790240379.7005155,
+          "at": 1790242644.7803497,
           "body": {
             "actor": "a.rivera",
             "key": "budget",
@@ -673,14 +1138,62 @@
             "verified": true,
             "version": "budget:8"
           },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "76e40f4ea7189d4fb5d74206fd5c8c48bbf55c27f303d23882f3822aac76e94d",
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "69bf32a262b82addd69e86049b2ef57e30c9b8bbb7aef9d23e1775c5e02a2bb8",
           "kind": "observed",
-          "previous": "1ea7db25f48e2f34f799bd6e8f9a3380c8e3d49dba2425a710ed5d6495124404",
+          "previous": "71d70649e6bc5abcd3c9a4ed74203d8b1ef03d73d732d2060fcab60d1bd09f7b",
           "seq": 4
         },
         {
-          "at": 1790240379.7022288,
+          "at": 1790242644.7816682,
+          "body": {
+            "actor": "a.rivera",
+            "key": "quote_options",
+            "source": "quote_options",
+            "value": {
+              "ids": [
+                "Q-882A",
+                "Q-882B"
+              ],
+              "request_id": "REQ-4814",
+              "selection": null
+            },
+            "verified": true,
+            "version": "selection:1"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "2ba4c221bee4c8354c864c0ee69d3fbc05511e9483c82fead1ed4b7f974a5f2a",
+          "kind": "observed",
+          "previous": "69bf32a262b82addd69e86049b2ef57e30c9b8bbb7aef9d23e1775c5e02a2bb8",
+          "seq": 5
+        },
+        {
+          "at": 1790242644.7821712,
+          "body": {
+            "actor": "a.rivera",
+            "choices": [
+              "Q-882A",
+              "Q-882B"
+            ],
+            "choices_hash": "2ba4c221bee4c8354c864c0ee69d3fbc05511e9483c82fead1ed4b7f974a5f2a",
+            "choices_version": "selection:1",
+            "due_at": 1790246244.782145,
+            "escalate_role": "manager",
+            "id": "7d7e3867-200a-4af8-8089-d1ec6fca346f",
+            "key": "quote",
+            "owner_role": "procurement",
+            "record_key": "REQ-4814",
+            "trigger_hash": "2ba4c221bee4c8354c864c0ee69d3fbc05511e9483c82fead1ed4b7f974a5f2a",
+            "trigger_version": "selection:1"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "1ab980d83fec18fb1de0c565fe3f2484e6d9fa4f632b0a1f63e42f701655cf94",
+          "kind": "resolution_requested",
+          "previous": "2ba4c221bee4c8354c864c0ee69d3fbc05511e9483c82fead1ed4b7f974a5f2a",
+          "seq": 6
+        },
+        {
+          "at": 1790242644.784076,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
@@ -688,53 +1201,53 @@
               "request_id": "REQ-4814",
               "site_id": "DC-WEST-4"
             },
-            "id": "9a179a75-222a-45c9-8f49-fe8d4f20f46d",
+            "id": "127db87e-4da7-4ba0-bd0a-b5d1e5c50246",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "0f06d7b1cf1af7d646740a9c208c613ca08186b88b5636abb23e05ac7c60e33c",
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "140abfd2cbda6fcaed487762b700e3ebb3c5b51b416696d56bcdfaa96ffb7164",
           "kind": "proposed",
-          "previous": "76e40f4ea7189d4fb5d74206fd5c8c48bbf55c27f303d23882f3822aac76e94d",
-          "seq": 5
-        },
-        {
-          "at": 1790240379.7023623,
-          "body": {
-            "policy_version": 1,
-            "proposal_id": "9a179a75-222a-45c9-8f49-fe8d4f20f46d",
-            "reason": "all_checks_passed",
-            "status": "allowed"
-          },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "712e32197fff8a7d52ef0f6e8c9e8f6498d6768db86f604093da052d1e7acdbb",
-          "kind": "decision",
-          "previous": "0f06d7b1cf1af7d646740a9c208c613ca08186b88b5636abb23e05ac7c60e33c",
-          "seq": 6
-        },
-        {
-          "at": 1790240379.7026393,
-          "body": {
-            "action": "record_review",
-            "actor": "scheduler",
-            "idempotency_key": "9a179a75-222a-45c9-8f49-fe8d4f20f46d",
-            "policy_version": 1,
-            "proposal_id": "9a179a75-222a-45c9-8f49-fe8d4f20f46d"
-          },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "7b8801ee0e570d9f4dbfc1f445e2e59207d87837d7acf9fcf99e909e3d2124d0",
-          "kind": "effect_started",
-          "previous": "712e32197fff8a7d52ef0f6e8c9e8f6498d6768db86f604093da052d1e7acdbb",
+          "previous": "1ab980d83fec18fb1de0c565fe3f2484e6d9fa4f632b0a1f63e42f701655cf94",
           "seq": 7
         },
         {
-          "at": 1790240379.7028677,
+          "at": 1790242644.7842045,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "127db87e-4da7-4ba0-bd0a-b5d1e5c50246",
+            "reason": "all_checks_passed",
+            "status": "allowed"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "365017e2a119eb99b73c394eb3a61bf4eb8beac9e6572b7e3262276f9082c4c1",
+          "kind": "decision",
+          "previous": "140abfd2cbda6fcaed487762b700e3ebb3c5b51b416696d56bcdfaa96ffb7164",
+          "seq": 8
+        },
+        {
+          "at": 1790242644.7845159,
           "body": {
             "action": "record_review",
-            "claim_hash": "7b8801ee0e570d9f4dbfc1f445e2e59207d87837d7acf9fcf99e909e3d2124d0",
+            "actor": "scheduler",
+            "idempotency_key": "127db87e-4da7-4ba0-bd0a-b5d1e5c50246",
+            "policy_version": 1,
+            "proposal_id": "127db87e-4da7-4ba0-bd0a-b5d1e5c50246"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "a68e6e42b6d62939f801e2d57ee368c44bf7d07794447984cc01c3c5ee8c2825",
+          "kind": "effect_started",
+          "previous": "365017e2a119eb99b73c394eb3a61bf4eb8beac9e6572b7e3262276f9082c4c1",
+          "seq": 9
+        },
+        {
+          "at": 1790242644.7846994,
+          "body": {
+            "action": "record_review",
+            "claim_hash": "a68e6e42b6d62939f801e2d57ee368c44bf7d07794447984cc01c3c5ee8c2825",
             "output": {
               "args": {
                 "request_id": "REQ-4814",
@@ -742,77 +1255,329 @@
               },
               "recorded": true
             },
-            "proposal_id": "9a179a75-222a-45c9-8f49-fe8d4f20f46d"
+            "proposal_id": "127db87e-4da7-4ba0-bd0a-b5d1e5c50246"
           },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "e50abd2a3c6e5be52d624a10d6e0741df52d3af41b2902c5979e76bed835efc2",
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "485ac8ba5b5d411150c993783a0f6ab2b5546279be30ef6062fcb825020c9d53",
           "kind": "effect_succeeded",
-          "previous": "7b8801ee0e570d9f4dbfc1f445e2e59207d87837d7acf9fcf99e909e3d2124d0",
-          "seq": 8
+          "previous": "a68e6e42b6d62939f801e2d57ee368c44bf7d07794447984cc01c3c5ee8c2825",
+          "seq": 10
         },
         {
-          "at": 1790240379.7033787,
+          "at": 1790242644.7850835,
           "body": {
             "action": "issue_order",
             "actor": "a.rivera",
             "args": {
               "amount": 2500
             },
-            "id": "929ad7d9-4144-4c22-8162-afe670cb2ff3",
+            "id": "a1d9e178-d137-4e96-8f0b-cf688586516f",
             "origin": "human",
             "roles": [
               "operator"
             ]
           },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "33795540973b7be09198bf71dbf00e185dc84d84606eccb7b0af4c2080926fda",
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "eab9ca32db4e8d304c904b93da80bcc6b02ce5553df987eb2dea94bdd0227335",
           "kind": "proposed",
-          "previous": "e50abd2a3c6e5be52d624a10d6e0741df52d3af41b2902c5979e76bed835efc2",
-          "seq": 9
+          "previous": "485ac8ba5b5d411150c993783a0f6ab2b5546279be30ef6062fcb825020c9d53",
+          "seq": 11
         },
         {
-          "at": 1790240379.7034729,
+          "at": 1790242644.7852461,
           "body": {
             "policy_version": 1,
-            "proposal_id": "929ad7d9-4144-4c22-8162-afe670cb2ff3",
-            "reason": "missing_fact:quote",
+            "proposal_id": "a1d9e178-d137-4e96-8f0b-cf688586516f",
+            "reason": "resolution_open:quote",
             "status": "denied"
           },
-          "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-          "hash": "80e85e273da05b195e21dba56f2c5943fd1d6afa5fefcdbd21871f9f2a8b5cd0",
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "99279b239d9867f854b9caadc537a8053dfb6351c39710fbc48a83c00dd6d9a5",
           "kind": "decision",
-          "previous": "33795540973b7be09198bf71dbf00e185dc84d84606eccb7b0af4c2080926fda",
-          "seq": 10
+          "previous": "eab9ca32db4e8d304c904b93da80bcc6b02ce5553df987eb2dea94bdd0227335",
+          "seq": 12
+        },
+        {
+          "at": 1790242644.787053,
+          "body": {
+            "actor": "p.soto",
+            "reason": "source_shape",
+            "status": "pending",
+            "task_id": "7d7e3867-200a-4af8-8089-d1ec6fca346f"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "daee75eef51c42d43eb076140e361efd2ad84cebc4033f113c056fbfb84cfd9c",
+          "kind": "resolution_checked",
+          "previous": "99279b239d9867f854b9caadc537a8053dfb6351c39710fbc48a83c00dd6d9a5",
+          "seq": 13
+        },
+        {
+          "at": 1790242644.7905455,
+          "body": {
+            "actor": "p.soto",
+            "key": "quote",
+            "source": "supplier",
+            "value": {
+              "currency": "USD",
+              "id": "Q-882A",
+              "request_id": "REQ-4814",
+              "total": 2500,
+              "unit_price": 1250,
+              "vendor": "Alder Components"
+            },
+            "verified": true,
+            "version": "quote:1"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "bf04167c058b8633a52a187d4096309ae5e6830fb7d68bfa03572d457df3ae0f",
+          "kind": "observed",
+          "previous": "daee75eef51c42d43eb076140e361efd2ad84cebc4033f113c056fbfb84cfd9c",
+          "seq": 14
+        },
+        {
+          "at": 1790242644.7935605,
+          "body": {
+            "actor": "p.soto",
+            "key": "quote_options",
+            "source": "quote_options",
+            "value": {
+              "ids": [
+                "Q-882A",
+                "Q-882B"
+              ],
+              "request_id": "REQ-4814",
+              "selection": "Q-882A"
+            },
+            "verified": true,
+            "version": "selection:2"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "79f866f24d2d74c51f98430bdafbfebe9c16897ccc581781f67f908cfe35516b",
+          "kind": "observed",
+          "previous": "bf04167c058b8633a52a187d4096309ae5e6830fb7d68bfa03572d457df3ae0f",
+          "seq": 15
+        },
+        {
+          "at": 1790242644.794176,
+          "body": {
+            "actor": "p.soto",
+            "choice": "Q-882A",
+            "confirmation_hash": "79f866f24d2d74c51f98430bdafbfebe9c16897ccc581781f67f908cfe35516b",
+            "key": "quote",
+            "observation_hash": "bf04167c058b8633a52a187d4096309ae5e6830fb7d68bfa03572d457df3ae0f",
+            "source": "supplier",
+            "task_id": "7d7e3867-200a-4af8-8089-d1ec6fca346f",
+            "version": "quote:1"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "7e7ba6760b1b4eddeaff71955f8105762857109281a9cbc37a4c0ae107a81bda",
+          "kind": "resolution_completed",
+          "previous": "79f866f24d2d74c51f98430bdafbfebe9c16897ccc581781f67f908cfe35516b",
+          "seq": 16
+        },
+        {
+          "at": 1790242644.7948475,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "args": {
+              "amount": 2500,
+              "budget": {
+                "available": 5000,
+                "currency": "USD",
+                "id": "CC-742"
+              },
+              "quote": {
+                "currency": "USD",
+                "id": "Q-882A",
+                "request_id": "REQ-4814",
+                "total": 2500,
+                "unit_price": 1250,
+                "vendor": "Alder Components"
+              },
+              "quote_version": "quote:1",
+              "request": {
+                "cost_center": "CC-742",
+                "id": "REQ-4814",
+                "part": "P-104",
+                "quantity": 2,
+                "site_id": "DC-WEST-4",
+                "state": "approved"
+              },
+              "site": {
+                "address": "901 Harbor Way, Oakland CA",
+                "id": "DC-WEST-4",
+                "state": "active"
+              }
+            },
+            "id": "22406be2-b620-440b-9536-032d4c45af09",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "4e66506f6f09ccb543de558c9eb6c9e10d2e34a8181af8bba930c7ac37589e09",
+          "kind": "proposed",
+          "previous": "7e7ba6760b1b4eddeaff71955f8105762857109281a9cbc37a4c0ae107a81bda",
+          "seq": 17
+        },
+        {
+          "at": 1790242644.7951286,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "22406be2-b620-440b-9536-032d4c45af09",
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "d44f543b212ee709093776f68d2fc69f141079d81b3dde4d059d71adb8d6d257",
+          "kind": "decision",
+          "previous": "4e66506f6f09ccb543de558c9eb6c9e10d2e34a8181af8bba930c7ac37589e09",
+          "seq": 18
+        },
+        {
+          "at": 1790242644.7954988,
+          "body": {
+            "actor": "d.patel",
+            "args_hash": "f5cee586a429a005bc39b5bb17c069b0ba0d5c25c32b040e5b026d93f57f4767",
+            "proposal_id": "22406be2-b620-440b-9536-032d4c45af09",
+            "role": "manager"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "36295c56d25a087cb80389cda7ebf153950ff75a467a5a093651132482bacafe",
+          "kind": "approved",
+          "previous": "d44f543b212ee709093776f68d2fc69f141079d81b3dde4d059d71adb8d6d257",
+          "seq": 19
+        },
+        {
+          "at": 1790242644.7959049,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "idempotency_key": "22406be2-b620-440b-9536-032d4c45af09",
+            "policy_version": 1,
+            "proposal_id": "22406be2-b620-440b-9536-032d4c45af09"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "ba0f58b10a757ff73a6c38fa257ed7d28184e377afb83fe714c3519324a98e9c",
+          "kind": "effect_started",
+          "previous": "36295c56d25a087cb80389cda7ebf153950ff75a467a5a093651132482bacafe",
+          "seq": 20
+        },
+        {
+          "at": 1790242644.7974641,
+          "body": {
+            "action": "issue_order",
+            "claim_hash": "ba0f58b10a757ff73a6c38fa257ed7d28184e377afb83fe714c3519324a98e9c",
+            "output": {
+              "body": "{\"id\": \"PO-9001\", \"replayed\": false}",
+              "status": 201
+            },
+            "proposal_id": "22406be2-b620-440b-9536-032d4c45af09"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "15452824f1eb87234a7d75b325a17000d53e424ec3e4a66719be5116892012bf",
+          "kind": "effect_succeeded",
+          "previous": "ba0f58b10a757ff73a6c38fa257ed7d28184e377afb83fe714c3519324a98e9c",
+          "seq": 21
+        },
+        {
+          "at": 1790242644.7978332,
+          "body": {
+            "actor": "d.patel",
+            "role": "manager"
+          },
+          "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+          "hash": "bf8a48d8c80b4b2538e15da846723d3810d5bc975601877ed13282d95116d147",
+          "kind": "signed",
+          "previous": "15452824f1eb87234a7d75b325a17000d53e424ec3e4a66719be5116892012bf",
+          "seq": 22
         }
       ],
-      "case_id": "f13bb925-5a38-4ad3-b1cf-43cd6f7c3eef",
-      "chain_head": "80e85e273da05b195e21dba56f2c5943fd1d6afa5fefcdbd21871f9f2a8b5cd0",
+      "case_id": "69010de8-f083-421f-9153-3d00912b0646",
+      "chain_head": "bf8a48d8c80b4b2538e15da846723d3810d5bc975601877ed13282d95116d147",
       "chain_valid": true,
-      "event_count": 10,
+      "event_count": 22,
       "event_kinds": [
         "case_created",
         "observed",
         "observed",
         "observed",
+        "observed",
+        "resolution_requested",
         "proposed",
         "decision",
         "effect_started",
         "effect_succeeded",
         "proposed",
-        "decision"
+        "decision",
+        "resolution_checked",
+        "observed",
+        "observed",
+        "resolution_completed",
+        "proposed",
+        "decision",
+        "approved",
+        "effect_started",
+        "effect_succeeded",
+        "signed"
       ],
-      "external_orders": 0,
+      "external_orders": 1,
       "external_state": {
         "budget": {
-          "available": 5000,
+          "available": 2500,
           "currency": "USD",
           "id": "CC-742",
-          "version": 8
+          "version": 9
         },
-        "orders": []
+        "orders": [
+          {
+            "amount": 2500,
+            "id": "PO-9001",
+            "idempotency_key": "22406be2-b620-440b-9536-032d4c45af09",
+            "quote_id": "Q-882A",
+            "request_digest": "f5cee586a429a005bc39b5bb17c069b0ba0d5c25c32b040e5b026d93f57f4767",
+            "request_id": "REQ-4814",
+            "site_id": "DC-WEST-4"
+          }
+        ],
+        "updates": [
+          {
+            "actor_role": "procurement",
+            "new_version": "selection:2",
+            "old_version": "selection:1",
+            "record_key": "REQ-4814",
+            "selected": "Q-882A",
+            "target": "quotes"
+          }
+        ]
       },
       "id": "ambiguous_quote",
-      "outcome": "blocked_ambiguous_quote",
+      "outcome": "resolved_quote",
+      "resolutions": [
+        {
+          "actor": "a.rivera",
+          "choice": "Q-882A",
+          "choices": [
+            "Q-882A",
+            "Q-882B"
+          ],
+          "choices_hash": "2ba4c221bee4c8354c864c0ee69d3fbc05511e9483c82fead1ed4b7f974a5f2a",
+          "choices_version": "selection:1",
+          "due_at": 1790246244.782145,
+          "escalate_role": "manager",
+          "id": "7d7e3867-200a-4af8-8089-d1ec6fca346f",
+          "key": "quote",
+          "owner_role": "procurement",
+          "record_key": "REQ-4814",
+          "status": "completed",
+          "trigger_hash": "2ba4c221bee4c8354c864c0ee69d3fbc05511e9483c82fead1ed4b7f974a5f2a",
+          "trigger_version": "selection:1"
+        }
+      ],
+      "status": "complete",
       "trace": [
         {
           "action": "create_case",
@@ -822,6 +1587,16 @@
           "action": "read_requisition",
           "state": "approved",
           "version": "req:4"
+        },
+        {
+          "action": "request_quote_resolution",
+          "choices": [
+            "Q-882A",
+            "Q-882B"
+          ],
+          "due_at": 1790246244.782145,
+          "owner_role": "procurement",
+          "task_id": "7d7e3867-200a-4af8-8089-d1ec6fca346f"
         },
         {
           "action": "read_competing_quotes",
@@ -838,9 +1613,25 @@
         {
           "action": "propose_without_selected_quote",
           "decision": {
-            "reason": "missing_fact:quote",
+            "reason": "resolution_open:quote",
             "status": "denied"
           }
+        },
+        {
+          "action": "check_quote_before_source_change",
+          "result": "pending"
+        },
+        {
+          "action": "procurement_selects_quote_in_erp",
+          "version": "selection:2"
+        },
+        {
+          "action": "verify_quote_resolution",
+          "choice": "Q-882A"
+        },
+        {
+          "action": "place_order_after_quote_resolution",
+          "result": "succeeded"
         }
       ]
     },
@@ -858,7 +1649,7 @@
       "acceptance_complete": false,
       "case_events": [
         {
-          "at": 1790240380.2075822,
+          "at": 1790242645.3024302,
           "body": {
             "actor": "a.rivera",
             "contract": [
@@ -869,14 +1660,14 @@
               "request_id": "REQ-4812"
             }
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "d7f0f962051b470456b30d94936731027e69d14444372492b9d02097e1046c91",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "4c52634fadd1cb215547d4bd4b8f02a68329d2b9c4910a4aed337cc221954e06",
           "kind": "case_created",
           "previous": "0000000000000000000000000000000000000000000000000000000000000000",
           "seq": 1
         },
         {
-          "at": 1790240380.2092083,
+          "at": 1790242645.3041034,
           "body": {
             "actor": "a.rivera",
             "key": "request",
@@ -892,14 +1683,14 @@
             "verified": true,
             "version": "req:6"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "4ec1120fb211b33ad08e8bcc755f56018948793d2fe64edbd0e19f8a0d148fe6",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "42ac4caf415e8b9b335982e3c4320474b05a8a257a86d129cb909afea8d58503",
           "kind": "observed",
-          "previous": "d7f0f962051b470456b30d94936731027e69d14444372492b9d02097e1046c91",
+          "previous": "4c52634fadd1cb215547d4bd4b8f02a68329d2b9c4910a4aed337cc221954e06",
           "seq": 2
         },
         {
-          "at": 1790240380.2106454,
+          "at": 1790242645.3058805,
           "body": {
             "actor": "a.rivera",
             "key": "site",
@@ -912,14 +1703,14 @@
             "verified": true,
             "version": "site:12"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "141b38557d3d60ba3d1089bb6e465bad7627653d6cae979dc966fba9fbb396da",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "3c637259e612f73a00c4c0cc5a0c9bb69c0fbfaf413c8df824bc96f78779e759",
           "kind": "observed",
-          "previous": "4ec1120fb211b33ad08e8bcc755f56018948793d2fe64edbd0e19f8a0d148fe6",
+          "previous": "42ac4caf415e8b9b335982e3c4320474b05a8a257a86d129cb909afea8d58503",
           "seq": 3
         },
         {
-          "at": 1790240380.21214,
+          "at": 1790242645.308465,
           "body": {
             "actor": "a.rivera",
             "key": "budget",
@@ -932,14 +1723,14 @@
             "verified": true,
             "version": "budget:8"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "22a5bc8cd24debe26984fe092c3666af6b7a17be2a0af2a2f9ed387f206e6096",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "c3c0263492b72d686e7f4e5c30e6f6b6bc7bc01f1cdc2e75d952b3870ec31d97",
           "kind": "observed",
-          "previous": "141b38557d3d60ba3d1089bb6e465bad7627653d6cae979dc966fba9fbb396da",
+          "previous": "3c637259e612f73a00c4c0cc5a0c9bb69c0fbfaf413c8df824bc96f78779e759",
           "seq": 4
         },
         {
-          "at": 1790240380.2137625,
+          "at": 1790242645.3097696,
           "body": {
             "actor": "a.rivera",
             "key": "quote",
@@ -955,14 +1746,14 @@
             "verified": true,
             "version": "quote:3"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "a0b0baea078e75ddea89f2e2376508e1ccca4a0eced762903aca39c3ba417510",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "4b05476c2072bfbfa51391d0cba598588fac65ec029f6acc5af2319a21b9738b",
           "kind": "observed",
-          "previous": "22a5bc8cd24debe26984fe092c3666af6b7a17be2a0af2a2f9ed387f206e6096",
+          "previous": "c3c0263492b72d686e7f4e5c30e6f6b6bc7bc01f1cdc2e75d952b3870ec31d97",
           "seq": 5
         },
         {
-          "at": 1790240380.2144334,
+          "at": 1790242645.3115528,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
@@ -970,53 +1761,53 @@
               "request_id": "REQ-4812",
               "site_id": "DC-WEST-4"
             },
-            "id": "09a0983c-14b6-4336-91ad-67d05c30eb3c",
+            "id": "045a4edc-3ffc-4ffb-9b55-1cadc1b49beb",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "705d9228af1c9094639e77d99aea46c468918540331f6ad63f03646078b398f8",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "8e891b0f4c233a7b8d9692b2072aa93969f70d342407730bd48bc5ba4e554449",
           "kind": "proposed",
-          "previous": "a0b0baea078e75ddea89f2e2376508e1ccca4a0eced762903aca39c3ba417510",
+          "previous": "4b05476c2072bfbfa51391d0cba598588fac65ec029f6acc5af2319a21b9738b",
           "seq": 6
         },
         {
-          "at": 1790240380.2145522,
+          "at": 1790242645.3116972,
           "body": {
             "policy_version": 1,
-            "proposal_id": "09a0983c-14b6-4336-91ad-67d05c30eb3c",
+            "proposal_id": "045a4edc-3ffc-4ffb-9b55-1cadc1b49beb",
             "reason": "all_checks_passed",
             "status": "allowed"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "6ebb07c503239dccc9d826860692755a2af292c28a7630483bf7cf28dba9a93d",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "e14fae0594c2e08fbd4cb5ce3964ce57afd5d82d24a87aab47299259fc6e9788",
           "kind": "decision",
-          "previous": "705d9228af1c9094639e77d99aea46c468918540331f6ad63f03646078b398f8",
+          "previous": "8e891b0f4c233a7b8d9692b2072aa93969f70d342407730bd48bc5ba4e554449",
           "seq": 7
         },
         {
-          "at": 1790240380.2148252,
+          "at": 1790242645.3120854,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
-            "idempotency_key": "09a0983c-14b6-4336-91ad-67d05c30eb3c",
+            "idempotency_key": "045a4edc-3ffc-4ffb-9b55-1cadc1b49beb",
             "policy_version": 1,
-            "proposal_id": "09a0983c-14b6-4336-91ad-67d05c30eb3c"
+            "proposal_id": "045a4edc-3ffc-4ffb-9b55-1cadc1b49beb"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "c2445d0dadea165659a7fb339055ac181734f009b4374e58f57fca594dd824c8",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "080285fdee4fc31419129edf1af5f25e20a17c0c4c22fa46eeaf3a965e63c2c5",
           "kind": "effect_started",
-          "previous": "6ebb07c503239dccc9d826860692755a2af292c28a7630483bf7cf28dba9a93d",
+          "previous": "e14fae0594c2e08fbd4cb5ce3964ce57afd5d82d24a87aab47299259fc6e9788",
           "seq": 8
         },
         {
-          "at": 1790240380.2150385,
+          "at": 1790242645.312295,
           "body": {
             "action": "record_review",
-            "claim_hash": "c2445d0dadea165659a7fb339055ac181734f009b4374e58f57fca594dd824c8",
+            "claim_hash": "080285fdee4fc31419129edf1af5f25e20a17c0c4c22fa46eeaf3a965e63c2c5",
             "output": {
               "args": {
                 "request_id": "REQ-4812",
@@ -1024,16 +1815,16 @@
               },
               "recorded": true
             },
-            "proposal_id": "09a0983c-14b6-4336-91ad-67d05c30eb3c"
+            "proposal_id": "045a4edc-3ffc-4ffb-9b55-1cadc1b49beb"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "54bbe9881508e455cf321a9c926bbb0eaf1714dbcf2bd9c15d13f89bb7bb9a3a",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "1f121c5d179dfd046685c5affe8bad46f0d478a2f6f506ddd904087f06303b64",
           "kind": "effect_succeeded",
-          "previous": "c2445d0dadea165659a7fb339055ac181734f009b4374e58f57fca594dd824c8",
+          "previous": "080285fdee4fc31419129edf1af5f25e20a17c0c4c22fa46eeaf3a965e63c2c5",
           "seq": 9
         },
         {
-          "at": 1790240380.2154922,
+          "at": 1790242645.3127942,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
@@ -1067,65 +1858,65 @@
                 "state": "active"
               }
             },
-            "id": "827936e4-ff2d-4326-974d-3271a4cf54b3",
+            "id": "8e3d0a7e-9367-4393-b742-c3812f817ee2",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "5a940bdd3d652ee40486184c01af44063bd4724368b3a3636c414c1e45a52659",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "c3644d3d4b0f5b5dc5b9c6079cc968dc0241e51060db670fbec96526f68af99e",
           "kind": "proposed",
-          "previous": "54bbe9881508e455cf321a9c926bbb0eaf1714dbcf2bd9c15d13f89bb7bb9a3a",
+          "previous": "1f121c5d179dfd046685c5affe8bad46f0d478a2f6f506ddd904087f06303b64",
           "seq": 10
         },
         {
-          "at": 1790240380.2157714,
+          "at": 1790242645.3129213,
           "body": {
             "policy_version": 1,
-            "proposal_id": "827936e4-ff2d-4326-974d-3271a4cf54b3",
+            "proposal_id": "8e3d0a7e-9367-4393-b742-c3812f817ee2",
             "reason": "approval_required:manager",
             "status": "needs_approval"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "e8d2ac1d83d6ee853bb4b06980d20e94f355de96996319f43d23c93ad092b3a6",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "8f64c4acf97693966e2ee7f6f0ac32bcd472c5586a0401f913136d97f36a573d",
           "kind": "decision",
-          "previous": "5a940bdd3d652ee40486184c01af44063bd4724368b3a3636c414c1e45a52659",
+          "previous": "c3644d3d4b0f5b5dc5b9c6079cc968dc0241e51060db670fbec96526f68af99e",
           "seq": 11
         },
         {
-          "at": 1790240380.2161586,
+          "at": 1790242645.3133543,
           "body": {
             "actor": "d.patel",
             "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
-            "proposal_id": "827936e4-ff2d-4326-974d-3271a4cf54b3",
+            "proposal_id": "8e3d0a7e-9367-4393-b742-c3812f817ee2",
             "role": "manager"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "8efb27a61fc9cbdcba878c111c08cc67dcb22190487c1954fd91b0662c133404",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "ba3ce4730984f56ab24843847ff2078adeba606e8e6f2f2d6243702e49a77ff5",
           "kind": "approved",
-          "previous": "e8d2ac1d83d6ee853bb4b06980d20e94f355de96996319f43d23c93ad092b3a6",
+          "previous": "8f64c4acf97693966e2ee7f6f0ac32bcd472c5586a0401f913136d97f36a573d",
           "seq": 12
         },
         {
-          "at": 1790240380.2167559,
+          "at": 1790242645.31383,
           "body": {
             "phase": "commit",
             "policy_version": 2,
-            "proposal_id": "827936e4-ff2d-4326-974d-3271a4cf54b3",
+            "proposal_id": "8e3d0a7e-9367-4393-b742-c3812f817ee2",
             "reason": "action_not_in_global_policy",
             "status": "denied"
           },
-          "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-          "hash": "bfaf74d8b88386e63418524b564941459b01e8a03cf9d22ebddb7b72a3e62673",
+          "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+          "hash": "919248726eb3186ed5a86e1a28a1594ee475513253ac159b8dadc16e69d08b8a",
           "kind": "decision",
-          "previous": "8efb27a61fc9cbdcba878c111c08cc67dcb22190487c1954fd91b0662c133404",
+          "previous": "ba3ce4730984f56ab24843847ff2078adeba606e8e6f2f2d6243702e49a77ff5",
           "seq": 13
         }
       ],
-      "case_id": "0c30f59e-6c82-41e4-9900-42718b3589d4",
-      "chain_head": "bfaf74d8b88386e63418524b564941459b01e8a03cf9d22ebddb7b72a3e62673",
+      "case_id": "efa3600e-8e3a-45af-bb9c-a3ab35c77057",
+      "chain_head": "919248726eb3186ed5a86e1a28a1594ee475513253ac159b8dadc16e69d08b8a",
       "chain_valid": true,
       "event_count": 13,
       "event_kinds": [
@@ -1151,10 +1942,13 @@
           "id": "CC-742",
           "version": 8
         },
-        "orders": []
+        "orders": [],
+        "updates": []
       },
       "id": "policy_tightened",
       "outcome": "blocked_at_commit",
+      "resolutions": [],
+      "status": "in_progress",
       "trace": [
         {
           "action": "create_case",
@@ -1217,7 +2011,7 @@
       "acceptance_complete": true,
       "case_events": [
         {
-          "at": 1790240380.7183194,
+          "at": 1790242645.8144522,
           "body": {
             "actor": "a.rivera",
             "contract": [
@@ -1228,14 +2022,14 @@
               "request_id": "REQ-4812"
             }
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "423677a985defdd9a3e39e7e9496ca7df8f53a7dd20c48b52057c383d550fed1",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "1a86c5af459fb912df0847174e4e64fc92416102b9467180777503071c690567",
           "kind": "case_created",
           "previous": "0000000000000000000000000000000000000000000000000000000000000000",
           "seq": 1
         },
         {
-          "at": 1790240380.7199364,
+          "at": 1790242645.8158746,
           "body": {
             "actor": "a.rivera",
             "key": "request",
@@ -1251,14 +2045,14 @@
             "verified": true,
             "version": "req:6"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "8a87899599006668049efbef867574dfa1b8755f5806988732097b0b17899949",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "1bf0ef12991423fed50804d4ffe56a6430ee28ea988eacd8981e3da044f57df1",
           "kind": "observed",
-          "previous": "423677a985defdd9a3e39e7e9496ca7df8f53a7dd20c48b52057c383d550fed1",
+          "previous": "1a86c5af459fb912df0847174e4e64fc92416102b9467180777503071c690567",
           "seq": 2
         },
         {
-          "at": 1790240380.7214787,
+          "at": 1790242645.8175952,
           "body": {
             "actor": "a.rivera",
             "key": "site",
@@ -1271,14 +2065,14 @@
             "verified": true,
             "version": "site:12"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "0a3fd7fcbd9f50c86d09be505c8ff420a0499951072df22516b49ad72d6698a8",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "a8c7d916036d155bb7ab2ef2471c0f2bfdbf12843e4a4e9a519c47bf9eea1a77",
           "kind": "observed",
-          "previous": "8a87899599006668049efbef867574dfa1b8755f5806988732097b0b17899949",
+          "previous": "1bf0ef12991423fed50804d4ffe56a6430ee28ea988eacd8981e3da044f57df1",
           "seq": 3
         },
         {
-          "at": 1790240380.7228274,
+          "at": 1790242645.8189812,
           "body": {
             "actor": "a.rivera",
             "key": "budget",
@@ -1291,14 +2085,14 @@
             "verified": true,
             "version": "budget:8"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "136477a3e84210e27b9eb7f526a3d9347e7a954925efcc564dc5283dcfcb7cd7",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "be18504fe8da8ece1c569cb0ab6fd425a13f5b0e095e8353bbee74f5afb8f665",
           "kind": "observed",
-          "previous": "0a3fd7fcbd9f50c86d09be505c8ff420a0499951072df22516b49ad72d6698a8",
+          "previous": "a8c7d916036d155bb7ab2ef2471c0f2bfdbf12843e4a4e9a519c47bf9eea1a77",
           "seq": 4
         },
         {
-          "at": 1790240380.7240677,
+          "at": 1790242645.820387,
           "body": {
             "actor": "a.rivera",
             "key": "quote",
@@ -1314,14 +2108,14 @@
             "verified": true,
             "version": "quote:3"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "38b759b9aec6ec9fa02cbe74fab2334a8d87347b96baf1325bf32c743efaafde",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "ed8a6c2bd8bfef5ec3d489ef86ed1387607a6bef8a20fbaef711ec3bbe0d4008",
           "kind": "observed",
-          "previous": "136477a3e84210e27b9eb7f526a3d9347e7a954925efcc564dc5283dcfcb7cd7",
+          "previous": "be18504fe8da8ece1c569cb0ab6fd425a13f5b0e095e8353bbee74f5afb8f665",
           "seq": 5
         },
         {
-          "at": 1790240380.7245872,
+          "at": 1790242645.8209429,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
@@ -1329,53 +2123,53 @@
               "request_id": "REQ-4812",
               "site_id": "DC-WEST-4"
             },
-            "id": "8ae89f9d-f09f-4d4d-8a60-710d10305cc6",
+            "id": "f357d28e-ef36-495b-98cd-721635dba0d9",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "8c365e1888e5b821380d8e836b9ea53686c97be096be4c549e9df0a6bc6f5bb9",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "e0fb56c60e110e46bcb3e53264a4d798bb86da7204436066370d948eaff949df",
           "kind": "proposed",
-          "previous": "38b759b9aec6ec9fa02cbe74fab2334a8d87347b96baf1325bf32c743efaafde",
+          "previous": "ed8a6c2bd8bfef5ec3d489ef86ed1387607a6bef8a20fbaef711ec3bbe0d4008",
           "seq": 6
         },
         {
-          "at": 1790240380.7246912,
+          "at": 1790242645.821175,
           "body": {
             "policy_version": 1,
-            "proposal_id": "8ae89f9d-f09f-4d4d-8a60-710d10305cc6",
+            "proposal_id": "f357d28e-ef36-495b-98cd-721635dba0d9",
             "reason": "all_checks_passed",
             "status": "allowed"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "c858fc30d22ce8f6c3df42ade01ac8ecdebb7c452696f58ec29ac0055476eda0",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "236a88c8a80821848f561f7a5e1e1ecc88a93ec3f669a13b088f48f082d42896",
           "kind": "decision",
-          "previous": "8c365e1888e5b821380d8e836b9ea53686c97be096be4c549e9df0a6bc6f5bb9",
+          "previous": "e0fb56c60e110e46bcb3e53264a4d798bb86da7204436066370d948eaff949df",
           "seq": 7
         },
         {
-          "at": 1790240380.7249537,
+          "at": 1790242645.821648,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
-            "idempotency_key": "8ae89f9d-f09f-4d4d-8a60-710d10305cc6",
+            "idempotency_key": "f357d28e-ef36-495b-98cd-721635dba0d9",
             "policy_version": 1,
-            "proposal_id": "8ae89f9d-f09f-4d4d-8a60-710d10305cc6"
+            "proposal_id": "f357d28e-ef36-495b-98cd-721635dba0d9"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "43e52ab204709e1682dd05cbf79316ee7e893ef2b66af09a3ad54e120613ac79",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "0872818f81213fa5d1b85a0184611b872a44e146e0dc193c9b93e400fe334434",
           "kind": "effect_started",
-          "previous": "c858fc30d22ce8f6c3df42ade01ac8ecdebb7c452696f58ec29ac0055476eda0",
+          "previous": "236a88c8a80821848f561f7a5e1e1ecc88a93ec3f669a13b088f48f082d42896",
           "seq": 8
         },
         {
-          "at": 1790240380.7252457,
+          "at": 1790242645.8219516,
           "body": {
             "action": "record_review",
-            "claim_hash": "43e52ab204709e1682dd05cbf79316ee7e893ef2b66af09a3ad54e120613ac79",
+            "claim_hash": "0872818f81213fa5d1b85a0184611b872a44e146e0dc193c9b93e400fe334434",
             "output": {
               "args": {
                 "request_id": "REQ-4812",
@@ -1383,16 +2177,16 @@
               },
               "recorded": true
             },
-            "proposal_id": "8ae89f9d-f09f-4d4d-8a60-710d10305cc6"
+            "proposal_id": "f357d28e-ef36-495b-98cd-721635dba0d9"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "930227b8f150d316bb4f8bdf48924628f33f86b4ca7540ba0c866964bdb49a05",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "9cb77def1ad54b1f169a8b014f83357afb64791ea0f07afe70b627602a63b567",
           "kind": "effect_succeeded",
-          "previous": "43e52ab204709e1682dd05cbf79316ee7e893ef2b66af09a3ad54e120613ac79",
+          "previous": "0872818f81213fa5d1b85a0184611b872a44e146e0dc193c9b93e400fe334434",
           "seq": 9
         },
         {
-          "at": 1790240380.725741,
+          "at": 1790242645.822515,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
@@ -1426,78 +2220,78 @@
                 "state": "active"
               }
             },
-            "id": "cb08315d-b8d1-4b9a-882f-b28cc143c0e9",
+            "id": "3a749aa8-71f8-4e8c-83cd-123e11cc7ddd",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "72d6c8b68ad0155499f34fa0102d0e0f5e77487cbc3f361e91765deb3b337f57",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "7a431954a04544e293bc65317f2130edfa31487134e245a277ed33addf28ae44",
           "kind": "proposed",
-          "previous": "930227b8f150d316bb4f8bdf48924628f33f86b4ca7540ba0c866964bdb49a05",
+          "previous": "9cb77def1ad54b1f169a8b014f83357afb64791ea0f07afe70b627602a63b567",
           "seq": 10
         },
         {
-          "at": 1790240380.7258754,
+          "at": 1790242645.8226523,
           "body": {
             "policy_version": 1,
-            "proposal_id": "cb08315d-b8d1-4b9a-882f-b28cc143c0e9",
+            "proposal_id": "3a749aa8-71f8-4e8c-83cd-123e11cc7ddd",
             "reason": "approval_required:manager",
             "status": "needs_approval"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "cdf72904a6b3df3ad24db67c2a32df70bb2759d1d132bd2dfb28afa993e66c0f",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "edcaeaef65f6ed76979fe8057d9965971d39ec559070fb87ddb23e3550bafcec",
           "kind": "decision",
-          "previous": "72d6c8b68ad0155499f34fa0102d0e0f5e77487cbc3f361e91765deb3b337f57",
+          "previous": "7a431954a04544e293bc65317f2130edfa31487134e245a277ed33addf28ae44",
           "seq": 11
         },
         {
-          "at": 1790240380.7262034,
+          "at": 1790242645.8229315,
           "body": {
             "actor": "d.patel",
             "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
-            "proposal_id": "cb08315d-b8d1-4b9a-882f-b28cc143c0e9",
+            "proposal_id": "3a749aa8-71f8-4e8c-83cd-123e11cc7ddd",
             "role": "manager"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "8cbc3edfe0473353f1dae64da4bfa136c8dd70cfbcd31ff30ca66855eebedbbb",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "06a9e4e765d2942adb2ca27804939865d685131e897bec06ac07cb1966c95858",
           "kind": "approved",
-          "previous": "cdf72904a6b3df3ad24db67c2a32df70bb2759d1d132bd2dfb28afa993e66c0f",
+          "previous": "edcaeaef65f6ed76979fe8057d9965971d39ec559070fb87ddb23e3550bafcec",
           "seq": 12
         },
         {
-          "at": 1790240380.7267132,
+          "at": 1790242645.8234773,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
-            "idempotency_key": "cb08315d-b8d1-4b9a-882f-b28cc143c0e9",
+            "idempotency_key": "3a749aa8-71f8-4e8c-83cd-123e11cc7ddd",
             "policy_version": 1,
-            "proposal_id": "cb08315d-b8d1-4b9a-882f-b28cc143c0e9"
+            "proposal_id": "3a749aa8-71f8-4e8c-83cd-123e11cc7ddd"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "7ee28b2c78aa12a0d7b5b0146f2563e64a8b5b371bda620b95fd429a813e195c",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "9683428dbe339e4a562c95caed84387e8145a404f04d032fc9a2b7c9c9fa4fc8",
           "kind": "effect_started",
-          "previous": "8cbc3edfe0473353f1dae64da4bfa136c8dd70cfbcd31ff30ca66855eebedbbb",
+          "previous": "06a9e4e765d2942adb2ca27804939865d685131e897bec06ac07cb1966c95858",
           "seq": 13
         },
         {
-          "at": 1790240380.727977,
+          "at": 1790242645.824765,
           "body": {
             "action": "issue_order",
-            "claim_hash": "7ee28b2c78aa12a0d7b5b0146f2563e64a8b5b371bda620b95fd429a813e195c",
-            "proposal_id": "cb08315d-b8d1-4b9a-882f-b28cc143c0e9",
+            "claim_hash": "9683428dbe339e4a562c95caed84387e8145a404f04d032fc9a2b7c9c9fa4fc8",
+            "proposal_id": "3a749aa8-71f8-4e8c-83cd-123e11cc7ddd",
             "status": 412
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "2c365a8f5009a5e02519cfba0b5a898c85969e80c95f981973ee980ba6ac8a69",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "c0f7bf4de8a865481fdf42a4d518f52694bac33729225762057a8e560a0f04c6",
           "kind": "effect_rejected",
-          "previous": "7ee28b2c78aa12a0d7b5b0146f2563e64a8b5b371bda620b95fd429a813e195c",
+          "previous": "9683428dbe339e4a562c95caed84387e8145a404f04d032fc9a2b7c9c9fa4fc8",
           "seq": 14
         },
         {
-          "at": 1790240380.731315,
+          "at": 1790242645.827337,
           "body": {
             "actor": "a.rivera",
             "key": "quote",
@@ -1513,14 +2307,14 @@
             "verified": true,
             "version": "quote:4"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "aa28052402811dea04c575241528e080fa4937468702dda93b837f67af917fcb",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "a96c81d1706abec45a9c3330e21ca4673533e650f1595519e8d79d7407d77721",
           "kind": "observed",
-          "previous": "2c365a8f5009a5e02519cfba0b5a898c85969e80c95f981973ee980ba6ac8a69",
+          "previous": "c0f7bf4de8a865481fdf42a4d518f52694bac33729225762057a8e560a0f04c6",
           "seq": 15
         },
         {
-          "at": 1790240380.7319357,
+          "at": 1790242645.8281806,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
@@ -1554,94 +2348,94 @@
                 "state": "active"
               }
             },
-            "id": "bf01bb59-3751-42f5-bfd1-32fc1e45b366",
+            "id": "34e2996b-ebf5-4477-b031-da3c47301bb8",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "26206abdcea04a6f837924e9e186cb7e55f5f2da4c9eca483c010b95652d40c9",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "a6ed1bd49388318ba6a6743af90b5223a988c4a13f73131ff6ab0a0d75415ad0",
           "kind": "proposed",
-          "previous": "aa28052402811dea04c575241528e080fa4937468702dda93b837f67af917fcb",
+          "previous": "a96c81d1706abec45a9c3330e21ca4673533e650f1595519e8d79d7407d77721",
           "seq": 16
         },
         {
-          "at": 1790240380.7321143,
+          "at": 1790242645.8283472,
           "body": {
             "policy_version": 1,
-            "proposal_id": "bf01bb59-3751-42f5-bfd1-32fc1e45b366",
+            "proposal_id": "34e2996b-ebf5-4477-b031-da3c47301bb8",
             "reason": "approval_required:manager",
             "status": "needs_approval"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "3a4e825bbd3aab25a8be16d27af2d665ca9eb60165139545d848a65c2e58c53d",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "56aa88603730b8ad630bb4e17a471f274382f93fc925aacbd316c36dce878770",
           "kind": "decision",
-          "previous": "26206abdcea04a6f837924e9e186cb7e55f5f2da4c9eca483c010b95652d40c9",
+          "previous": "a6ed1bd49388318ba6a6743af90b5223a988c4a13f73131ff6ab0a0d75415ad0",
           "seq": 17
         },
         {
-          "at": 1790240380.7324483,
+          "at": 1790242645.8286896,
           "body": {
             "actor": "d.patel",
             "args_hash": "d390da3adbdcc265b6b38b59fb1d1881d148870374ee83f5bbc784b784e270b7",
-            "proposal_id": "bf01bb59-3751-42f5-bfd1-32fc1e45b366",
+            "proposal_id": "34e2996b-ebf5-4477-b031-da3c47301bb8",
             "role": "manager"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "0fa697f54bf6c0780dc512a3b0ce93f7bd92cc4be692b6f6e0280993701e24ea",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "b662c785aa7fcd429136de5c53ad26d28da0a3995fac49d6eb3ca15cee0c543e",
           "kind": "approved",
-          "previous": "3a4e825bbd3aab25a8be16d27af2d665ca9eb60165139545d848a65c2e58c53d",
+          "previous": "56aa88603730b8ad630bb4e17a471f274382f93fc925aacbd316c36dce878770",
           "seq": 18
         },
         {
-          "at": 1790240380.7328448,
+          "at": 1790242645.8291705,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
-            "idempotency_key": "bf01bb59-3751-42f5-bfd1-32fc1e45b366",
+            "idempotency_key": "34e2996b-ebf5-4477-b031-da3c47301bb8",
             "policy_version": 1,
-            "proposal_id": "bf01bb59-3751-42f5-bfd1-32fc1e45b366"
+            "proposal_id": "34e2996b-ebf5-4477-b031-da3c47301bb8"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "7f6d382ea405f007e686c0a686990ed152fdefc9a50435de493c700066f0d775",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "5587a71ecbeb2618341d85d0975d35f09e7bef3669a86f9d5809b2fce9a719a7",
           "kind": "effect_started",
-          "previous": "0fa697f54bf6c0780dc512a3b0ce93f7bd92cc4be692b6f6e0280993701e24ea",
+          "previous": "b662c785aa7fcd429136de5c53ad26d28da0a3995fac49d6eb3ca15cee0c543e",
           "seq": 19
         },
         {
-          "at": 1790240380.7344112,
+          "at": 1790242645.8306909,
           "body": {
             "action": "issue_order",
-            "claim_hash": "7f6d382ea405f007e686c0a686990ed152fdefc9a50435de493c700066f0d775",
+            "claim_hash": "5587a71ecbeb2618341d85d0975d35f09e7bef3669a86f9d5809b2fce9a719a7",
             "output": {
               "body": "{\"id\": \"PO-9001\", \"replayed\": false}",
               "status": 201
             },
-            "proposal_id": "bf01bb59-3751-42f5-bfd1-32fc1e45b366"
+            "proposal_id": "34e2996b-ebf5-4477-b031-da3c47301bb8"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "fa08029719df928dd0c5739df88a0119425ddfb6d42c1e8a4914ad0fdca5fba9",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "3a2d9b5f441271ec838de073957fb9e7007da373470534851917b21586385658",
           "kind": "effect_succeeded",
-          "previous": "7f6d382ea405f007e686c0a686990ed152fdefc9a50435de493c700066f0d775",
+          "previous": "5587a71ecbeb2618341d85d0975d35f09e7bef3669a86f9d5809b2fce9a719a7",
           "seq": 20
         },
         {
-          "at": 1790240380.734675,
+          "at": 1790242645.8311262,
           "body": {
             "actor": "d.patel",
             "role": "manager"
           },
-          "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-          "hash": "ec180f802367d76421b51ed75316900637229236c66f76acb5ea79bcf65c161c",
+          "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+          "hash": "6493d55dfe8377870e5ad98c7222b63336dd46b1e58fba472b20e931399ed319",
           "kind": "signed",
-          "previous": "fa08029719df928dd0c5739df88a0119425ddfb6d42c1e8a4914ad0fdca5fba9",
+          "previous": "3a2d9b5f441271ec838de073957fb9e7007da373470534851917b21586385658",
           "seq": 21
         }
       ],
-      "case_id": "efc9fca1-6387-4f11-ba62-ce44c11884c0",
-      "chain_head": "ec180f802367d76421b51ed75316900637229236c66f76acb5ea79bcf65c161c",
+      "case_id": "87947902-1753-48d3-86c4-8d30d96f1ac1",
+      "chain_head": "6493d55dfe8377870e5ad98c7222b63336dd46b1e58fba472b20e931399ed319",
       "chain_valid": true,
       "event_count": 21,
       "event_kinds": [
@@ -1679,16 +2473,19 @@
           {
             "amount": 2500,
             "id": "PO-9001",
-            "idempotency_key": "bf01bb59-3751-42f5-bfd1-32fc1e45b366",
+            "idempotency_key": "34e2996b-ebf5-4477-b031-da3c47301bb8",
             "quote_id": "Q-881",
             "request_digest": "d390da3adbdcc265b6b38b59fb1d1881d148870374ee83f5bbc784b784e270b7",
             "request_id": "REQ-4812",
             "site_id": "DC-WEST-4"
           }
-        ]
+        ],
+        "updates": []
       },
       "id": "stale_quote",
       "outcome": "recovered_after_refresh",
+      "resolutions": [],
+      "status": "complete",
       "trace": [
         {
           "action": "create_case",
@@ -1750,7 +2547,7 @@
       "acceptance_complete": true,
       "case_events": [
         {
-          "at": 1790240381.2387757,
+          "at": 1790242646.3357928,
           "body": {
             "actor": "a.rivera",
             "contract": [
@@ -1761,14 +2558,14 @@
               "request_id": "REQ-4812"
             }
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "a453bec78bdabb82a0dcdea08bd2cba288f1193e4fb180c95038e5763f06a40c",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "81565c876cf642e928c8666e5cf0f9ec8d4f349bee7594ae34f2540c4e02345a",
           "kind": "case_created",
           "previous": "0000000000000000000000000000000000000000000000000000000000000000",
           "seq": 1
         },
         {
-          "at": 1790240381.2403762,
+          "at": 1790242646.337635,
           "body": {
             "actor": "a.rivera",
             "key": "request",
@@ -1784,14 +2581,14 @@
             "verified": true,
             "version": "req:6"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "df1d92f221802a6746ec301e495e893e0f9db9316bc736e65642a8ffadf1e9f4",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "d52083f7d43de57bd76bde0ab35fdd0e1984768024bda7d6e3a1077a951d2bcf",
           "kind": "observed",
-          "previous": "a453bec78bdabb82a0dcdea08bd2cba288f1193e4fb180c95038e5763f06a40c",
+          "previous": "81565c876cf642e928c8666e5cf0f9ec8d4f349bee7594ae34f2540c4e02345a",
           "seq": 2
         },
         {
-          "at": 1790240381.241892,
+          "at": 1790242646.3391006,
           "body": {
             "actor": "a.rivera",
             "key": "site",
@@ -1804,14 +2601,14 @@
             "verified": true,
             "version": "site:12"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "9a835efbec045c32b0439044a4f257f39bb8b0cca4f7214c56acce6beb7ea92f",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "a59f035dda12019b5538992521ed0a9129edcba68c1276f9e341ad4a06f61562",
           "kind": "observed",
-          "previous": "df1d92f221802a6746ec301e495e893e0f9db9316bc736e65642a8ffadf1e9f4",
+          "previous": "d52083f7d43de57bd76bde0ab35fdd0e1984768024bda7d6e3a1077a951d2bcf",
           "seq": 3
         },
         {
-          "at": 1790240381.2439623,
+          "at": 1790242646.340951,
           "body": {
             "actor": "a.rivera",
             "key": "budget",
@@ -1824,14 +2621,14 @@
             "verified": true,
             "version": "budget:8"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "427f8e2db9ff4a7a6c051637ff604aa393689097c4d2a5af82f0e9884cf97d94",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "5cee1120335712083618e6988ce07c49e0ebc5b86a6a1bd0e5158bc0dbd4ecd9",
           "kind": "observed",
-          "previous": "9a835efbec045c32b0439044a4f257f39bb8b0cca4f7214c56acce6beb7ea92f",
+          "previous": "a59f035dda12019b5538992521ed0a9129edcba68c1276f9e341ad4a06f61562",
           "seq": 4
         },
         {
-          "at": 1790240381.2454572,
+          "at": 1790242646.3426461,
           "body": {
             "actor": "a.rivera",
             "key": "quote",
@@ -1847,14 +2644,14 @@
             "verified": true,
             "version": "quote:3"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "1e30d86f92fbd4de17e64a8dccd3c8d36ed52b2a409666acd8dda7a9644307ed",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "24cadbb7d40de62e90430e7208f4c996ab56b898503d95ce18de392ccea03f16",
           "kind": "observed",
-          "previous": "427f8e2db9ff4a7a6c051637ff604aa393689097c4d2a5af82f0e9884cf97d94",
+          "previous": "5cee1120335712083618e6988ce07c49e0ebc5b86a6a1bd0e5158bc0dbd4ecd9",
           "seq": 5
         },
         {
-          "at": 1790240381.2459676,
+          "at": 1790242646.343264,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
@@ -1862,53 +2659,53 @@
               "request_id": "REQ-4812",
               "site_id": "DC-WEST-4"
             },
-            "id": "6eb40a80-218b-425c-b709-34071442f29b",
+            "id": "1d4f5dfa-cd98-48b9-b3d9-9bb054349cd7",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "948f2a3d8ca70bdfb3d8eb166408f8e6bc5c9632096184f975a92293b65b6b22",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "6fb9ee80b2cb598fbd6acf7b9f8013148f5820e7544d320c9e0800c608806ac3",
           "kind": "proposed",
-          "previous": "1e30d86f92fbd4de17e64a8dccd3c8d36ed52b2a409666acd8dda7a9644307ed",
+          "previous": "24cadbb7d40de62e90430e7208f4c996ab56b898503d95ce18de392ccea03f16",
           "seq": 6
         },
         {
-          "at": 1790240381.2461472,
+          "at": 1790242646.3433828,
           "body": {
             "policy_version": 1,
-            "proposal_id": "6eb40a80-218b-425c-b709-34071442f29b",
+            "proposal_id": "1d4f5dfa-cd98-48b9-b3d9-9bb054349cd7",
             "reason": "all_checks_passed",
             "status": "allowed"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "9d36fbd47585ff86e0723dcefcedfc6d5e2ce95d9da1abdca527400344985501",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "938d89c4218bb364481d035e2a986ea99e0463ca6aa41aedae513f0ad95aa303",
           "kind": "decision",
-          "previous": "948f2a3d8ca70bdfb3d8eb166408f8e6bc5c9632096184f975a92293b65b6b22",
+          "previous": "6fb9ee80b2cb598fbd6acf7b9f8013148f5820e7544d320c9e0800c608806ac3",
           "seq": 7
         },
         {
-          "at": 1790240381.2464323,
+          "at": 1790242646.3436863,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
-            "idempotency_key": "6eb40a80-218b-425c-b709-34071442f29b",
+            "idempotency_key": "1d4f5dfa-cd98-48b9-b3d9-9bb054349cd7",
             "policy_version": 1,
-            "proposal_id": "6eb40a80-218b-425c-b709-34071442f29b"
+            "proposal_id": "1d4f5dfa-cd98-48b9-b3d9-9bb054349cd7"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "2fdc1505c1cb5c8224ff234a239cdebfc923329c7ba5cb2dba784531e352d801",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "e648521ae00a919372ee32707b9c6ac8656e700f5f4a14ac32703f6ce6dd4ca9",
           "kind": "effect_started",
-          "previous": "9d36fbd47585ff86e0723dcefcedfc6d5e2ce95d9da1abdca527400344985501",
+          "previous": "938d89c4218bb364481d035e2a986ea99e0463ca6aa41aedae513f0ad95aa303",
           "seq": 8
         },
         {
-          "at": 1790240381.2466078,
+          "at": 1790242646.3438828,
           "body": {
             "action": "record_review",
-            "claim_hash": "2fdc1505c1cb5c8224ff234a239cdebfc923329c7ba5cb2dba784531e352d801",
+            "claim_hash": "e648521ae00a919372ee32707b9c6ac8656e700f5f4a14ac32703f6ce6dd4ca9",
             "output": {
               "args": {
                 "request_id": "REQ-4812",
@@ -1916,16 +2713,16 @@
               },
               "recorded": true
             },
-            "proposal_id": "6eb40a80-218b-425c-b709-34071442f29b"
+            "proposal_id": "1d4f5dfa-cd98-48b9-b3d9-9bb054349cd7"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "d24deeb4a826106ccb2e2722e9dbf69193f33d7aa193f1573ea0dbef6a90307c",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "e8465d29fdb6465cf9b033d043ff8a82fe440280bf124faa4092db65fb70cb7d",
           "kind": "effect_succeeded",
-          "previous": "2fdc1505c1cb5c8224ff234a239cdebfc923329c7ba5cb2dba784531e352d801",
+          "previous": "e648521ae00a919372ee32707b9c6ac8656e700f5f4a14ac32703f6ce6dd4ca9",
           "seq": 9
         },
         {
-          "at": 1790240381.2470613,
+          "at": 1790242646.3444693,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
@@ -1959,111 +2756,111 @@
                 "state": "active"
               }
             },
-            "id": "84674b39-c5b3-4ddd-95e5-14b77911c6f7",
+            "id": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "534b87053428206c263583b818e62990e3ed670c2aa375d4eba06c49d0eef2c0",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "131f972184177e47532a59015e458bb4895320ffe5651aa4e07e62fdf9ff6e6e",
           "kind": "proposed",
-          "previous": "d24deeb4a826106ccb2e2722e9dbf69193f33d7aa193f1573ea0dbef6a90307c",
+          "previous": "e8465d29fdb6465cf9b033d043ff8a82fe440280bf124faa4092db65fb70cb7d",
           "seq": 10
         },
         {
-          "at": 1790240381.2471898,
+          "at": 1790242646.3446167,
           "body": {
             "policy_version": 1,
-            "proposal_id": "84674b39-c5b3-4ddd-95e5-14b77911c6f7",
+            "proposal_id": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a",
             "reason": "approval_required:manager",
             "status": "needs_approval"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "884782d0cf6438d42295c5da945b4e22d81a2dccf9473d83271ea30c502d0c13",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "0602b05a69fb329520af93921589da050cfce46c29055277375ecee26c90a3f9",
           "kind": "decision",
-          "previous": "534b87053428206c263583b818e62990e3ed670c2aa375d4eba06c49d0eef2c0",
+          "previous": "131f972184177e47532a59015e458bb4895320ffe5651aa4e07e62fdf9ff6e6e",
           "seq": 11
         },
         {
-          "at": 1790240381.247487,
+          "at": 1790242646.3449252,
           "body": {
             "actor": "d.patel",
             "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
-            "proposal_id": "84674b39-c5b3-4ddd-95e5-14b77911c6f7",
+            "proposal_id": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a",
             "role": "manager"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "00c57508059f74ad2d1015fcc7ec726d7abaf16c16b0bb572f41bef3419570d7",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "5f83340e07de54950e51a060b6f716e240b2cfeba52e007914c763eb8e09b4b6",
           "kind": "approved",
-          "previous": "884782d0cf6438d42295c5da945b4e22d81a2dccf9473d83271ea30c502d0c13",
+          "previous": "0602b05a69fb329520af93921589da050cfce46c29055277375ecee26c90a3f9",
           "seq": 12
         },
         {
-          "at": 1790240381.2478278,
+          "at": 1790242646.3454328,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
-            "idempotency_key": "84674b39-c5b3-4ddd-95e5-14b77911c6f7",
+            "idempotency_key": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a",
             "policy_version": 1,
-            "proposal_id": "84674b39-c5b3-4ddd-95e5-14b77911c6f7"
+            "proposal_id": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "d3c010d20ae1e65a6b01dc5406de6cb4a812571238f8251666b7e03c927e59a5",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "1dd21a76c8aabc9e44472fd76e5c3a5a8c822852939cf6161e289b47e58cf92d",
           "kind": "effect_started",
-          "previous": "00c57508059f74ad2d1015fcc7ec726d7abaf16c16b0bb572f41bef3419570d7",
+          "previous": "5f83340e07de54950e51a060b6f716e240b2cfeba52e007914c763eb8e09b4b6",
           "seq": 13
         },
         {
-          "at": 1790240381.2494388,
+          "at": 1790242646.346818,
           "body": {
             "action": "issue_order",
             "error": "Remote end closed connection without response",
-            "proposal_id": "84674b39-c5b3-4ddd-95e5-14b77911c6f7"
+            "proposal_id": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "f9a8732d77fe790caab16268639e38cfebfb2108104cffacbff1631627e57890",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "a8a54840f6bb9c677e58a4c26abbb9d12e18490df04d53153f69886994c7bd59",
           "kind": "effect_unknown",
-          "previous": "d3c010d20ae1e65a6b01dc5406de6cb4a812571238f8251666b7e03c927e59a5",
+          "previous": "1dd21a76c8aabc9e44472fd76e5c3a5a8c822852939cf6161e289b47e58cf92d",
           "seq": 14
         },
         {
-          "at": 1790240381.2511153,
+          "at": 1790242646.3494353,
           "body": {
             "action": "issue_order",
             "actor": "d.patel",
             "proof": {
               "external_id": "PO-9001",
-              "idempotency_key": "84674b39-c5b3-4ddd-95e5-14b77911c6f7",
+              "idempotency_key": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a",
               "request_digest": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
-              "response_digest": "fccaf3dae55ae5757dd9042e0dd2a4ce94693dda73228f22e579da1954992ced",
+              "response_digest": "2e5459bedd90ef4358fd26522d04a9c7b45f9b466bc6d6d5f959d0b6c44ca3d3",
               "verified": true
             },
-            "proposal_id": "84674b39-c5b3-4ddd-95e5-14b77911c6f7",
+            "proposal_id": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a",
             "success": true
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "bf3c37b945e03252439a4e28389e23c589ae4e3432d36a20bcc3041a78afa84f",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "645c170b70a997a903a91747fe30efd74d02824de3352fea8ff768725a10344c",
           "kind": "reconciled",
-          "previous": "f9a8732d77fe790caab16268639e38cfebfb2108104cffacbff1631627e57890",
+          "previous": "a8a54840f6bb9c677e58a4c26abbb9d12e18490df04d53153f69886994c7bd59",
           "seq": 15
         },
         {
-          "at": 1790240381.2513702,
+          "at": 1790242646.3498206,
           "body": {
             "actor": "d.patel",
             "role": "manager"
           },
-          "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-          "hash": "df1c982341831a83d4fe102ae666ad9ad62bdf6c740dce087bf3c784734b252a",
+          "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+          "hash": "c23bdba868bb5c4b2050b855a3e3c8bc7e01f3a2006afc01a00226fa5bfbaac9",
           "kind": "signed",
-          "previous": "bf3c37b945e03252439a4e28389e23c589ae4e3432d36a20bcc3041a78afa84f",
+          "previous": "645c170b70a997a903a91747fe30efd74d02824de3352fea8ff768725a10344c",
           "seq": 16
         }
       ],
-      "case_id": "45273037-3a7e-447e-acc9-e4101a6325ca",
-      "chain_head": "df1c982341831a83d4fe102ae666ad9ad62bdf6c740dce087bf3c784734b252a",
+      "case_id": "1869a64f-3a28-46ff-91d2-e56cde1c2168",
+      "chain_head": "c23bdba868bb5c4b2050b855a3e3c8bc7e01f3a2006afc01a00226fa5bfbaac9",
       "chain_valid": true,
       "event_count": 16,
       "event_kinds": [
@@ -2096,16 +2893,19 @@
           {
             "amount": 2500,
             "id": "PO-9001",
-            "idempotency_key": "84674b39-c5b3-4ddd-95e5-14b77911c6f7",
+            "idempotency_key": "a33ee341-8ba6-4ecd-95fe-a91ac7b4714a",
             "quote_id": "Q-881",
             "request_digest": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
             "request_id": "REQ-4812",
             "site_id": "DC-WEST-4"
           }
-        ]
+        ],
+        "updates": []
       },
       "id": "lost_ack",
       "outcome": "reconciled_complete",
+      "resolutions": [],
+      "status": "complete",
       "trace": [
         {
           "action": "create_case",
@@ -2165,7 +2965,7 @@
       "acceptance_complete": false,
       "case_events": [
         {
-          "at": 1790240381.7553902,
+          "at": 1790242646.854367,
           "body": {
             "actor": "a.rivera",
             "contract": [
@@ -2176,14 +2976,14 @@
               "request_id": "REQ-4812"
             }
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "828e51ffadb5e58dda79d626d8d5f35fab52cacbc93d91693506fdc2490c7543",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "49cbf9000b1d919711423da84e857dc73f0a588e3639e1cf044b7fa61a55341c",
           "kind": "case_created",
           "previous": "0000000000000000000000000000000000000000000000000000000000000000",
           "seq": 1
         },
         {
-          "at": 1790240381.7569475,
+          "at": 1790242646.8568523,
           "body": {
             "actor": "a.rivera",
             "key": "request",
@@ -2199,14 +2999,14 @@
             "verified": true,
             "version": "req:6"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "cecaddd1331a4175630c2899f0d25affa84b3b13b3c8ea664492e7173ba8a61d",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "8215584e73422ff802146cb4993dcdf6972787bc5aedae9f846b24f2439aaab8",
           "kind": "observed",
-          "previous": "828e51ffadb5e58dda79d626d8d5f35fab52cacbc93d91693506fdc2490c7543",
+          "previous": "49cbf9000b1d919711423da84e857dc73f0a588e3639e1cf044b7fa61a55341c",
           "seq": 2
         },
         {
-          "at": 1790240381.7584546,
+          "at": 1790242646.858517,
           "body": {
             "actor": "a.rivera",
             "key": "site",
@@ -2219,14 +3019,14 @@
             "verified": true,
             "version": "site:12"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "771c683cee487cea683bd7e2ea0b10c18705faa863f123f54f5f71c36ef06cab",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "a9a527a1cbbaa405ab965fe8cc3f5ebd44b2dd3af1497b506d44aab26ef76a92",
           "kind": "observed",
-          "previous": "cecaddd1331a4175630c2899f0d25affa84b3b13b3c8ea664492e7173ba8a61d",
+          "previous": "8215584e73422ff802146cb4993dcdf6972787bc5aedae9f846b24f2439aaab8",
           "seq": 3
         },
         {
-          "at": 1790240381.7598712,
+          "at": 1790242646.859782,
           "body": {
             "actor": "a.rivera",
             "key": "budget",
@@ -2239,14 +3039,14 @@
             "verified": true,
             "version": "budget:8"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "436215c79685a897ee7739fbfac227fee04074c8a39cafcf7e3e80a49a89e284",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "3eae13aca3a561f4e0e9da78d3966024203df9f13429e4665e24ebd5d948bab2",
           "kind": "observed",
-          "previous": "771c683cee487cea683bd7e2ea0b10c18705faa863f123f54f5f71c36ef06cab",
+          "previous": "a9a527a1cbbaa405ab965fe8cc3f5ebd44b2dd3af1497b506d44aab26ef76a92",
           "seq": 4
         },
         {
-          "at": 1790240381.7616067,
+          "at": 1790242646.8612528,
           "body": {
             "actor": "a.rivera",
             "key": "quote",
@@ -2262,14 +3062,14 @@
             "verified": true,
             "version": "quote:3"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "f48fcfb2a155eb1b917c597fd66b672c940738c261702180f068da59e80f2c20",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "8c417a4b1de888d9cfe17abe335fcee3ee27a12b395f25269475726a55c0faa0",
           "kind": "observed",
-          "previous": "436215c79685a897ee7739fbfac227fee04074c8a39cafcf7e3e80a49a89e284",
+          "previous": "3eae13aca3a561f4e0e9da78d3966024203df9f13429e4665e24ebd5d948bab2",
           "seq": 5
         },
         {
-          "at": 1790240381.7622635,
+          "at": 1790242646.8618088,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
@@ -2277,53 +3077,53 @@
               "request_id": "REQ-4812",
               "site_id": "DC-WEST-4"
             },
-            "id": "54ca5dce-794e-48fd-a875-53e0e7fc3fb0",
+            "id": "b5d43718-747b-414d-8aa8-a0ad1f2fdfed",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "1740651bf025eb194e05f7e66f041aecc4f72d48e4db51ce494f1368ca2620c0",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "e4731c599307f1df7b011cac4d5d2c15afc6c2a228c75c8cbd65542c6abfd6f6",
           "kind": "proposed",
-          "previous": "f48fcfb2a155eb1b917c597fd66b672c940738c261702180f068da59e80f2c20",
+          "previous": "8c417a4b1de888d9cfe17abe335fcee3ee27a12b395f25269475726a55c0faa0",
           "seq": 6
         },
         {
-          "at": 1790240381.7623875,
+          "at": 1790242646.8619242,
           "body": {
             "policy_version": 1,
-            "proposal_id": "54ca5dce-794e-48fd-a875-53e0e7fc3fb0",
+            "proposal_id": "b5d43718-747b-414d-8aa8-a0ad1f2fdfed",
             "reason": "all_checks_passed",
             "status": "allowed"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "fc950d636a0eb7e3fcb6aac7e274f0b8a5cd39a6b83c13ce4716e91083fdeefe",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "c67690ef6696d46ac2532bab8c12046e513c9330264e6cfd2fadaba1ff23f9aa",
           "kind": "decision",
-          "previous": "1740651bf025eb194e05f7e66f041aecc4f72d48e4db51ce494f1368ca2620c0",
+          "previous": "e4731c599307f1df7b011cac4d5d2c15afc6c2a228c75c8cbd65542c6abfd6f6",
           "seq": 7
         },
         {
-          "at": 1790240381.7626655,
+          "at": 1790242646.862282,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
-            "idempotency_key": "54ca5dce-794e-48fd-a875-53e0e7fc3fb0",
+            "idempotency_key": "b5d43718-747b-414d-8aa8-a0ad1f2fdfed",
             "policy_version": 1,
-            "proposal_id": "54ca5dce-794e-48fd-a875-53e0e7fc3fb0"
+            "proposal_id": "b5d43718-747b-414d-8aa8-a0ad1f2fdfed"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "f2a725cf753153b39254af41f5996f68a00be9bc2435c55e3a60e8325b3e252e",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "09db471a4279a0d5267c517c1272ff2388ddf8c0f8d3390fcebd9bd65fd96f00",
           "kind": "effect_started",
-          "previous": "fc950d636a0eb7e3fcb6aac7e274f0b8a5cd39a6b83c13ce4716e91083fdeefe",
+          "previous": "c67690ef6696d46ac2532bab8c12046e513c9330264e6cfd2fadaba1ff23f9aa",
           "seq": 8
         },
         {
-          "at": 1790240381.76284,
+          "at": 1790242646.862475,
           "body": {
             "action": "record_review",
-            "claim_hash": "f2a725cf753153b39254af41f5996f68a00be9bc2435c55e3a60e8325b3e252e",
+            "claim_hash": "09db471a4279a0d5267c517c1272ff2388ddf8c0f8d3390fcebd9bd65fd96f00",
             "output": {
               "args": {
                 "request_id": "REQ-4812",
@@ -2331,16 +3131,16 @@
               },
               "recorded": true
             },
-            "proposal_id": "54ca5dce-794e-48fd-a875-53e0e7fc3fb0"
+            "proposal_id": "b5d43718-747b-414d-8aa8-a0ad1f2fdfed"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "344ad9950f6c6be788cbcef2837cbc930373765f0e9374611cbb0de340f81cca",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "76154f57e14ac6c3456d082b93d15d0c986612d2edc6397567eccb758a950cb4",
           "kind": "effect_succeeded",
-          "previous": "f2a725cf753153b39254af41f5996f68a00be9bc2435c55e3a60e8325b3e252e",
+          "previous": "09db471a4279a0d5267c517c1272ff2388ddf8c0f8d3390fcebd9bd65fd96f00",
           "seq": 9
         },
         {
-          "at": 1790240381.7633166,
+          "at": 1790242646.8629131,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
@@ -2374,92 +3174,92 @@
                 "state": "active"
               }
             },
-            "id": "af391990-459f-4f3c-8a5f-c69e48897070",
+            "id": "58ba9844-ca49-45fe-87d6-997576186bfa",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "6a85974030e19b32774e872aa97b910433f5d9e21b63eca1f709ac428555c394",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "3c88ff5772c48ce2486e7addd71338d95be95bb961f379535448dec2876b73c1",
           "kind": "proposed",
-          "previous": "344ad9950f6c6be788cbcef2837cbc930373765f0e9374611cbb0de340f81cca",
+          "previous": "76154f57e14ac6c3456d082b93d15d0c986612d2edc6397567eccb758a950cb4",
           "seq": 10
         },
         {
-          "at": 1790240381.7634513,
+          "at": 1790242646.8630755,
           "body": {
             "policy_version": 1,
-            "proposal_id": "af391990-459f-4f3c-8a5f-c69e48897070",
+            "proposal_id": "58ba9844-ca49-45fe-87d6-997576186bfa",
             "reason": "approval_required:manager",
             "status": "needs_approval"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "bcdbfd3245fd6c638bd194b7aebb53d6f3395cfc75f48f7e1fada03099fc0fa8",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "05fd6900bbdaa9c00447ff86207dee493ef6df390ed115ee9e91be08ca85d214",
           "kind": "decision",
-          "previous": "6a85974030e19b32774e872aa97b910433f5d9e21b63eca1f709ac428555c394",
+          "previous": "3c88ff5772c48ce2486e7addd71338d95be95bb961f379535448dec2876b73c1",
           "seq": 11
         },
         {
-          "at": 1790240381.7637348,
+          "at": 1790242646.8635728,
           "body": {
             "actor": "d.patel",
             "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
-            "proposal_id": "af391990-459f-4f3c-8a5f-c69e48897070",
+            "proposal_id": "58ba9844-ca49-45fe-87d6-997576186bfa",
             "role": "manager"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "a1d480bc94d11d4899e967a9763d0fd185f703616026289cca2eba8be23f5ac9",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "451331c6894da46220047059883877fa34452b8a67ec1c2d1616773ae249b12f",
           "kind": "approved",
-          "previous": "bcdbfd3245fd6c638bd194b7aebb53d6f3395cfc75f48f7e1fada03099fc0fa8",
+          "previous": "05fd6900bbdaa9c00447ff86207dee493ef6df390ed115ee9e91be08ca85d214",
           "seq": 12
         },
         {
-          "at": 1790240381.7641232,
+          "at": 1790242646.8641553,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
-            "idempotency_key": "af391990-459f-4f3c-8a5f-c69e48897070",
+            "idempotency_key": "58ba9844-ca49-45fe-87d6-997576186bfa",
             "policy_version": 1,
-            "proposal_id": "af391990-459f-4f3c-8a5f-c69e48897070"
+            "proposal_id": "58ba9844-ca49-45fe-87d6-997576186bfa"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "b196dc100b1ab2a6bb398702de22ad5012222b0e05db446cbae51e74e87728d3",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "50166f0715376394c3d66a3a6584ae4751dbfe45140778595091369ca6338f6f",
           "kind": "effect_started",
-          "previous": "a1d480bc94d11d4899e967a9763d0fd185f703616026289cca2eba8be23f5ac9",
+          "previous": "451331c6894da46220047059883877fa34452b8a67ec1c2d1616773ae249b12f",
           "seq": 13
         },
         {
-          "at": 1790240381.7652817,
+          "at": 1790242646.8650959,
           "body": {
             "action": "issue_order",
             "error": "Remote end closed connection without response",
-            "proposal_id": "af391990-459f-4f3c-8a5f-c69e48897070"
+            "proposal_id": "58ba9844-ca49-45fe-87d6-997576186bfa"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "2dffe557c781844776d58f7e479f13f7bacd29de033556bbf26402b9c9beecb9",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "887dc4bbe5dfbb7fa2fe16e6af47eefd5587b316efc5d5adca7aa695f1aacf49",
           "kind": "effect_unknown",
-          "previous": "b196dc100b1ab2a6bb398702de22ad5012222b0e05db446cbae51e74e87728d3",
+          "previous": "50166f0715376394c3d66a3a6584ae4751dbfe45140778595091369ca6338f6f",
           "seq": 14
         },
         {
-          "at": 1790240381.7668695,
+          "at": 1790242646.8669636,
           "body": {
             "action": "issue_order",
             "actor": "d.patel",
-            "proposal_id": "af391990-459f-4f3c-8a5f-c69e48897070",
+            "proposal_id": "58ba9844-ca49-45fe-87d6-997576186bfa",
             "reason": "not_found_not_proof",
             "status": "pending"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "6f8001438235f55bb00fd399acd769ce1507ab2aa55085004cd9174a58d15aea",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "af8d7603503934afa1fca0604aa711c543d496e0865af872d8fed89c3e609278",
           "kind": "reconciliation_checked",
-          "previous": "2dffe557c781844776d58f7e479f13f7bacd29de033556bbf26402b9c9beecb9",
+          "previous": "887dc4bbe5dfbb7fa2fe16e6af47eefd5587b316efc5d5adca7aa695f1aacf49",
           "seq": 15
         },
         {
-          "at": 1790240381.767539,
+          "at": 1790242646.8676248,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
@@ -2493,36 +3293,36 @@
                 "state": "active"
               }
             },
-            "id": "01063c40-abaf-4bac-adf8-577a1f1fdbc2",
+            "id": "4c3bc1b2-c7ea-430d-b074-752918ce37ed",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "334ea700199a3b2e5e57f4d3b9e7a0055f7781f95d038680a349d9a74b9a7bc4",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "b8e2186a2ed68b053883467186f3d5fdd0b0d758bf4d16044f07ec57e3a51cf3",
           "kind": "proposed",
-          "previous": "6f8001438235f55bb00fd399acd769ce1507ab2aa55085004cd9174a58d15aea",
+          "previous": "af8d7603503934afa1fca0604aa711c543d496e0865af872d8fed89c3e609278",
           "seq": 16
         },
         {
-          "at": 1790240381.7676542,
+          "at": 1790242646.8677404,
           "body": {
             "policy_version": 1,
-            "proposal_id": "01063c40-abaf-4bac-adf8-577a1f1fdbc2",
+            "proposal_id": "4c3bc1b2-c7ea-430d-b074-752918ce37ed",
             "reason": "effect_unresolved:issue_order",
             "status": "denied"
           },
-          "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-          "hash": "ed0f4c082d8f331952138388ef6bf8cdc6e3f3e88507c3d4d777f3e6bb4788d0",
+          "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+          "hash": "d02d8a678b8e2e2840189f162649f16809d8b1a193de3f4db49e4d66b5434e0c",
           "kind": "decision",
-          "previous": "334ea700199a3b2e5e57f4d3b9e7a0055f7781f95d038680a349d9a74b9a7bc4",
+          "previous": "b8e2186a2ed68b053883467186f3d5fdd0b0d758bf4d16044f07ec57e3a51cf3",
           "seq": 17
         }
       ],
-      "case_id": "47c95ff2-3c92-4298-9be6-b4d5ce3b5c67",
-      "chain_head": "ed0f4c082d8f331952138388ef6bf8cdc6e3f3e88507c3d4d777f3e6bb4788d0",
+      "case_id": "c223adfd-c6d8-49c8-bc56-49e0606fcde4",
+      "chain_head": "d02d8a678b8e2e2840189f162649f16809d8b1a193de3f4db49e4d66b5434e0c",
       "chain_valid": true,
       "event_count": 17,
       "event_kinds": [
@@ -2552,10 +3352,13 @@
           "id": "CC-742",
           "version": 8
         },
-        "orders": []
+        "orders": [],
+        "updates": []
       },
       "id": "forged_claim",
       "outcome": "blocked_unproven_claim",
+      "resolutions": [],
+      "status": "in_progress",
       "trace": [
         {
           "action": "create_case",
@@ -2627,7 +3430,7 @@
       "acceptance_complete": false,
       "case_events": [
         {
-          "at": 1790240382.2714696,
+          "at": 1790242647.3728635,
           "body": {
             "actor": "a.rivera",
             "contract": [
@@ -2638,14 +3441,14 @@
               "request_id": "REQ-4812"
             }
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "04ff9b0bd3c8f6c2822d61380dbd1856c78e4d89d8d4ea42ef54b19846ba11b8",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "48f414c3b30b071f336acda567f52dfb4cc6a01086e6c93acd029ce1896184ce",
           "kind": "case_created",
           "previous": "0000000000000000000000000000000000000000000000000000000000000000",
           "seq": 1
         },
         {
-          "at": 1790240382.2732713,
+          "at": 1790242647.37458,
           "body": {
             "actor": "a.rivera",
             "key": "request",
@@ -2661,14 +3464,14 @@
             "verified": true,
             "version": "req:6"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "2c7f484d9cd91f73a8fc0da461feb8f9d418072a3e79524a07ee35c88a7482ef",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "19cce5b255c4d74e7beaedb446933732ba04bf363fb664ff4bdd0c23f3775355",
           "kind": "observed",
-          "previous": "04ff9b0bd3c8f6c2822d61380dbd1856c78e4d89d8d4ea42ef54b19846ba11b8",
+          "previous": "48f414c3b30b071f336acda567f52dfb4cc6a01086e6c93acd029ce1896184ce",
           "seq": 2
         },
         {
-          "at": 1790240382.2746973,
+          "at": 1790242647.3763883,
           "body": {
             "actor": "a.rivera",
             "key": "site",
@@ -2681,14 +3484,14 @@
             "verified": true,
             "version": "site:12"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "1bdcf5eb00e8b26ac899749688ed81aeb815a6ead2bfb5b41bc2e5c5d20c9f24",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "e4a71f9b046eafcd575a8f0352216d5a0ada8b53974def4e2cea4e9a9dfa01ec",
           "kind": "observed",
-          "previous": "2c7f484d9cd91f73a8fc0da461feb8f9d418072a3e79524a07ee35c88a7482ef",
+          "previous": "19cce5b255c4d74e7beaedb446933732ba04bf363fb664ff4bdd0c23f3775355",
           "seq": 3
         },
         {
-          "at": 1790240382.2761533,
+          "at": 1790242647.378184,
           "body": {
             "actor": "a.rivera",
             "key": "budget",
@@ -2701,14 +3504,14 @@
             "verified": true,
             "version": "budget:8"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "9478b4c7338020f95da4d064640452250931848116a12533aad24e1da0d97042",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "85950b764c02dbe18eea77c45d019f833adbdd78fab030250661e6c61f80f8db",
           "kind": "observed",
-          "previous": "1bdcf5eb00e8b26ac899749688ed81aeb815a6ead2bfb5b41bc2e5c5d20c9f24",
+          "previous": "e4a71f9b046eafcd575a8f0352216d5a0ada8b53974def4e2cea4e9a9dfa01ec",
           "seq": 4
         },
         {
-          "at": 1790240382.2775576,
+          "at": 1790242647.3798442,
           "body": {
             "actor": "a.rivera",
             "key": "quote",
@@ -2724,14 +3527,14 @@
             "verified": true,
             "version": "quote:3"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "ef3fb26191e45fc3d3bd7eae5f8649b004b3b843596c0d05f4aff25b269e3022",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "876fb53f26c279f2223def39ea1344acf8273ccd45faed64c8ee42330bee5a0b",
           "kind": "observed",
-          "previous": "9478b4c7338020f95da4d064640452250931848116a12533aad24e1da0d97042",
+          "previous": "85950b764c02dbe18eea77c45d019f833adbdd78fab030250661e6c61f80f8db",
           "seq": 5
         },
         {
-          "at": 1790240382.2781315,
+          "at": 1790242647.380682,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
@@ -2739,53 +3542,53 @@
               "request_id": "REQ-4812",
               "site_id": "DC-WEST-4"
             },
-            "id": "aa4cdb6b-5b05-4343-8e4b-5d0b1c0e8b95",
+            "id": "7dd73097-3a86-425e-8dd2-d88832617c2d",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "ebade3c0df3138e5e15e1ad91a7f8fb01ea0b02f1deca135355f30d996322e93",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "45f3b966815b1f64a4be5a8c154a14bd6c902549e1437ce213410adc76f506ac",
           "kind": "proposed",
-          "previous": "ef3fb26191e45fc3d3bd7eae5f8649b004b3b843596c0d05f4aff25b269e3022",
+          "previous": "876fb53f26c279f2223def39ea1344acf8273ccd45faed64c8ee42330bee5a0b",
           "seq": 6
         },
         {
-          "at": 1790240382.2782464,
+          "at": 1790242647.3808265,
           "body": {
             "policy_version": 1,
-            "proposal_id": "aa4cdb6b-5b05-4343-8e4b-5d0b1c0e8b95",
+            "proposal_id": "7dd73097-3a86-425e-8dd2-d88832617c2d",
             "reason": "all_checks_passed",
             "status": "allowed"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "9eb87d9f9686927aeb9e6946fb9cb855ec0a5db6ab79e03c81f82013cd6b45c9",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "e8ebf2e7cce5dd36ac50ef940ed5388df3535b3bef9e57753a5da0a3d624f00d",
           "kind": "decision",
-          "previous": "ebade3c0df3138e5e15e1ad91a7f8fb01ea0b02f1deca135355f30d996322e93",
+          "previous": "45f3b966815b1f64a4be5a8c154a14bd6c902549e1437ce213410adc76f506ac",
           "seq": 7
         },
         {
-          "at": 1790240382.278542,
+          "at": 1790242647.3814647,
           "body": {
             "action": "record_review",
             "actor": "scheduler",
-            "idempotency_key": "aa4cdb6b-5b05-4343-8e4b-5d0b1c0e8b95",
+            "idempotency_key": "7dd73097-3a86-425e-8dd2-d88832617c2d",
             "policy_version": 1,
-            "proposal_id": "aa4cdb6b-5b05-4343-8e4b-5d0b1c0e8b95"
+            "proposal_id": "7dd73097-3a86-425e-8dd2-d88832617c2d"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "99795a60b53ef66d670ef6190495d4cbe039e9620c94ef16da09aade28ee5546",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "d23c7056fa93a05f3f98a6b30f2f830e6413e033c6043519736da54b2ce39153",
           "kind": "effect_started",
-          "previous": "9eb87d9f9686927aeb9e6946fb9cb855ec0a5db6ab79e03c81f82013cd6b45c9",
+          "previous": "e8ebf2e7cce5dd36ac50ef940ed5388df3535b3bef9e57753a5da0a3d624f00d",
           "seq": 8
         },
         {
-          "at": 1790240382.2787266,
+          "at": 1790242647.3817194,
           "body": {
             "action": "record_review",
-            "claim_hash": "99795a60b53ef66d670ef6190495d4cbe039e9620c94ef16da09aade28ee5546",
+            "claim_hash": "d23c7056fa93a05f3f98a6b30f2f830e6413e033c6043519736da54b2ce39153",
             "output": {
               "args": {
                 "request_id": "REQ-4812",
@@ -2793,16 +3596,16 @@
               },
               "recorded": true
             },
-            "proposal_id": "aa4cdb6b-5b05-4343-8e4b-5d0b1c0e8b95"
+            "proposal_id": "7dd73097-3a86-425e-8dd2-d88832617c2d"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "a1057b87705af40fef549b246825dfb5da19253baedfbc672e9c681b85a55942",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "43811175759be8d44861981d64ef65606f893ff1df305dc759dbfe302a949449",
           "kind": "effect_succeeded",
-          "previous": "99795a60b53ef66d670ef6190495d4cbe039e9620c94ef16da09aade28ee5546",
+          "previous": "d23c7056fa93a05f3f98a6b30f2f830e6413e033c6043519736da54b2ce39153",
           "seq": 9
         },
         {
-          "at": 1790240382.2792242,
+          "at": 1790242647.3823538,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
@@ -2836,105 +3639,105 @@
                 "state": "active"
               }
             },
-            "id": "936f68c0-ee28-48ba-92f8-cb543a2b1467",
+            "id": "e0d9da5b-5375-4aec-a898-079f659a77f7",
             "origin": "compiled",
             "roles": [
               "operator",
               "compiled"
             ]
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "bdf549cdfb03926897c6798b261865971a8072905d530436aca2b10768fe1771",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "76f9a3dfa509f2f5a2fe3ab5fcb710aa763448086e5f41add207fc47e7c2f639",
           "kind": "proposed",
-          "previous": "a1057b87705af40fef549b246825dfb5da19253baedfbc672e9c681b85a55942",
+          "previous": "43811175759be8d44861981d64ef65606f893ff1df305dc759dbfe302a949449",
           "seq": 10
         },
         {
-          "at": 1790240382.2793558,
+          "at": 1790242647.3825076,
           "body": {
             "policy_version": 1,
-            "proposal_id": "936f68c0-ee28-48ba-92f8-cb543a2b1467",
+            "proposal_id": "e0d9da5b-5375-4aec-a898-079f659a77f7",
             "reason": "approval_required:manager",
             "status": "needs_approval"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "a5cd1ff6dcef5eda750578c69a424740e6e85d374e6d25f375e591ae9ae03a35",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "31901836085d9ac0c344990a6d9b5d31dcbe094538bfdcfae859f8f07e9511b3",
           "kind": "decision",
-          "previous": "bdf549cdfb03926897c6798b261865971a8072905d530436aca2b10768fe1771",
+          "previous": "76f9a3dfa509f2f5a2fe3ab5fcb710aa763448086e5f41add207fc47e7c2f639",
           "seq": 11
         },
         {
-          "at": 1790240382.2796257,
+          "at": 1790242647.3828251,
           "body": {
             "actor": "d.patel",
             "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
-            "proposal_id": "936f68c0-ee28-48ba-92f8-cb543a2b1467",
+            "proposal_id": "e0d9da5b-5375-4aec-a898-079f659a77f7",
             "role": "manager"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "2beba1faec5551f2d1870f6df75426867a520668782005def0fd84bb6956bc82",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "53712144038fb6d5ff2531c830f2e2eef1cb79d06e95bfd68f2a9c60cb730eef",
           "kind": "approved",
-          "previous": "a5cd1ff6dcef5eda750578c69a424740e6e85d374e6d25f375e591ae9ae03a35",
+          "previous": "31901836085d9ac0c344990a6d9b5d31dcbe094538bfdcfae859f8f07e9511b3",
           "seq": 12
         },
         {
-          "at": 1790240382.2799833,
+          "at": 1790242647.3832834,
           "body": {
             "action": "issue_order",
             "actor": "scheduler",
-            "idempotency_key": "936f68c0-ee28-48ba-92f8-cb543a2b1467",
+            "idempotency_key": "e0d9da5b-5375-4aec-a898-079f659a77f7",
             "policy_version": 1,
-            "proposal_id": "936f68c0-ee28-48ba-92f8-cb543a2b1467"
+            "proposal_id": "e0d9da5b-5375-4aec-a898-079f659a77f7"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "1f32f70eee686c91957a204c20091e1b797722cfc302433f2f232afbc5ec61da",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "5b560813e8cfd3eac6eeb8b5509478fd914b57d7842ceaa300df8249f7de40c0",
           "kind": "effect_started",
-          "previous": "2beba1faec5551f2d1870f6df75426867a520668782005def0fd84bb6956bc82",
+          "previous": "53712144038fb6d5ff2531c830f2e2eef1cb79d06e95bfd68f2a9c60cb730eef",
           "seq": 13
         },
         {
-          "at": 1790240382.2814057,
+          "at": 1790242647.3848174,
           "body": {
             "action": "issue_order",
             "error": "Remote end closed connection without response",
-            "proposal_id": "936f68c0-ee28-48ba-92f8-cb543a2b1467"
+            "proposal_id": "e0d9da5b-5375-4aec-a898-079f659a77f7"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "3ad1fee958f08c3f6ab91dac99506bca0982398c0b0246d7ed4592af137ea0df",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "8ecd08d4902f509ebf504c4f73b54d19475c8b2beecb25732af3c33c082f6e32",
           "kind": "effect_unknown",
-          "previous": "1f32f70eee686c91957a204c20091e1b797722cfc302433f2f232afbc5ec61da",
+          "previous": "5b560813e8cfd3eac6eeb8b5509478fd914b57d7842ceaa300df8249f7de40c0",
           "seq": 14
         },
         {
-          "at": 1790240382.2833505,
+          "at": 1790242647.3866742,
           "body": {
             "action": "issue_order",
             "actor": "d.patel",
-            "proposal_id": "936f68c0-ee28-48ba-92f8-cb543a2b1467",
+            "proposal_id": "e0d9da5b-5375-4aec-a898-079f659a77f7",
             "reason": "destination_record_mismatch",
             "status": "unverified"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "e3288c2b887f5fb66115bf40c24b7f829bfac8020d4755a8291a8d4ef01d9ad4",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "f74d97cf6a5a49f5e7f43803e3357914de6d7cc83d6e4dfba51b502e48aff634",
           "kind": "reconciliation_checked",
-          "previous": "3ad1fee958f08c3f6ab91dac99506bca0982398c0b0246d7ed4592af137ea0df",
+          "previous": "8ecd08d4902f509ebf504c4f73b54d19475c8b2beecb25732af3c33c082f6e32",
           "seq": 15
         },
         {
-          "at": 1790240382.2836957,
+          "at": 1790242647.3870492,
           "body": {
             "actor": "d.patel",
             "role": "manager"
           },
-          "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-          "hash": "5394c5e2259d37d8f033eb3dc634e23c18fbe008685f63183b371a15b7565661",
+          "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+          "hash": "2c0c1643d7eb25555b8a226eba80df330c454dae3b7e51a9fe1f276a9c9743f5",
           "kind": "signed",
-          "previous": "e3288c2b887f5fb66115bf40c24b7f829bfac8020d4755a8291a8d4ef01d9ad4",
+          "previous": "f74d97cf6a5a49f5e7f43803e3357914de6d7cc83d6e4dfba51b502e48aff634",
           "seq": 16
         }
       ],
-      "case_id": "65952ef0-6335-46e0-942e-ede8f9d62a35",
-      "chain_head": "5394c5e2259d37d8f033eb3dc634e23c18fbe008685f63183b371a15b7565661",
+      "case_id": "b8837d20-c727-4882-be5b-dade776ab57d",
+      "chain_head": "2c0c1643d7eb25555b8a226eba80df330c454dae3b7e51a9fe1f276a9c9743f5",
       "chain_valid": true,
       "event_count": 16,
       "event_kinds": [
@@ -2967,16 +3770,19 @@
           {
             "amount": 2500,
             "id": "PO-9001",
-            "idempotency_key": "936f68c0-ee28-48ba-92f8-cb543a2b1467",
+            "idempotency_key": "e0d9da5b-5375-4aec-a898-079f659a77f7",
             "quote_id": "Q-881",
             "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
             "request_id": "REQ-4812",
             "site_id": "DC-WEST-4"
           }
-        ]
+        ],
+        "updates": []
       },
       "id": "mismatched_status",
       "outcome": "blocked_mismatched_record",
+      "resolutions": [],
+      "status": "in_progress",
       "trace": [
         {
           "action": "create_case",
@@ -3020,6 +3826,366 @@
           "action": "check_mismatched_destination_record",
           "reason": "destination_record_mismatch",
           "result": "unverified"
+        }
+      ]
+    },
+    {
+      "acceptance": [
+        {
+          "id": "order_recorded",
+          "passed": false
+        },
+        {
+          "id": "manager_signed_after_order",
+          "passed": false
+        }
+      ],
+      "acceptance_complete": false,
+      "case_events": [
+        {
+          "at": 1790242647.8916974,
+          "body": {
+            "actor": "a.rivera",
+            "contract": [
+              "northstar-spare-procurement",
+              1
+            ],
+            "inputs": {
+              "request_id": "REQ-4814"
+            }
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "7931dcd84e473b445611eb65b4fd336d4201f203a9e540bb97af38c3c95d3d05",
+          "kind": "case_created",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 1
+        },
+        {
+          "at": 1790242647.8935351,
+          "body": {
+            "actor": "a.rivera",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4814",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": "DC-WEST-4",
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:4"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "a787262710a796c7b03f0fdccce9bf2688939918df712833e6edfba8991101d1",
+          "kind": "observed",
+          "previous": "7931dcd84e473b445611eb65b4fd336d4201f203a9e540bb97af38c3c95d3d05",
+          "seq": 2
+        },
+        {
+          "at": 1790242647.8951488,
+          "body": {
+            "actor": "a.rivera",
+            "key": "site",
+            "source": "sites",
+            "value": {
+              "address": "901 Harbor Way, Oakland CA",
+              "id": "DC-WEST-4",
+              "state": "active"
+            },
+            "verified": true,
+            "version": "site:12"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "4a0e3e4d106448fcee106457159a3c537da28e7bfdf3e7e64a15a2b487ab70cd",
+          "kind": "observed",
+          "previous": "a787262710a796c7b03f0fdccce9bf2688939918df712833e6edfba8991101d1",
+          "seq": 3
+        },
+        {
+          "at": 1790242647.89652,
+          "body": {
+            "actor": "a.rivera",
+            "key": "budget",
+            "source": "finance",
+            "value": {
+              "available": 5000,
+              "currency": "USD",
+              "id": "CC-742"
+            },
+            "verified": true,
+            "version": "budget:8"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "ab7fe529149c95e5195f0b0989276489e87581638c5065280365c20b010003f6",
+          "kind": "observed",
+          "previous": "4a0e3e4d106448fcee106457159a3c537da28e7bfdf3e7e64a15a2b487ab70cd",
+          "seq": 4
+        },
+        {
+          "at": 1790242647.8979745,
+          "body": {
+            "actor": "a.rivera",
+            "key": "quote_options",
+            "source": "quote_options",
+            "value": {
+              "ids": [
+                "Q-882A",
+                "Q-882B"
+              ],
+              "request_id": "REQ-4814",
+              "selection": null
+            },
+            "verified": true,
+            "version": "selection:1"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "60a7f9eca7a8b4420688ee2c9d4f3e92b3e114d897abb9584e4b44e749213332",
+          "kind": "observed",
+          "previous": "ab7fe529149c95e5195f0b0989276489e87581638c5065280365c20b010003f6",
+          "seq": 5
+        },
+        {
+          "at": 1790242647.8983974,
+          "body": {
+            "actor": "a.rivera",
+            "choices": [
+              "Q-882A",
+              "Q-882B"
+            ],
+            "choices_hash": "60a7f9eca7a8b4420688ee2c9d4f3e92b3e114d897abb9584e4b44e749213332",
+            "choices_version": "selection:1",
+            "due_at": 1790246247.8983722,
+            "escalate_role": "manager",
+            "id": "31fde864-6360-4c8d-875e-ab7b520a51f0",
+            "key": "quote",
+            "owner_role": "procurement",
+            "record_key": "REQ-4814",
+            "trigger_hash": "60a7f9eca7a8b4420688ee2c9d4f3e92b3e114d897abb9584e4b44e749213332",
+            "trigger_version": "selection:1"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "426202bbacee77a0d70a609564fe4bcbb3984ebed1a0692b44200b26c29d86d4",
+          "kind": "resolution_requested",
+          "previous": "60a7f9eca7a8b4420688ee2c9d4f3e92b3e114d897abb9584e4b44e749213332",
+          "seq": 6
+        },
+        {
+          "at": 1790242647.8999498,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "args": {
+              "request_id": "REQ-4814",
+              "site_id": "DC-WEST-4"
+            },
+            "id": "531d332e-8783-4667-8d25-9fcab9a6e836",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "33917d382d147516c041ea7e96b987547a2108f0c1ff7b94c2431c1239a43f1e",
+          "kind": "proposed",
+          "previous": "426202bbacee77a0d70a609564fe4bcbb3984ebed1a0692b44200b26c29d86d4",
+          "seq": 7
+        },
+        {
+          "at": 1790242647.900139,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "531d332e-8783-4667-8d25-9fcab9a6e836",
+            "reason": "all_checks_passed",
+            "status": "allowed"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "0f178f49eec3690d667e7cda8a74cf49845fb65bf6d38c56034dcd30e3a3ee11",
+          "kind": "decision",
+          "previous": "33917d382d147516c041ea7e96b987547a2108f0c1ff7b94c2431c1239a43f1e",
+          "seq": 8
+        },
+        {
+          "at": 1790242647.900453,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "idempotency_key": "531d332e-8783-4667-8d25-9fcab9a6e836",
+            "policy_version": 1,
+            "proposal_id": "531d332e-8783-4667-8d25-9fcab9a6e836"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "f36b38a047183cdc901dff98d38f52da5186c1fa9bcb463a66b37b70366169dd",
+          "kind": "effect_started",
+          "previous": "0f178f49eec3690d667e7cda8a74cf49845fb65bf6d38c56034dcd30e3a3ee11",
+          "seq": 9
+        },
+        {
+          "at": 1790242647.9006348,
+          "body": {
+            "action": "record_review",
+            "claim_hash": "f36b38a047183cdc901dff98d38f52da5186c1fa9bcb463a66b37b70366169dd",
+            "output": {
+              "args": {
+                "request_id": "REQ-4814",
+                "site_id": "DC-WEST-4"
+              },
+              "recorded": true
+            },
+            "proposal_id": "531d332e-8783-4667-8d25-9fcab9a6e836"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "6f84d14a435d3167f4fc38dc174fd32dbc47c6a99c67185fda5f5e21dfbc87a4",
+          "kind": "effect_succeeded",
+          "previous": "f36b38a047183cdc901dff98d38f52da5186c1fa9bcb463a66b37b70366169dd",
+          "seq": 10
+        },
+        {
+          "at": 1790242647.900911,
+          "body": {
+            "action": "issue_order",
+            "actor": "a.rivera",
+            "args": {
+              "amount": 2500
+            },
+            "id": "56c3718b-1dbd-4d3c-b601-cb7319d6cb46",
+            "origin": "human",
+            "roles": [
+              "operator"
+            ]
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "e2c0fde61b48d65eae07ee34c86f721d789a6ad6f0ea9eb0ecfacb85191f778a",
+          "kind": "proposed",
+          "previous": "6f84d14a435d3167f4fc38dc174fd32dbc47c6a99c67185fda5f5e21dfbc87a4",
+          "seq": 11
+        },
+        {
+          "at": 1790242647.900987,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "56c3718b-1dbd-4d3c-b601-cb7319d6cb46",
+            "reason": "resolution_open:quote",
+            "status": "denied"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "a956a818b02b0e6fb8bd8dc978c77064f3c65344c22bac0b0e86aee79a669fc0",
+          "kind": "decision",
+          "previous": "e2c0fde61b48d65eae07ee34c86f721d789a6ad6f0ea9eb0ecfacb85191f778a",
+          "seq": 12
+        },
+        {
+          "at": 1790242647.9014077,
+          "body": {
+            "actor": "d.patel",
+            "reason": "Supplier qualification unresolved",
+            "role": "manager"
+          },
+          "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+          "hash": "0ffc43a5189f9c222be9a2806460e0549dfb21756f4d35b2cabf64e7ffeddbad",
+          "kind": "case_cancelled",
+          "previous": "a956a818b02b0e6fb8bd8dc978c77064f3c65344c22bac0b0e86aee79a669fc0",
+          "seq": 13
+        }
+      ],
+      "case_id": "e9e0e950-9839-4b9b-8b55-3067a626184f",
+      "chain_head": "0ffc43a5189f9c222be9a2806460e0549dfb21756f4d35b2cabf64e7ffeddbad",
+      "chain_valid": true,
+      "event_count": 13,
+      "event_kinds": [
+        "case_created",
+        "observed",
+        "observed",
+        "observed",
+        "observed",
+        "resolution_requested",
+        "proposed",
+        "decision",
+        "effect_started",
+        "effect_succeeded",
+        "proposed",
+        "decision",
+        "case_cancelled"
+      ],
+      "external_orders": 0,
+      "external_state": {
+        "budget": {
+          "available": 5000,
+          "currency": "USD",
+          "id": "CC-742",
+          "version": 8
+        },
+        "orders": [],
+        "updates": []
+      },
+      "id": "quote_cancelled",
+      "outcome": "cancelled",
+      "resolutions": [
+        {
+          "actor": "a.rivera",
+          "choice": null,
+          "choices": [
+            "Q-882A",
+            "Q-882B"
+          ],
+          "choices_hash": "60a7f9eca7a8b4420688ee2c9d4f3e92b3e114d897abb9584e4b44e749213332",
+          "choices_version": "selection:1",
+          "due_at": 1790246247.8983722,
+          "escalate_role": "manager",
+          "id": "31fde864-6360-4c8d-875e-ab7b520a51f0",
+          "key": "quote",
+          "owner_role": "procurement",
+          "record_key": "REQ-4814",
+          "status": "cancelled",
+          "trigger_hash": "60a7f9eca7a8b4420688ee2c9d4f3e92b3e114d897abb9584e4b44e749213332",
+          "trigger_version": "selection:1"
+        }
+      ],
+      "status": "cancelled",
+      "trace": [
+        {
+          "action": "create_case",
+          "requisition": "REQ-4814"
+        },
+        {
+          "action": "read_requisition",
+          "state": "approved",
+          "version": "req:4"
+        },
+        {
+          "action": "request_quote_resolution",
+          "choices": [
+            "Q-882A",
+            "Q-882B"
+          ],
+          "due_at": 1790246247.8983722,
+          "owner_role": "procurement",
+          "task_id": "31fde864-6360-4c8d-875e-ab7b520a51f0"
+        },
+        {
+          "action": "read_competing_quotes",
+          "candidate_ids": [
+            "Q-882A",
+            "Q-882B"
+          ],
+          "result": "source_shape"
+        },
+        {
+          "action": "record_review",
+          "event": "effect_succeeded"
+        },
+        {
+          "action": "propose_without_selected_quote",
+          "decision": {
+            "reason": "resolution_open:quote",
+            "status": "denied"
+          }
+        },
+        {
+          "action": "manager_cancels_unresolved_case",
+          "reason": "Supplier qualification unresolved"
         }
       ]
     }

@@ -36,6 +36,8 @@ def main():
             ("planner", ["operator", "model"], []),
             ("scheduler", ["operator", "compiled"], []),
             ("manager", ["manager"], []),
+            ("logistics", ["logistics"], []),
+            ("procurement", ["procurement"], []),
             ("inventory", ["observer"], ["inventory"]),
             ("supplier", ["observer"], ["supplier"]),
         ):

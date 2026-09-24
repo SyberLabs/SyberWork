@@ -23,13 +23,21 @@ async function inspect() {
   const info = await api('cases/' + selected);
   $('case-title').textContent = info.contract.title || info.case.contract_id;
   $('case-meta').textContent = selected + ' · contract v' + info.case.contract_version;
-  $('complete').textContent = info.complete ? 'COMPLETE' : 'IN PROGRESS'; $('complete').className = 'status ' + (info.complete ? 'done' : '');
+  $('complete').textContent = info.status.toUpperCase().replace('_', ' '); $('complete').className = 'status ' + (info.complete ? 'done' : '');
   $('next').textContent = info.next_compiled ? 'Next compiled step: ' + info.next_compiled : 'No remaining compiled step';
   $('clauses').replaceChildren();
   for (const clause of info.acceptance) {
     const row = document.createElement('div'); row.className = 'clause ' + (clause.passed ? 'passed' : 'pending');
     row.textContent = (clause.passed ? '✓ ' : '○ ') + clause.id; $('clauses').append(row);
   }
+  $('resolutions').replaceChildren();
+  for (const task of info.resolutions || []) {
+    const row = document.createElement('button'); row.className = 'case-button';
+    row.textContent = task.key + ' · ' + task.status + ' · ' + task.owner_role + ' · due ' + new Date(task.due_at * 1000).toLocaleString() + ' · ' + (task.choice || task.choices.join(', '));
+    row.onclick = () => { $('task-id').value = task.id; $('resolution-key').value = task.key; };
+    $('resolutions').append(row);
+  }
+  if (!info.resolutions?.length) $('resolutions').textContent = 'No resolution tasks';
   $('events').replaceChildren();
   for (const event of info.events.slice().reverse()) {
     const item = document.createElement('details'); item.className = 'event';
@@ -51,6 +59,10 @@ $('refresh').onclick = () => run(refresh);
 $('create').onclick = () => run(async () => { const r = await mutate('cases', {contract_id: $('contract').value, version: Number($('version').value), inputs: json('inputs')}); selected = r.id; await inspect(); await refresh(); });
 $('observe').onclick = () => run(async () => { await mutate('cases/' + selected + '/facts', {key: $('fact-key').value, value: json('fact-value'), source: $('fact-source').value, version: $('fact-version').value}); show('Observation recorded'); });
 $('refresh-fact').onclick = () => run(async () => { await mutate('cases/' + selected + '/refresh', {key: $('fact-key').value, source: $('fact-source').value, record_key: $('record-key').value}); show('Source fact verified and recorded'); });
+$('request-resolution').onclick = () => run(async () => { await mutate('cases/' + selected + '/resolution-request', {key: $('resolution-key').value}); show('Resolution task opened'); });
+$('resolve-resolution').onclick = () => run(async () => { const r = await mutate('cases/' + selected + '/resolution-resolve', {task_id: $('task-id').value}); show('Source decision: ' + r.status); });
+$('escalate-resolution').onclick = () => run(async () => { await mutate('cases/' + selected + '/resolution-escalate', {task_id: $('task-id').value}); show('Overdue task escalated'); });
+$('cancel-case').onclick = () => run(async () => { await mutate('cases/' + selected + '/cancel', {reason: $('cancel-reason').value}); show('Case cancelled'); });
 $('propose').onclick = () => run(async () => { await mutate('cases/' + selected + '/proposals', {action: $('action').value, args: json('arguments'), origin: $('origin').value}); show('Proposal evaluated'); });
 $('compiled').onclick = () => run(async () => { await mutate('cases/' + selected + '/compiled', {}); show('Compiled step proposed'); });
 $('suggest').onclick = () => run(async () => { await mutate('cases/' + selected + '/suggest', {}); show('Planner suggestion admitted or refused'); });

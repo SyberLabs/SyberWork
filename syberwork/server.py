@@ -108,6 +108,14 @@ def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
                         result = work.observe(case_id, data["key"], data["value"], data["source"], data["version"], name)
                     elif operation == "refresh":
                         result = work.refresh_fact(case_id, data["source"], data["key"], data["record_key"], name, roles)
+                    elif operation == "resolution-request":
+                        result = work.request_resolution(case_id, data["key"], name, roles)
+                    elif operation == "resolution-resolve":
+                        result = work.resolve_resolution(case_id, data["task_id"], name, roles)
+                    elif operation == "resolution-escalate":
+                        result = work.escalate_resolution(case_id, data["task_id"], name, roles)
+                    elif operation == "cancel":
+                        result = work.cancel_case(case_id, data["reason"], name, roles)
                     elif operation == "proposals":
                         result = work.propose(case_id, data["action"], data["args"], name, roles, data.get("origin", "human"))
                     elif operation == "compiled":

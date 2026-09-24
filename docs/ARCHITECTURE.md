@@ -14,6 +14,8 @@ The contract defines inputs, declared actions, argument bindings to recorded fac
 
 Optional `input_bindings` tie a case input to a path in the latest observed fact, for example `{"request_id":"fact:request.id"}`. Admission rechecks this equality. The relevant action must independently require that fact from a verified, fresh source; the binding alone does not authenticate an observation.
 
+Optional `resolutions` declare a missing decision, candidate source, assigned role, due time, escalation role, authoritative result, and actions to block. The task stores observation hashes and source versions. The assigned owner confirms a changed, versioned source record whose selected option and identity match the task and case. Admission requires task closure and keeps checking the latest result's choice and identity. See [resolution tasks](RESOLUTION_TASKS.md).
+
 ## State transitions
 
 `proposed → decision → approved (when required) → effect_started → effect_succeeded | effect_rejected | effect_unknown → reconciliation_checked | reconciled`

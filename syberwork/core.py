@@ -66,6 +66,12 @@ def trusted_origin(url: str) -> tuple[str, str, int]:
     raise Rejected("invalid_target", "target must be HTTPS or loopback HTTP without URL credentials")
 
 
+def at_path(value: Any, path: str) -> Any:
+    for part in path.split("."):
+        value = value.get(part) if isinstance(value, dict) else None
+    return value
+
+
 class Work:
     def __init__(self, database: str | Path):
         self.database = str(database)
@@ -122,6 +128,27 @@ class Work:
             for key, binding in bindings.items()
         ):
             raise Rejected("invalid_contract", "input bindings must map declared input keys to fact paths")
+        resolutions = doc.get("resolutions", {})
+        if not isinstance(resolutions, dict):
+            raise Rejected("invalid_contract", "resolutions must be an object")
+        for name, spec in resolutions.items():
+            if (not isinstance(name, str) or not isinstance(spec, dict) or
+                    spec.get("record_key_input") not in doc["inputs"] or
+                    not isinstance(spec.get("due_seconds"), int) or not 0 < spec["due_seconds"] <= 2592000 or
+                    not isinstance(spec.get("blocks_actions"), list) or
+                    any(action not in doc["actions"] for action in spec["blocks_actions"]) or
+                    any(not isinstance(spec.get(field), str) or not spec[field] for field in ("owner_role", "escalate_role"))):
+                raise Rejected("invalid_contract", "resolution needs owner, escalation, due time, and input key")
+            for field, required_fields in (("trigger", ("key", "source", "missing_path", "identity_path")),
+                                           ("choices", ("key", "source", "list_path", "identity_path")),
+                                           ("result", ("key", "source", "value_path", "identity_path"))):
+                item = spec.get(field)
+                if not isinstance(item, dict) or any(not isinstance(item.get(k), str) or not item[k] for k in required_fields):
+                    raise Rejected("invalid_contract", "resolution requires a source-backed " + field)
+            if "confirmation" in spec and (not isinstance(spec["confirmation"], dict) or
+                    any(not isinstance(spec["confirmation"].get(k), str) or not spec["confirmation"][k]
+                        for k in ("key", "source", "value_path"))):
+                raise Rejected("invalid_contract", "invalid resolution confirmation")
         path = self._compile_path(doc)
         doc = {**doc, "compiled_path": path}
         with self.tx() as db:
@@ -229,6 +256,141 @@ class Work:
             db.execute("INSERT INTO cases VALUES (?,?,?,?,?)", (case_id, contract_id, version, canonical(inputs), time.time()))
             self._append(db, case_id, "case_created", {"actor": actor, "inputs": inputs, "contract": [contract_id, version]})
             return case_id
+
+    @staticmethod
+    def _task(history: list[dict], task_id: str) -> dict:
+        task = next((event for event in history if event["kind"] == "resolution_requested" and event["body"]["id"] == task_id), None)
+        if not task:
+            raise Rejected("unknown_resolution", task_id)
+        if any(event["kind"] == "resolution_completed" and event["body"]["task_id"] == task_id for event in history):
+            raise Rejected("resolution_complete", "this task is already closed")
+        return task
+
+    def request_resolution(self, case_id: str, key: str, actor: str, roles: list[str]) -> dict:
+        if "operator" not in roles:
+            raise Rejected("resolution_denied", "operator role required to request clarification")
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+            spec = contract.get("resolutions", {}).get(key)
+            if not spec:
+                raise Rejected("unknown_resolution", key)
+            history = self._events(db, case_id)
+            if any(e["kind"] == "case_cancelled" for e in history):
+                raise Rejected("case_cancelled", "case is closed")
+            if any(e["kind"] == "resolution_requested" and e["body"]["key"] == key for e in history):
+                raise Rejected("resolution_exists", "a task for this decision already exists")
+
+            def latest(descriptor):
+                event = next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == descriptor["key"]), None)
+                if not event or event["body"]["source"] != descriptor["source"] or not event["body"].get("verified"):
+                    raise Rejected("resolution_evidence_missing", descriptor["key"])
+                return event
+
+            trigger, choices = latest(spec["trigger"]), latest(spec["choices"])
+            record_key = json.loads(row["inputs"])[spec["record_key_input"]]
+            if any(at_path(event["body"]["value"], spec[field]["identity_path"]) != record_key
+                   for event, field in ((trigger, "trigger"), (choices, "choices"))):
+                raise Rejected("resolution_evidence_mismatch", "trigger and choices must belong to the case input")
+            if at_path(trigger["body"]["value"], spec["trigger"]["missing_path"]) is not None:
+                raise Rejected("resolution_unnecessary", "the authoritative source already has a decision")
+            candidates = at_path(choices["body"]["value"], spec["choices"]["list_path"])
+            if (not isinstance(candidates, list) or not candidates or
+                    any(not isinstance(c, str) or not c for c in candidates) or len(set(candidates)) != len(candidates)):
+                raise Rejected("resolution_evidence_missing", "choices must be distinct source-backed identifiers")
+            now = time.time()
+            return self._append(db, case_id, "resolution_requested", {
+                "id": str(uuid.uuid4()), "key": key, "actor": actor, "owner_role": spec["owner_role"],
+                "escalate_role": spec["escalate_role"], "due_at": now + spec["due_seconds"],
+                "choices": candidates, "record_key": record_key,
+                "trigger_version": trigger["body"]["version"], "trigger_hash": trigger["hash"],
+                "choices_version": choices["body"]["version"], "choices_hash": choices["hash"],
+            })
+
+    def resolve_resolution(self, case_id: str, task_id: str, actor: str, roles: list[str]) -> dict:
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            history = self._events(db, case_id)
+            task = self._task(history, task_id)["body"]
+            if any(e["kind"] == "case_cancelled" for e in history):
+                raise Rejected("case_cancelled", "case is closed")
+            if task["owner_role"] not in roles:
+                raise Rejected("resolution_denied", "assigned role required")
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+            spec = contract["resolutions"][task["key"]]
+        try:
+            result = self.refresh_fact(case_id, spec["result"]["source"], spec["result"]["key"],
+                                       task["record_key"], actor, roles)
+            confirmation = None
+            if "confirmation" in spec:
+                check = spec["confirmation"]
+                confirmation = self.refresh_fact(case_id, check["source"], check["key"],
+                                                 task["record_key"], actor, roles)
+        except Rejected as error:
+            if error.code not in ("source_shape", "source_unavailable", "source_unversioned"):
+                raise
+            with self.tx() as db:
+                self._task(self._events(db, case_id), task_id)
+                self._append(db, case_id, "resolution_checked", {"task_id": task_id, "status": "pending", "reason": error.code, "actor": actor})
+            return {"status": "pending", "reason": error.code}
+
+        with self.tx() as db:
+            history = self._events(db, case_id)
+            self._task(history, task_id)
+            if any(e["kind"] == "case_cancelled" for e in history):
+                raise Rejected("case_cancelled", "case is closed")
+            selected = at_path(result["body"]["value"], spec["result"]["value_path"])
+            identity = at_path(result["body"]["value"], spec["result"]["identity_path"])
+            confirmed = (not confirmation or at_path(confirmation["body"]["value"],
+                         spec["confirmation"]["value_path"]) == selected)
+            changed = (spec["trigger"]["key"] != spec["result"]["key"] or
+                       result["body"]["version"] != task["trigger_version"])
+            if (selected not in task["choices"] or identity != task["record_key"] or
+                    not changed or not confirmed):
+                self._append(db, case_id, "resolution_checked", {
+                    "task_id": task_id, "status": "pending", "reason": "source_decision_unverified", "actor": actor,
+                    "observation_hash": result["hash"],
+                })
+                return {"status": "pending", "reason": "source_decision_unverified"}
+            event = self._append(db, case_id, "resolution_completed", {
+                "task_id": task_id, "key": task["key"], "choice": selected, "actor": actor,
+                "source": spec["result"]["source"], "version": result["body"]["version"],
+                "observation_hash": result["hash"],
+                "confirmation_hash": confirmation["hash"] if confirmation else None,
+            })
+            return {"status": "completed", "choice": selected, "event": event}
+
+    def escalate_resolution(self, case_id: str, task_id: str, actor: str, roles: list[str]) -> dict:
+        with self.tx() as db:
+            history = self._events(db, case_id)
+            task = self._task(history, task_id)["body"]
+            if any(e["kind"] == "case_cancelled" for e in history):
+                raise Rejected("case_cancelled", "case is closed")
+            if task["escalate_role"] not in roles or time.time() < task["due_at"]:
+                raise Rejected("resolution_escalation_denied", "escalation role and elapsed deadline required")
+            if any(e["kind"] == "resolution_escalated" and e["body"]["task_id"] == task_id for e in history):
+                raise Rejected("resolution_escalation_denied", "already escalated")
+            return self._append(db, case_id, "resolution_escalated", {"task_id": task_id, "actor": actor, "role": task["escalate_role"]})
+
+    def cancel_case(self, case_id: str, reason: str, actor: str, roles: list[str]) -> dict:
+        if not isinstance(reason, str) or not reason.strip():
+            raise Rejected("cancellation_denied", "reason required")
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+            if contract.get("cancel_role", "manager") not in roles:
+                raise Rejected("cancellation_denied", "authorized cancellation role required")
+            history = self._events(db, case_id)
+            if any(e["kind"] == "case_cancelled" for e in history):
+                raise Rejected("case_cancelled", "case is already closed")
+            rejected = {e["body"]["proposal_id"] for e in history if e["kind"] == "effect_rejected"}
+            for event in history:
+                if event["kind"] != "effect_started" or event["body"]["proposal_id"] in rejected:
+                    continue
+                action = db.execute("SELECT body FROM actions WHERE name=?", (event["body"]["action"],)).fetchone()
+                if action and json.loads(action["body"])["kind"] == "http":
+                    raise Rejected("cancellation_denied", "an external effect was claimed; verify its outcome first")
+            return self._append(db, case_id, "case_cancelled", {"actor": actor, "role": contract.get("cancel_role", "manager"), "reason": reason.strip()})
 
     def observe(self, case_id: str, key: str, value: Any, source: str, version: str, actor: str, verified: bool = False) -> dict:
         if not all((key, source, version)):
@@ -466,6 +628,8 @@ class Work:
             raise Rejected("signoff_denied", "actor lacks role")
         with self.tx() as db:
             self._case(db, case_id)
+            if any(e["kind"] == "case_cancelled" for e in self._events(db, case_id)):
+                raise Rejected("case_cancelled", "case is closed")
             return self._append(db, case_id, "signed", {"actor": actor, "role": role})
 
     def inspect(self, case_id: str) -> dict:
@@ -474,9 +638,21 @@ class Work:
             contract = self._contract(db, row["contract_id"], row["contract_version"])
             history = self._events(db, case_id)
             clauses = self._acceptance(contract, history)
+            cancelled = any(e["kind"] == "case_cancelled" for e in history)
+            resolutions = []
+            for event in history:
+                if event["kind"] != "resolution_requested":
+                    continue
+                task = event["body"]
+                closed = next((e for e in history if e["kind"] == "resolution_completed" and e["body"]["task_id"] == task["id"]), None)
+                escalated = any(e["kind"] == "resolution_escalated" and e["body"]["task_id"] == task["id"] for e in history)
+                resolutions.append({**task, "status": "completed" if closed else "cancelled" if cancelled else "escalated" if escalated else "overdue" if time.time() >= task["due_at"] else "open",
+                                    "choice": closed["body"]["choice"] if closed else None})
             return {"case": dict(row), "contract": contract, "events": history,
-                    "acceptance": clauses, "complete": bool(clauses) and all(v["passed"] for v in clauses),
-                    "next_compiled": self._next_path(contract, history)}
+                    "acceptance": clauses, "complete": not cancelled and bool(clauses) and all(v["passed"] for v in clauses),
+                    "status": "cancelled" if cancelled else "complete" if bool(clauses) and all(v["passed"] for v in clauses) else "in_progress",
+                    "resolutions": resolutions,
+                    "next_compiled": None if cancelled else self._next_path(contract, history)}
 
     def list_cases(self) -> list[dict]:
         with self.tx() as db:
@@ -580,6 +756,8 @@ class Work:
         action, args = proposal["action"], proposal["args"]
         def deny(reason):
             return {"status": "denied", "reason": reason}
+        if any(event["kind"] == "case_cancelled" for event in history):
+            return deny("case_cancelled")
         if not isinstance(args, dict) or not isinstance(proposal.get("roles"), list):
             return deny("invalid_proposal_shape")
         if action not in contract["actions"]:
@@ -591,6 +769,21 @@ class Work:
         local, global_rule = contract["actions"][action], policy["actions"][action]
         if not set(global_rule.get("roles", [])).intersection(proposal["roles"]):
             return deny("actor_role_missing")
+        for key, resolution in contract.get("resolutions", {}).items():
+            if action not in resolution["blocks_actions"]:
+                continue
+            task = next((e for e in history if e["kind"] == "resolution_requested" and e["body"]["key"] == key), None)
+            if not task:
+                continue
+            closed = next((e for e in history if e["kind"] == "resolution_completed" and e["body"]["task_id"] == task["body"]["id"]), None)
+            if not closed:
+                return deny("resolution_open:" + key)
+            result_spec = resolution["result"]
+            latest = next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == result_spec["key"]), None)
+            if (not latest or not latest["body"].get("verified") or latest["body"]["source"] != result_spec["source"] or
+                    at_path(latest["body"]["value"], result_spec["value_path"]) != closed["body"]["choice"] or
+                    at_path(latest["body"]["value"], result_spec["identity_path"]) != task["body"]["record_key"]):
+                return deny("resolution_changed:" + key)
         if any(e["kind"] == "effect_succeeded" and e["body"]["action"] == action or
                verified_reconciliation(e) and e["body"]["action"] == action for e in history):
             return deny("action_already_completed")
