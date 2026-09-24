@@ -89,6 +89,12 @@ class Work:
             raise Rejected("invalid_contract", "acceptance clauses need IDs and known kinds")
         if len({a["id"] for a in doc["acceptance"]}) != len(doc["acceptance"]):
             raise Rejected("invalid_contract", "acceptance clause IDs must be unique")
+        bindings = doc.get("input_bindings", {})
+        if not isinstance(bindings, dict) or any(
+            key not in doc["inputs"] or not isinstance(binding, str) or not binding.startswith("fact:")
+            for key, binding in bindings.items()
+        ):
+            raise Rejected("invalid_contract", "input bindings must map declared input keys to fact paths")
         path = self._compile_path(doc)
         doc = {**doc, "compiled_path": path}
         with self.tx() as db:
@@ -502,6 +508,15 @@ class Work:
                 return deny("source_verification_required:" + requirement["key"])
             if now - fact["at"] > requirement.get("max_age_seconds", 86400):
                 return deny("stale_fact:" + requirement["key"])
+        created = next((e for e in history if e["kind"] == "case_created"), None)
+        for input_key, binding in contract.get("input_bindings", {}).items():
+            fact_key, *path = binding[5:].split(".")
+            fact = next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == fact_key), None)
+            value = fact["body"]["value"] if fact else None
+            for component in path:
+                value = value.get(component) if isinstance(value, dict) else None
+            if not created or not fact or value is None or value != created["body"]["inputs"][input_key]:
+                return deny("input_provenance:" + input_key)
         for param, binding in local.get("arguments", {}).items():
             if binding.startswith("version:"):
                 name = binding[8:]
@@ -528,7 +543,9 @@ class Work:
             if clause["kind"] == "effect":
                 passed = any(e["kind"] == "effect_succeeded" and e["body"]["action"] == clause["action"] or e["kind"] == "reconciled" and e["body"].get("success") and e["body"]["action"] == clause["action"] for e in history)
             elif clause["kind"] == "signoff":
-                completed_seq = next((e["seq"] for e in history if e["kind"] == "effect_succeeded" and e["body"]["action"] == clause.get("after_action")), 0)
+                completed_seq = next((e["seq"] for e in history if
+                                      (e["kind"] == "effect_succeeded" or e["kind"] == "reconciled" and e["body"].get("success"))
+                                      and e["body"]["action"] == clause.get("after_action")), 0)
                 passed = any(e["kind"] == "signed" and e["body"]["role"] == clause["role"] and (not clause.get("after_action") or e["seq"] > completed_seq > 0) for e in history)
             elif clause["kind"] == "fact":
                 passed = any(e["kind"] == "observed" and e["body"]["key"] == clause["key"] and e["body"]["value"] == clause.get("equals") for e in history)

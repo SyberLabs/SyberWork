@@ -49,6 +49,21 @@ class WorkFlow(unittest.TestCase):
         with self.assertRaises(Rejected):
             self.db.commit(self.case, order["proposal"]["id"], "operator")
 
+    def test_signoff_after_reconciled_success_completes_case(self):
+        self.facts()
+        review = self.db.propose(self.case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+        self.db.commit(self.case, review["proposal"]["id"], "operator")
+        order = self.db.compiled_propose(self.case, "scheduler", ["operator", "compiled"])
+        order_id = order["proposal"]["id"]
+        self.db.approve(self.case, order_id, "manager", ["manager"])
+        with patch.object(self.db, "_execute", side_effect=ConnectionError("response lost")):
+            self.assertEqual(self.db.commit(self.case, order_id, "scheduler")["status"], "unknown")
+        self.db.signoff(self.case, "manager", ["manager"], "manager")
+        self.db.reconcile(self.case, order_id, True, "ERP order ID PO-51", "manager", ["manager"])
+        self.assertFalse(self.db.inspect(self.case)["complete"])
+        self.db.signoff(self.case, "manager", ["manager"], "manager")
+        self.assertTrue(self.db.inspect(self.case)["complete"])
+
     def test_denies_untrusted_and_inferred_facts(self):
         self.db.observe(self.case, "part_number", "P-104", "user", "asserted", "operator")
         result = self.db.propose(self.case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
@@ -56,6 +71,19 @@ class WorkFlow(unittest.TestCase):
         self.db.observe(self.case, "part_number", "P-104", "inventory", "v1", "inventory", verified=True)
         result = self.db.propose(self.case, "record_review", {"part_number": "P-999"}, "operator", ["operator"])
         self.assertEqual(result["decision"]["reason"], "argument_provenance:part_number")
+
+    def test_case_input_must_match_verified_fact_when_contract_binds_it(self):
+        contract = json.loads(json.dumps(self.contract))
+        contract["version"] = 2
+        contract["input_bindings"] = {"part_number": "fact:part_number"}
+        self.db.install_contract(contract)
+        case = self.db.create_case("purchase-order", 2, {"part_number": "P-104", "quantity": 2}, "operator")
+        self.db.observe(case, "part_number", "P-999", "inventory", "inventory:9", "inventory", verified=True)
+        mismatched = self.db.propose(case, "record_review", {"part_number": "P-999"}, "operator", ["operator"])
+        self.assertEqual(mismatched["decision"], {"status": "denied", "reason": "input_provenance:part_number"})
+        self.db.observe(case, "part_number", "P-104", "inventory", "inventory:10", "inventory", verified=True)
+        matched = self.db.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+        self.assertEqual(matched["decision"]["status"], "allowed")
 
     def test_replay_amendment_and_original_immutability(self):
         self.facts()

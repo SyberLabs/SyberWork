@@ -64,6 +64,10 @@ PYTHONPATH=. python -m unittest discover -s tests -v
 
 The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, and an HTTP effect with its idempotency key. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems or policies have been integrated correctly.
 
+## Executed enterprise case study
+
+[Case Study 001](case_studies/ENTERPRISE_PROCUREMENT.md) executes seven procurement scenarios against a separate synthetic ERP: complete information, missing intake input, unresolved delivery site, competing quotes, policy withdrawal, changed quote, and a write whose acknowledgement is lost. The [recorded run](case_studies/results/enterprise_procurement_run_001.json) contains case events and external order snapshots. Run it yourself with `PYTHONPATH=. python -m case_studies.enterprise_procurement`. This is a simulation with fictional data, not a customer deployment.
+
 ## Deployment boundary
 
 The included service is local and single-installation. Its role-bearing tokens are provisioned locally. It does not provide SSO, multi-tenant isolation, a distributed transaction with an external API, a customer-specific semantic layer, or an automatic translation from arbitrary prose into a correct contract. The interface requires human review of published contracts. Preserve the `.syberwork` database and credentials together when moving the installation. A hash chain detects accidental editing against its local history; it does not prevent a database owner from replacing and rehashing the whole chain.

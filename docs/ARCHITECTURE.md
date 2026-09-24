@@ -12,6 +12,8 @@
 
 The contract defines inputs, declared actions, argument bindings to recorded facts or source versions, required observations, history predicates such as prior completed effects, local approval restrictions, a compiled path, and acceptance clauses. Global policy can deny an action or require an additional approval. The work contract cannot widen global action availability or roles. Case history is causal *within a case*; hash chaining is integrity evidence within the current database trust boundary.
 
+Optional `input_bindings` tie a case input to a path in the latest observed fact, for example `{"request_id":"fact:request.id"}`. Admission rechecks this equality. The relevant action must independently require that fact from a verified, fresh source; the binding alone does not authenticate an observation.
+
 ## State transitions
 
 `proposed → decision → approved (when required) → effect_started → effect_succeeded | effect_unknown → reconciled`

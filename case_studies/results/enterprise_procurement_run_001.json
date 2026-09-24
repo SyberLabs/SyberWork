@@ -1,0 +1,2163 @@
+{
+  "execution": "Local HTTP plus two isolated SQLite databases per case; no actual enterprise system",
+  "organization": "Northstar Medical Devices (fictional)",
+  "scenarios": [
+    {
+      "acceptance": [
+        {
+          "id": "order_recorded",
+          "passed": true
+        },
+        {
+          "id": "manager_signed_after_order",
+          "passed": true
+        }
+      ],
+      "acceptance_complete": true,
+      "case_events": [
+        {
+          "at": 1790239583.7806983,
+          "body": {
+            "actor": "a.rivera",
+            "contract": [
+              "northstar-spare-procurement",
+              1
+            ],
+            "inputs": {
+              "request_id": "REQ-4812"
+            }
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "58b0d063e837df491a91f29e95e699c42e697370fc44e6bb26124e22f961148c",
+          "kind": "case_created",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 1
+        },
+        {
+          "at": 1790239583.7828343,
+          "body": {
+            "actor": "a.rivera",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4812",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": "DC-WEST-4",
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:6"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "24de2bc7b172e514f4747e055b80f64956c2b10e8813d1b99f74c7d94d832dbf",
+          "kind": "observed",
+          "previous": "58b0d063e837df491a91f29e95e699c42e697370fc44e6bb26124e22f961148c",
+          "seq": 2
+        },
+        {
+          "at": 1790239583.7844238,
+          "body": {
+            "actor": "a.rivera",
+            "key": "site",
+            "source": "sites",
+            "value": {
+              "address": "901 Harbor Way, Oakland CA",
+              "id": "DC-WEST-4",
+              "state": "active"
+            },
+            "verified": true,
+            "version": "site:12"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "fb2304d48e9d24666b56aa95698adfac579f4092e987c37ae4983eb5250f2bbd",
+          "kind": "observed",
+          "previous": "24de2bc7b172e514f4747e055b80f64956c2b10e8813d1b99f74c7d94d832dbf",
+          "seq": 3
+        },
+        {
+          "at": 1790239583.7859251,
+          "body": {
+            "actor": "a.rivera",
+            "key": "budget",
+            "source": "finance",
+            "value": {
+              "available": 5000,
+              "currency": "USD",
+              "id": "CC-742"
+            },
+            "verified": true,
+            "version": "budget:8"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "86268141ea52bf06c79c646c9c4a156228db811dd4b445b28d917957fc9072a8",
+          "kind": "observed",
+          "previous": "fb2304d48e9d24666b56aa95698adfac579f4092e987c37ae4983eb5250f2bbd",
+          "seq": 4
+        },
+        {
+          "at": 1790239583.787242,
+          "body": {
+            "actor": "a.rivera",
+            "key": "quote",
+            "source": "supplier",
+            "value": {
+              "currency": "USD",
+              "id": "Q-881",
+              "request_id": "REQ-4812",
+              "total": 2500,
+              "unit_price": 1250,
+              "vendor": "Alder Components"
+            },
+            "verified": true,
+            "version": "quote:3"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "f29d2f9f86b3cedf1426b11b0d83abf87138574c4ba42702392d0d234c7e128f",
+          "kind": "observed",
+          "previous": "86268141ea52bf06c79c646c9c4a156228db811dd4b445b28d917957fc9072a8",
+          "seq": 5
+        },
+        {
+          "at": 1790239583.7877562,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "args": {
+              "request_id": "REQ-4812",
+              "site_id": "DC-WEST-4"
+            },
+            "id": "027956a3-dfdd-44dc-aa62-e9ed2a1e5ce3",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "a12d15983a7d71448d18f8bc8531f9a3fe45eeefe239e24caea4d35fb6654ff2",
+          "kind": "proposed",
+          "previous": "f29d2f9f86b3cedf1426b11b0d83abf87138574c4ba42702392d0d234c7e128f",
+          "seq": 6
+        },
+        {
+          "at": 1790239583.7878594,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "027956a3-dfdd-44dc-aa62-e9ed2a1e5ce3",
+            "reason": "all_checks_passed",
+            "status": "allowed"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "933ace88ac381d6a412e39e2d65f7cbceb26fb852cddd5ba49174b42d108afb5",
+          "kind": "decision",
+          "previous": "a12d15983a7d71448d18f8bc8531f9a3fe45eeefe239e24caea4d35fb6654ff2",
+          "seq": 7
+        },
+        {
+          "at": 1790239583.788168,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "idempotency_key": "027956a3-dfdd-44dc-aa62-e9ed2a1e5ce3",
+            "policy_version": 1,
+            "proposal_id": "027956a3-dfdd-44dc-aa62-e9ed2a1e5ce3"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "98fdb186beb405e0c71759fb55692464548a3cf14ed58f137f24a8666588c0d9",
+          "kind": "effect_started",
+          "previous": "933ace88ac381d6a412e39e2d65f7cbceb26fb852cddd5ba49174b42d108afb5",
+          "seq": 8
+        },
+        {
+          "at": 1790239583.78845,
+          "body": {
+            "action": "record_review",
+            "claim_hash": "98fdb186beb405e0c71759fb55692464548a3cf14ed58f137f24a8666588c0d9",
+            "output": {
+              "args": {
+                "request_id": "REQ-4812",
+                "site_id": "DC-WEST-4"
+              },
+              "recorded": true
+            },
+            "proposal_id": "027956a3-dfdd-44dc-aa62-e9ed2a1e5ce3"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "f13e9c6a2a8f474890c1e3a3d06a563af1aa80e79c528161e11b690d5bb850b8",
+          "kind": "effect_succeeded",
+          "previous": "98fdb186beb405e0c71759fb55692464548a3cf14ed58f137f24a8666588c0d9",
+          "seq": 9
+        },
+        {
+          "at": 1790239583.7889712,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "args": {
+              "amount": 2500,
+              "budget": {
+                "available": 5000,
+                "currency": "USD",
+                "id": "CC-742"
+              },
+              "quote": {
+                "currency": "USD",
+                "id": "Q-881",
+                "request_id": "REQ-4812",
+                "total": 2500,
+                "unit_price": 1250,
+                "vendor": "Alder Components"
+              },
+              "quote_version": "quote:3",
+              "request": {
+                "cost_center": "CC-742",
+                "id": "REQ-4812",
+                "part": "P-104",
+                "quantity": 2,
+                "site_id": "DC-WEST-4",
+                "state": "approved"
+              },
+              "site": {
+                "address": "901 Harbor Way, Oakland CA",
+                "id": "DC-WEST-4",
+                "state": "active"
+              }
+            },
+            "id": "5ac215d1-d2a0-44f1-86c5-18f24e5eef67",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "0067793b8803a458fdccc0d9e5035e762b87f9082bbc63f0995cbb3220acaa49",
+          "kind": "proposed",
+          "previous": "f13e9c6a2a8f474890c1e3a3d06a563af1aa80e79c528161e11b690d5bb850b8",
+          "seq": 10
+        },
+        {
+          "at": 1790239583.7894278,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "5ac215d1-d2a0-44f1-86c5-18f24e5eef67",
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "21ac6eced76e949806871b1e054a4d4fb217b6c48211bc477842e82c93becad4",
+          "kind": "decision",
+          "previous": "0067793b8803a458fdccc0d9e5035e762b87f9082bbc63f0995cbb3220acaa49",
+          "seq": 11
+        },
+        {
+          "at": 1790239583.7898662,
+          "body": {
+            "phase": "commit",
+            "policy_version": 1,
+            "proposal_id": "5ac215d1-d2a0-44f1-86c5-18f24e5eef67",
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "d202726f7a4105723da2aaf0707e177d824e978f417bce599ac76e36e1afcfe5",
+          "kind": "decision",
+          "previous": "21ac6eced76e949806871b1e054a4d4fb217b6c48211bc477842e82c93becad4",
+          "seq": 12
+        },
+        {
+          "at": 1790239583.7902539,
+          "body": {
+            "actor": "d.patel",
+            "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
+            "proposal_id": "5ac215d1-d2a0-44f1-86c5-18f24e5eef67",
+            "role": "manager"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "f275aed3b07ef6934849e08527dc4239e1ae6b4ae53344d88993a9f27381ed79",
+          "kind": "approved",
+          "previous": "d202726f7a4105723da2aaf0707e177d824e978f417bce599ac76e36e1afcfe5",
+          "seq": 13
+        },
+        {
+          "at": 1790239583.790596,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "idempotency_key": "5ac215d1-d2a0-44f1-86c5-18f24e5eef67",
+            "policy_version": 1,
+            "proposal_id": "5ac215d1-d2a0-44f1-86c5-18f24e5eef67"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "a2afcd158e0b28ac2da54d667a1809f46c22d2b804af3a6bb20eef70a2e6213d",
+          "kind": "effect_started",
+          "previous": "f275aed3b07ef6934849e08527dc4239e1ae6b4ae53344d88993a9f27381ed79",
+          "seq": 14
+        },
+        {
+          "at": 1790239583.7921438,
+          "body": {
+            "action": "issue_order",
+            "claim_hash": "a2afcd158e0b28ac2da54d667a1809f46c22d2b804af3a6bb20eef70a2e6213d",
+            "output": {
+              "body": "{\"id\": \"PO-9001\", \"replayed\": false}",
+              "status": 201
+            },
+            "proposal_id": "5ac215d1-d2a0-44f1-86c5-18f24e5eef67"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "42444bc4aab30d5e354cd1174148f4919b843461042ff730d8444c550104abf3",
+          "kind": "effect_succeeded",
+          "previous": "a2afcd158e0b28ac2da54d667a1809f46c22d2b804af3a6bb20eef70a2e6213d",
+          "seq": 15
+        },
+        {
+          "at": 1790239583.7924948,
+          "body": {
+            "actor": "d.patel",
+            "role": "manager"
+          },
+          "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+          "hash": "2ed1ca58e135d729ecf8c9042c2c8876d562939f9c8c2e3aa755cad5a4da5efd",
+          "kind": "signed",
+          "previous": "42444bc4aab30d5e354cd1174148f4919b843461042ff730d8444c550104abf3",
+          "seq": 16
+        }
+      ],
+      "case_id": "a60ef347-f175-4575-8be3-2b1e69c176ea",
+      "chain_head": "2ed1ca58e135d729ecf8c9042c2c8876d562939f9c8c2e3aa755cad5a4da5efd",
+      "chain_valid": true,
+      "event_count": 16,
+      "event_kinds": [
+        "case_created",
+        "observed",
+        "observed",
+        "observed",
+        "observed",
+        "proposed",
+        "decision",
+        "effect_started",
+        "effect_succeeded",
+        "proposed",
+        "decision",
+        "decision",
+        "approved",
+        "effect_started",
+        "effect_succeeded",
+        "signed"
+      ],
+      "external_orders": 1,
+      "external_state": {
+        "budget": {
+          "available": 2500,
+          "currency": "USD",
+          "id": "CC-742",
+          "version": 9
+        },
+        "orders": [
+          {
+            "amount": 2500,
+            "id": "PO-9001",
+            "idempotency_key": "5ac215d1-d2a0-44f1-86c5-18f24e5eef67",
+            "quote_id": "Q-881",
+            "request_id": "REQ-4812",
+            "site_id": "DC-WEST-4"
+          }
+        ]
+      },
+      "id": "complete",
+      "outcome": "complete",
+      "trace": [
+        {
+          "action": "create_case",
+          "requisition": "REQ-4812"
+        },
+        {
+          "action": "read_requisition",
+          "state": "approved",
+          "version": "req:6"
+        },
+        {
+          "action": "read_verified_records",
+          "quote_version": "quote:3",
+          "sources": [
+            "sites",
+            "finance",
+            "supplier"
+          ]
+        },
+        {
+          "action": "record_review",
+          "event": "effect_succeeded"
+        },
+        {
+          "action": "propose_order",
+          "amount": 2500,
+          "decision": {
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          }
+        },
+        {
+          "action": "attempt_without_approval",
+          "decision": {
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          }
+        },
+        {
+          "action": "independent_approval",
+          "role": "manager"
+        },
+        {
+          "action": "submit_order",
+          "result": "succeeded"
+        }
+      ]
+    },
+    {
+      "acceptance": [],
+      "acceptance_complete": false,
+      "case_events": [],
+      "case_id": null,
+      "chain_head": null,
+      "chain_valid": null,
+      "event_count": 0,
+      "event_kinds": [],
+      "external_orders": 0,
+      "external_state": {
+        "budget": {
+          "available": 5000,
+          "currency": "USD",
+          "id": "CC-742",
+          "version": 8
+        },
+        "orders": []
+      },
+      "id": "missing_input",
+      "outcome": "input_rejected",
+      "trace": [
+        {
+          "action": "submit_incomplete_requisition",
+          "result": "input_schema"
+        }
+      ]
+    },
+    {
+      "acceptance": [
+        {
+          "id": "order_recorded",
+          "passed": false
+        },
+        {
+          "id": "manager_signed_after_order",
+          "passed": false
+        }
+      ],
+      "acceptance_complete": false,
+      "case_events": [
+        {
+          "at": 1790239584.7985358,
+          "body": {
+            "actor": "a.rivera",
+            "contract": [
+              "northstar-spare-procurement",
+              1
+            ],
+            "inputs": {
+              "request_id": "REQ-4813"
+            }
+          },
+          "case_id": "2b529568-f88b-44f6-a62a-c59457da582b",
+          "hash": "ec0c349e98b6e02e265273ad33d8c081c37b58b9107368517e94d71e31582335",
+          "kind": "case_created",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 1
+        },
+        {
+          "at": 1790239584.8002737,
+          "body": {
+            "actor": "a.rivera",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4813",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": null,
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:3"
+          },
+          "case_id": "2b529568-f88b-44f6-a62a-c59457da582b",
+          "hash": "3e7803ca6098dd65814671c3e4a363dabec716f95095dadf8af3ef4d4063cbb0",
+          "kind": "observed",
+          "previous": "ec0c349e98b6e02e265273ad33d8c081c37b58b9107368517e94d71e31582335",
+          "seq": 2
+        },
+        {
+          "at": 1790239584.8005865,
+          "body": {
+            "action": "record_review",
+            "actor": "a.rivera",
+            "args": {
+              "request_id": "REQ-4813",
+              "site_id": "DC-WEST-4"
+            },
+            "id": "806aac76-f2e4-4441-9633-9aba524b578f",
+            "origin": "human",
+            "roles": [
+              "operator"
+            ]
+          },
+          "case_id": "2b529568-f88b-44f6-a62a-c59457da582b",
+          "hash": "605d8d2e8eb4124671508b8ecbd36495e678597fbf17643b67d042408121d3f8",
+          "kind": "proposed",
+          "previous": "3e7803ca6098dd65814671c3e4a363dabec716f95095dadf8af3ef4d4063cbb0",
+          "seq": 3
+        },
+        {
+          "at": 1790239584.8006604,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "806aac76-f2e4-4441-9633-9aba524b578f",
+            "reason": "missing_fact:site",
+            "status": "denied"
+          },
+          "case_id": "2b529568-f88b-44f6-a62a-c59457da582b",
+          "hash": "920455442df9cd5a7659654b5faaa0792dd7891acac6abd0e76c29743e7a96a5",
+          "kind": "decision",
+          "previous": "605d8d2e8eb4124671508b8ecbd36495e678597fbf17643b67d042408121d3f8",
+          "seq": 4
+        }
+      ],
+      "case_id": "2b529568-f88b-44f6-a62a-c59457da582b",
+      "chain_head": "920455442df9cd5a7659654b5faaa0792dd7891acac6abd0e76c29743e7a96a5",
+      "chain_valid": true,
+      "event_count": 4,
+      "event_kinds": [
+        "case_created",
+        "observed",
+        "proposed",
+        "decision"
+      ],
+      "external_orders": 0,
+      "external_state": {
+        "budget": {
+          "available": 5000,
+          "currency": "USD",
+          "id": "CC-742",
+          "version": 8
+        },
+        "orders": []
+      },
+      "id": "missing_site",
+      "outcome": "blocked_missing_site",
+      "trace": [
+        {
+          "action": "create_case",
+          "requisition": "REQ-4813"
+        },
+        {
+          "action": "read_requisition",
+          "state": "approved",
+          "version": "req:3"
+        },
+        {
+          "action": "resolve_destination",
+          "candidates": [
+            "DC-WEST-4",
+            "DC-EAST-2"
+          ],
+          "selected": null
+        },
+        {
+          "action": "propose_review_with_guessed_site",
+          "decision": {
+            "reason": "missing_fact:site",
+            "status": "denied"
+          }
+        }
+      ]
+    },
+    {
+      "acceptance": [
+        {
+          "id": "order_recorded",
+          "passed": false
+        },
+        {
+          "id": "manager_signed_after_order",
+          "passed": false
+        }
+      ],
+      "acceptance_complete": false,
+      "case_events": [
+        {
+          "at": 1790239585.3039668,
+          "body": {
+            "actor": "a.rivera",
+            "contract": [
+              "northstar-spare-procurement",
+              1
+            ],
+            "inputs": {
+              "request_id": "REQ-4814"
+            }
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "98a8dd7b963787a0dd9df5a36979371d58a0fea51d1c9f21e76b4bd7bb7d9823",
+          "kind": "case_created",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 1
+        },
+        {
+          "at": 1790239585.3057082,
+          "body": {
+            "actor": "a.rivera",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4814",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": "DC-WEST-4",
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:4"
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "b3ddc9dc72dbaccb389ef2707393771d9232acad99d227e403e329e5fcc998d9",
+          "kind": "observed",
+          "previous": "98a8dd7b963787a0dd9df5a36979371d58a0fea51d1c9f21e76b4bd7bb7d9823",
+          "seq": 2
+        },
+        {
+          "at": 1790239585.3070672,
+          "body": {
+            "actor": "a.rivera",
+            "key": "site",
+            "source": "sites",
+            "value": {
+              "address": "901 Harbor Way, Oakland CA",
+              "id": "DC-WEST-4",
+              "state": "active"
+            },
+            "verified": true,
+            "version": "site:12"
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "47d4ac46bf9362f2218f84bbd683e6cb8bb485805ac64403686fc039e8497e6d",
+          "kind": "observed",
+          "previous": "b3ddc9dc72dbaccb389ef2707393771d9232acad99d227e403e329e5fcc998d9",
+          "seq": 3
+        },
+        {
+          "at": 1790239585.3084228,
+          "body": {
+            "actor": "a.rivera",
+            "key": "budget",
+            "source": "finance",
+            "value": {
+              "available": 5000,
+              "currency": "USD",
+              "id": "CC-742"
+            },
+            "verified": true,
+            "version": "budget:8"
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "71ae16f4e0f6cf6ba335ab4e692d6531465f6f8d5c446dadad984585fa5b195b",
+          "kind": "observed",
+          "previous": "47d4ac46bf9362f2218f84bbd683e6cb8bb485805ac64403686fc039e8497e6d",
+          "seq": 4
+        },
+        {
+          "at": 1790239585.31013,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "args": {
+              "request_id": "REQ-4814",
+              "site_id": "DC-WEST-4"
+            },
+            "id": "50222ce9-581c-4c5e-81cc-3c99124e3183",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "7a3eab7a2747100a2dff167192ced844c312902950981efd1b511131b31aa373",
+          "kind": "proposed",
+          "previous": "71ae16f4e0f6cf6ba335ab4e692d6531465f6f8d5c446dadad984585fa5b195b",
+          "seq": 5
+        },
+        {
+          "at": 1790239585.3102546,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "50222ce9-581c-4c5e-81cc-3c99124e3183",
+            "reason": "all_checks_passed",
+            "status": "allowed"
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "5e14d807ff9e16bb7c9f1e39ec091ea52cddafc11a6fa43b3f4f9c1847d200fc",
+          "kind": "decision",
+          "previous": "7a3eab7a2747100a2dff167192ced844c312902950981efd1b511131b31aa373",
+          "seq": 6
+        },
+        {
+          "at": 1790239585.310541,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "idempotency_key": "50222ce9-581c-4c5e-81cc-3c99124e3183",
+            "policy_version": 1,
+            "proposal_id": "50222ce9-581c-4c5e-81cc-3c99124e3183"
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "ac82fd1b7ac1b9fe83fdc05dfb207c8d0d70db715adc9ff65f3cf3e6e467ef05",
+          "kind": "effect_started",
+          "previous": "5e14d807ff9e16bb7c9f1e39ec091ea52cddafc11a6fa43b3f4f9c1847d200fc",
+          "seq": 7
+        },
+        {
+          "at": 1790239585.3107176,
+          "body": {
+            "action": "record_review",
+            "claim_hash": "ac82fd1b7ac1b9fe83fdc05dfb207c8d0d70db715adc9ff65f3cf3e6e467ef05",
+            "output": {
+              "args": {
+                "request_id": "REQ-4814",
+                "site_id": "DC-WEST-4"
+              },
+              "recorded": true
+            },
+            "proposal_id": "50222ce9-581c-4c5e-81cc-3c99124e3183"
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "d897c0b94c964af35867c43a1e745ac2cc973b3ff0590827c2ab61f47b75c139",
+          "kind": "effect_succeeded",
+          "previous": "ac82fd1b7ac1b9fe83fdc05dfb207c8d0d70db715adc9ff65f3cf3e6e467ef05",
+          "seq": 8
+        },
+        {
+          "at": 1790239585.310973,
+          "body": {
+            "action": "issue_order",
+            "actor": "a.rivera",
+            "args": {
+              "amount": 2500
+            },
+            "id": "191e009e-124b-47ea-a71b-8d90248a1ec1",
+            "origin": "human",
+            "roles": [
+              "operator"
+            ]
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "f941ef0411dd8f63c3a0925a7892a0c8e0acc0a623bb68c8260f006b03647fb1",
+          "kind": "proposed",
+          "previous": "d897c0b94c964af35867c43a1e745ac2cc973b3ff0590827c2ab61f47b75c139",
+          "seq": 9
+        },
+        {
+          "at": 1790239585.3110871,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "191e009e-124b-47ea-a71b-8d90248a1ec1",
+            "reason": "missing_fact:quote",
+            "status": "denied"
+          },
+          "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+          "hash": "128b4ee8c119415590a94746ced8eaecd11a0491badb126493890ec28206131c",
+          "kind": "decision",
+          "previous": "f941ef0411dd8f63c3a0925a7892a0c8e0acc0a623bb68c8260f006b03647fb1",
+          "seq": 10
+        }
+      ],
+      "case_id": "b5ac02a7-8b9c-4ff5-8cd5-156272e9e99d",
+      "chain_head": "128b4ee8c119415590a94746ced8eaecd11a0491badb126493890ec28206131c",
+      "chain_valid": true,
+      "event_count": 10,
+      "event_kinds": [
+        "case_created",
+        "observed",
+        "observed",
+        "observed",
+        "proposed",
+        "decision",
+        "effect_started",
+        "effect_succeeded",
+        "proposed",
+        "decision"
+      ],
+      "external_orders": 0,
+      "external_state": {
+        "budget": {
+          "available": 5000,
+          "currency": "USD",
+          "id": "CC-742",
+          "version": 8
+        },
+        "orders": []
+      },
+      "id": "ambiguous_quote",
+      "outcome": "blocked_ambiguous_quote",
+      "trace": [
+        {
+          "action": "create_case",
+          "requisition": "REQ-4814"
+        },
+        {
+          "action": "read_requisition",
+          "state": "approved",
+          "version": "req:4"
+        },
+        {
+          "action": "read_competing_quotes",
+          "candidate_ids": [
+            "Q-882A",
+            "Q-882B"
+          ],
+          "result": "source_shape"
+        },
+        {
+          "action": "record_review",
+          "event": "effect_succeeded"
+        },
+        {
+          "action": "propose_without_selected_quote",
+          "decision": {
+            "reason": "missing_fact:quote",
+            "status": "denied"
+          }
+        }
+      ]
+    },
+    {
+      "acceptance": [
+        {
+          "id": "order_recorded",
+          "passed": false
+        },
+        {
+          "id": "manager_signed_after_order",
+          "passed": false
+        }
+      ],
+      "acceptance_complete": false,
+      "case_events": [
+        {
+          "at": 1790239585.8143156,
+          "body": {
+            "actor": "a.rivera",
+            "contract": [
+              "northstar-spare-procurement",
+              1
+            ],
+            "inputs": {
+              "request_id": "REQ-4812"
+            }
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "3f62c0407050284b3a28621a2c9099d7a5d5c5bc22272c922405161b91f19f0e",
+          "kind": "case_created",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 1
+        },
+        {
+          "at": 1790239585.816806,
+          "body": {
+            "actor": "a.rivera",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4812",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": "DC-WEST-4",
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:6"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "12abc8bc18aac3f41b31151366d26a64a3fff244fe772f2a4ba010dd9b350c57",
+          "kind": "observed",
+          "previous": "3f62c0407050284b3a28621a2c9099d7a5d5c5bc22272c922405161b91f19f0e",
+          "seq": 2
+        },
+        {
+          "at": 1790239585.8184662,
+          "body": {
+            "actor": "a.rivera",
+            "key": "site",
+            "source": "sites",
+            "value": {
+              "address": "901 Harbor Way, Oakland CA",
+              "id": "DC-WEST-4",
+              "state": "active"
+            },
+            "verified": true,
+            "version": "site:12"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "414226fba0638b1e39f8933ea2981e8e9b44f334648522aa168308b3ae33759f",
+          "kind": "observed",
+          "previous": "12abc8bc18aac3f41b31151366d26a64a3fff244fe772f2a4ba010dd9b350c57",
+          "seq": 3
+        },
+        {
+          "at": 1790239585.819819,
+          "body": {
+            "actor": "a.rivera",
+            "key": "budget",
+            "source": "finance",
+            "value": {
+              "available": 5000,
+              "currency": "USD",
+              "id": "CC-742"
+            },
+            "verified": true,
+            "version": "budget:8"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "76b131af9818312d05c5e00dfa069c2e49ada99aad3ae6ddbd18b0090aaea3b6",
+          "kind": "observed",
+          "previous": "414226fba0638b1e39f8933ea2981e8e9b44f334648522aa168308b3ae33759f",
+          "seq": 4
+        },
+        {
+          "at": 1790239585.821349,
+          "body": {
+            "actor": "a.rivera",
+            "key": "quote",
+            "source": "supplier",
+            "value": {
+              "currency": "USD",
+              "id": "Q-881",
+              "request_id": "REQ-4812",
+              "total": 2500,
+              "unit_price": 1250,
+              "vendor": "Alder Components"
+            },
+            "verified": true,
+            "version": "quote:3"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "75101aa021f323ec41aa3a56cdda66d3bf059ea41daa7f115d7c3e0463698271",
+          "kind": "observed",
+          "previous": "76b131af9818312d05c5e00dfa069c2e49ada99aad3ae6ddbd18b0090aaea3b6",
+          "seq": 5
+        },
+        {
+          "at": 1790239585.8218758,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "args": {
+              "request_id": "REQ-4812",
+              "site_id": "DC-WEST-4"
+            },
+            "id": "27464ea9-18cf-4931-bc6b-51b8fdac09fd",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "04b12a30c54ab312941ab0a05e512d7eb18fe51199d3b43e46f1ba9dd2892b80",
+          "kind": "proposed",
+          "previous": "75101aa021f323ec41aa3a56cdda66d3bf059ea41daa7f115d7c3e0463698271",
+          "seq": 6
+        },
+        {
+          "at": 1790239585.8219743,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "27464ea9-18cf-4931-bc6b-51b8fdac09fd",
+            "reason": "all_checks_passed",
+            "status": "allowed"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "85eef1f98224e6fe56d3823a6aab51a46ee40e4f97ff5a01a0d01433fa63e4fc",
+          "kind": "decision",
+          "previous": "04b12a30c54ab312941ab0a05e512d7eb18fe51199d3b43e46f1ba9dd2892b80",
+          "seq": 7
+        },
+        {
+          "at": 1790239585.8223155,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "idempotency_key": "27464ea9-18cf-4931-bc6b-51b8fdac09fd",
+            "policy_version": 1,
+            "proposal_id": "27464ea9-18cf-4931-bc6b-51b8fdac09fd"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "ba1ac59adbc98e85f52eb26743c9f03f0692e17c4be57b2e1327e6396bc7bf19",
+          "kind": "effect_started",
+          "previous": "85eef1f98224e6fe56d3823a6aab51a46ee40e4f97ff5a01a0d01433fa63e4fc",
+          "seq": 8
+        },
+        {
+          "at": 1790239585.8225026,
+          "body": {
+            "action": "record_review",
+            "claim_hash": "ba1ac59adbc98e85f52eb26743c9f03f0692e17c4be57b2e1327e6396bc7bf19",
+            "output": {
+              "args": {
+                "request_id": "REQ-4812",
+                "site_id": "DC-WEST-4"
+              },
+              "recorded": true
+            },
+            "proposal_id": "27464ea9-18cf-4931-bc6b-51b8fdac09fd"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "f854cd61f577168805fa8ab6ee905698f0c8f243848bc8c8a4ca092ee0dee9c8",
+          "kind": "effect_succeeded",
+          "previous": "ba1ac59adbc98e85f52eb26743c9f03f0692e17c4be57b2e1327e6396bc7bf19",
+          "seq": 9
+        },
+        {
+          "at": 1790239585.822983,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "args": {
+              "amount": 2500,
+              "budget": {
+                "available": 5000,
+                "currency": "USD",
+                "id": "CC-742"
+              },
+              "quote": {
+                "currency": "USD",
+                "id": "Q-881",
+                "request_id": "REQ-4812",
+                "total": 2500,
+                "unit_price": 1250,
+                "vendor": "Alder Components"
+              },
+              "quote_version": "quote:3",
+              "request": {
+                "cost_center": "CC-742",
+                "id": "REQ-4812",
+                "part": "P-104",
+                "quantity": 2,
+                "site_id": "DC-WEST-4",
+                "state": "approved"
+              },
+              "site": {
+                "address": "901 Harbor Way, Oakland CA",
+                "id": "DC-WEST-4",
+                "state": "active"
+              }
+            },
+            "id": "a72f7850-4bdc-46a9-95cc-b60737c83ed0",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "21f4c41bfa65e95c4b530fd54c15e74d70aff4ecb0a88a9b6ba4815c82c01289",
+          "kind": "proposed",
+          "previous": "f854cd61f577168805fa8ab6ee905698f0c8f243848bc8c8a4ca092ee0dee9c8",
+          "seq": 10
+        },
+        {
+          "at": 1790239585.8231478,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "a72f7850-4bdc-46a9-95cc-b60737c83ed0",
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "b2038fc4db478afbdade3abfdd01be0e22095dbca379d816b5ceb5add765cbac",
+          "kind": "decision",
+          "previous": "21f4c41bfa65e95c4b530fd54c15e74d70aff4ecb0a88a9b6ba4815c82c01289",
+          "seq": 11
+        },
+        {
+          "at": 1790239585.82344,
+          "body": {
+            "actor": "d.patel",
+            "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
+            "proposal_id": "a72f7850-4bdc-46a9-95cc-b60737c83ed0",
+            "role": "manager"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "a32e21d8caf5387f7a0a38e074b2a1381967f0f5a2da61bfaa2d7fc86644e3f6",
+          "kind": "approved",
+          "previous": "b2038fc4db478afbdade3abfdd01be0e22095dbca379d816b5ceb5add765cbac",
+          "seq": 12
+        },
+        {
+          "at": 1790239585.8243968,
+          "body": {
+            "phase": "commit",
+            "policy_version": 2,
+            "proposal_id": "a72f7850-4bdc-46a9-95cc-b60737c83ed0",
+            "reason": "action_not_in_global_policy",
+            "status": "denied"
+          },
+          "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+          "hash": "c3942d9d5fa3191dba28c65610a771a6391d36f269430c81787cece5f01b688b",
+          "kind": "decision",
+          "previous": "a32e21d8caf5387f7a0a38e074b2a1381967f0f5a2da61bfaa2d7fc86644e3f6",
+          "seq": 13
+        }
+      ],
+      "case_id": "84f93fa5-fa05-47fe-b6cc-65172168c851",
+      "chain_head": "c3942d9d5fa3191dba28c65610a771a6391d36f269430c81787cece5f01b688b",
+      "chain_valid": true,
+      "event_count": 13,
+      "event_kinds": [
+        "case_created",
+        "observed",
+        "observed",
+        "observed",
+        "observed",
+        "proposed",
+        "decision",
+        "effect_started",
+        "effect_succeeded",
+        "proposed",
+        "decision",
+        "approved",
+        "decision"
+      ],
+      "external_orders": 0,
+      "external_state": {
+        "budget": {
+          "available": 5000,
+          "currency": "USD",
+          "id": "CC-742",
+          "version": 8
+        },
+        "orders": []
+      },
+      "id": "policy_tightened",
+      "outcome": "blocked_at_commit",
+      "trace": [
+        {
+          "action": "create_case",
+          "requisition": "REQ-4812"
+        },
+        {
+          "action": "read_requisition",
+          "state": "approved",
+          "version": "req:6"
+        },
+        {
+          "action": "read_verified_records",
+          "quote_version": "quote:3",
+          "sources": [
+            "sites",
+            "finance",
+            "supplier"
+          ]
+        },
+        {
+          "action": "record_review",
+          "event": "effect_succeeded"
+        },
+        {
+          "action": "propose_order",
+          "amount": 2500,
+          "decision": {
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          }
+        },
+        {
+          "action": "independent_approval",
+          "role": "manager"
+        },
+        {
+          "action": "commit_after_policy_change",
+          "decision": {
+            "reason": "action_not_in_global_policy",
+            "status": "denied"
+          }
+        },
+        {
+          "action": "amendment_replay",
+          "changed_decisions": 1
+        }
+      ]
+    },
+    {
+      "acceptance": [
+        {
+          "id": "order_recorded",
+          "passed": true
+        },
+        {
+          "id": "manager_signed_after_order",
+          "passed": true
+        }
+      ],
+      "acceptance_complete": true,
+      "case_events": [
+        {
+          "at": 1790239586.3261104,
+          "body": {
+            "actor": "a.rivera",
+            "contract": [
+              "northstar-spare-procurement",
+              1
+            ],
+            "inputs": {
+              "request_id": "REQ-4812"
+            }
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "bdf91127bb738312ea9329b3194c3097b38325b56a1fb4d0bff5946b2946d50d",
+          "kind": "case_created",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 1
+        },
+        {
+          "at": 1790239586.3276412,
+          "body": {
+            "actor": "a.rivera",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4812",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": "DC-WEST-4",
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:6"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "d801da1e1d14aec112ba696299620747513f9433d1d4e59368b25a884c3762c4",
+          "kind": "observed",
+          "previous": "bdf91127bb738312ea9329b3194c3097b38325b56a1fb4d0bff5946b2946d50d",
+          "seq": 2
+        },
+        {
+          "at": 1790239586.3290682,
+          "body": {
+            "actor": "a.rivera",
+            "key": "site",
+            "source": "sites",
+            "value": {
+              "address": "901 Harbor Way, Oakland CA",
+              "id": "DC-WEST-4",
+              "state": "active"
+            },
+            "verified": true,
+            "version": "site:12"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "332d71b84131933e1c91b2b7a357b00eb8c7ed90feab553721b8950d09e5f920",
+          "kind": "observed",
+          "previous": "d801da1e1d14aec112ba696299620747513f9433d1d4e59368b25a884c3762c4",
+          "seq": 3
+        },
+        {
+          "at": 1790239586.3305345,
+          "body": {
+            "actor": "a.rivera",
+            "key": "budget",
+            "source": "finance",
+            "value": {
+              "available": 5000,
+              "currency": "USD",
+              "id": "CC-742"
+            },
+            "verified": true,
+            "version": "budget:8"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "d25b1514c564c0f0cef8639aec0c138029d21c66c81affb815f3789c86c7df78",
+          "kind": "observed",
+          "previous": "332d71b84131933e1c91b2b7a357b00eb8c7ed90feab553721b8950d09e5f920",
+          "seq": 4
+        },
+        {
+          "at": 1790239586.3317773,
+          "body": {
+            "actor": "a.rivera",
+            "key": "quote",
+            "source": "supplier",
+            "value": {
+              "currency": "USD",
+              "id": "Q-881",
+              "request_id": "REQ-4812",
+              "total": 2500,
+              "unit_price": 1250,
+              "vendor": "Alder Components"
+            },
+            "verified": true,
+            "version": "quote:3"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "6ac1696879c43478f900bd8d66b01f8e650e114eb772568518a6aaf9191431c7",
+          "kind": "observed",
+          "previous": "d25b1514c564c0f0cef8639aec0c138029d21c66c81affb815f3789c86c7df78",
+          "seq": 5
+        },
+        {
+          "at": 1790239586.3323207,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "args": {
+              "request_id": "REQ-4812",
+              "site_id": "DC-WEST-4"
+            },
+            "id": "c7b68b0d-2f41-41fd-b0cf-c71d764bb355",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "4bdcbff54138fac79dda2ee60243346380e912e7926dde490221c432e7643c80",
+          "kind": "proposed",
+          "previous": "6ac1696879c43478f900bd8d66b01f8e650e114eb772568518a6aaf9191431c7",
+          "seq": 6
+        },
+        {
+          "at": 1790239586.3324232,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "c7b68b0d-2f41-41fd-b0cf-c71d764bb355",
+            "reason": "all_checks_passed",
+            "status": "allowed"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "81adf82a834a4a44bb3b1521753a8e4580d7b82a99bb3e3776599cb7740544fe",
+          "kind": "decision",
+          "previous": "4bdcbff54138fac79dda2ee60243346380e912e7926dde490221c432e7643c80",
+          "seq": 7
+        },
+        {
+          "at": 1790239586.3326874,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "idempotency_key": "c7b68b0d-2f41-41fd-b0cf-c71d764bb355",
+            "policy_version": 1,
+            "proposal_id": "c7b68b0d-2f41-41fd-b0cf-c71d764bb355"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "78cc41ae113b1108dc2dda6368188da2dc64b45635cdb1d1790a5202e6368144",
+          "kind": "effect_started",
+          "previous": "81adf82a834a4a44bb3b1521753a8e4580d7b82a99bb3e3776599cb7740544fe",
+          "seq": 8
+        },
+        {
+          "at": 1790239586.332865,
+          "body": {
+            "action": "record_review",
+            "claim_hash": "78cc41ae113b1108dc2dda6368188da2dc64b45635cdb1d1790a5202e6368144",
+            "output": {
+              "args": {
+                "request_id": "REQ-4812",
+                "site_id": "DC-WEST-4"
+              },
+              "recorded": true
+            },
+            "proposal_id": "c7b68b0d-2f41-41fd-b0cf-c71d764bb355"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "7ab59b9b35438600a4fdc213d8c66a034f03ddd5e7c04b3726c47ea86eadeabd",
+          "kind": "effect_succeeded",
+          "previous": "78cc41ae113b1108dc2dda6368188da2dc64b45635cdb1d1790a5202e6368144",
+          "seq": 9
+        },
+        {
+          "at": 1790239586.3333983,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "args": {
+              "amount": 2500,
+              "budget": {
+                "available": 5000,
+                "currency": "USD",
+                "id": "CC-742"
+              },
+              "quote": {
+                "currency": "USD",
+                "id": "Q-881",
+                "request_id": "REQ-4812",
+                "total": 2500,
+                "unit_price": 1250,
+                "vendor": "Alder Components"
+              },
+              "quote_version": "quote:3",
+              "request": {
+                "cost_center": "CC-742",
+                "id": "REQ-4812",
+                "part": "P-104",
+                "quantity": 2,
+                "site_id": "DC-WEST-4",
+                "state": "approved"
+              },
+              "site": {
+                "address": "901 Harbor Way, Oakland CA",
+                "id": "DC-WEST-4",
+                "state": "active"
+              }
+            },
+            "id": "9155ac6d-872b-4f12-a6e1-919443c50eb1",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "19bed5d7cd95ca7527c219352894ea08e5867deef85bb525d4c319cedbc331b6",
+          "kind": "proposed",
+          "previous": "7ab59b9b35438600a4fdc213d8c66a034f03ddd5e7c04b3726c47ea86eadeabd",
+          "seq": 10
+        },
+        {
+          "at": 1790239586.3335216,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "9155ac6d-872b-4f12-a6e1-919443c50eb1",
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "173554476afdf06ca85d962907369b27a5c77575fb2684a23aa29df68d7cf802",
+          "kind": "decision",
+          "previous": "19bed5d7cd95ca7527c219352894ea08e5867deef85bb525d4c319cedbc331b6",
+          "seq": 11
+        },
+        {
+          "at": 1790239586.3337874,
+          "body": {
+            "actor": "d.patel",
+            "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
+            "proposal_id": "9155ac6d-872b-4f12-a6e1-919443c50eb1",
+            "role": "manager"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "3b4933c6f9337273fceab7228853bd48bfbadc33998856e371d55ce94b2fc094",
+          "kind": "approved",
+          "previous": "173554476afdf06ca85d962907369b27a5c77575fb2684a23aa29df68d7cf802",
+          "seq": 12
+        },
+        {
+          "at": 1790239586.33431,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "idempotency_key": "9155ac6d-872b-4f12-a6e1-919443c50eb1",
+            "policy_version": 1,
+            "proposal_id": "9155ac6d-872b-4f12-a6e1-919443c50eb1"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "030a52d544e4e137a97bec72002625647693b7fa114980e38697e6f38600dd9b",
+          "kind": "effect_started",
+          "previous": "3b4933c6f9337273fceab7228853bd48bfbadc33998856e371d55ce94b2fc094",
+          "seq": 13
+        },
+        {
+          "at": 1790239586.335542,
+          "body": {
+            "error": "HTTP Error 412: Precondition Failed",
+            "proposal_id": "9155ac6d-872b-4f12-a6e1-919443c50eb1"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "2c407a7c136e01333e95e7d27e8bcf8d87da1d1dc6f6d338a51cd9c68950fe5d",
+          "kind": "effect_unknown",
+          "previous": "030a52d544e4e137a97bec72002625647693b7fa114980e38697e6f38600dd9b",
+          "seq": 14
+        },
+        {
+          "at": 1790239586.3378327,
+          "body": {
+            "action": "issue_order",
+            "actor": "d.patel",
+            "evidence": "ERP idempotency lookup for 9155ac6d-872b-4f12-a6e1-919443c50eb1: 404",
+            "proposal_id": "9155ac6d-872b-4f12-a6e1-919443c50eb1",
+            "success": false
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "2a13d765913a3a38f95d1672acb41ef56d833c50c2a0b6c4f168027a7c8769e0",
+          "kind": "reconciled",
+          "previous": "2c407a7c136e01333e95e7d27e8bcf8d87da1d1dc6f6d338a51cd9c68950fe5d",
+          "seq": 15
+        },
+        {
+          "at": 1790239586.3390965,
+          "body": {
+            "actor": "a.rivera",
+            "key": "quote",
+            "source": "supplier",
+            "value": {
+              "currency": "USD",
+              "id": "Q-881",
+              "request_id": "REQ-4812",
+              "total": 2500,
+              "unit_price": 1250,
+              "vendor": "Alder Components"
+            },
+            "verified": true,
+            "version": "quote:4"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "288891d3a30179ea6abbbed66740d76d46e2d5b9b55a822a7a18537a51f300ec",
+          "kind": "observed",
+          "previous": "2a13d765913a3a38f95d1672acb41ef56d833c50c2a0b6c4f168027a7c8769e0",
+          "seq": 16
+        },
+        {
+          "at": 1790239586.3398275,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "args": {
+              "amount": 2500,
+              "budget": {
+                "available": 5000,
+                "currency": "USD",
+                "id": "CC-742"
+              },
+              "quote": {
+                "currency": "USD",
+                "id": "Q-881",
+                "request_id": "REQ-4812",
+                "total": 2500,
+                "unit_price": 1250,
+                "vendor": "Alder Components"
+              },
+              "quote_version": "quote:4",
+              "request": {
+                "cost_center": "CC-742",
+                "id": "REQ-4812",
+                "part": "P-104",
+                "quantity": 2,
+                "site_id": "DC-WEST-4",
+                "state": "approved"
+              },
+              "site": {
+                "address": "901 Harbor Way, Oakland CA",
+                "id": "DC-WEST-4",
+                "state": "active"
+              }
+            },
+            "id": "dc3b6584-9c97-4194-a1ba-af220d6e693f",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "4cb9882669d6e229bb4092526036a87359130fa40459727e8efa334577d1030f",
+          "kind": "proposed",
+          "previous": "288891d3a30179ea6abbbed66740d76d46e2d5b9b55a822a7a18537a51f300ec",
+          "seq": 17
+        },
+        {
+          "at": 1790239586.3400424,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "dc3b6584-9c97-4194-a1ba-af220d6e693f",
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "e48c52c4364b7b2e3be2c1f12516b5f3c021938e7172832ca3e0b0b7353d3748",
+          "kind": "decision",
+          "previous": "4cb9882669d6e229bb4092526036a87359130fa40459727e8efa334577d1030f",
+          "seq": 18
+        },
+        {
+          "at": 1790239586.340411,
+          "body": {
+            "actor": "d.patel",
+            "args_hash": "d390da3adbdcc265b6b38b59fb1d1881d148870374ee83f5bbc784b784e270b7",
+            "proposal_id": "dc3b6584-9c97-4194-a1ba-af220d6e693f",
+            "role": "manager"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "2887937e636c98dacfded9404b7e6891274b2694fb9e0f4d9849131826134de8",
+          "kind": "approved",
+          "previous": "e48c52c4364b7b2e3be2c1f12516b5f3c021938e7172832ca3e0b0b7353d3748",
+          "seq": 19
+        },
+        {
+          "at": 1790239586.340898,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "idempotency_key": "dc3b6584-9c97-4194-a1ba-af220d6e693f",
+            "policy_version": 1,
+            "proposal_id": "dc3b6584-9c97-4194-a1ba-af220d6e693f"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "e71eb1f12954e3daa8aa4937e643cffeba8131f06d4d4def1b8a73ea12dcdce9",
+          "kind": "effect_started",
+          "previous": "2887937e636c98dacfded9404b7e6891274b2694fb9e0f4d9849131826134de8",
+          "seq": 20
+        },
+        {
+          "at": 1790239586.3427975,
+          "body": {
+            "action": "issue_order",
+            "claim_hash": "e71eb1f12954e3daa8aa4937e643cffeba8131f06d4d4def1b8a73ea12dcdce9",
+            "output": {
+              "body": "{\"id\": \"PO-9001\", \"replayed\": false}",
+              "status": 201
+            },
+            "proposal_id": "dc3b6584-9c97-4194-a1ba-af220d6e693f"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "758a66c8e916ba5ef68a2842a112c88a7408e94c2b2623e93d05418da9b529bc",
+          "kind": "effect_succeeded",
+          "previous": "e71eb1f12954e3daa8aa4937e643cffeba8131f06d4d4def1b8a73ea12dcdce9",
+          "seq": 21
+        },
+        {
+          "at": 1790239586.343094,
+          "body": {
+            "actor": "d.patel",
+            "role": "manager"
+          },
+          "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+          "hash": "841946770bb1559ba624e9736f4c823638d2619277152b6854b20d91140a9ca3",
+          "kind": "signed",
+          "previous": "758a66c8e916ba5ef68a2842a112c88a7408e94c2b2623e93d05418da9b529bc",
+          "seq": 22
+        }
+      ],
+      "case_id": "b94b5d8c-4424-4686-975f-cc4d877c9ea8",
+      "chain_head": "841946770bb1559ba624e9736f4c823638d2619277152b6854b20d91140a9ca3",
+      "chain_valid": true,
+      "event_count": 22,
+      "event_kinds": [
+        "case_created",
+        "observed",
+        "observed",
+        "observed",
+        "observed",
+        "proposed",
+        "decision",
+        "effect_started",
+        "effect_succeeded",
+        "proposed",
+        "decision",
+        "approved",
+        "effect_started",
+        "effect_unknown",
+        "reconciled",
+        "observed",
+        "proposed",
+        "decision",
+        "approved",
+        "effect_started",
+        "effect_succeeded",
+        "signed"
+      ],
+      "external_orders": 1,
+      "external_state": {
+        "budget": {
+          "available": 2500,
+          "currency": "USD",
+          "id": "CC-742",
+          "version": 9
+        },
+        "orders": [
+          {
+            "amount": 2500,
+            "id": "PO-9001",
+            "idempotency_key": "dc3b6584-9c97-4194-a1ba-af220d6e693f",
+            "quote_id": "Q-881",
+            "request_id": "REQ-4812",
+            "site_id": "DC-WEST-4"
+          }
+        ]
+      },
+      "id": "stale_quote",
+      "outcome": "recovered_after_refresh",
+      "trace": [
+        {
+          "action": "create_case",
+          "requisition": "REQ-4812"
+        },
+        {
+          "action": "read_requisition",
+          "state": "approved",
+          "version": "req:6"
+        },
+        {
+          "action": "read_verified_records",
+          "quote_version": "quote:3",
+          "sources": [
+            "sites",
+            "finance",
+            "supplier"
+          ]
+        },
+        {
+          "action": "record_review",
+          "event": "effect_succeeded"
+        },
+        {
+          "action": "propose_order",
+          "amount": 2500,
+          "decision": {
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          }
+        },
+        {
+          "action": "independent_approval",
+          "role": "manager"
+        },
+        {
+          "action": "submit_with_stale_quote",
+          "result": "unknown"
+        },
+        {
+          "action": "reconcile_no_write",
+          "external_order": null
+        },
+        {
+          "action": "submit_after_refresh",
+          "quote_version": "quote:4",
+          "result": "succeeded"
+        }
+      ]
+    },
+    {
+      "acceptance": [
+        {
+          "id": "order_recorded",
+          "passed": true
+        },
+        {
+          "id": "manager_signed_after_order",
+          "passed": true
+        }
+      ],
+      "acceptance_complete": true,
+      "case_events": [
+        {
+          "at": 1790239586.846883,
+          "body": {
+            "actor": "a.rivera",
+            "contract": [
+              "northstar-spare-procurement",
+              1
+            ],
+            "inputs": {
+              "request_id": "REQ-4812"
+            }
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "0d910c9fd5b1ece6c597a778eed0dbf284d509a396e2bad6677e37735c9c86b6",
+          "kind": "case_created",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "seq": 1
+        },
+        {
+          "at": 1790239586.8489356,
+          "body": {
+            "actor": "a.rivera",
+            "key": "request",
+            "source": "requisitions",
+            "value": {
+              "cost_center": "CC-742",
+              "id": "REQ-4812",
+              "part": "P-104",
+              "quantity": 2,
+              "site_id": "DC-WEST-4",
+              "state": "approved"
+            },
+            "verified": true,
+            "version": "req:6"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "f6a8ec90601dade4870179e1c809b575904fe1e653cdaff88df78bbc12ee7a31",
+          "kind": "observed",
+          "previous": "0d910c9fd5b1ece6c597a778eed0dbf284d509a396e2bad6677e37735c9c86b6",
+          "seq": 2
+        },
+        {
+          "at": 1790239586.8506396,
+          "body": {
+            "actor": "a.rivera",
+            "key": "site",
+            "source": "sites",
+            "value": {
+              "address": "901 Harbor Way, Oakland CA",
+              "id": "DC-WEST-4",
+              "state": "active"
+            },
+            "verified": true,
+            "version": "site:12"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "60de004d7db1db66af8ba142f577d6bdbe90364cf75636ac2490709f70ed1f67",
+          "kind": "observed",
+          "previous": "f6a8ec90601dade4870179e1c809b575904fe1e653cdaff88df78bbc12ee7a31",
+          "seq": 3
+        },
+        {
+          "at": 1790239586.8520305,
+          "body": {
+            "actor": "a.rivera",
+            "key": "budget",
+            "source": "finance",
+            "value": {
+              "available": 5000,
+              "currency": "USD",
+              "id": "CC-742"
+            },
+            "verified": true,
+            "version": "budget:8"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "4a0abae955d791dbce59b9adfb14b8873b11c604f788b35779d1cd76624f5fe8",
+          "kind": "observed",
+          "previous": "60de004d7db1db66af8ba142f577d6bdbe90364cf75636ac2490709f70ed1f67",
+          "seq": 4
+        },
+        {
+          "at": 1790239586.85348,
+          "body": {
+            "actor": "a.rivera",
+            "key": "quote",
+            "source": "supplier",
+            "value": {
+              "currency": "USD",
+              "id": "Q-881",
+              "request_id": "REQ-4812",
+              "total": 2500,
+              "unit_price": 1250,
+              "vendor": "Alder Components"
+            },
+            "verified": true,
+            "version": "quote:3"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "1c69252e066ec7c8369f93ad04c22f9fb28b487981aac40ddee643f4860354bb",
+          "kind": "observed",
+          "previous": "4a0abae955d791dbce59b9adfb14b8873b11c604f788b35779d1cd76624f5fe8",
+          "seq": 5
+        },
+        {
+          "at": 1790239586.8539903,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "args": {
+              "request_id": "REQ-4812",
+              "site_id": "DC-WEST-4"
+            },
+            "id": "bec1293f-3b74-4bd4-9859-909926062ec1",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "05e0aed150d2167008735629bfa45a43a5b15c315b0635c1ac9dd23c1d4952bc",
+          "kind": "proposed",
+          "previous": "1c69252e066ec7c8369f93ad04c22f9fb28b487981aac40ddee643f4860354bb",
+          "seq": 6
+        },
+        {
+          "at": 1790239586.8541405,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "bec1293f-3b74-4bd4-9859-909926062ec1",
+            "reason": "all_checks_passed",
+            "status": "allowed"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "63d5bc9cf87caaec9f1fb0fe64d088809d8a79c5ffc5d9ab6b2de7d773c3b938",
+          "kind": "decision",
+          "previous": "05e0aed150d2167008735629bfa45a43a5b15c315b0635c1ac9dd23c1d4952bc",
+          "seq": 7
+        },
+        {
+          "at": 1790239586.854413,
+          "body": {
+            "action": "record_review",
+            "actor": "scheduler",
+            "idempotency_key": "bec1293f-3b74-4bd4-9859-909926062ec1",
+            "policy_version": 1,
+            "proposal_id": "bec1293f-3b74-4bd4-9859-909926062ec1"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "20e0fef13732a1bafe5032113bd98ab0193bd5c35b875ff1877b528beb620a42",
+          "kind": "effect_started",
+          "previous": "63d5bc9cf87caaec9f1fb0fe64d088809d8a79c5ffc5d9ab6b2de7d773c3b938",
+          "seq": 8
+        },
+        {
+          "at": 1790239586.8545818,
+          "body": {
+            "action": "record_review",
+            "claim_hash": "20e0fef13732a1bafe5032113bd98ab0193bd5c35b875ff1877b528beb620a42",
+            "output": {
+              "args": {
+                "request_id": "REQ-4812",
+                "site_id": "DC-WEST-4"
+              },
+              "recorded": true
+            },
+            "proposal_id": "bec1293f-3b74-4bd4-9859-909926062ec1"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "7f92a5d954d964c3f04a0af6f2bb9d88b6b75475846656f030baa8e28f3304b1",
+          "kind": "effect_succeeded",
+          "previous": "20e0fef13732a1bafe5032113bd98ab0193bd5c35b875ff1877b528beb620a42",
+          "seq": 9
+        },
+        {
+          "at": 1790239586.8557272,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "args": {
+              "amount": 2500,
+              "budget": {
+                "available": 5000,
+                "currency": "USD",
+                "id": "CC-742"
+              },
+              "quote": {
+                "currency": "USD",
+                "id": "Q-881",
+                "request_id": "REQ-4812",
+                "total": 2500,
+                "unit_price": 1250,
+                "vendor": "Alder Components"
+              },
+              "quote_version": "quote:3",
+              "request": {
+                "cost_center": "CC-742",
+                "id": "REQ-4812",
+                "part": "P-104",
+                "quantity": 2,
+                "site_id": "DC-WEST-4",
+                "state": "approved"
+              },
+              "site": {
+                "address": "901 Harbor Way, Oakland CA",
+                "id": "DC-WEST-4",
+                "state": "active"
+              }
+            },
+            "id": "b2dc4145-b727-46f6-aee9-103f6192c050",
+            "origin": "compiled",
+            "roles": [
+              "operator",
+              "compiled"
+            ]
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "c7746eab427b0b9d5f3afe64d79e387ce355e1d5f9670918b4ecb9994fa244fd",
+          "kind": "proposed",
+          "previous": "7f92a5d954d964c3f04a0af6f2bb9d88b6b75475846656f030baa8e28f3304b1",
+          "seq": 10
+        },
+        {
+          "at": 1790239586.8558857,
+          "body": {
+            "policy_version": 1,
+            "proposal_id": "b2dc4145-b727-46f6-aee9-103f6192c050",
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "ac126bfd064ce4970b2a071fc89a6d3be46885adc132bb889b974faa6bfc1104",
+          "kind": "decision",
+          "previous": "c7746eab427b0b9d5f3afe64d79e387ce355e1d5f9670918b4ecb9994fa244fd",
+          "seq": 11
+        },
+        {
+          "at": 1790239586.8562672,
+          "body": {
+            "actor": "d.patel",
+            "args_hash": "a72b6abe1b6dc3253aeabee72c32a27e57e17ee864206e4ec655bfc2c68cf6cd",
+            "proposal_id": "b2dc4145-b727-46f6-aee9-103f6192c050",
+            "role": "manager"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "22f87c656af6f2c49fe96d2593d9cdb4afdb3fea22ace8dd160c846583fd56f4",
+          "kind": "approved",
+          "previous": "ac126bfd064ce4970b2a071fc89a6d3be46885adc132bb889b974faa6bfc1104",
+          "seq": 12
+        },
+        {
+          "at": 1790239586.8566384,
+          "body": {
+            "action": "issue_order",
+            "actor": "scheduler",
+            "idempotency_key": "b2dc4145-b727-46f6-aee9-103f6192c050",
+            "policy_version": 1,
+            "proposal_id": "b2dc4145-b727-46f6-aee9-103f6192c050"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "2f42c8407900c5aefd8d14e5cd5288b087233deedd76bf11c306c911dec9d6d4",
+          "kind": "effect_started",
+          "previous": "22f87c656af6f2c49fe96d2593d9cdb4afdb3fea22ace8dd160c846583fd56f4",
+          "seq": 13
+        },
+        {
+          "at": 1790239586.8579204,
+          "body": {
+            "error": "Remote end closed connection without response",
+            "proposal_id": "b2dc4145-b727-46f6-aee9-103f6192c050"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "c8cb0b1869a6dd1e8ee669683f451a7826454e279a1a9fdd0272fc805bdd6d01",
+          "kind": "effect_unknown",
+          "previous": "2f42c8407900c5aefd8d14e5cd5288b087233deedd76bf11c306c911dec9d6d4",
+          "seq": 14
+        },
+        {
+          "at": 1790239586.859224,
+          "body": {
+            "action": "issue_order",
+            "actor": "d.patel",
+            "evidence": "ERP order PO-9001; idempotency key b2dc4145-b727-46f6-aee9-103f6192c050",
+            "proposal_id": "b2dc4145-b727-46f6-aee9-103f6192c050",
+            "success": true
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "1cc1034a7c1467de6314c17936690ae81f5223aec94da5666151729328a6d48f",
+          "kind": "reconciled",
+          "previous": "c8cb0b1869a6dd1e8ee669683f451a7826454e279a1a9fdd0272fc805bdd6d01",
+          "seq": 15
+        },
+        {
+          "at": 1790239586.8594658,
+          "body": {
+            "actor": "d.patel",
+            "role": "manager"
+          },
+          "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+          "hash": "d0a63f2bcbc0326b418fa69cfbafa16d2b707bfa9c983d9d500f0898a1885c9b",
+          "kind": "signed",
+          "previous": "1cc1034a7c1467de6314c17936690ae81f5223aec94da5666151729328a6d48f",
+          "seq": 16
+        }
+      ],
+      "case_id": "237959d9-3c1e-46b1-bae2-57fc09b3904b",
+      "chain_head": "d0a63f2bcbc0326b418fa69cfbafa16d2b707bfa9c983d9d500f0898a1885c9b",
+      "chain_valid": true,
+      "event_count": 16,
+      "event_kinds": [
+        "case_created",
+        "observed",
+        "observed",
+        "observed",
+        "observed",
+        "proposed",
+        "decision",
+        "effect_started",
+        "effect_succeeded",
+        "proposed",
+        "decision",
+        "approved",
+        "effect_started",
+        "effect_unknown",
+        "reconciled",
+        "signed"
+      ],
+      "external_orders": 1,
+      "external_state": {
+        "budget": {
+          "available": 2500,
+          "currency": "USD",
+          "id": "CC-742",
+          "version": 9
+        },
+        "orders": [
+          {
+            "amount": 2500,
+            "id": "PO-9001",
+            "idempotency_key": "b2dc4145-b727-46f6-aee9-103f6192c050",
+            "quote_id": "Q-881",
+            "request_id": "REQ-4812",
+            "site_id": "DC-WEST-4"
+          }
+        ]
+      },
+      "id": "lost_ack",
+      "outcome": "reconciled_complete",
+      "trace": [
+        {
+          "action": "create_case",
+          "requisition": "REQ-4812"
+        },
+        {
+          "action": "read_requisition",
+          "state": "approved",
+          "version": "req:6"
+        },
+        {
+          "action": "read_verified_records",
+          "quote_version": "quote:3",
+          "sources": [
+            "sites",
+            "finance",
+            "supplier"
+          ]
+        },
+        {
+          "action": "record_review",
+          "event": "effect_succeeded"
+        },
+        {
+          "action": "propose_order",
+          "amount": 2500,
+          "decision": {
+            "reason": "approval_required:manager",
+            "status": "needs_approval"
+          }
+        },
+        {
+          "action": "independent_approval",
+          "role": "manager"
+        },
+        {
+          "action": "submit_response_lost",
+          "result": "unknown"
+        },
+        {
+          "action": "reconcile_verified_write",
+          "external_order": "PO-9001"
+        }
+      ]
+    }
+  ],
+  "workflow": "Emergency packaging-line spare-part purchase order"
+}
