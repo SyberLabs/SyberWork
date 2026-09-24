@@ -1,0 +1,4 @@
+{
+  "record_review": {"kind": "local", "title": "Record review"},
+  "issue_order": {"kind": "http", "title": "Issue purchase order", "method": "POST", "url": "http://127.0.0.1:8999/orders", "version_arg": "quote_version", "timeout_seconds": 10}
+}

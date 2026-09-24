@@ -1,0 +1,31 @@
+# Architecture and invariants
+
+## Owners
+
+| Owner | Artifact | Changes independently |
+| --- | --- | --- |
+| Organization | Versioned global action policy and credential roles | Yes; active policy governs new admissions and commits |
+| Workflow owner | Immutable versioned work contract | Yes; running cases remain pinned |
+| Integration owner | Immutable named HTTP source and action definitions | New names for changed integrations |
+| Source system | Actual inventory, quotes, purchase orders | Yes; SyberWork records observations and effects |
+| SyberWork | Case history, proposals, decisions, and acceptance projections | Append-only at the API boundary |
+
+The contract defines inputs, declared actions, argument bindings to recorded facts or source versions, required observations, history predicates such as prior completed effects, local approval restrictions, a compiled path, and acceptance clauses. Global policy can deny an action or require an additional approval. The work contract cannot widen global action availability or roles. Case history is causal *within a case*; hash chaining is integrity evidence within the current database trust boundary.
+
+## State transitions
+
+`proposed → decision → approved (when required) → effect_started → effect_succeeded | effect_unknown → reconciled`
+
+Only `effect_succeeded`, or a manager reconciliation of an unknown effect backed by an external reference, licenses an `effect` acceptance clause. A decision of `allowed` does not imply the external write occurred. A signer can attest after the required effect; a prior signature does not satisfy an `after_action` clause. Rejected proposals remain visible in the case history. `commit` serializes the recheck and the single effect claim with SQLite `BEGIN IMMEDIATE`. The network call occurs after the claim; unknown responses require manual reconciliation.
+
+## Evidence and freshness
+
+Human-entered observations are assertions, even if the actor claims a source. The source reader calls a fixed admin-installed URL and records the returned ETag or record version. Contracts can require `verified: true` and a maximum age. For arguments with `fact:quote.price`, the current observation must equal the proposal value; `version:quote` binds to the observed version. The destination should use `If-Match` or an equivalent condition to detect changes between read and write; the included reference integration does.
+
+## Replay
+
+For each past proposal, replay evaluates a selected new contract and policy against the historical event prefix at the proposal's recorded time. It reports changed decisions and acceptance clauses without mutating the case or external systems. Replay of recorded facts cannot prove whether today's source data would produce the same answer. The operator can independently refresh live data.
+
+## Integration
+
+HTTP sources and effects are bound by administrator-installed definitions and do not accept an LLM-provided destination URL. Authorization headers use environment variable names in definitions; secrets never enter the contract. Cross-origin redirects are blocked. Model suggestions are proposals accepted under separate model-bearing credentials, never direct network effects. The included `reference_system.py` is one fully running integration; SyberRuntime, Barn, OmniOS, and customer tools require explicit adapters matching their authority and event semantics before their behavior can be claimed as integrated.

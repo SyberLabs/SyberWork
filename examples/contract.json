@@ -1,0 +1,24 @@
+{
+  "id": "purchase-order",
+  "version": 1,
+  "title": "Source-backed purchase order",
+  "inputs": {"part_number": "string", "quantity": "integer"},
+  "actions": {
+    "record_review": {"required_facts": [{"key": "part_number", "source": "inventory", "verified": true, "max_age_seconds": 86400}], "arguments": {"part_number": "fact:part_number"}},
+    "issue_order": {
+      "required_facts": [
+        {"key": "part_number", "source": "inventory", "verified": true, "max_age_seconds": 86400},
+        {"key": "quote", "source": "supplier", "verified": true, "max_age_seconds": 3600}
+      ],
+      "arguments": {"part_number": "fact:part_number", "quote": "fact:quote", "quote_id": "fact:quote.id", "amount": "fact:quote.price", "quote_version": "version:quote"},
+      "requires_effect": "record_review",
+      "approval_role": "manager",
+      "max_amount": 10000
+    }
+  },
+  "acceptance": [
+    {"id": "order_sent", "kind": "effect", "action": "issue_order"},
+    {"id": "manager_signed", "kind": "signoff", "role": "manager", "after_action": "issue_order"}
+  ],
+  "compiled_path": ["record_review", "issue_order"]
+}

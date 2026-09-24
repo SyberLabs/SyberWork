@@ -1,0 +1,4 @@
+{
+  "inventory": {"kind": "http", "url": "http://127.0.0.1:8999/inventory/{key}", "value_path": ["part_number"], "roles": ["operator"]},
+  "supplier": {"kind": "http", "url": "http://127.0.0.1:8999/quotes/{key}", "value_path": ["quote"], "roles": ["operator"]}
+}

@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "actions": {
+    "record_review": {"roles": ["operator", "manager"]},
+    "issue_order": {"roles": ["operator"], "approval_role": "manager", "max_amount": 25000}
+  }
+}
