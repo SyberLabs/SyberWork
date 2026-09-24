@@ -54,7 +54,7 @@ This output only creates a proposal. Admission rechecks the bound observation, g
 - `POST /api/cases/{id}/approve`, `/commit`, `/signoff`, `/reconcile`: decision operations.
 - `GET /api/cases/{id}`, `/verify`; `POST /api/cases/{id}/replay`: inspection and counterfactual comparison.
 
-The case SQLite database is authoritative for *SyberWork decisions and observed responses*. The source systems remain authoritative for inventory, quotes, and purchase orders. An observation stores its source, record version, observed value, observation time, and whether it came from a configured connector. An action rechecks admission when committed. The reference destination checks the quote version at write time. A failed or timed-out write remains `effect_unknown` until a manager checks the destination and records reconciliation with an evidence reference. Automatic retries cannot create a second order.
+The case SQLite database is authoritative for *SyberWork decisions and observed responses*. The source systems remain authoritative for inventory, quotes, and purchase orders. An observation stores its source, record version, observed value, observation time, and whether it came from a configured connector. An action rechecks admission when committed. The reference destination checks the quote version at write time. For an unknown result, a manager may trigger the installed destination status lookup. SyberWork requires a committed record with the original idempotency key and exact request digest before recording verified success. A 404 remains pending and blocks another effect of the same action; a manager cannot assert success with a text reference. Explicit adapter-declared no-write precondition rejections can release a fresh proposal. See [reconciliation contract](docs/RECONCILIATION.md).
 
 ## Verification
 
@@ -66,7 +66,7 @@ The tests cover the full case, independent approval, policy precedence, model an
 
 ## Executed enterprise case study
 
-[Case Study 001](case_studies/ENTERPRISE_PROCUREMENT.md) executes seven procurement scenarios against a separate synthetic ERP: complete information, missing intake input, unresolved delivery site, competing quotes, policy withdrawal, changed quote, and a write whose acknowledgement is lost. The [recorded run](case_studies/results/enterprise_procurement_run_001.json) contains case events and external order snapshots. Run it yourself with `PYTHONPATH=. python -m case_studies.enterprise_procurement`. This is a simulation with fictional data, not a customer deployment.
+[Case Study 001](case_studies/ENTERPRISE_PROCUREMENT.md) executes nine procurement scenarios against a separate synthetic ERP: complete information, missing intake input, unresolved delivery site, competing quotes, policy withdrawal, changed quote, a lost acknowledgement, a forged manager claim, and a mismatched destination record. The [recorded run](case_studies/results/enterprise_procurement_run_001.json) contains case events and external order snapshots. Run it yourself with `PYTHONPATH=. python -m case_studies.enterprise_procurement`. This is a simulation with fictional data, not a customer deployment.
 
 ## Deployment boundary
 

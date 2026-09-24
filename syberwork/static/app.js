@@ -57,9 +57,8 @@ $('suggest').onclick = () => run(async () => { await mutate('cases/' + selected 
 $('approve').onclick = () => run(async () => { await mutate('cases/' + selected + '/approve', {proposal_id: $('proposal').value}); show('Approval recorded'); });
 $('commit').onclick = () => run(async () => { await mutate('cases/' + selected + '/commit', {proposal_id: $('proposal').value}); show('Effect result recorded'); });
 $('signoff').onclick = () => run(async () => { await mutate('cases/' + selected + '/signoff', {role: 'manager'}); show('Manager signed'); });
-async function reconcile(success) { await mutate('cases/' + selected + '/reconcile', {proposal_id: $('proposal').value, success, evidence: $('reconcile-evidence').value}); show('Reconciliation recorded'); }
-$('confirm-effect').onclick = () => run(() => reconcile(true));
-$('reject-effect').onclick = () => run(() => reconcile(false));
+async function reconcile() { const result = await mutate('cases/' + selected + '/reconcile', {proposal_id: $('proposal').value}); show('Destination status: ' + result.status + ' (' + result.reason + ')'); }
+$('check-effect').onclick = () => run(reconcile);
 $('verify').onclick = () => run(async () => { const r = await api('cases/' + selected + '/verify'); show(r.valid ? 'Case history intact' : 'Case history invalid', !r.valid); });
 $('replay').onclick = () => run(async () => { const r = await api('cases/' + selected + '/replay', {contract_version: Number($('replay-contract').value), policy_version: Number($('replay-policy').value)}); $('diff').textContent = JSON.stringify(r, null, 2); });
 for (const [button, path, field] of [['publish-contract', 'contracts', 'contract-json'], ['publish-policy', 'policies', 'policy-json']]) {

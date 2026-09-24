@@ -16,9 +16,9 @@ Optional `input_bindings` tie a case input to a path in the latest observed fact
 
 ## State transitions
 
-`proposed → decision → approved (when required) → effect_started → effect_succeeded | effect_unknown → reconciled`
+`proposed → decision → approved (when required) → effect_started → effect_succeeded | effect_rejected | effect_unknown → reconciliation_checked | reconciled`
 
-Only `effect_succeeded`, or a manager reconciliation of an unknown effect backed by an external reference, licenses an `effect` acceptance clause. A decision of `allowed` does not imply the external write occurred. A signer can attest after the required effect; a prior signature does not satisfy an `after_action` clause. Rejected proposals remain visible in the case history. `commit` serializes the recheck and the single effect claim with SQLite `BEGIN IMMEDIATE`. The network call occurs after the claim; unknown responses require manual reconciliation.
+Only `effect_succeeded`, or a reconciliation independently verified against the installed destination status lookup, licenses an `effect` acceptance clause. A historical text-only reconciliation does not qualify. A decision of `allowed` does not imply the external write occurred. A signer can attest after the required effect; a prior signature does not satisfy an `after_action` clause. `commit` serializes the recheck and the single effect claim with SQLite `BEGIN IMMEDIATE`. The network call occurs after the claim. Unknown outcomes block new effects of the same action; a destination 404 is inconclusive. An explicit adapter-declared no-write precondition status produces `effect_rejected`, allowing a fresh proposal. See [reconciliation contract](RECONCILIATION.md).
 
 ## Evidence and freshness
 

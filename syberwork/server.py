@@ -121,7 +121,9 @@ def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
                     elif operation == "signoff":
                         result = work.signoff(case_id, name, roles, data["role"])
                     elif operation == "reconcile":
-                        result = work.reconcile(case_id, data["proposal_id"], data["success"], data["evidence"], name, roles)
+                        if "success" in data or "evidence" in data:
+                            raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")
+                        result = work.reconcile(case_id, data["proposal_id"], name, roles)
                     elif operation == "replay":
                         result = work.replay(case_id, data["contract_version"], data["policy_version"])
                     else:

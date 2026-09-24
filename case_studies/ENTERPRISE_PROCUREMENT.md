@@ -24,7 +24,7 @@ The runner is repeatable in behavior; case UUIDs, timestamps, and hash heads dif
 | Manufacturing requester `m.liu` | Business need and requisition `REQ-4812` | A vendor selection, live budget, or an approved purchase order |
 | Procurement analyst `a.rivera` | Opens the case and reads registered systems | Independent approval; an asserted fact cannot impersonate a verified source read |
 | Compiled scheduler | Proposes the next contract action using observed values | A direct destination write or an exemption from admission |
-| Purchasing manager `d.patel` | Independent approval, reconciliation attestation, final signoff | The source of inventory, quote, site, or budget records |
+| Purchasing manager `d.patel` | Independent approval, permission to check destination status, final signoff | A self-authored claim that an order exists |
 | Requisition registry | Request ID, part, quantity, delivery site, cost center, approval state | Supplier price or purchase completion |
 | Site registry | A versioned, active site and address | Which of two plausible sites a missing requisition intended |
 | Supplier quote endpoint | Selected quote, unit price, total, currency, version | A selection from two candidates when selection is absent |
@@ -37,7 +37,7 @@ The ordinary case uses two parts at USD 1,250 each, a USD 2,500 total, selected 
 
 The contract is version 1 of `northstar-spare-procurement`, with one required case input: `request_id`. The added `input_bindings` rule ties that pinned input to the verified `request.id`; an unrelated requisition cannot be silently substituted. Both actions require source-backed request and site facts. `issue_order` additionally requires a selected supplier quote and finance record, with 15-minute freshness limits for quote and budget; it also requires a successfully recorded review. All submitted fields are bound to observed values, and the write carries the quote's ETag in `If-Match` plus a proposal-scoped `Idempotency-Key`.
 
-The contract caps the order at USD 5,000. The organization policy grants the operator role, caps the action at USD 10,000, and requires a manager approval. Both caps apply, so the effective cap is USD 5,000. The original proposer alone may commit. Completion requires an external `issue_order` success, or a reconciled confirmed success, **followed by** a manager signoff. Initial approval does not count as completion.
+The contract caps the order at USD 5,000. The organization policy grants the operator role, caps the action at USD 10,000, and requires a manager approval. Both caps apply, so the effective cap is USD 5,000. The original proposer alone may commit. Completion requires an external `issue_order` success, or a destination-verified reconciliation, **followed by** a manager signoff. Initial approval does not count as completion. The destination status lookup must match the original idempotency key and canonical request digest.
 
 These are controls in the executable code and in this particular synthetic contract. The simulated ERP supplies additional consistency checks. SyberWork's generic policy language does not yet express every cross-record business rule that the ERP enforces.
 
@@ -50,10 +50,12 @@ These are controls in the executable code and in this particular synthetic contr
 | Delivery destination unresolved | Guessing a site yields `missing_fact:site` | `blocked_missing_site` | 0 | Incomplete |
 | Two plausible supplier quotes | Source yields options without a selected `quote`; `source_shape`, then `missing_fact:quote` | `blocked_ambiguous_quote` | 0 | Incomplete |
 | Policy tightened after approval | Commit rechecks policy and returns `action_not_in_global_policy` | `blocked_at_commit` | 0 | Incomplete |
-| Quote changed before submit | ERP returns 412; old effect becomes unknown; external lookup finds no order; quote refresh leads to a new approved proposal | `recovered_after_refresh` | 1 | Complete |
-| ERP wrote but response disappeared | Application records unknown; external lookup finds order by idempotency key; manager reconciles and signs | `reconciled_complete` | 1 | Complete |
+| Quote changed before submit | ERP guarantees its 412 is a no-write rejection; quote refresh leads to a new approved proposal | `recovered_after_refresh` | 1 | Complete |
+| ERP wrote but response disappeared | Application records unknown; status lookup matches original idempotency key and request digest; manager signs later | `reconciled_complete` | 1 | Complete |
+| Manager supplies a fabricated order reference | Manual claim rejected; destination 404 remains pending; another proposal denied | `blocked_unproven_claim` | 0 | Incomplete |
+| Destination record has the wrong payload digest | Status lookup rejects mismatch even though an external order exists | `blocked_mismatched_record` | 1 | Incomplete |
 
-The recorded run contained **16, 0, 4, 10, 13, 22, and 16 case events** respectively. The six opened cases passed their local hash-chain checks. The missing-input scenario never created a case and has no chain to verify. The three completing scenarios each left CC-742 at USD 2,500; blocked cases left it at USD 5,000.
+The recorded run contained **16, 0, 4, 10, 13, 21, 16, 17, and 16 case events** respectively. The eight opened cases passed their local hash-chain checks. The missing-input scenario never created a case and has no chain to verify. The three completing scenarios each left CC-742 at USD 2,500. The mismatched-status case also debited USD 2,500 externally while remaining incomplete internally; this is intentional fail-closed behavior, not a second order.
 
 ## The operating sequence and alternate paths
 
@@ -79,14 +81,22 @@ The operator prepares a valid order and the manager approves it. Before commit, 
 
 ### 6. A quote changes after observation
 
-The operator observes quote version `quote:3`, gains approval, and attempts the order. Before the write, the supplier's authoritative quote advances to `quote:4`. The ERP enforces `If-Match` and returns 412; SyberWork conservatively records `effect_unknown` because its HTTP execution path does not distinguish a definitive rejection from a lost response. In this strongly consistent synthetic ERP, a lookup by the proposal's idempotency key returns 404. The manager records **negative reconciliation** with that external lookup reference. The operator refreshes the quote, creates a **new proposal and approval**, and writes PO-9001 exactly once. Signoff completes the new effect. In an eventually consistent real ERP, an immediate 404 would be insufficient to declare non-execution; the integration must define a safe settlement window or a stronger status endpoint.
+The operator observes quote version `quote:3`, gains approval, and attempts the order. Before the write, the supplier's authoritative quote advances to `quote:4`. The ERP enforces `If-Match` and returns 412 **before writing**. Its installed action definition explicitly declares 412 a no-write precondition result, so SyberWork records `effect_rejected`, not `effect_unknown`. The operator refreshes the quote, creates a **new proposal and approval**, and writes PO-9001 exactly once. Signoff completes the new effect. This declaration must come from the real destination's contract; a later 404 lookup cannot prove a write did not happen.
 
 ### 7. The order succeeds but its acknowledgement is lost
 
-The simulated ERP commits PO-9001 and reduces the budget, then deliberately closes the HTTP connection before sending an acknowledgement. SyberWork records `effect_unknown` and does not retry that proposal. The manager checks the ERP **by the original idempotency key**, finds the order, and records a positive reconciliation with its ID. A later signoff completes the case. This execution exposed and fixed a real completion defect: the signoff clause previously counted only a direct `effect_succeeded` event, not a confirmed reconciliation. The new test covers that path. The application still **trusts the manager's external evidence string**; it does not independently authenticate the lookup during reconciliation.
+The simulated ERP commits PO-9001 and reduces the budget, then deliberately closes the HTTP connection before sending an acknowledgement. SyberWork records `effect_unknown` and does not retry that proposal. The manager triggers the registered status lookup. The application itself compares the returned `state`, idempotency key, durable order ID, and digest of the exact approved arguments. Only then does it record verified reconciliation. A later signoff completes the case.
+
+### 8. A fabricated manager claim and an inconclusive lookup
+
+The simulated connection closes **before** the ERP writes. The manager submits a fabricated reference `PO-FAKE` with `success=true`. SyberWork rejects the claim as `manual_reconciliation_disabled`. Its authorized status lookup receives 404, records `pending`, and refuses a new proposal for `issue_order` with `effect_unresolved:issue_order`. No external order exists in this run, yet the case remains open: a 404 alone is not an authoritative negative resolution in an eventually consistent system.
+
+### 9. A committed order with the wrong status digest
+
+The ERP writes an order and loses its acknowledgement, but the status record is then altered to carry the wrong request digest. The manager's lookup returns `unverified` with `destination_record_mismatch`. The order exists in the simulated ERP, and the manager even signs; SyberWork correctly remains incomplete because it cannot establish that this order matches the approved proposal. This case requires investigation and repair of the destination evidence, not a second order.
 
 ## What this licenses, and what it does not
 
-The execution shows deterministic denial on missing or conflicting facts, commit-time policy rechecks, a conditional ERP write, independent approval, idempotent effect claims, and a path through uncertain results in this synthetic environment. It does **not** establish enterprise deployment readiness. The highest priority engineering gaps before connecting a real customer include authenticated and machine-verifiable reconciliation evidence, source-specific identifier and shape validation, a deliberate quote-selection workflow, SSO and role provisioning, operational backup and restore, accounting controls for concurrent orders across cases, and a clear settlement protocol for eventually consistent destinations. A manager can currently attest a fake reference through the API; the case history would faithfully record the attestation without proving the referenced order exists.
+The execution shows deterministic denial on missing or conflicting facts, commit-time policy rechecks, a conditional ERP write, independent approval, idempotent effect claims, and a destination-verified path through uncertain results in this synthetic environment. It does **not** establish enterprise deployment readiness. Remaining work before connecting a real customer includes source-specific identifier and shape validation, a deliberate quote-selection workflow, SSO and role provisioning, operational backup and restore, accounting controls for concurrent orders across cases, and adapter contracts that genuinely guarantee no-write statuses and durable idempotency lookups. A compromised or incorrect destination can still return false status data; the application is trusting that system's authenticated response.
 
 The case study also demonstrates a distinction essential to this architecture: uncertainty can legitimately keep a case open. “High realism” here means preserving that open state and its missing authority, rather than making the workflow finish by supplying a plausible answer.

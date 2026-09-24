@@ -49,21 +49,6 @@ class WorkFlow(unittest.TestCase):
         with self.assertRaises(Rejected):
             self.db.commit(self.case, order["proposal"]["id"], "operator")
 
-    def test_signoff_after_reconciled_success_completes_case(self):
-        self.facts()
-        review = self.db.propose(self.case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        self.db.commit(self.case, review["proposal"]["id"], "operator")
-        order = self.db.compiled_propose(self.case, "scheduler", ["operator", "compiled"])
-        order_id = order["proposal"]["id"]
-        self.db.approve(self.case, order_id, "manager", ["manager"])
-        with patch.object(self.db, "_execute", side_effect=ConnectionError("response lost")):
-            self.assertEqual(self.db.commit(self.case, order_id, "scheduler")["status"], "unknown")
-        self.db.signoff(self.case, "manager", ["manager"], "manager")
-        self.db.reconcile(self.case, order_id, True, "ERP order ID PO-51", "manager", ["manager"])
-        self.assertFalse(self.db.inspect(self.case)["complete"])
-        self.db.signoff(self.case, "manager", ["manager"], "manager")
-        self.assertTrue(self.db.inspect(self.case)["complete"])
-
     def test_denies_untrusted_and_inferred_facts(self):
         self.db.observe(self.case, "part_number", "P-104", "user", "asserted", "operator")
         result = self.db.propose(self.case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])

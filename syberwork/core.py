@@ -8,7 +8,7 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -37,6 +37,33 @@ class Rejected(ValueError):
     def __init__(self, code: str, detail: str):
         self.code, self.detail = code, detail
         super().__init__(f"{code}: {detail}")
+
+
+def verified_reconciliation(event: dict) -> bool:
+    """Legacy manager attestations do not establish external execution."""
+    body = event["body"]
+    return (event["kind"] == "reconciled" and body.get("success") is True
+            and isinstance(body.get("proof"), dict)
+            and body["proof"].get("verified") is True
+            and bool(body["proof"].get("external_id"))
+            and bool(body["proof"].get("response_digest")))
+
+
+def trusted_origin(url: str) -> tuple[str, str, int]:
+    """Reject userinfo and non-loopback HTTP before a credential-bearing request."""
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+        if (not isinstance(url, str) or not parsed.hostname or parsed.username
+                or parsed.password or parsed.fragment or not parsed.path.startswith("/")):
+            raise ValueError("invalid URL")
+        if parsed.scheme == "https":
+            return parsed.scheme, parsed.hostname, port or 443
+        if parsed.scheme == "http" and parsed.hostname == "127.0.0.1" and port:
+            return parsed.scheme, parsed.hostname, port
+    except (ValueError, AttributeError, TypeError):
+        pass
+    raise Rejected("invalid_target", "target must be HTTPS or loopback HTTP without URL credentials")
 
 
 class Work:
@@ -160,8 +187,20 @@ class Work:
     def install_action(self, name: str, doc: dict) -> None:
         if doc.get("kind") not in ("local", "http"):
             raise Rejected("invalid_action", "action kind must be local or http")
-        if doc["kind"] == "http" and (not doc.get("url", "").startswith(("https://", "http://127.0.0.1:")) or doc.get("method", "POST") not in ("POST", "PUT", "PATCH")):
-            raise Rejected("invalid_action", "HTTP target must be HTTPS or local and method must write")
+        if doc["kind"] == "http":
+            origin = trusted_origin(doc.get("url", ""))
+            if doc.get("method", "POST") not in ("POST", "PUT", "PATCH"):
+                raise Rejected("invalid_action", "HTTP method must write")
+        status_url = doc.get("status_url")
+        if status_url is not None:
+            if (doc["kind"] != "http" or trusted_origin(status_url) != origin or
+                    status_url.count("{key}") != 1 or
+                    urlsplit(status_url).path.count("{key}") != 1 or
+                    any(c in status_url.replace("{key}", "") for c in "{}")):
+                raise Rejected("invalid_action", "status lookup needs one path key on the action origin")
+        no_write = doc.get("no_write_statuses", [])
+        if not isinstance(no_write, list) or any(type(code) is not int or code not in (409, 412, 428) for code in no_write):
+            raise Rejected("invalid_action", "no-write statuses must be explicit precondition rejections")
         with self.tx() as db:
             prior = db.execute("SELECT body FROM actions WHERE name=?", (name,)).fetchone()
             if prior and prior["body"] != canonical(doc):
@@ -330,7 +369,7 @@ class Work:
             proposal = self._proposal(history, proposal_id)
             if actor != proposal["actor"]:
                 raise Rejected("actor_mismatch", "only the original proposer may commit")
-            if any(e["kind"] in ("effect_started", "effect_succeeded", "effect_unknown") and e["body"]["proposal_id"] == proposal_id for e in history):
+            if any(e["kind"] in ("effect_started", "effect_succeeded", "effect_unknown", "effect_rejected") and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("effect_claimed", "already started; inspect or reconcile")
             decision = self._admit(contract, policy, history, proposal, time.time(), db)
             if decision["status"] != "allowed":
@@ -340,25 +379,87 @@ class Work:
             claim = self._append(db, case_id, "effect_started", {"proposal_id": proposal_id, "action": proposal["action"], "actor": actor, "policy_version": policy["version"], "idempotency_key": proposal_id})
         try:
             output = self._execute(action, proposal["args"], proposal_id)
+        except urllib.error.HTTPError as exc:
+            if exc.code in action.get("no_write_statuses", []):
+                with self.tx() as db:
+                    event = self._append(db, case_id, "effect_rejected", {
+                        "proposal_id": proposal_id, "action": proposal["action"],
+                        "status": exc.code, "claim_hash": claim["hash"],
+                    })
+                return {"status": "rejected", "event": event}
+            with self.tx() as db:
+                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": str(exc)[:400]})
+            return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         except Exception as exc:
             with self.tx() as db:
-                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "error": str(exc)[:400]})
+                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": str(exc)[:400]})
             return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         with self.tx() as db:
             result = self._append(db, case_id, "effect_succeeded", {"proposal_id": proposal_id, "action": proposal["action"], "output": output, "claim_hash": claim["hash"]})
         return {"status": "succeeded", "event": result}
 
-    def reconcile(self, case_id: str, proposal_id: str, success: bool, evidence: str, actor: str, roles: list[str]) -> dict:
-        if "manager" not in roles or not evidence:
-            raise Rejected("reconciliation_denied", "manager and external evidence reference required")
+    def reconcile(self, case_id: str, proposal_id: str, actor: str, roles: list[str], *, success=None, evidence=None) -> dict:
+        """Check the installed destination's authoritative status; caller supplies no outcome."""
+        if success is not None or evidence is not None:
+            raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")
+        if "manager" not in roles:
+            raise Rejected("reconciliation_denied", "manager role required")
         with self.tx() as db:
             history = self._events(db, case_id)
             proposal = self._proposal(history, proposal_id)
             if not any(e["kind"] == "effect_unknown" and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("reconciliation_denied", "no unknown effect")
-            if any(e["kind"] == "reconciled" and e["body"]["proposal_id"] == proposal_id for e in history):
+            if any(verified_reconciliation(e) and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("reconciliation_denied", "already reconciled")
-            return self._append(db, case_id, "reconciled", {"proposal_id": proposal_id, "action": proposal["action"], "success": success, "evidence": evidence, "actor": actor})
+            config = json.loads(db.execute("SELECT body FROM actions WHERE name=?", (proposal["action"],)).fetchone()["body"])
+            status_url = config.get("status_url")
+            if not status_url:
+                raise Rejected("reconciliation_unavailable", "action has no installed destination status lookup")
+        import os
+        headers = {"Accept": "application/json"}
+        if config.get("auth_env"):
+            token = os.getenv(config["auth_env"])
+            if not token:
+                raise Rejected("missing_credential", "destination status credential unavailable")
+            headers["Authorization"] = "Bearer " + token
+        request = urllib.request.Request(status_url.replace("{key}", quote(proposal_id, safe="")), headers=headers)
+        try:
+            with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
+                raw = response.read(65537)
+                if len(raw) > 65536:
+                    raise ValueError("status response exceeds 64 KB")
+                record = json.loads(raw)
+        except urllib.error.HTTPError as exc:
+            status, reason = ("pending", "not_found_not_proof") if exc.code == 404 else ("pending", "status_unavailable")
+            record = None
+        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+            status, reason, record = "pending", "status_unavailable", None
+        else:
+            if (isinstance(record, dict) and record.get("state") == "committed"
+                    and record.get("idempotency_key") == proposal_id
+                    and record.get("request_digest") == digest(proposal["args"])
+                    and isinstance(record.get("external_id"), str) and record["external_id"]):
+                status, reason = "verified", "destination_record_matched"
+            else:
+                status, reason = "unverified", "destination_record_mismatch"
+        with self.tx() as db:
+            history = self._events(db, case_id)
+            if any(verified_reconciliation(e) and e["body"]["proposal_id"] == proposal_id for e in history):
+                raise Rejected("reconciliation_denied", "already reconciled")
+            if status == "verified":
+                proof = {"verified": True, "external_id": record["external_id"],
+                         "request_digest": record["request_digest"], "response_digest": digest(record),
+                         "idempotency_key": proposal_id}
+                event = self._append(db, case_id, "reconciled", {
+                    "proposal_id": proposal_id, "action": proposal["action"],
+                    "success": True, "proof": proof, "actor": actor,
+                })
+            else:
+                event = self._append(db, case_id, "reconciliation_checked", {
+                    "proposal_id": proposal_id, "action": proposal["action"],
+                    "status": status, "reason": reason, "actor": actor,
+                })
+            return {"status": status, "reason": reason, "event": event}
 
     def signoff(self, case_id: str, actor: str, roles: list[str], role: str) -> dict:
         if role not in roles:
@@ -490,13 +591,24 @@ class Work:
         local, global_rule = contract["actions"][action], policy["actions"][action]
         if not set(global_rule.get("roles", [])).intersection(proposal["roles"]):
             return deny("actor_role_missing")
+        if any(e["kind"] == "effect_succeeded" and e["body"]["action"] == action or
+               verified_reconciliation(e) and e["body"]["action"] == action for e in history):
+            return deny("action_already_completed")
+        proposals = {e["body"]["id"]: e["body"]["action"] for e in history if e["kind"] == "proposed"}
+        verified_ids = {e["body"]["proposal_id"] for e in history if verified_reconciliation(e)}
+        for event in history:
+            if event["kind"] != "effect_unknown":
+                continue
+            effect = event["body"]
+            if effect.get("action", proposals.get(effect["proposal_id"])) == action and effect["proposal_id"] not in verified_ids:
+                return deny("effect_unresolved:" + action)
         for rule in (global_rule, local):
             if "max_amount" in rule:
                 if type(args.get("amount")) not in (int, float):
                     return deny("amount_required")
                 if args["amount"] > rule["max_amount"] or args["amount"] < 0:
                     return deny("amount_exceeds_limit")
-        if local.get("requires_effect") and not any(e["kind"] == "effect_succeeded" and e["body"]["action"] == local["requires_effect"] or e["kind"] == "reconciled" and e["body"].get("success") and e["body"]["action"] == local["requires_effect"] for e in history):
+        if local.get("requires_effect") and not any(e["kind"] == "effect_succeeded" and e["body"]["action"] == local["requires_effect"] or verified_reconciliation(e) and e["body"]["action"] == local["requires_effect"] for e in history):
             return deny("required_prior_effect_missing")
         for requirement in local.get("required_facts", []):
             fact = next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == requirement["key"]), None)
@@ -541,10 +653,10 @@ class Work:
         results = []
         for clause in contract["acceptance"]:
             if clause["kind"] == "effect":
-                passed = any(e["kind"] == "effect_succeeded" and e["body"]["action"] == clause["action"] or e["kind"] == "reconciled" and e["body"].get("success") and e["body"]["action"] == clause["action"] for e in history)
+                passed = any(e["kind"] == "effect_succeeded" and e["body"]["action"] == clause["action"] or verified_reconciliation(e) and e["body"]["action"] == clause["action"] for e in history)
             elif clause["kind"] == "signoff":
                 completed_seq = next((e["seq"] for e in history if
-                                      (e["kind"] == "effect_succeeded" or e["kind"] == "reconciled" and e["body"].get("success"))
+                                      (e["kind"] == "effect_succeeded" or verified_reconciliation(e))
                                       and e["body"]["action"] == clause.get("after_action")), 0)
                 passed = any(e["kind"] == "signed" and e["body"]["role"] == clause["role"] and (not clause.get("after_action") or e["seq"] > completed_seq > 0) for e in history)
             elif clause["kind"] == "fact":
@@ -556,5 +668,5 @@ class Work:
 
     @staticmethod
     def _next_path(contract, history):
-        completed = {e["body"]["action"] for e in history if e["kind"] == "effect_succeeded"}
+        completed = {e["body"]["action"] for e in history if e["kind"] == "effect_succeeded" or verified_reconciliation(e)}
         return next((a for a in contract.get("compiled_path", []) if a not in completed), None)

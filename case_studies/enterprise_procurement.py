@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from syberwork.core import Rejected, Work
+from syberwork.core import Rejected, Work, digest
 
 
 CONTRACT = {
@@ -67,6 +67,7 @@ class SimulatedERP:
     def __init__(self, path: Path):
         self.path = path
         self.drop_after_write = False
+        self.drop_before_write = False
         with sqlite3.connect(path) as db:
             db.executescript("""
                 CREATE TABLE requests(id TEXT PRIMARY KEY, part TEXT, quantity INTEGER,
@@ -76,7 +77,8 @@ class SimulatedERP:
                     unit_price INTEGER, total INTEGER, currency TEXT, version TEXT);
                 CREATE TABLE budgets(id TEXT PRIMARY KEY, available INTEGER, currency TEXT, version INTEGER);
                 CREATE TABLE orders(id TEXT PRIMARY KEY, request_id TEXT, quote_id TEXT,
-                    site_id TEXT, amount INTEGER, idempotency_key TEXT UNIQUE);
+                    site_id TEXT, amount INTEGER, idempotency_key TEXT UNIQUE,
+                    request_digest TEXT NOT NULL);
                 INSERT INTO requests VALUES ('REQ-4812','P-104',2,'DC-WEST-4','CC-742','approved','req:6');
                 INSERT INTO requests VALUES ('REQ-4813','P-104',2,NULL,'CC-742','approved','req:3');
                 INSERT INTO requests VALUES ('REQ-4814','P-104',2,'DC-WEST-4','CC-742','approved','req:4');
@@ -107,7 +109,11 @@ class SimulatedERP:
                     db.row_factory = sqlite3.Row
                     if len(parts) == 3 and parts[:2] == ["orders", "by-key"]:
                         row = db.execute("SELECT * FROM orders WHERE idempotency_key=?", (parts[2],)).fetchone()
-                        return self.respond(dict(row)) if row else self.respond({"error": "not_found"}, 404)
+                        if row:
+                            return self.respond({"state": "committed", "external_id": row["id"],
+                                                 "request_digest": row["request_digest"],
+                                                 "idempotency_key": row["idempotency_key"]})
+                        return self.respond({"error": "not_found"}, 404)
                     if len(parts) != 2:
                         return self.respond({"error": "not_found"}, 404)
                     table, key = parts
@@ -137,6 +143,11 @@ class SimulatedERP:
             def do_POST(self):
                 if urlsplit(self.path).path != "/orders":
                     return self.respond({"error": "not_found"}, 404)
+                if fixture.drop_before_write:
+                    fixture.drop_before_write = False
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    self.connection.close()
+                    return
                 key = self.headers.get("Idempotency-Key")
                 version = self.headers.get("If-Match")
                 if not key or not version:
@@ -169,8 +180,8 @@ class SimulatedERP:
                     if not valid:
                         return self.respond({"error": "stale_or_inconsistent_order"}, 412)
                     order_id = f'PO-{db.execute("SELECT count(*) FROM orders").fetchone()[0] + 9001}'
-                    db.execute("INSERT INTO orders VALUES (?,?,?,?,?,?)",
-                               (order_id, request["id"], quote["id"], site["id"], total, key))
+                    db.execute("INSERT INTO orders VALUES (?,?,?,?,?,?,?)",
+                               (order_id, request["id"], quote["id"], site["id"], total, key, digest(body)))
                     db.execute("UPDATE budgets SET available=available-?, version=version+1 WHERE id=?", (total, budget["id"]))
                 if fixture.drop_after_write:
                     fixture.drop_after_write = False
@@ -222,7 +233,9 @@ def configure(work: Work, erp: SimulatedERP):
     work.install_contract(CONTRACT)
     work.install_policy(POLICY)
     work.install_action("record_review", {"kind": "local"})
-    work.install_action("issue_order", {"kind": "http", "url": erp.base + "/orders", "version_arg": "quote_version"})
+    work.install_action("issue_order", {"kind": "http", "url": erp.base + "/orders",
+                                        "status_url": erp.base + "/orders/by-key/{key}",
+                                        "no_write_statuses": [412], "version_arg": "quote_version"})
     for name, path, value in (("requisitions", "requests", "request"),
                               ("sites", "sites", "site"),
                               ("supplier", "quotes", "quote"),
@@ -303,12 +316,9 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
                         result["outcome"] = "blocked_at_commit"
                     elif scenario_id == "stale_quote":
                         erp.change_quote_version("quote:4")
-                        unknown = work.commit(case_id, key, "scheduler")
-                        step("submit_with_stale_quote", result=unknown["status"])
-                        external = erp.order_for_key(key)
-                        assert external is None
-                        work.reconcile(case_id, key, False, f"ERP idempotency lookup for {key}: 404", "d.patel", ["manager"])
-                        step("reconcile_no_write", external_order=None)
+                        rejected = work.commit(case_id, key, "scheduler")
+                        step("submit_with_stale_quote", result=rejected["status"], http_status=rejected["event"]["body"]["status"])
+                        assert erp.order_for_key(key) is None
                         work.refresh_fact(case_id, "supplier", "quote", request_id, "a.rivera", ["operator"])
                         newer = work.compiled_propose(case_id, "scheduler", ["operator", "compiled"])
                         work.approve(case_id, newer["proposal"]["id"], "d.patel", ["manager"])
@@ -320,12 +330,36 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
                         erp.drop_after_write = True
                         unknown = work.commit(case_id, key, "scheduler")
                         step("submit_response_lost", result=unknown["status"])
-                        external = erp.order_for_key(key)
-                        assert external is not None and external["idempotency_key"] == key
-                        work.reconcile(case_id, key, True, f'ERP order {external["id"]}; idempotency key {key}', "d.patel", ["manager"])
-                        step("reconcile_verified_write", external_order=external["id"])
+                        verified = work.reconcile(case_id, key, "d.patel", ["manager"])
+                        assert verified["status"] == "verified"
+                        step("reconcile_verified_write", external_order=verified["event"]["body"]["proof"]["external_id"])
                         work.signoff(case_id, "d.patel", ["manager"], "manager")
                         result["outcome"] = "reconciled_complete"
+                    elif scenario_id == "forged_claim":
+                        erp.drop_before_write = True
+                        unknown = work.commit(case_id, key, "scheduler")
+                        step("submit_without_destination_write", result=unknown["status"])
+                        try:
+                            work.reconcile(case_id, key, "d.patel", ["manager"], success=True, evidence="PO-FAKE")
+                        except Rejected as error:
+                            step("submit_fabricated_reference", result=error.code)
+                        else:
+                            raise AssertionError("Unverified manager claim was accepted")
+                        pending = work.reconcile(case_id, key, "d.patel", ["manager"])
+                        step("check_destination", result=pending["status"], reason=pending["reason"])
+                        again = work.compiled_propose(case_id, "scheduler", ["operator", "compiled"])
+                        step("attempt_another_order", decision=again["decision"])
+                        result["outcome"] = "blocked_unproven_claim"
+                    elif scenario_id == "mismatched_status":
+                        erp.drop_after_write = True
+                        unknown = work.commit(case_id, key, "scheduler")
+                        step("submit_response_lost", result=unknown["status"])
+                        with sqlite3.connect(erp.path) as db:
+                            db.execute("UPDATE orders SET request_digest=? WHERE idempotency_key=?", ("0" * 64, key))
+                        check = work.reconcile(case_id, key, "d.patel", ["manager"])
+                        step("check_mismatched_destination_record", result=check["status"], reason=check["reason"])
+                        work.signoff(case_id, "d.patel", ["manager"], "manager")
+                        result["outcome"] = "blocked_mismatched_record"
                     else:
                         committed = work.commit(case_id, key, "scheduler")
                         step("submit_order", result=committed["status"])
@@ -352,14 +386,14 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
 
 
 def run_study(directory: Path) -> dict:
-    """Execute seven separate cases, each with its own application and ERP databases."""
+    """Execute nine separate cases, each with its own application and ERP databases."""
     return {
         "organization": "Northstar Medical Devices (fictional)",
         "workflow": "Emergency packaging-line spare-part purchase order",
         "execution": "Local HTTP plus two isolated SQLite databases per case; no actual enterprise system",
         "scenarios": [run_scenario(sid, directory / sid) for sid in (
             "complete", "missing_input", "missing_site", "ambiguous_quote",
-            "policy_tightened", "stale_quote", "lost_ack")],
+            "policy_tightened", "stale_quote", "lost_ack", "forged_claim", "mismatched_status")],
     }
 
 
