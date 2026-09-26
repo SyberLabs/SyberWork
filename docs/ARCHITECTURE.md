@@ -33,3 +33,5 @@ For each past proposal, replay evaluates a selected new contract and policy agai
 ## Integration
 
 HTTP sources and effects are bound by administrator-installed definitions and do not accept an LLM-provided destination URL. Authorization headers use environment variable names in definitions; secrets never enter the contract. Cross-origin redirects are blocked. Model suggestions are proposals accepted under separate model-bearing credentials, never direct network effects. The included `reference_system.py` is one fully running integration; SyberRuntime, Barn, OmniOS, and customer tools require explicit adapters matching their authority and event semantics before their behavior can be claimed as integrated.
+
+The [`economic_http` effect](ECONOMIC_ACTIONS.md) adds exact atomic units and a cross-case budget reservation to this same admission boundary. Its trusted settlement service is a separate authority; SyberWork records that service's matching receipt and status assertion, not independent blockchain finality.

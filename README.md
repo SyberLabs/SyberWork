@@ -61,13 +61,17 @@ This output only creates a proposal. Admission rechecks the bound observation, g
 
 The case SQLite database is authoritative for *SyberWork decisions and observed responses*. The source systems remain authoritative for inventory, quotes, and purchase orders. An observation stores its source, record version, observed value, observation time, and whether it came from a configured connector. An action rechecks admission when committed. The reference destination checks the quote version at write time. For an unknown result, a manager may trigger the installed destination status lookup. SyberWork requires a committed record with the original idempotency key and exact request digest before recording verified success. A 404 remains pending and blocks another effect of the same action; a manager cannot assert success with a text reference. Explicit adapter-declared no-write precondition rejections can release a fresh proposal. See [reconciliation contract](docs/RECONCILIATION.md).
 
+## Economic actions
+
+An administrator can install an `economic_http` action with a fixed settlement service URL, same-origin status lookup, asset, rail and counterparty. Its global policy gives the action an exact atomic-unit limit and a budget shared across cases. The contract binds `amount_units` to a verified quote and requires evidence observations; a proposed `purchase_capability` or `transfer` includes their hashes, purpose and expiry. Barn checks these again at commit, reserves budget atomically, and only then invokes the settlement service. A missing or mismatched receipt remains uncertain and keeps the reservation until destination status proves the outcome. The [economic action contract](docs/ECONOMIC_ACTIONS.md) includes the wire requirements and limits. The tests run against a local settlement simulator and move no funds. This adapter is not an x402 implementation or on-chain finality verifier.
+
 ## Verification
 
 ```sh
 PYTHONPATH=. python -m unittest discover -s tests -v
 ```
 
-The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, and an HTTP effect with its idempotency key. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems or policies have been integrated correctly.
+The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, an HTTP effect with its idempotency key, and simulated economic settlements with shared budgets and reconciliation. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems, payment provider or policies have been integrated correctly.
 
 ## Resolution tasks
 

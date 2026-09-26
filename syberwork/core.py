@@ -24,6 +24,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from . import economic
+
 
 def canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -95,6 +97,10 @@ class Work:
                     case_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
                     body TEXT NOT NULL, at REAL NOT NULL, previous TEXT NOT NULL,
                     hash TEXT NOT NULL, PRIMARY KEY(case_id,seq));
+                CREATE TABLE IF NOT EXISTS economic_reservations (
+                    proposal_id TEXT PRIMARY KEY, case_id TEXT NOT NULL,
+                    budget_id TEXT NOT NULL, asset TEXT NOT NULL,
+                    amount_units INTEGER NOT NULL, state TEXT NOT NULL);
             """)
 
     @contextmanager
@@ -209,18 +215,65 @@ class Work:
                 raise Rejected("immutable_policy", "publish a new version")
             if current is not None and doc["version"] < current and not prior:
                 raise Rejected("policy_version", "new policy version must advance")
+            if prior:
+                return
+            budgets = {}
+            for existing in db.execute("SELECT body FROM policies"):
+                for rule in json.loads(existing["body"])["actions"].values():
+                    economic_rule = rule.get("economic") if isinstance(rule, dict) else None
+                    if isinstance(economic_rule, dict):
+                        key = economic_rule.get("budget_id")
+                        amount = economic.units(economic_rule.get("budget_units"))
+                        if isinstance(key, str) and amount is not None:
+                            earlier = budgets.get(key)
+                            if earlier and earlier[0] != economic_rule.get("asset"):
+                                raise Rejected("invalid_policy", "budget_id cannot change asset")
+                            budgets[key] = (economic_rule.get("asset"), min(amount, earlier[1]) if earlier else amount)
+            in_version = {}
+            for rule in doc["actions"].values():
+                economic_rule = rule.get("economic") if isinstance(rule, dict) else None
+                if economic_rule is None:
+                    continue
+                if not isinstance(economic_rule, dict):
+                    raise Rejected("invalid_policy", "economic rule must be an object")
+                key = economic_rule.get("budget_id")
+                asset = economic_rule.get("asset")
+                amount = economic.units(economic_rule.get("budget_units"))
+                if not isinstance(key, str) or not key or not isinstance(asset, str) or not asset or amount is None:
+                    raise Rejected("invalid_policy", "budget_id, asset and exact budget_units required")
+                counterparties = economic_rule.get("counterparties")
+                if (not isinstance(counterparties, list) or not counterparties or
+                        any(not isinstance(item, str) or not item for item in counterparties) or
+                        len(set(counterparties)) != len(counterparties)):
+                    raise Rejected("invalid_policy", "counterparties must be a nonempty list of unique identifiers")
+                if (not isinstance(economic_rule.get("rail"), str) or not economic_rule["rail"] or
+                        economic.units(economic_rule.get("max_amount_units")) is None):
+                    raise Rejected("invalid_policy", "rail and exact max_amount_units required")
+                if key in in_version and in_version[key] != (asset, amount):
+                    raise Rejected("invalid_policy", "budget_id must have one asset and cap per policy version")
+                in_version[key] = (asset, amount)
+                if key in budgets and (budgets[key][0] != asset or amount > budgets[key][1]):
+                    raise Rejected("invalid_policy", "budget_id cannot change asset or increase allocation")
             db.execute("INSERT OR IGNORE INTO policies VALUES (?,?)", (doc["version"], canonical(doc)))
 
     def install_action(self, name: str, doc: dict) -> None:
-        if doc.get("kind") not in ("local", "http"):
-            raise Rejected("invalid_action", "action kind must be local or http")
-        if doc["kind"] == "http":
+        if doc.get("kind") not in ("local", "http", "economic_http"):
+            raise Rejected("invalid_action", "action kind must be local, http or economic_http")
+        if doc["kind"] in ("http", "economic_http"):
             origin = trusted_origin(doc.get("url", ""))
-            if doc.get("method", "POST") not in ("POST", "PUT", "PATCH"):
+            if doc.get("method", "POST") not in (("POST",) if doc["kind"] == "economic_http" else ("POST", "PUT", "PATCH")):
                 raise Rejected("invalid_action", "HTTP method must write")
+        if doc["kind"] == "economic_http":
+            if (not isinstance(doc.get("asset"), str) or not doc["asset"] or
+                    not isinstance(doc.get("rail"), str) or not doc["rail"] or
+                    not isinstance(doc.get("counterparty"), str) or not doc["counterparty"] or
+                    doc.get("operation") not in ("purchase_capability", "transfer") or
+                    not doc.get("status_url") or
+                    (origin[0] == "https" and not doc.get("auth_env"))):
+                raise Rejected("invalid_action", "economic adapter needs asset, rail, counterparty, credential and status lookup")
         status_url = doc.get("status_url")
         if status_url is not None:
-            if (doc["kind"] != "http" or trusted_origin(status_url) != origin or
+            if (doc["kind"] not in ("http", "economic_http") or trusted_origin(status_url) != origin or
                     status_url.count("{key}") != 1 or
                     urlsplit(status_url).path.count("{key}") != 1 or
                     any(c in status_url.replace("{key}", "") for c in "{}")):
@@ -388,7 +441,7 @@ class Work:
                 if event["kind"] != "effect_started" or event["body"]["proposal_id"] in rejected:
                     continue
                 action = db.execute("SELECT body FROM actions WHERE name=?", (event["body"]["action"],)).fetchone()
-                if action and json.loads(action["body"])["kind"] == "http":
+                if action and json.loads(action["body"])["kind"] in ("http", "economic_http"):
                     raise Rejected("cancellation_denied", "an external effect was claimed; verify its outcome first")
             return self._append(db, case_id, "case_cancelled", {"actor": actor, "role": contract.get("cancel_role", "manager"), "reason": reason.strip()})
 
@@ -538,25 +591,55 @@ class Work:
                 self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision})
                 return {"decision": decision}
             action = json.loads(db.execute("SELECT body FROM actions WHERE name=?", (proposal["action"],)).fetchone()["body"])
-            claim = self._append(db, case_id, "effect_started", {"proposal_id": proposal_id, "action": proposal["action"], "actor": actor, "policy_version": policy["version"], "idempotency_key": proposal_id})
+            extra = {}
+            if action["kind"] == "economic_http":
+                rule = policy["actions"][proposal["action"]]["economic"]
+                db.execute("INSERT INTO economic_reservations VALUES (?,?,?,?,?,?)", (
+                    proposal_id, case_id, rule["budget_id"], action["asset"],
+                    economic.units(proposal["args"]["amount_units"]), "reserved"))
+                extra = {"policy_snapshot": digest(policy),
+                         "evidence_snapshot": digest(proposal["args"]["evidence"]),
+                         "intent_snapshot": digest(proposal["args"]),
+                         "budget_id": rule["budget_id"]}
+            claim = self._append(db, case_id, "effect_started", {"proposal_id": proposal_id, "action": proposal["action"], "actor": actor, "policy_version": policy["version"], "idempotency_key": proposal_id, **extra})
         try:
             output = self._execute(action, proposal["args"], proposal_id)
         except urllib.error.HTTPError as exc:
             if exc.code in action.get("no_write_statuses", []):
                 with self.tx() as db:
+                    settled = next((e for e in self._events(db, case_id) if verified_reconciliation(e) and
+                                    e["body"]["proposal_id"] == proposal_id), None)
+                    if settled:
+                        return {"status": "succeeded", "event": settled}
+                    if action["kind"] == "economic_http":
+                        db.execute("UPDATE economic_reservations SET state='released' WHERE proposal_id=?", (proposal_id,))
                     event = self._append(db, case_id, "effect_rejected", {
                         "proposal_id": proposal_id, "action": proposal["action"],
                         "status": exc.code, "claim_hash": claim["hash"],
                     })
                 return {"status": "rejected", "event": event}
             with self.tx() as db:
+                settled = next((e for e in self._events(db, case_id) if verified_reconciliation(e) and
+                                e["body"]["proposal_id"] == proposal_id), None)
+                if settled:
+                    return {"status": "succeeded", "event": settled}
                 self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": str(exc)[:400]})
             return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         except Exception as exc:
             with self.tx() as db:
+                settled = next((e for e in self._events(db, case_id) if verified_reconciliation(e) and
+                                e["body"]["proposal_id"] == proposal_id), None)
+                if settled:
+                    return {"status": "succeeded", "event": settled}
                 self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": str(exc)[:400]})
             return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         with self.tx() as db:
+            settled = next((e for e in self._events(db, case_id) if verified_reconciliation(e) and
+                            e["body"]["proposal_id"] == proposal_id), None)
+            if settled:
+                return {"status": "succeeded", "event": settled}
+            if action["kind"] == "economic_http":
+                db.execute("UPDATE economic_reservations SET state='settled' WHERE proposal_id=?", (proposal_id,))
             result = self._append(db, case_id, "effect_succeeded", {"proposal_id": proposal_id, "action": proposal["action"], "output": output, "claim_hash": claim["hash"]})
         return {"status": "succeeded", "event": result}
 
@@ -569,8 +652,9 @@ class Work:
         with self.tx() as db:
             history = self._events(db, case_id)
             proposal = self._proposal(history, proposal_id)
-            if not any(e["kind"] == "effect_unknown" and e["body"]["proposal_id"] == proposal_id for e in history):
-                raise Rejected("reconciliation_denied", "no unknown effect")
+            if not any(e["kind"] in ("effect_started", "effect_unknown") and e["body"]["proposal_id"] == proposal_id for e in history) or any(
+                    e["kind"] in ("effect_succeeded", "effect_rejected") and e["body"]["proposal_id"] == proposal_id for e in history):
+                raise Rejected("reconciliation_denied", "no unresolved effect")
             if any(verified_reconciliation(e) and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("reconciliation_denied", "already reconciled")
             config = json.loads(db.execute("SELECT body FROM actions WHERE name=?", (proposal["action"],)).fetchone()["body"])
@@ -597,10 +681,13 @@ class Work:
         except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
             status, reason, record = "pending", "status_unavailable", None
         else:
-            if (isinstance(record, dict) and record.get("state") == "committed"
-                    and record.get("idempotency_key") == proposal_id
-                    and record.get("request_digest") == digest(proposal["args"])
-                    and isinstance(record.get("external_id"), str) and record["external_id"]):
+            if ((config["kind"] == "economic_http" and economic.receipt_matches(
+                    record, proposal_id, proposal["args"], digest(proposal["args"]))) or
+                    (config["kind"] != "economic_http" and isinstance(record, dict) and
+                     record.get("state") == "committed" and
+                     record.get("idempotency_key") == proposal_id and
+                     record.get("request_digest") == digest(proposal["args"]) and
+                     isinstance(record.get("external_id"), str) and record["external_id"])):
                 status, reason = "verified", "destination_record_matched"
             else:
                 status, reason = "unverified", "destination_record_mismatch"
@@ -608,10 +695,18 @@ class Work:
             history = self._events(db, case_id)
             if any(verified_reconciliation(e) and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("reconciliation_denied", "already reconciled")
+            if any(e["kind"] in ("effect_succeeded", "effect_rejected") and
+                   e["body"]["proposal_id"] == proposal_id for e in history):
+                raise Rejected("reconciliation_denied", "effect resolved during status lookup")
             if status == "verified":
+                if config["kind"] == "economic_http":
+                    db.execute("UPDATE economic_reservations SET state='settled' WHERE proposal_id=? AND state='reserved'", (proposal_id,))
                 proof = {"verified": True, "external_id": record["external_id"],
                          "request_digest": record["request_digest"], "response_digest": digest(record),
                          "idempotency_key": proposal_id}
+                if config["kind"] == "economic_http":
+                    proof.update({"amount_units": record["amount_units"], "asset": record["asset"],
+                                  "counterparty": record["counterparty"], "rail": config["rail"]})
                 event = self._append(db, case_id, "reconciled", {
                     "proposal_id": proposal_id, "action": proposal["action"],
                     "success": True, "proof": proof, "actor": actor,
@@ -704,6 +799,11 @@ class Work:
         req = urllib.request.Request(action["url"], data=canonical(args).encode(), headers=headers, method=action.get("method", "POST"))
         with HTTP.open(req, timeout=min(30, action.get("timeout_seconds", 10))) as response:
             raw = response.read(32768)
+            if action["kind"] == "economic_http":
+                record = json.loads(raw)
+                if not economic.receipt_matches(record, key, args, digest(args)):
+                    raise ValueError("settlement receipt does not match the authorized intent")
+                return {"settlement": record}
             return {"status": response.status, "body": raw.decode("utf-8", errors="replace")}
 
     @staticmethod
@@ -764,8 +864,10 @@ class Work:
             return deny("action_not_in_contract")
         if action not in policy["actions"]:
             return deny("action_not_in_global_policy")
-        if not db.execute("SELECT 1 FROM actions WHERE name=?", (action,)).fetchone():
+        installed = db.execute("SELECT body FROM actions WHERE name=?", (action,)).fetchone()
+        if not installed:
             return deny("action_not_installed")
+        config = json.loads(installed["body"])
         local, global_rule = contract["actions"][action], policy["actions"][action]
         if not set(global_rule.get("roles", [])).intersection(proposal["roles"]):
             return deny("actor_role_missing")
@@ -787,13 +889,13 @@ class Work:
         if any(e["kind"] == "effect_succeeded" and e["body"]["action"] == action or
                verified_reconciliation(e) and e["body"]["action"] == action for e in history):
             return deny("action_already_completed")
-        proposals = {e["body"]["id"]: e["body"]["action"] for e in history if e["kind"] == "proposed"}
-        verified_ids = {e["body"]["proposal_id"] for e in history if verified_reconciliation(e)}
+        terminal_ids = {e["body"]["proposal_id"] for e in history if
+                        e["kind"] in ("effect_succeeded", "effect_rejected") or verified_reconciliation(e)}
         for event in history:
-            if event["kind"] != "effect_unknown":
+            if event["kind"] != "effect_started":
                 continue
             effect = event["body"]
-            if effect.get("action", proposals.get(effect["proposal_id"])) == action and effect["proposal_id"] not in verified_ids:
+            if effect["action"] == action and effect["proposal_id"] not in terminal_ids:
                 return deny("effect_unresolved:" + action)
         for rule in (global_rule, local):
             if "max_amount" in rule:
@@ -836,6 +938,12 @@ class Work:
                     expected = expected.get(component) if isinstance(expected, dict) else None
                 if not fact or expected is None or param not in args or args[param] != expected:
                     return deny("argument_provenance:" + param)
+        if config["kind"] == "economic_http":
+            reason = economic.admit(db, config, global_rule, local, history, args, now)
+            if reason:
+                return deny(reason)
+        elif "economic" in global_rule:
+            return deny("economic_adapter_required")
         for role in self._approval_roles(contract, policy, action):
             if not any(e["kind"] == "approved" and e["body"].get("proposal_id") == proposal["id"] and e["body"]["role"] == role and e["body"].get("args_hash") == digest(args) for e in history):
                 return {"status": "needs_approval", "reason": "approval_required:" + role}
