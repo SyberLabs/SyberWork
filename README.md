@@ -20,7 +20,7 @@ PYTHONPATH=. python examples/release_gate.py
 
 A project installs a contract, a policy, and local actions on `syberlabs.Session`, then observes, proposes, commits, approves, signs, explains, and replays. `Session.commit` runs admission again and only then records a local effect. `explain_admission` returns the deciding rule and its provenance and does not write them into the hash chain. HTTP effects and economic reservations stay on `syberwork.Work`.
 
-`examples/access_review.py` is a second project: a quarterly access review. Development notes and a comparison with OPA, Cedar, in-toto, Temporal, and agent frameworks are in [docs/SDK_FEEDBACK.md](docs/SDK_FEEDBACK.md).
+`examples/access_review.py` is a second project: a quarterly access review. Development notes are in [docs/SDK_FEEDBACK.md](docs/SDK_FEEDBACK.md). The standards gap and the order to close it are in [docs/SDK_REDTEAM.md](docs/SDK_REDTEAM.md).
 
 ```sh
 PYTHONPATH=. python examples/access_review.py

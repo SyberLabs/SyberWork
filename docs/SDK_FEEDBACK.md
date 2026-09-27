@@ -66,3 +66,5 @@ What this SDK is for: a host application that already has its own data, and need
 What it is not for: general authorization (use Cedar or OPA), durable workflow execution (use Temporal or Restate), relationship tuples (use SpiceDB), or a multi-language client generated from these schemas. Those do not exist here.
 
 The access-review project is the kind of fit that works today: a few named actions, facts from a system the host already trusts, one approval, and a signature. A project that needs retries, worker failover, or a policy language with its own tooling should not start here.
+
+The standards gap, the red-team findings, and the order to close them are in [SDK_REDTEAM.md](SDK_REDTEAM.md).
