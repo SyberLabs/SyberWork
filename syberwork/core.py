@@ -18,6 +18,7 @@ from syberlabs.canonical import canonical, digest
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import verified_reconciliation
+from syberlabs.planner import HttpPlanner
 from syberlabs.values import at_path
 
 __all__ = ["Rejected", "Work", "canonical", "digest", "trusted_origin"]
@@ -456,33 +457,23 @@ class Work:
                 args[param] = value
         return self.propose(case_id, action, args, actor, roles, origin="compiled")
 
-    def model_propose(self, case_id: str, actor: str, roles: list[str]) -> dict:
-        """Ask a configured planner for JSON; all output still passes through admission."""
-        import os
+    def model_propose(self, case_id: str, actor: str, roles: list[str], *, planner=None) -> dict:
+        """Ask a planner for JSON; all output still passes through admission."""
         if "model" not in roles:
             raise Rejected("origin_denied", "model proposer credential required")
-        target = os.getenv("SYBERWORK_PLANNER_URL", "")
-        if not target.startswith(("https://", "http://127.0.0.1:")):
-            raise Rejected("planner_unconfigured", "configure an HTTPS or local planner endpoint")
+        if planner is None:
+            planner = HttpPlanner()
+        if isinstance(planner, HttpPlanner):
+            planner.ensure_configured()
         case = self.inspect(case_id)
-        request_body = {"objective": case["contract"].get("title", case["contract"]["id"]),
-                        "allowed_actions": list(case["contract"]["actions"]),
-                        "contract": case["contract"], "events": case["events"],
-                        "acceptance": case["acceptance"]}
-        headers = {"Content-Type": "application/json"}
-        if os.getenv("SYBERWORK_PLANNER_TOKEN"):
-            headers["Authorization"] = "Bearer " + os.environ["SYBERWORK_PLANNER_TOKEN"]
-        request = urllib.request.Request(target, data=canonical(request_body).encode(), headers=headers, method="POST")
-        try:
-            with HTTP.open(request, timeout=30) as response:
-                raw = response.read(1024 * 1024 + 1)
-            if len(raw) > 1024 * 1024:
-                raise Rejected("planner_size", "planner response exceeds 1 MB")
-            suggestion = json.loads(raw)
-            if not isinstance(suggestion, dict) or not isinstance(suggestion.get("action"), str) or not isinstance(suggestion.get("args"), dict):
-                raise Rejected("planner_shape", "planner must return {action, args}")
-        except (urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise Rejected("planner_unavailable", str(exc)[:200]) from exc
+        suggestion = planner.propose({
+            "objective": case["contract"].get("title", case["contract"]["id"]),
+            "allowed_actions": list(case["contract"]["actions"]),
+            "contract": case["contract"], "events": case["events"],
+            "acceptance": case["acceptance"],
+        })
+        if not isinstance(suggestion, dict) or not isinstance(suggestion.get("action"), str) or not isinstance(suggestion.get("args"), dict):
+            raise Rejected("planner_shape", "planner must return {action, args}")
         return self.propose(case_id, suggestion["action"], suggestion["args"], actor, roles, origin="model")
 
     def approve(self, case_id: str, proposal_id: str, actor: str, roles: list[str]) -> dict:
