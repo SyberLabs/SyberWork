@@ -27,3 +27,5 @@ The schemas describe SyberWork as it behaves. They are not enforced at runtime. 
 12. **The checker treats only a non-bool `int` as `integer`.** That matches `type(value) is int` in `create_case`. Draft 2020-12 would also accept `1.0`.
 
 13. **`trusted_origin` is not encoded as a pattern.** It rejects userinfo, fragments, missing paths, and non-loopback HTTP by parsing the URL. The action schema only requires a string URL for `kind: http`.
+
+14. **The deciding rule name is not part of the stored decision.** `syberlabs.admission.admit` returns `rule` for inspection, including module, symbol, and line via `rule_provenance`. `Work._admit` drops `rule` before the decision is returned or appended, so decision events stay `{proposal_id, policy_version, status, reason}` plus an optional `phase`. Putting a source path or line number in the hash would make replay report a difference that is not semantic.

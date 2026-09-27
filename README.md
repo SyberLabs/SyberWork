@@ -8,6 +8,8 @@
 
 This is a running application, with a browser operator console, a versioned contract studio, a policy boundary, source-system readers, action executors, an external planner interface, human approval, completion checks, and amendment replay. It is separate from SyberLabs' existing `cross-platform` instrument panel: the panel inspects existing research systems; SyberWork executes contracts.
 
+The `syberlabs` package is the reusable core: canonical JSON, the event hash chain, the admission rules, and the planner interface. `syberwork` is the application: storage, the HTTP API, the CLI, the console, and connectors. `syberlabs` does not import `syberwork`. Both install from this repository at one version. The protocol those objects follow is `sdk.syberlabs.space/v0alpha1` in `spec/`.
+
 ## Start
 
 Python 3.11 or newer; no runtime dependencies. In the project directory:
@@ -46,7 +48,7 @@ To run a planner, set `SYBERWORK_PLANNER_URL` to an HTTPS or loopback endpoint a
 {"action":"record_review","args":{"part_number":"P-104"}}
 ```
 
-This output only creates a proposal. Admission rechecks the bound observation, global policy, roles, prior effects, and required approval. The planner receives no executor credential. The `scheduler` credential generates the next proposed compiled step directly from fact bindings; neither proposer can bypass the case API.
+This output only creates a proposal. Admission rechecks the bound observation, global policy, roles, prior effects, and required approval. The planner receives no executor credential. The configured endpoint is the `HttpPlanner` behind the `syberlabs` planner interface; a planner cannot do anything except return `{action, args}`. The `scheduler` credential generates the next proposed compiled step directly from fact bindings; neither proposer can bypass the case API.
 
 ## API and data ownership
 
@@ -65,7 +67,10 @@ The case SQLite database is authoritative for *SyberWork decisions and observed 
 
 ```sh
 PYTHONPATH=. python -m unittest discover -s tests -v
+PYTHONPATH=. python -m conformance.run
 ```
+
+`conformance/run` recaptures the case-study and admission traces and diffs them against `conformance/golden`. It exits nonzero on any difference. The unit tests include a case database created on `main` (`a2f909b`) and check that `verify_chain` and `replay` still accept it.
 
 The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, and an HTTP effect with its idempotency key. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems or policies have been integrated correctly.
 
