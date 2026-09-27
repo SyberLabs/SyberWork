@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from syberlabs.admission import admit, approval_roles
+from syberlabs.admission import AdmissionContext, admit, approval_roles
 from syberlabs.canonical import canonical, digest
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
@@ -725,9 +725,9 @@ class Work:
         return approval_roles(contract, policy, action)
 
     def _admit(self, contract, policy, history, proposal, now, db):
-        def action_installed(name):
-            return db.execute("SELECT 1 FROM actions WHERE name=?", (name,)).fetchone() is not None
-        return admit(contract, policy, history, proposal, now, action_installed)
+        installed = {row["name"] for row in db.execute("SELECT name FROM actions")}
+        decision = admit(AdmissionContext(contract, policy, history, proposal, now, installed))
+        return {"status": decision["status"], "reason": decision["reason"]}
 
     @staticmethod
     def _acceptance(contract, history):
