@@ -643,6 +643,14 @@ class Work:
                     "acceptance_after": self._acceptance(contract, events),
                     "note": "Counterfactual against captured case events; does not re-read or mutate external systems"}
 
+    def submit_witness(self, case_id: str, client) -> dict:
+        """Ask an external witness to sign this case. This store has no signing seed."""
+        if not self.verify_chain(case_id):
+            raise Rejected("invalid_chain", "case history does not verify")
+        with self.tx() as db:
+            events = self._events(db, case_id)
+        return client.submit(events)
+
     def verify_chain(self, case_id: str) -> bool:
         with self.tx() as db:
             events = self._events(db, case_id)

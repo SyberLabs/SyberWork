@@ -33,3 +33,5 @@ The schemas describe SyberWork as it behaves. They are not enforced at runtime e
 15. **Economic reservations are application state.** `economic.reserve` returns no decision for an action that is not `economic_http` and whose policy has no `economic` block, so non-economic traces stay the same. A committed `economic_http` effect stores `budget_id` and three snapshot digests on `effect_started` only. The budget total lives in `economic_reservations`, which is not part of the hash chain.
 
 16. **`at` has two stored forms.** New events hash an integer microsecond timestamp. The SQLite column is still `REAL`, so the integer is also stored in `at_json` and that text is what verify reads back. Older rows leave `at_json` null and keep the float that was hashed. An integer compared with a fact age or an economic expiry is divided by 1,000,000. A float is already seconds. `due_at` and `expires_at` stay seconds.
+
+17. **The witness process is not a separate OS user.** `WitnessClient` has no seed and opens the log with SQLite `mode=ro`. A process running as the same user can still open that file writable. The witness rechecks hash links; it does not re-run admission.

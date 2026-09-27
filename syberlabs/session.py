@@ -305,6 +305,14 @@ class Session:
             return False
         return _side_matches(events, self._side.get(case_id, {}))
 
+    def submit_witness(self, case_id: str, client) -> dict:
+        """Ask an external witness to sign this case. This session has no signing seed."""
+        with self._lock:
+            if not self.verify_chain(case_id):
+                raise Rejected("invalid_chain", "case history does not verify")
+            events = json.loads(json.dumps(self.events[case_id]))
+        return client.submit(events)
+
     @_guard
     def side_channel(self, case_id: str) -> list[dict]:
         """JCS digest and deciding rule id for each event. Neither is in the event hash."""

@@ -14,6 +14,7 @@ import sqlite3
 import threading
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import quote
 
 from syberlabs.canonical import canonical
 from syberlabs.dsse import CHECKPOINT_TYPE, sign_dsse, verified_payload, verify_chain_head
@@ -111,17 +112,50 @@ class TransparencyLog:
             self._db.close()
             raise
 
+    @classmethod
+    def open_readonly(cls, path: str | Path, public: bytes) -> "TransparencyLog":
+        """Open a log for inclusion checks. This object cannot append, and it has no signing seed."""
+        if not isinstance(public, bytes) or len(public) != 32:
+            raise Rejected("invalid_witness", "witness public key must be 32 bytes")
+        log = cls.__new__(cls)
+        log.path = str(path)
+        log._lock = threading.Lock()
+        log._seed = None
+        log.public = public
+        log._db = None
+        uri = "file:" + quote(Path(path).resolve().as_posix(), safe="/:") + "?mode=ro"
+        try:
+            log._db = sqlite3.connect(uri, uri=True, timeout=15, isolation_level=None, check_same_thread=False)
+            log._db.row_factory = sqlite3.Row
+            if log._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cases'").fetchone():
+                raise Rejected("log_path", "transparency log must be a different file from the case database")
+            if not log._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='leaves'").fetchone():
+                raise Rejected("log_path", "transparency log is not readable")
+        except Rejected:
+            if log._db is not None:
+                log._db.close()
+            raise
+        except sqlite3.Error:
+            if log._db is not None:
+                log._db.close()
+            raise Rejected("log_path", "transparency log is not readable") from None
+        return log
+
     def close(self) -> None:
-        self._db.close()
+        if self._db is not None:
+            self._db.close()
 
     def __del__(self):
         try:
-            self._db.close()
+            if self._db is not None:
+                self._db.close()
         except Exception:
             pass
 
     def append(self, envelope: Mapping) -> int:
         """Append a chain-head envelope that verifies under this log's key. Returns the index."""
+        if self._seed is None:
+            raise Rejected("log_readonly", "the case writer cannot append to the witness log")
         if verified_payload(envelope, self.public, "application/vnd.syberlabs.chain-head+json") is None:
             raise Rejected("invalid_witness", "chain-head signature does not verify")
         body = canonical(dict(envelope))

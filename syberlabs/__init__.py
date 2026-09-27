@@ -12,11 +12,14 @@ from syberlabs.mappings import translate_stabilize
 from syberlabs.session import Session
 from syberlabs.targets import trusted_origin
 from syberlabs.tlog import TransparencyLog
+from syberlabs.witness import Witness, WitnessClient
 
 __all__ = [
     "Rejected",
     "Session",
     "TransparencyLog",
+    "Witness",
+    "WitnessClient",
     "at_microseconds",
     "canonical",
     "cloudevent",
