@@ -1,6 +1,4 @@
-> **SYBERLABS TECHNICAL PRIORITY #1 — JEV INTEGRATION**
-> JEV integration is SyberLabs' number one technical priority and portfolio-wide focus across every project.
-> **We are actively recruiting engineers with hands-on JEV experience.**
+> **Provider direction:** SyberLabs is migrating existing bounded decisions from Jev to Kev. This repository has no active Kev provider call.
 
 # SyberWork
 
