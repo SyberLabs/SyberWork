@@ -1,8 +1,9 @@
-"""Exports that sit beside the hash chain. They do not change event bytes.
+"""Exports that sit beside the hash chain.
 
-CloudEvents is the envelope other systems already route. The witness is
-HMAC-SHA256 over the chain head, with a key the caller keeps. It is not
-a public-key DSSE signature and it is not a transparency-log entry.
+CloudEvents is the envelope other systems already route. ``witness`` is
+HMAC-SHA256 over the chain head, with a key the caller keeps. The public-key
+signature is ``sign_chain_head`` in ``syberlabs.dsse``. Neither object is an
+event, and neither is written into the case database.
 """
 
 from __future__ import annotations
@@ -12,16 +13,14 @@ import hmac
 from typing import Mapping
 
 from syberlabs.canonical import canonical
+from syberlabs.clock import at_microseconds
 from syberlabs.events import DIGEST_FIELDS, GENESIS
 from syberlabs.protocol import SIDE_PROTOCOL
 
 
 CLOUD_EVENT_SOURCE = "https://sdk.syberlabs.space/v0alpha1"
 
-
-def at_microseconds(at: float) -> int:
-    """Integer microseconds for export. The stored ``at`` float stays in the hash."""
-    return int(round(float(at) * 1_000_000))
+__all__ = ["at_microseconds", "cloudevent", "witness", "witness_matches"]
 
 
 def cloudevent(event: Mapping) -> dict:

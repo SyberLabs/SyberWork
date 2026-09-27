@@ -159,7 +159,7 @@ class IndustrialStore(unittest.TestCase):
         self.assertEqual(row["jcs"], envelope_jcs(decision))
         self.assertEqual(len(row["jcs"]), 64)
         self.assertTrue(session.verify_chain(case_id))
-        self.assertEqual(SIDE_PROTOCOL, "sdk.syberlabs.space/v0alpha1+jcs1")
+        self.assertEqual(SIDE_PROTOCOL, "sdk.syberlabs.space/v0alpha1+jcs1+us")
 
     def test_signoff_requires_a_different_actor_only_after_the_effect(self):
         session = self._session()

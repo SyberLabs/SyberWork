@@ -2,9 +2,9 @@ SyberLabs SDK development benchmark
 unit: microseconds per call, median and p95
 
 operation                     n    median_us       p95_us  note
-session.complete_case       100        538.1        577.2  steady session, full review
-work.complete_case           40      25879.9      38568.3  one SQLite connection, same contract
-admit.allowed              2000          3.6          4.4  one allowed decision, empty history
-explain.allowed            1000          3.8          4.1  admit plus cached provenance
-session.verify_chain         20       2724.8       2825.1  500 observations
-verify_events                20       2728.8       2842.6  501 events, no session lookup
+session.complete_case       100        536.2        597.2  steady session, full review
+work.complete_case           40      37377.1      49658.6  one SQLite connection, same contract
+admit.allowed              2000          3.5          4.1  one allowed decision, empty history
+explain.allowed            1000          3.8          4.2  admit plus cached provenance
+session.verify_chain         20      10246.8      10492.4  500 observations
+verify_events                20       2552.7       2673.1  501 events, no session lookup

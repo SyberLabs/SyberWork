@@ -10,7 +10,7 @@ from typing import Any, Mapping, Protocol
 
 from syberlabs.canonical import canonical
 from syberlabs.errors import Rejected
-from syberlabs.targets import trusted_origin
+from syberlabs.targets import guard_request, trusted_origin
 
 
 class PlannerRefusal(Rejected):
@@ -66,6 +66,7 @@ class HttpPlanner:
 
     def propose(self, context: Mapping[str, Any]) -> dict[str, Any]:
         target = self.ensure_configured()
+        guard_request(target)
         headers = {"Content-Type": "application/json"}
         if os.getenv("SYBERWORK_PLANNER_TOKEN"):
             headers["Authorization"] = "Bearer " + os.environ["SYBERWORK_PLANNER_TOKEN"]

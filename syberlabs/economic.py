@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 
+from syberlabs.clock import as_seconds
 from syberlabs.errors import Rejected
 
 
@@ -86,6 +87,7 @@ def validate_policy_budgets(doc: dict, prior_docs: Sequence[dict]) -> None:
 
 def denial(config, policy_action, local, history, args, now, budget_reserved: Callable[[str, str], int] | None):
     """Return a denial reason or None. Caller already checked source freshness."""
+    now = as_seconds(now)
     economic = policy_action.get("economic")
     if not isinstance(economic, dict):
         return "economic_policy_missing"

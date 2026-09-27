@@ -15,6 +15,7 @@ from typing import Any, Callable
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
 from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
+from syberlabs.clock import stamp
 from syberlabs.contracts import check_case_inputs, prepare_contract
 from syberlabs.economic import policy_has_economic, validate_policy_budgets
 from syberlabs.errors import Rejected
@@ -356,7 +357,7 @@ class Session:
             "seq": previous["seq"] + 1 if previous else 1,
             "kind": kind,
             "body": body,
-            "at": self.clock(),
+            "at": stamp(self.clock()),
             "previous": previous["hash"] if previous else "0" * 64,
         }
         event["hash"] = event_digest(event)

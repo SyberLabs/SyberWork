@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/v0alpha1/event.schema.json",
   "title": "Event",
-  "description": "Hash-chain envelope. Protocol sdk.syberlabs.space/v0alpha1. The digest covers case_id, seq, kind, body, at, and previous, in canonical JSON. hash is stored beside that object and is not an input to itself.",
+  "description": "Hash-chain envelope. Protocol sdk.syberlabs.space/v0alpha1. The digest covers case_id, seq, kind, body, at, and previous, in canonical JSON. hash is stored beside that object and is not an input to itself. New events store at as integer microseconds. Events written earlier store at as float seconds. Both forms are the digest input for the row that carries them.",
   "type": "object",
   "additionalProperties": false,
   "required": ["case_id", "seq", "kind", "body", "at", "previous", "hash"],

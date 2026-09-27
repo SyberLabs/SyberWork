@@ -6,7 +6,7 @@ from typing import Any, Literal, TypedDict
 
 
 # Side channel beside the hash chain. Not an input to event_digest.
-SIDE_PROTOCOL = "sdk.syberlabs.space/v0alpha1+jcs1"
+SIDE_PROTOCOL = "sdk.syberlabs.space/v0alpha1+jcs1+us"
 
 
 AdmissionStatus = Literal["allowed", "needs_approval", "denied"]
@@ -52,6 +52,6 @@ class Event(TypedDict):
     seq: int
     kind: str
     body: dict[str, Any]
-    at: float
+    at: float | int
     previous: str
     hash: str

@@ -17,6 +17,7 @@ from urllib.parse import quote, urlsplit
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
 from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
+from syberlabs.clock import stamp
 from syberlabs.contracts import check_case_inputs, compile_path, prepare_contract
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
@@ -24,7 +25,7 @@ from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import acceptance_results, signer_is_effect_actor, verified_reconciliation
 from syberlabs.jcs import envelope_jcs
 from syberlabs.planner import HttpPlanner, planning_context
-from syberlabs.targets import trusted_origin
+from syberlabs.targets import guard_request, trusted_origin
 from syberlabs.values import at_path
 
 __all__ = ["Rejected", "Work", "canonical", "digest", "trusted_origin"]
@@ -77,7 +78,7 @@ class Work:
                 CREATE TABLE IF NOT EXISTS events (
                     case_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
                     body TEXT NOT NULL, at REAL NOT NULL, previous TEXT NOT NULL,
-                    hash TEXT NOT NULL, PRIMARY KEY(case_id,seq));
+                    hash TEXT NOT NULL, at_json TEXT, PRIMARY KEY(case_id,seq));
                 CREATE TABLE IF NOT EXISTS economic_reservations (
                     proposal_id TEXT PRIMARY KEY, case_id TEXT NOT NULL,
                     budget_id TEXT NOT NULL, asset TEXT NOT NULL,
@@ -86,6 +87,9 @@ class Work:
                     case_id TEXT NOT NULL, seq INTEGER NOT NULL,
                     jcs TEXT, rule TEXT, PRIMARY KEY(case_id, seq));
             """)
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(events)")}
+        if "at_json" not in columns:
+            self._db.execute("ALTER TABLE events ADD COLUMN at_json TEXT")
 
     def close(self) -> None:
         self._db.close()
@@ -366,7 +370,9 @@ class Work:
             if not token:
                 raise Rejected("missing_credential", "source credential unavailable")
             headers["Authorization"] = "Bearer " + token
-        request = urllib.request.Request(config["url"].replace("{key}", quote(record_key, safe="")), headers=headers)
+        target = config["url"].replace("{key}", quote(record_key, safe=""))
+        guard_request(target)
+        request = urllib.request.Request(target, headers=headers)
         try:
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
                 raw = response.read(1024 * 1024 + 1)
@@ -526,7 +532,9 @@ class Work:
             if not token:
                 raise Rejected("missing_credential", "destination status credential unavailable")
             headers["Authorization"] = "Bearer " + token
-        request = urllib.request.Request(status_url.replace("{key}", quote(proposal_id, safe="")), headers=headers)
+        target = status_url.replace("{key}", quote(proposal_id, safe=""))
+        guard_request(target)
+        request = urllib.request.Request(target, headers=headers)
         try:
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
                 raw = response.read(65537)
@@ -676,6 +684,7 @@ class Work:
             headers["Authorization"] = f"Bearer {token}"
         if "version_arg" in action and action["version_arg"] in args:
             headers["If-Match"] = str(args[action["version_arg"]])
+        guard_request(action["url"])
         req = urllib.request.Request(action["url"], data=canonical(args).encode(), headers=headers, method=action.get("method", "POST"))
         with HTTP.open(req, timeout=min(30, action.get("timeout_seconds", 10))) as response:
             raw = response.read(32768)
@@ -709,15 +718,34 @@ class Work:
 
     @staticmethod
     def _events(db, case_id):
-        return [{**dict(r), "body": json.loads(r["body"])} for r in db.execute("SELECT * FROM events WHERE case_id=? ORDER BY seq", (case_id,))]
+        events = []
+        rows = db.execute(
+            "SELECT case_id, seq, kind, body, at, previous, hash, at_json FROM events WHERE case_id=? ORDER BY seq",
+            (case_id,),
+        )
+        for row in rows:
+            at = json.loads(row["at_json"]) if row["at_json"] is not None else row["at"]
+            events.append({
+                "case_id": row["case_id"],
+                "seq": row["seq"],
+                "kind": row["kind"],
+                "body": json.loads(row["body"]),
+                "at": at,
+                "previous": row["previous"],
+                "hash": row["hash"],
+            })
+        return events
 
     @staticmethod
     def _append(db, case_id, kind, body, *, rule=None):
         previous = db.execute("SELECT seq,hash FROM events WHERE case_id=? ORDER BY seq DESC LIMIT 1", (case_id,)).fetchone()
         event = {"case_id": case_id, "seq": previous["seq"] + 1 if previous else 1, "kind": kind,
-                 "body": body, "at": time.time(), "previous": previous["hash"] if previous else "0" * 64}
+                 "body": body, "at": stamp(time.time()), "previous": previous["hash"] if previous else "0" * 64}
         event["hash"] = event_digest(event)
-        db.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?)", (case_id, event["seq"], kind, canonical(body), event["at"], event["previous"], event["hash"]))
+        db.execute(
+            "INSERT INTO events (case_id, seq, kind, body, at, previous, hash, at_json) VALUES (?,?,?,?,?,?,?,?)",
+            (case_id, event["seq"], kind, canonical(body), event["at"], event["previous"], event["hash"], json.dumps(event["at"])),
+        )
         db.execute(
             "INSERT INTO event_side VALUES (?,?,?,?)",
             (case_id, event["seq"], envelope_jcs(event), rule if kind == "decision" else None),

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from syberlabs.canonical import digest
+from syberlabs.clock import as_seconds
 from syberlabs.economic import denial as economic_denial
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.values import at_path
@@ -206,7 +207,7 @@ def facts_required(ctx: AdmissionContext) -> dict | None:
             return deny("untrusted_fact_source:" + requirement["key"], "facts.required")
         if requirement.get("verified") and not fact["body"].get("verified"):
             return deny("source_verification_required:" + requirement["key"], "facts.required")
-        if ctx.now - fact["at"] > requirement.get("max_age_seconds", 86400):
+        if as_seconds(ctx.now) - as_seconds(fact["at"]) > requirement.get("max_age_seconds", 86400):
             return deny("stale_fact:" + requirement["key"], "facts.required")
     return None
 
