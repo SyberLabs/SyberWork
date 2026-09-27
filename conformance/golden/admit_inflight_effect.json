@@ -1,0 +1,47 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "allowed",
+      "all_checks_passed"
+    ],
+    [
+      "effect_started",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "effect_unresolved:record_review"
+    ]
+  ],
+  "id": "admit_inflight_effect",
+  "outcome": "effect_unresolved:record_review",
+  "source": "admission"
+}

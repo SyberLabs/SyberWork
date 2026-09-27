@@ -34,8 +34,15 @@ class PlannerInterface(unittest.TestCase):
         planner = Spy("issue_order", {"amount": 10})
         with patch.dict(os.environ, {"SYBERWORK_PLANNER_TOKEN": "executor-must-not-appear"}):
             result = self.work.model_propose(self.case, "planner", ["model", "operator"], planner=planner)
-        self.assertEqual(set(seen["context"]), {"objective", "allowed_actions", "contract", "events", "acceptance"})
-        self.assertNotIn("executor-must-not-appear", json.dumps(seen["context"]))
+        self.assertEqual(set(seen["context"]), {"objective", "allowed_actions", "arguments", "required_facts", "acceptance"})
+        encoded = json.dumps(seen["context"])
+        self.assertNotIn("executor-must-not-appear", encoded)
+        self.assertNotIn("P-104", encoded)
+        self.assertEqual(set(seen["context"]["allowed_actions"]), {"record_review", "issue_order"})
+        self.assertEqual(seen["context"]["acceptance"], [
+            {"id": "order_sent", "passed": False},
+            {"id": "manager_signed", "passed": False},
+        ])
         self.assertEqual(result["proposal"]["origin"], "model")
         self.assertEqual(result["decision"]["status"], "denied")
         self.assertEqual(result["decision"]["reason"], "required_prior_effect_missing")

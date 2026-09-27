@@ -113,7 +113,7 @@ def run_benchmark(*, session_cases: int = 100, work_cases: int = 40, observation
         if not work.verify_chain(case_id):
             raise RuntimeError("work chain broke")
 
-    rows.append(_row("work.complete_case", _samples(one_work_case, work_cases), "same contract on SQLite"))
+    rows.append(_row("work.complete_case", _samples(one_work_case, work_cases), "one SQLite connection, same contract"))
 
     ctx = _admit_context()
 
@@ -129,7 +129,7 @@ def run_benchmark(*, session_cases: int = 100, work_cases: int = 40, observation
         if found["rule"] != "admission.passed":
             raise RuntimeError(found)
 
-    rows.append(_row("explain.allowed", _samples(one_explain, 1000, warmup=10), "admit plus provenance lookup"))
+    rows.append(_row("explain.allowed", _samples(one_explain, 1000, warmup=10), "admit plus cached provenance"))
 
     long_session = project.open_session()
     long_case = long_session.create_case("access-review", 1, {"review_id": "AR-LONG"}, "reviewer")

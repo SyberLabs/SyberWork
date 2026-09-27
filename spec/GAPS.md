@@ -6,13 +6,13 @@ The schemas describe SyberWork as it behaves. They are not enforced at runtime e
 
 2. **AdmissionDecision is the `{status, reason}` object.** The `decision` event body also stores `proposal_id`, `policy_version`, and, on a failed commit recheck, `phase: "commit"`. Replay compares status and reason only.
 
-3. **`install_contract` checks the fields admission indexes, and still ignores unknown input kinds.** An acceptance `effect` without `action`, a `signoff` without `role`, a `fact` without `key`, or a `required_facts` item without `key` and `source` is rejected at publish. An input kind other than `string` or `integer` can still be published. `create_case` accepts any value for an unrecognized input kind because the kind test is two `and` clauses joined by `or`.
+3. **`install_contract` checks the fields admission indexes, including input kinds.** An acceptance `effect` without `action`, a `signoff` without `role`, a `fact` without `key`, or a `required_facts` item without `key` and `source` is rejected at publish. An input kind other than `string` or `integer` is `invalid_contract`. `create_case` rejects a value of the wrong kind with `input_schema`, including a boolean passed where an integer is required.
 
 4. **`trusted_origin` is procedural.** Source install and `SYBERWORK_PLANNER_URL` now call it. The public errors stay `invalid_source` and `planner_unconfigured`. A host that only begins with `http://127.0.0.1:` is rejected. The schemas still do not encode the parser (no userinfo, no fragment, path required, HTTP only for `127.0.0.1` with a port).
 
 5. **Proposals are appended before admission.** A non-dict `args` or a missing role list is stored, then denied with `invalid_proposal_shape`. The Proposal schema therefore does not require `args` to be an object.
 
-6. **Amount checks use `type()`.** `True` is not an amount (`amount_required`). A `NaN` float is not greater than the limit and is not less than zero, so it passes. Negative numbers fail as `amount_exceeds_limit`.
+6. **Amount checks use `type()` and `math.isfinite`.** `True` is not an amount (`amount_required`). `NaN` and infinities are not finite, so they are `amount_required` rather than compared to the limit. Negative numbers fail as `amount_exceeds_limit`.
 
 7. **Acceptance clause ids must be unique in code.** The clause schema cannot say that by itself.
 
@@ -28,6 +28,6 @@ The schemas describe SyberWork as it behaves. They are not enforced at runtime e
 
 13. **`trusted_origin` is not encoded as a pattern.** It rejects userinfo, fragments, missing paths, and non-loopback HTTP by parsing the URL. The action schema only requires a string URL for `kind: http`.
 
-14. **The deciding rule name is not part of the stored decision.** `explain` and `Work.explain_admission` return `rule` plus module, symbol, and line. They do not append an event. `Work._admit` still drops `rule` before a decision is returned or stored, so decision events stay `{proposal_id, policy_version, status, reason}` plus an optional `phase`.
+14. **The deciding rule name is not part of the hashed decision.** `explain` and `Work.explain_admission` return `rule` plus module, symbol, and line. They do not append an event. The public decision and the hashed body stay `{proposal_id, policy_version, status, reason}` plus an optional `phase`. The rule id is written on the side channel (`event_side.rule`, or `Session.side_channel`) and is not an input to `hash`. The file path and line stay inspection-only.
 
-15. **Economic reservations are application state.** `economic.reserve` returns no decision for an action that is not `economic_http` and whose policy has no `economic` block, so non-economic traces stay the same. A committed `economic_http` effect stores `budget_id` and three snapshot digests on `effect_started` only. The budget total lives in `economic_reservations`, which is not part of the hash chain. NaN amounts and unknown input kinds were not tightened.
+15. **Economic reservations are application state.** `economic.reserve` returns no decision for an action that is not `economic_http` and whose policy has no `economic` block, so non-economic traces stay the same. A committed `economic_http` effect stores `budget_id` and three snapshot digests on `effect_started` only. The budget total lives in `economic_reservations`, which is not part of the hash chain.

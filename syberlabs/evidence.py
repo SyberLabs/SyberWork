@@ -11,6 +11,33 @@ def verified_reconciliation(event: dict) -> bool:
             and bool(body["proof"].get("response_digest")))
 
 
+def signer_is_effect_actor(contract: dict, history: list, actor: str, role: str) -> bool:
+    """True when a completed ``after_action`` effect for this signoff was started by ``actor``.
+
+    A signoff before that effect exists is allowed. Acceptance still fails
+    until the effect and a later signature are both present.
+    """
+    for clause in contract.get("acceptance", []):
+        if not isinstance(clause, dict) or clause.get("kind") != "signoff" or clause.get("role") != role:
+            continue
+        action = clause.get("after_action")
+        if not action:
+            continue
+        completed = {
+            event["body"].get("proposal_id")
+            for event in history
+            if (event.get("kind") == "effect_succeeded" or verified_reconciliation(event))
+            and (event.get("body") or {}).get("action") == action
+        }
+        if not completed:
+            continue
+        for event in history:
+            body = event.get("body") or {}
+            if event.get("kind") == "effect_started" and body.get("proposal_id") in completed and body.get("actor") == actor:
+                return True
+    return False
+
+
 def acceptance_results(contract: dict, history: list) -> list[dict]:
     results = []
     for clause in contract["acceptance"]:

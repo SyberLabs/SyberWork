@@ -14,40 +14,41 @@ What worked on the first integration:
 
 - The public surface is small. `Session`, `Rejected`, and `StaticPlanner` were enough to finish a case.
 - Admission is the same function the procurement app uses, so a denial reason from the new project is a real reason, not a demo stub.
-- `compiled_propose` binds arguments from the contract. The new project does not hand-write those paths. It was missing on `Session` and is now there, matching `Work`.
+- `compiled_propose` binds arguments from the contract through one function, `bind_arguments`, used by both `Session` and `Work`.
 - `explain_admission(..., when="recorded")` still says `all_checks_passed` after the case is complete. `when="now"` says `action_already_completed`, because commit would refuse a second effect. Both are useful, and they answer different questions. The default remains `now`.
 - A bad `required_facts` item fails at `install_contract` with `invalid_contract`, before a case exists.
 - The planner can propose `revoke_extra` first. The decision is `required_prior_effect_missing` and no `effect_started` event is written.
 
 What got in the way:
 
-- `Session` executes `local` actions only. A project that needs an HTTP write has to move the case onto `syberwork.Work`. There is no shared store between them.
-- `compiled_propose` is duplicated in `Session` and `Work`. The binding rules match today. They can drift.
+- `Session` executes `local` actions only. A project that needs an HTTP write has to move the case onto `syberwork.Work`. The admission rules, compiled binding, and hash function are shared. The stores are not.
 - Reason codes are strings. A caller branches on `approval_required:manager` rather than a typed result.
-- `explain_admission(when="now")` after a successful commit does not explain the recorded decision. Callers who want that must pass `when="recorded"`.
-- The in-memory session has no source connector. The new project records a verified observation itself. That is honest, and it means "verified" is the host's claim.
-- There is still no second language SDK. The schemas are language-neutral. The only runtime is this Python package.
-- NaN amounts and unrecognized input kinds still pass, as `spec/GAPS.md` says. The access review does not use amounts.
+- `explain_admission(when="now")` after a successful commit does not explain the recorded decision. Callers who want that must pass `when="recorded"`. The rule id for that decision is also on the side channel, outside the hash.
+- The in-memory session has no source connector. The new project records a verified observation itself. That is the host's claim. The HTTP API still sets `verified` only from a source read.
+- There is still no second language SDK. `conformance/jcs_vectors.json` publishes the JCS bytes and SHA-256 another language can check. The chain link itself is still this package's canonical JSON.
+- Non-finite amounts are `amount_required`. An input kind other than `string` or `integer` is rejected at publish.
 
 ## Benchmarks
 
 Command: `PYTHONPATH=. python benchmarks/run_bench.py`.
 
-**MEASURED** on this development machine, one process, CPython 3.12. The same run wrote `benchmarks/results/dev-session.txt`.
+**MEASURED** on this development machine, one process, CPython 3.12, after one SQLite connection per `Work` and a cache for rule provenance. The same run wrote `benchmarks/results/dev-session.txt`.
 
 | Operation | n | Median | p95 |
 | --- | ---: | ---: | ---: |
-| `session.complete_case` | 100 | 0.63 ms | 0.74 ms |
-| `work.complete_case` | 40 | 24.3 ms | 50.9 ms |
-| `admit.allowed` | 2000 | 3.5 µs | 4.0 µs |
-| `explain.allowed` | 1000 | 106 µs | 126 µs |
-| `session.verify_chain` (500 observations) | 20 | 2.8 ms | 3.0 ms |
+| `session.complete_case` | 100 | 0.54 ms | 0.58 ms |
+| `work.complete_case` | 40 | 25.9 ms | 38.6 ms |
+| `admit.allowed` | 2000 | 3.6 µs | 4.4 µs |
+| `explain.allowed` | 1000 | 3.8 µs | 4.1 µs |
+| `session.verify_chain` (500 observations) | 20 | 2.7 ms | 2.8 ms |
 
 The unit test runs a shorter pass and checks that a session case stays under 50 ms, a Work case under 100 ms, an allow under 1 ms, and that the session median beats Work on this machine.
 
-Work is about 40× slower on this path because each call opens a SQLite transaction. That cost is real for this API shape. It is not a claim about SQLite's maximum throughput, and it is not a reason to avoid `Work` when the case has to survive a process restart. `explain` is about 30× `admit` because it resolves the rule's source file and line. Admission itself is not the cost.
+`explain` was about 106 µs before the provenance cache. It is now in the same band as `admit`. Admission itself is not the cost of a case.
 
-`admit` on an empty history is the floor. A case with facts, resolutions, and economic checks costs more. The benchmark does not include those. Hash verification of 501 events is about 2.8 ms, and almost all of that is the digest loop, not the session lookup.
+`Work` is still about 48× the session median on a full access-review case. An empty transaction on the reused connection measured about 7 µs. Opening a fresh connection for the same statement measured about 29 µs. That difference does not account for 26 ms. A separate measurement, not the default, completed one case in about 1.3 ms with WAL and `synchronous=NORMAL`, and stayed near 24 ms with the default FULL sync. `NORMAL` can drop the latest commits after power loss, so the library stays on FULL. The remaining cost is a sync per commit. It is not a claim about SQLite's maximum throughput, and it is not a reason to avoid `Work` when the case has to survive a process restart.
+
+`admit` on an empty history is the floor. A case with facts, resolutions, and economic checks costs more. The benchmark does not include those. Hash verification of 501 events is about 2.7 ms, and almost all of that is the digest loop, not the session lookup.
 
 ## How this compares to existing SDK frameworks
 
@@ -67,4 +68,4 @@ What it is not for: general authorization (use Cedar or OPA), durable workflow e
 
 The access-review project is the kind of fit that works today: a few named actions, facts from a system the host already trusts, one approval, and a signature. A project that needs retries, worker failover, or a policy language with its own tooling should not start here.
 
-The standards gap, the red-team findings, and the order to close them are in [SDK_REDTEAM.md](SDK_REDTEAM.md).
+The standards gap and what this pass closed are in [SDK_REDTEAM.md](SDK_REDTEAM.md). Public-key signatures, a transparency log, and an integer `at` inside the existing hash are still not in this protocol.

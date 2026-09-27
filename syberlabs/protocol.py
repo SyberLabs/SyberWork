@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any, Literal, TypedDict
 
 
+# Side channel beside the hash chain. Not an input to event_digest.
+SIDE_PROTOCOL = "sdk.syberlabs.space/v0alpha1+jcs1"
+
+
 AdmissionStatus = Literal["allowed", "needs_approval", "denied"]
 EffectState = Literal["succeeded", "rejected", "unknown"]
 EventKind = Literal[

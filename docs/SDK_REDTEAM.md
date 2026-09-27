@@ -120,4 +120,20 @@ CloudEvents requires `id`, `source`, `specversion`, and `type`. This envelope is
 4. **Witness.** Sign the chain head with a key that is not in the database. A transparency log is the step after a verifier exists outside this process.
 5. **Planner view and signoff independence.** Shrink the planner context. Require the signer to be a different actor from the effect actor.
 
-Items 1 and 2 are code in this repository. Item 3 is a version bump because it changes bytes that are hashed. Items 4 and 5 are product boundaries: a key and an identity that this process does not invent for itself.
+Items 1 and 2 are code in this repository. Item 3 is a version bump when it changes bytes that are hashed. Items 4 and 5 are product boundaries: a key and an identity that this process does not invent for itself.
+
+## Status after the implementation pass
+
+The chain link is still `canonical`. Histories from `main` (`a2f909b`) keep verifying. `PYTHONPATH=. python -m conformance.run` matches the original 20 traces plus three new ones: `admit_nonfinite_amount`, `admit_inflight_effect`, and `admit_unknown_input_kind`.
+
+| Step | Status | What landed |
+| --- | --- | --- |
+| 1 | Closed for the listed checks | Non-finite amounts are `amount_required`. Input kinds other than `string` and `integer` are `invalid_contract` at publish and `input_schema` at create. An `effect_started` with no `effect_succeeded`, `effect_rejected`, or verified reconciliation occupies the action as `effect_unresolved:<action>`. `effect_rejected` still allows a fresh proposal. `effect_unknown.error` and `source_unavailable` detail are codes (`destination_http`, `destination_unreachable`, `destination_error`, or `Rejected.code`), not exception text. |
+| 2 | Closed for binding and the connection | `bind_arguments` and `next_compiled` are shared. `Work` keeps one SQLite connection and a lock. `Session` uses a re-entrant lock. HTTP execution stays on `Work`. |
+| 3 | Closed beside the hash, not inside it | New events store a JCS SHA-256 of the hashed fields on `event_side` / `Session.side_channel`. `verify_chain` checks that digest when a row has one. Old rows have none and still verify. The deciding rule id is on that side record. `cloudevent` exports CloudEvents 1.0. `at_microseconds` is export-only. `conformance/jcs_vectors.json` is the byte vector. Integer `at` inside `hash` is still **PROPOSED**. |
+| 4 | HMAC only | `witness` is HMAC-SHA256 over canonical `{case_id, count, head}` with a caller-supplied key. The mac is not stored in the event. It is not a public-key DSSE signature. A transparency log is still **PROPOSED**. |
+| 5 | Closed | The planner context is `objective`, `allowed_actions`, `arguments`, `required_facts`, and acceptance `{id, passed}`. Fact values are not included. A signoff is refused when that role's `after_action` effect has completed and the signer started it. A signoff before that effect still records; acceptance still fails. |
+
+Still **PROPOSED**, and not built here: replacing admission with Cedar or OPA, replacing `Session` with a durable workflow engine, rewriting existing hashes as JCS, putting microseconds into `at`, a public-key signature, a transparency log, and an HTTPS host allowlist tighter than the installed action URL. `Session.observe(..., verified=True)` is still the host's claim. The loopback HTTP API still marks a fact verified only after a source read.
+
+**MEASURED** with the default FULL sync, one connection: `explain.allowed` median 3.8 µs (it was 106 µs before the provenance cache). `work.complete_case` median 25.9 ms. An empty transaction on that connection was about 7 µs, against about 29 µs when each call opened a connection. A non-default WAL + `synchronous=NORMAL` trial completed one case in about 1.3 ms and was not adopted, because `NORMAL` can lose the latest commits on power loss.

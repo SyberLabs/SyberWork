@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
@@ -140,6 +141,19 @@ def effect_not_completed(ctx: AdmissionContext) -> dict | None:
     return None
 
 
+def _finished_proposal_ids(history: list) -> set:
+    """Proposals whose effect has succeeded, been rejected, or been verified."""
+    finished = set()
+    for event in history:
+        kind = event.get("kind")
+        body = event.get("body") or {}
+        if kind in ("effect_succeeded", "effect_rejected") or verified_reconciliation(event):
+            proposal_id = body.get("proposal_id")
+            if proposal_id is not None:
+                finished.add(proposal_id)
+    return finished
+
+
 @rule("effect.unresolved", "effect_unresolved:")
 def effect_unresolved(ctx: AdmissionContext) -> dict | None:
     proposals = {event["body"]["id"]: event["body"]["action"] for event in ctx.history if event["kind"] == "proposed"}
@@ -150,6 +164,15 @@ def effect_unresolved(ctx: AdmissionContext) -> dict | None:
         effect = event["body"]
         if effect.get("action", proposals.get(effect["proposal_id"])) == ctx.action and effect["proposal_id"] not in verified_ids:
             return deny("effect_unresolved:" + ctx.action, "effect.unresolved")
+    # An effect_started with no terminal outcome occupies the action.
+    # effect_rejected is terminal, so a fresh proposal of that action can proceed.
+    finished = _finished_proposal_ids(ctx.history)
+    for event in ctx.history:
+        if event["kind"] != "effect_started":
+            continue
+        effect = event["body"]
+        if effect.get("action") == ctx.action and effect.get("proposal_id") not in finished:
+            return deny("effect_unresolved:" + ctx.action, "effect.unresolved")
     return None
 
 
@@ -157,9 +180,10 @@ def effect_unresolved(ctx: AdmissionContext) -> dict | None:
 def limits_amount(ctx: AdmissionContext) -> dict | None:
     for spec in (ctx.global_action(), ctx.local_action()):
         if "max_amount" in spec:
-            if type(ctx.args.get("amount")) not in (int, float):
+            amount = ctx.args.get("amount")
+            if type(amount) not in (int, float) or not math.isfinite(amount):
                 return deny("amount_required", "limits.amount")
-            if ctx.args["amount"] > spec["max_amount"] or ctx.args["amount"] < 0:
+            if amount > spec["max_amount"] or amount < 0:
                 return deny("amount_exceeds_limit", "limits.amount")
     return None
 
@@ -275,8 +299,20 @@ def rule_order() -> list[str]:
     return [name for name, _fn in RULES]
 
 
+_PROVENANCE: dict[str, dict] = {}
+
+
 def rule_provenance(name: str) -> dict:
     """Module, symbol, and line of the rule function, resolved when inspected."""
+    cached = _PROVENANCE.get(name)
+    if cached is not None:
+        return dict(cached)
+    found = _rule_provenance(name)
+    _PROVENANCE[name] = found
+    return dict(found)
+
+
+def _rule_provenance(name: str) -> dict:
     target = inspect.unwrap(dict(RULES)[name])
     try:
         source_file = inspect.getsourcefile(target) or inspect.getfile(target)

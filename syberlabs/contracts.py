@@ -9,12 +9,34 @@ def _text(value) -> bool:
     return isinstance(value, str) and bool(value)
 
 
-def require_indexed_fields(doc: dict) -> None:
-    """Reject acceptance clauses and fact requirements admission later indexes.
+def require_input_kinds(doc: dict) -> None:
+    """Only string and integer inputs. Other kinds are not a case schema."""
+    inputs = doc.get("inputs")
+    if not isinstance(inputs, dict):
+        raise Rejected("invalid_contract", "inputs must be an object")
+    for key, kind in inputs.items():
+        if kind not in ("string", "integer"):
+            raise Rejected("invalid_contract", f"input {key} must be string or integer")
 
-    Unknown input kinds are intentionally left alone. ``create_case`` still
-    accepts them; see GAPS.md.
-    """
+
+def check_case_inputs(schema: dict, inputs: dict) -> None:
+    """Reject a case whose keys or value kinds do not match the contract."""
+    if set(inputs) != set(schema):
+        raise Rejected("input_schema", "input keys must exactly match contract")
+    for key, kind in schema.items():
+        value = inputs[key]
+        if kind == "string":
+            ok = isinstance(value, str)
+        elif kind == "integer":
+            ok = type(value) is int
+        else:
+            ok = False
+        if not ok:
+            raise Rejected("input_schema", f"invalid {key}: expected {kind}")
+
+
+def require_indexed_fields(doc: dict) -> None:
+    """Reject acceptance clauses and fact requirements admission later indexes."""
     for clause in doc["acceptance"]:
         kind = clause.get("kind")
         if kind == "effect" and not _text(clause.get("action")):
@@ -69,6 +91,7 @@ def prepare_contract(doc: dict) -> dict:
     required = ("id", "version", "inputs", "actions", "acceptance")
     if any(k not in doc for k in required) or not isinstance(doc["version"], int):
         raise Rejected("invalid_contract", "id, integer version, inputs, actions, acceptance are required")
+    require_input_kinds(doc)
     if not isinstance(doc["actions"], dict) or not isinstance(doc["acceptance"], list):
         raise Rejected("invalid_contract", "actions must be an object and acceptance a list")
     if any(not isinstance(a, dict) or "id" not in a or a.get("kind") not in ("effect", "signoff", "fact") for a in doc["acceptance"]):

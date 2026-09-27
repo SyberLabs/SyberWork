@@ -10,7 +10,7 @@
     "id": {"type": "string", "minLength": 1},
     "version": {"type": "integer"},
     "title": {"type": "string"},
-    "inputs": {"type": "object", "additionalProperties": {"type": "string"}},
+    "inputs": {"type": "object", "additionalProperties": {"enum": ["string", "integer"]}},
     "input_bindings": {
       "type": "object",
       "additionalProperties": {"type": "string", "pattern": "^fact:"}

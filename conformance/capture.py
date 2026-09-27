@@ -183,6 +183,36 @@ def _admission_traces() -> list[dict]:
         state = work.inspect(case)
         traces.append(_trace("admit_cancelled", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
 
+        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+        work.propose(case, "issue_order", {"amount": float("nan")}, "operator", ["operator"])
+        state = work.inspect(case)
+        traces.append(_trace("admit_nonfinite_amount", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+        _facts(work, case)
+        work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+        with work.tx() as db:
+            work._append(db, case, "effect_started", {
+                "proposal_id": "inflight",
+                "action": "record_review",
+                "actor": "operator",
+                "policy_version": 1,
+                "idempotency_key": "inflight",
+            })
+        work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+        state = work.inspect(case)
+        traces.append(_trace("admit_inflight_effect", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+        bad = json.loads((EXAMPLES / "contract.json").read_text())
+        bad["id"] = "bad-input-kind"
+        bad["inputs"] = {"note": "boolean"}
+        try:
+            work.install_contract(bad)
+            unknown_outcome = "published"
+        except Exception as exc:
+            unknown_outcome = getattr(exc, "code", "error")
+        traces.append(_trace("admit_unknown_input_kind", unknown_outcome, [], source="admission"))
+
         traces.append(_planner_trace(Path(folder)))
     return traces
 

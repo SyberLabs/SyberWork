@@ -7,29 +7,57 @@ uses the same digest as Work. This module does not import syberwork.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from typing import Any, Callable
 
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
+from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
-from syberlabs.contracts import prepare_contract
+from syberlabs.contracts import check_case_inputs, prepare_contract
 from syberlabs.economic import policy_has_economic, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
-from syberlabs.evidence import acceptance_results, verified_reconciliation
-from syberlabs.planner import HttpPlanner
+from syberlabs.evidence import acceptance_results, signer_is_effect_actor
+from syberlabs.jcs import envelope_jcs
+from syberlabs.planner import HttpPlanner, planning_context
+
+
+def _side_matches(events: list[dict], sides: dict) -> bool:
+    """A stored JCS digest must still describe the event. Missing digests are old history."""
+    for event in events:
+        row = sides.get(event["seq"])
+        stored = row.get("jcs") if isinstance(row, dict) else None
+        if isinstance(stored, str) and stored != envelope_jcs(event):
+            return False
+    return True
+
+
+def _guard(method):
+    """Serialize session mutations. Re-entrant so compiled_propose can call propose."""
+
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    wrapped.__name__ = method.__name__
+    wrapped.__doc__ = method.__doc__
+    return wrapped
 
 
 class Session:
     def __init__(self, *, clock: Callable[[], float] | None = None):
         self.clock = clock or time.time
+        self._lock = threading.RLock()
         self.contracts: dict[tuple[str, int], dict] = {}
         self.policies: dict[int, dict] = {}
         self.actions: dict[str, dict] = {}
         self.cases: dict[str, dict] = {}
         self.events: dict[str, list[dict]] = {}
+        self._side: dict[str, dict[int, dict]] = {}
 
+    @_guard
     def install_contract(self, doc: dict) -> None:
         prepared = prepare_contract(doc)
         key = (prepared["id"], prepared["version"])
@@ -39,6 +67,7 @@ class Session:
             raise Rejected("immutable_contract", "publish a new version")
         self.contracts[key] = stored
 
+    @_guard
     def install_policy(self, doc: dict) -> None:
         if not isinstance(doc.get("version"), int) or not isinstance(doc.get("actions"), dict):
             raise Rejected("invalid_policy", "version and actions required")
@@ -54,6 +83,7 @@ class Session:
         if prior is None:
             self.policies[version] = stored
 
+    @_guard
     def install_action(self, name: str, doc: dict) -> None:
         if doc.get("kind") != "local":
             raise Rejected("invalid_action", "the in-memory session executes local actions")
@@ -64,14 +94,10 @@ class Session:
         if prior is None:
             self.actions[name] = stored
 
+    @_guard
     def create_case(self, contract_id: str, version: int, inputs: dict, actor: str) -> str:
         contract = self._contract(contract_id, version)
-        if set(inputs) != set(contract["inputs"]):
-            raise Rejected("input_schema", "input keys must exactly match contract")
-        for key, kind in contract["inputs"].items():
-            value = inputs[key]
-            if kind == "string" and not isinstance(value, str) or kind == "integer" and (type(value) is not int):
-                raise Rejected("input_schema", f"invalid {key}: expected {kind}")
+        check_case_inputs(contract["inputs"], inputs)
         case_id = str(uuid.uuid4())
         self.cases[case_id] = {
             "id": case_id,
@@ -84,6 +110,7 @@ class Session:
         self._append(case_id, "case_created", {"actor": actor, "inputs": inputs, "contract": [contract_id, version]})
         return case_id
 
+    @_guard
     def observe(self, case_id: str, key: str, value: Any, source: str, version: str, actor: str, verified: bool = False) -> dict:
         if not all((key, source, version)):
             raise Rejected("invalid_observation", "key, source and source version are required")
@@ -92,6 +119,7 @@ class Session:
             "key": key, "value": value, "source": source, "version": version, "actor": actor, "verified": verified,
         })
 
+    @_guard
     def propose(self, case_id: str, action: str, args: dict, actor: str, roles: list[str], origin: str = "human") -> dict:
         if origin not in ("human", "model", "compiled"):
             raise Rejected("invalid_origin", "origin must be human, model or compiled")
@@ -104,51 +132,37 @@ class Session:
         proposal_id = str(uuid.uuid4())
         proposal = {"id": proposal_id, "action": action, "args": args, "actor": actor, "roles": roles, "origin": origin}
         self._append(case_id, "proposed", proposal)
-        decision = self._public_decision(contract, policy, history, proposal, self.clock())
-        self._append(case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], **decision})
+        full = admit(self._context(contract, policy, history, proposal, self.clock()))
+        decision = {"status": full["status"], "reason": full["reason"]}
+        self._append(case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], **decision}, rule=full["rule"])
         return {"proposal": proposal, "decision": decision}
 
+    @_guard
     def suggest(self, case_id: str, actor: str, roles: list[str], planner) -> dict:
         if "model" not in roles:
             raise Rejected("origin_denied", "model proposer credential required")
         if isinstance(planner, HttpPlanner):
             planner.ensure_configured()
         case = self.inspect(case_id)
-        suggestion = planner.propose({
-            "objective": case["contract"].get("title", case["contract"]["id"]),
-            "allowed_actions": list(case["contract"]["actions"]),
-            "contract": case["contract"],
-            "events": case["events"],
-            "acceptance": case["acceptance"],
-        })
+        suggestion = planner.propose(planning_context(case["contract"], case["acceptance"]))
         if not isinstance(suggestion, dict) or not isinstance(suggestion.get("action"), str) or not isinstance(suggestion.get("args"), dict):
             raise Rejected("planner_shape", "planner must return {action, args}")
         return self.propose(case_id, suggestion["action"], suggestion["args"], actor, roles, origin="model")
 
+    @_guard
     def compiled_propose(self, case_id: str, actor: str, roles: list[str]) -> dict:
         if "compiled" not in roles:
             raise Rejected("origin_denied", "compiled proposer credential required")
         row = self._case(case_id)
         contract = self._contract(row["contract_id"], row["contract_version"])
         history = self.events[case_id]
-        action = self._next_path(contract, history)
+        action = next_compiled(contract, history)
         if not action:
             raise Rejected("path_complete", "no remaining compiled step")
-        args = {}
-        for param, binding in contract["actions"][action].get("arguments", {}).items():
-            name = binding.removeprefix("version:").removeprefix("fact:").split(".")[0]
-            fact = next((event for event in reversed(history) if event["kind"] == "observed" and event["body"]["key"] == name), None)
-            if not fact:
-                raise Rejected("missing_fact", name)
-            value = fact["body"]["version"] if binding.startswith("version:") else fact["body"]["value"]
-            if binding.startswith("fact:"):
-                for field in binding[5:].split(".")[1:]:
-                    if not isinstance(value, dict) or field not in value:
-                        raise Rejected("missing_fact_field", binding)
-                    value = value[field]
-            args[param] = value
+        args = bind_arguments(contract, history, action)
         return self.propose(case_id, action, args, actor, roles, origin="compiled")
 
+    @_guard
     def approve(self, case_id: str, proposal_id: str, actor: str, roles: list[str]) -> dict:
         row = self._case(case_id)
         contract = self._contract(row["contract_id"], row["contract_version"])
@@ -166,6 +180,7 @@ class Session:
             "proposal_id": proposal_id, "actor": actor, "role": selected_role, "args_hash": digest(proposal["args"]),
         })
 
+    @_guard
     def commit(self, case_id: str, proposal_id: str, actor: str) -> dict:
         row = self._case(case_id)
         contract = self._contract(row["contract_id"], row["contract_version"])
@@ -176,9 +191,10 @@ class Session:
             raise Rejected("actor_mismatch", "only the original proposer may commit")
         if any(event["kind"] in ("effect_started", "effect_succeeded", "effect_unknown", "effect_rejected") and event["body"]["proposal_id"] == proposal_id for event in history):
             raise Rejected("effect_claimed", "already started; inspect or reconcile")
-        decision = self._public_decision(contract, policy, history, proposal, self.clock())
+        full = admit(self._context(contract, policy, history, proposal, self.clock()))
+        decision = {"status": full["status"], "reason": full["reason"]}
         if decision["status"] != "allowed":
-            self._append(case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision})
+            self._append(case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision}, rule=full["rule"])
             return {"decision": decision}
         action = self.actions.get(proposal["action"])
         if not action or action.get("kind") != "local":
@@ -193,14 +209,20 @@ class Session:
         })
         return {"status": "succeeded", "event": result}
 
+    @_guard
     def signoff(self, case_id: str, actor: str, roles: list[str], role: str) -> dict:
         if role not in roles:
             raise Rejected("signoff_denied", "actor lacks role")
-        self._case(case_id)
-        if any(event["kind"] == "case_cancelled" for event in self.events[case_id]):
+        row = self._case(case_id)
+        history = self.events[case_id]
+        if any(event["kind"] == "case_cancelled" for event in history):
             raise Rejected("case_cancelled", "case is closed")
+        contract = self._contract(row["contract_id"], row["contract_version"])
+        if signer_is_effect_actor(contract, history, actor, role):
+            raise Rejected("signoff_denied", "signer must differ from the effect actor")
         return self._append(case_id, "signed", {"actor": actor, "role": role})
 
+    @_guard
     def explain_admission(self, case_id: str, proposal_id: str, *, when: str = "now") -> dict:
         """Admission for a stored proposal, plus the deciding rule.
 
@@ -231,6 +253,7 @@ class Session:
             raise RuntimeError("explain_admission appended an event")
         return found
 
+    @_guard
     def inspect(self, case_id: str) -> dict:
         row = self._case(case_id)
         contract = self._contract(row["contract_id"], row["contract_version"])
@@ -248,6 +271,7 @@ class Session:
             "chain_valid": verify_events(history),
         }
 
+    @_guard
     def replay(self, case_id: str, contract_version: int, policy_version: int) -> dict:
         row = self._case(case_id)
         contract = self._contract(row["contract_id"], contract_version)
@@ -272,13 +296,20 @@ class Session:
             "acceptance_after": acceptance_results(contract, events),
         }
 
+    @_guard
     def verify_chain(self, case_id: str) -> bool:
         self._case(case_id)
-        return verify_events(self.events[case_id])
+        events = self.events[case_id]
+        if not verify_events(events):
+            return False
+        return _side_matches(events, self._side.get(case_id, {}))
 
-    def _next_path(self, contract, history):
-        completed = {event["body"]["action"] for event in history if event["kind"] == "effect_succeeded" or verified_reconciliation(event)}
-        return next((action for action in contract.get("compiled_path", []) if action not in completed), None)
+    @_guard
+    def side_channel(self, case_id: str) -> list[dict]:
+        """JCS digest and deciding rule id for each event. Neither is in the event hash."""
+        self._case(case_id)
+        rows = self._side.get(case_id, {})
+        return [dict(rows[seq]) for seq in sorted(rows)]
 
     def _context(self, contract, policy, history, proposal, now) -> AdmissionContext:
         return AdmissionContext(
@@ -318,7 +349,7 @@ class Session:
                 return event["body"]
         raise Rejected("unknown_proposal", proposal_id)
 
-    def _append(self, case_id: str, kind: str, body: dict) -> dict:
+    def _append(self, case_id: str, kind: str, body: dict, *, rule: str | None = None) -> dict:
         previous = self.events[case_id][-1] if self.events[case_id] else None
         event = {
             "case_id": case_id,
@@ -330,4 +361,9 @@ class Session:
         }
         event["hash"] = event_digest(event)
         self.events[case_id].append(event)
+        self._side.setdefault(case_id, {})[event["seq"]] = {
+            "seq": event["seq"],
+            "jcs": envelope_jcs(event),
+            "rule": rule if kind == "decision" else None,
+        }
         return event

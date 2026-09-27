@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -14,13 +15,15 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
+from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
-from syberlabs.contracts import compile_path, prepare_contract
+from syberlabs.contracts import check_case_inputs, compile_path, prepare_contract
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
-from syberlabs.evidence import acceptance_results, verified_reconciliation
-from syberlabs.planner import HttpPlanner
+from syberlabs.evidence import acceptance_results, signer_is_effect_actor, verified_reconciliation
+from syberlabs.jcs import envelope_jcs
+from syberlabs.planner import HttpPlanner, planning_context
 from syberlabs.targets import trusted_origin
 from syberlabs.values import at_path
 
@@ -37,12 +40,27 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 HTTP = urllib.request.build_opener(NoRedirect)
 
 
+def _destination_code(exc: BaseException) -> str:
+    """Stable code for a destination failure. The exception text is not stored."""
+    if isinstance(exc, Rejected):
+        return exc.code
+    if isinstance(exc, urllib.error.HTTPError):
+        return "destination_http"
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, OSError)):
+        return "destination_unreachable"
+    return "destination_error"
+
+
 class Work:
     def __init__(self, database: str | Path):
         self.database = str(database)
         Path(database).parent.mkdir(parents=True, exist_ok=True)
-        with self.tx() as db:
-            db.executescript("""
+        self._lock = threading.Lock()
+        self._db = sqlite3.connect(self.database, timeout=15, isolation_level=None, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._db.execute("PRAGMA foreign_keys=ON")
+        self._db.execute("PRAGMA busy_timeout=15000")
+        self._db.executescript("""
                 CREATE TABLE IF NOT EXISTS contracts (
                     id TEXT NOT NULL, version INTEGER NOT NULL, body TEXT NOT NULL,
                     PRIMARY KEY(id, version));
@@ -64,22 +82,34 @@ class Work:
                     proposal_id TEXT PRIMARY KEY, case_id TEXT NOT NULL,
                     budget_id TEXT NOT NULL, asset TEXT NOT NULL,
                     amount_units INTEGER NOT NULL, state TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS event_side (
+                    case_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                    jcs TEXT, rule TEXT, PRIMARY KEY(case_id, seq));
             """)
+
+    def close(self) -> None:
+        self._db.close()
+
+    def __del__(self):
+        try:
+            self._db.close()
+        except Exception:
+            pass
 
     @contextmanager
     def tx(self):
-        db = sqlite3.connect(self.database, timeout=15, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        try:
-            db.execute("PRAGMA foreign_keys=ON")
-            db.execute("BEGIN IMMEDIATE")
-            yield db
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        """One connection for the life of this Work. Callers must not nest tx()."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._db
+                self._db.commit()
+            except BaseException:
+                try:
+                    self._db.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
 
     def install_contract(self, doc: dict) -> None:
         doc = prepare_contract(doc)
@@ -170,12 +200,7 @@ class Work:
     def create_case(self, contract_id: str, version: int, inputs: dict, actor: str) -> str:
         with self.tx() as db:
             contract = self._contract(db, contract_id, version)
-            if set(inputs) != set(contract["inputs"]):
-                raise Rejected("input_schema", "input keys must exactly match contract")
-            for key, kind in contract["inputs"].items():
-                value = inputs[key]
-                if kind == "string" and not isinstance(value, str) or kind == "integer" and (type(value) is not int):
-                    raise Rejected("input_schema", f"invalid {key}: expected {kind}")
+            check_case_inputs(contract["inputs"], inputs)
             case_id = str(uuid.uuid4())
             db.execute("INSERT INTO cases VALUES (?,?,?,?,?)", (case_id, contract_id, version, canonical(inputs), time.time()))
             self._append(db, case_id, "case_created", {"actor": actor, "inputs": inputs, "contract": [contract_id, version]})
@@ -349,8 +374,12 @@ class Work:
                     raise Rejected("source_size", "source response exceeds 1 MB")
                 document = json.loads(raw)
                 version = response.headers.get("ETag") or response.headers.get("X-Record-Version")
-        except (urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise Rejected("source_unavailable", str(exc)[:200]) from exc
+        except urllib.error.HTTPError:
+            raise Rejected("source_unavailable", "destination_http") from None
+        except urllib.error.URLError:
+            raise Rejected("source_unavailable", "destination_unreachable") from None
+        except json.JSONDecodeError:
+            raise Rejected("source_unavailable", "destination_error") from None
         if not version:
             raise Rejected("source_unversioned", "source must return ETag or X-Record-Version")
         value = document
@@ -373,8 +402,9 @@ class Work:
             proposal_id = str(uuid.uuid4())
             proposal = {"id": proposal_id, "action": action, "args": args, "actor": actor, "roles": roles, "origin": origin}
             self._append(db, case_id, "proposed", proposal)
-            result = self._admit(contract, policy, history, proposal, time.time(), db)
-            self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], **result})
+            full = self._decision(contract, policy, history, proposal, time.time(), db)
+            result = {"status": full["status"], "reason": full["reason"]}
+            self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], **result}, rule=full["rule"])
             return {"proposal": proposal, "decision": result}
 
     def compiled_propose(self, case_id: str, actor: str, roles: list[str]) -> dict:
@@ -384,22 +414,10 @@ class Work:
             row = self._case(db, case_id)
             contract = self._contract(db, row["contract_id"], row["contract_version"])
             history = self._events(db, case_id)
-            action = self._next_path(contract, history)
+            action = next_compiled(contract, history)
             if not action:
                 raise Rejected("path_complete", "no remaining compiled step")
-            args = {}
-            for param, binding in contract["actions"][action].get("arguments", {}).items():
-                name = binding.removeprefix("version:").removeprefix("fact:").split(".")[0]
-                fact = next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == name), None)
-                if not fact:
-                    raise Rejected("missing_fact", name)
-                value = fact["body"]["version"] if binding.startswith("version:") else fact["body"]["value"]
-                if binding.startswith("fact:"):
-                    for field in binding[5:].split(".")[1:]:
-                        if not isinstance(value, dict) or field not in value:
-                            raise Rejected("missing_fact_field", binding)
-                        value = value[field]
-                args[param] = value
+            args = bind_arguments(contract, history, action)
         return self.propose(case_id, action, args, actor, roles, origin="compiled")
 
     def model_propose(self, case_id: str, actor: str, roles: list[str], *, planner=None) -> dict:
@@ -411,12 +429,7 @@ class Work:
         if isinstance(planner, HttpPlanner):
             planner.ensure_configured()
         case = self.inspect(case_id)
-        suggestion = planner.propose({
-            "objective": case["contract"].get("title", case["contract"]["id"]),
-            "allowed_actions": list(case["contract"]["actions"]),
-            "contract": case["contract"], "events": case["events"],
-            "acceptance": case["acceptance"],
-        })
+        suggestion = planner.propose(planning_context(case["contract"], case["acceptance"]))
         if not isinstance(suggestion, dict) or not isinstance(suggestion.get("action"), str) or not isinstance(suggestion.get("args"), dict):
             raise Rejected("planner_shape", "planner must return {action, args}")
         return self.propose(case_id, suggestion["action"], suggestion["args"], actor, roles, origin="model")
@@ -447,9 +460,10 @@ class Work:
                 raise Rejected("actor_mismatch", "only the original proposer may commit")
             if any(e["kind"] in ("effect_started", "effect_succeeded", "effect_unknown", "effect_rejected") and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("effect_claimed", "already started; inspect or reconcile")
-            decision = self._admit(contract, policy, history, proposal, time.time(), db)
+            full = self._decision(contract, policy, history, proposal, time.time(), db)
+            decision = {"status": full["status"], "reason": full["reason"]}
             if decision["status"] != "allowed":
-                self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision})
+                self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision}, rule=full["rule"])
                 return {"decision": decision}
             action = json.loads(db.execute("SELECT body FROM actions WHERE name=?", (proposal["action"],)).fetchone()["body"])
             extra = {}
@@ -476,11 +490,11 @@ class Work:
                     })
                 return {"status": "rejected", "event": event}
             with self.tx() as db:
-                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": str(exc)[:400]})
+                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": _destination_code(exc)})
             return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         except Exception as exc:
             with self.tx() as db:
-                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": str(exc)[:400]})
+                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": _destination_code(exc)})
             return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         with self.tx() as db:
             if action["kind"] == "economic_http":
@@ -565,9 +579,13 @@ class Work:
         if role not in roles:
             raise Rejected("signoff_denied", "actor lacks role")
         with self.tx() as db:
-            self._case(db, case_id)
-            if any(e["kind"] == "case_cancelled" for e in self._events(db, case_id)):
+            row = self._case(db, case_id)
+            history = self._events(db, case_id)
+            if any(e["kind"] == "case_cancelled" for e in history):
                 raise Rejected("case_cancelled", "case is closed")
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+            if signer_is_effect_actor(contract, history, actor, role):
+                raise Rejected("signoff_denied", "signer must differ from the effect actor")
             return self._append(db, case_id, "signed", {"actor": actor, "role": role})
 
     def inspect(self, case_id: str) -> dict:
@@ -619,7 +637,31 @@ class Work:
 
     def verify_chain(self, case_id: str) -> bool:
         with self.tx() as db:
-            return verify_events(self._events(db, case_id))
+            events = self._events(db, case_id)
+            if not verify_events(events):
+                return False
+            stored = {
+                row["seq"]: row["jcs"]
+                for row in db.execute("SELECT seq, jcs FROM event_side WHERE case_id=?", (case_id,))
+            }
+            for event in events:
+                digest = stored.get(event["seq"])
+                if isinstance(digest, str) and digest != envelope_jcs(event):
+                    return False
+            return True
+
+    def side_channel(self, case_id: str) -> list[dict]:
+        """JCS digest and deciding rule id for each new event. Neither is in the event hash.
+
+        Events written before this side table existed have no row.
+        """
+        with self.tx() as db:
+            self._case(db, case_id)
+            rows = db.execute(
+                "SELECT seq, jcs, rule FROM event_side WHERE case_id=? ORDER BY seq",
+                (case_id,),
+            ).fetchall()
+            return [{"seq": row["seq"], "jcs": row["jcs"], "rule": row["rule"]} for row in rows]
 
     @staticmethod
     def _execute(action: dict, args: dict, key: str) -> dict:
@@ -670,12 +712,16 @@ class Work:
         return [{**dict(r), "body": json.loads(r["body"])} for r in db.execute("SELECT * FROM events WHERE case_id=? ORDER BY seq", (case_id,))]
 
     @staticmethod
-    def _append(db, case_id, kind, body):
+    def _append(db, case_id, kind, body, *, rule=None):
         previous = db.execute("SELECT seq,hash FROM events WHERE case_id=? ORDER BY seq DESC LIMIT 1", (case_id,)).fetchone()
         event = {"case_id": case_id, "seq": previous["seq"] + 1 if previous else 1, "kind": kind,
                  "body": body, "at": time.time(), "previous": previous["hash"] if previous else "0" * 64}
         event["hash"] = event_digest(event)
         db.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?)", (case_id, event["seq"], kind, canonical(body), event["at"], event["previous"], event["hash"]))
+        db.execute(
+            "INSERT INTO event_side VALUES (?,?,?,?)",
+            (case_id, event["seq"], envelope_jcs(event), rule if kind == "decision" else None),
+        )
         return event
 
     @staticmethod
@@ -729,8 +775,11 @@ class Work:
 
         return AdmissionContext(contract, policy, history, proposal, now, installed, configs, reserved)
 
+    def _decision(self, contract, policy, history, proposal, now, db):
+        return admit(self._context(contract, policy, history, proposal, now, db))
+
     def _admit(self, contract, policy, history, proposal, now, db):
-        decision = admit(self._context(contract, policy, history, proposal, now, db))
+        decision = self._decision(contract, policy, history, proposal, now, db)
         return {"status": decision["status"], "reason": decision["reason"]}
 
     @staticmethod
@@ -739,5 +788,4 @@ class Work:
 
     @staticmethod
     def _next_path(contract, history):
-        completed = {e["body"]["action"] for e in history if e["kind"] == "effect_succeeded" or verified_reconciliation(e)}
-        return next((a for a in contract.get("compiled_path", []) if a not in completed), None)
+        return next_compiled(contract, history)

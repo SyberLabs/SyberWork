@@ -22,6 +22,29 @@ class Planner(Protocol):
         """Return ``{"action", "args"}`` or raise PlannerRefusal."""
 
 
+def planning_context(contract: Mapping[str, Any], acceptance: list) -> dict[str, Any]:
+    """What a planner may see: names and sources, not fact values or credentials.
+
+    ``allowed_actions`` stays so an existing caller can still read that list.
+    """
+    actions = contract.get("actions") or {}
+    arguments: dict[str, list] = {}
+    required_facts = []
+    for name, spec in actions.items():
+        spec = spec if isinstance(spec, dict) else {}
+        arguments[name] = sorted((spec.get("arguments") or {}))
+        for fact in spec.get("required_facts") or []:
+            if isinstance(fact, dict) and fact.get("key") and fact.get("source"):
+                required_facts.append({"action": name, "key": fact["key"], "source": fact["source"]})
+    return {
+        "objective": contract.get("title") or contract.get("id"),
+        "allowed_actions": list(actions),
+        "arguments": arguments,
+        "required_facts": required_facts,
+        "acceptance": [{"id": item["id"], "passed": bool(item.get("passed"))} for item in acceptance],
+    }
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
