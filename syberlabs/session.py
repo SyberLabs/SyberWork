@@ -11,13 +11,13 @@ import time
 import uuid
 from typing import Any, Callable
 
-from syberlabs.admission import AdmissionContext, admit, approval_roles, explain
+from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
 from syberlabs.canonical import canonical, digest
 from syberlabs.contracts import prepare_contract
 from syberlabs.economic import policy_has_economic, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
-from syberlabs.evidence import acceptance_results
+from syberlabs.evidence import acceptance_results, verified_reconciliation
 from syberlabs.planner import HttpPlanner
 
 
@@ -125,6 +125,30 @@ class Session:
             raise Rejected("planner_shape", "planner must return {action, args}")
         return self.propose(case_id, suggestion["action"], suggestion["args"], actor, roles, origin="model")
 
+    def compiled_propose(self, case_id: str, actor: str, roles: list[str]) -> dict:
+        if "compiled" not in roles:
+            raise Rejected("origin_denied", "compiled proposer credential required")
+        row = self._case(case_id)
+        contract = self._contract(row["contract_id"], row["contract_version"])
+        history = self.events[case_id]
+        action = self._next_path(contract, history)
+        if not action:
+            raise Rejected("path_complete", "no remaining compiled step")
+        args = {}
+        for param, binding in contract["actions"][action].get("arguments", {}).items():
+            name = binding.removeprefix("version:").removeprefix("fact:").split(".")[0]
+            fact = next((event for event in reversed(history) if event["kind"] == "observed" and event["body"]["key"] == name), None)
+            if not fact:
+                raise Rejected("missing_fact", name)
+            value = fact["body"]["version"] if binding.startswith("version:") else fact["body"]["value"]
+            if binding.startswith("fact:"):
+                for field in binding[5:].split(".")[1:]:
+                    if not isinstance(value, dict) or field not in value:
+                        raise Rejected("missing_fact_field", binding)
+                    value = value[field]
+            args[param] = value
+        return self.propose(case_id, action, args, actor, roles, origin="compiled")
+
     def approve(self, case_id: str, proposal_id: str, actor: str, roles: list[str]) -> dict:
         row = self._case(case_id)
         contract = self._contract(row["contract_id"], row["contract_version"])
@@ -177,14 +201,32 @@ class Session:
             raise Rejected("case_cancelled", "case is closed")
         return self._append(case_id, "signed", {"actor": actor, "role": role})
 
-    def explain_admission(self, case_id: str, proposal_id: str) -> dict:
+    def explain_admission(self, case_id: str, proposal_id: str, *, when: str = "now") -> dict:
+        """Admission for a stored proposal, plus the deciding rule.
+
+        ``when="now"`` rechecks against the current history, which is what commit
+        would do. ``when="recorded"`` uses the prefix and time of the original
+        proposal, which is what the stored decision was based on.
+        """
         row = self._case(case_id)
         contract = self._contract(row["contract_id"], row["contract_version"])
+        full = list(self.events[case_id])
+        proposal = self._proposal(full, proposal_id)
         policy = self._policy()
-        history = list(self.events[case_id])
-        proposal = self._proposal(history, proposal_id)
-        before = len(history)
-        found = explain(self._context(contract, policy, history, proposal, self.clock()))
+        history = full
+        now = self.clock()
+        if when == "recorded":
+            prefix = proposal_prefix(full, proposal_id)
+            if prefix is None:
+                raise Rejected("unknown_proposal", proposal_id)
+            history, now = prefix
+            recorded = next((event["body"] for event in full if event["kind"] == "decision" and event["body"].get("proposal_id") == proposal_id), None)
+            if recorded and "policy_version" in recorded:
+                policy = self._policy(recorded["policy_version"])
+        elif when != "now":
+            raise Rejected("invalid_explain", "when must be now or recorded")
+        before = len(self.events[case_id])
+        found = explain(self._context(contract, policy, history, proposal, now))
         if len(self.events[case_id]) != before:
             raise RuntimeError("explain_admission appended an event")
         return found
@@ -233,6 +275,10 @@ class Session:
     def verify_chain(self, case_id: str) -> bool:
         self._case(case_id)
         return verify_events(self.events[case_id])
+
+    def _next_path(self, contract, history):
+        completed = {event["body"]["action"] for event in history if event["kind"] == "effect_succeeded" or verified_reconciliation(event)}
+        return next((action for action in contract.get("compiled_path", []) if action not in completed), None)
 
     def _context(self, contract, policy, history, proposal, now) -> AdmissionContext:
         return AdmissionContext(

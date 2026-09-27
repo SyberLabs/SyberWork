@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from syberlabs.admission import AdmissionContext, admit, approval_roles, explain
+from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
 from syberlabs.canonical import canonical, digest
 from syberlabs.contracts import compile_path, prepare_contract
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
@@ -689,18 +689,31 @@ class Work:
     def _approval_roles(contract, policy, action):
         return approval_roles(contract, policy, action)
 
-    def explain_admission(self, case_id: str, proposal_id: str) -> dict:
-        """Current admission of a stored proposal, including the deciding rule.
+    def explain_admission(self, case_id: str, proposal_id: str, *, when: str = "now") -> dict:
+        """Admission for a stored proposal, including the deciding rule.
 
-        Does not append an event. ``rule`` and provenance stay out of the hash chain.
+        ``when="now"`` rechecks the current history. ``when="recorded"`` uses the
+        prefix and policy version of the original decision. Neither appends an event.
         """
         with self.tx() as db:
             row = self._case(db, case_id)
             contract = self._contract(db, row["contract_id"], row["contract_version"])
+            full = self._events(db, case_id)
+            proposal = self._proposal(full, proposal_id)
             policy = self._policy(db)
-            history = self._events(db, case_id)
-            proposal = self._proposal(history, proposal_id)
-            return explain(self._context(contract, policy, history, proposal, time.time(), db))
+            history = full
+            now = time.time()
+            if when == "recorded":
+                prefix = proposal_prefix(full, proposal_id)
+                if prefix is None:
+                    raise Rejected("unknown_proposal", proposal_id)
+                history, now = prefix
+                recorded = next((event["body"] for event in full if event["kind"] == "decision" and event["body"].get("proposal_id") == proposal_id), None)
+                if recorded and "policy_version" in recorded:
+                    policy = self._policy(db, recorded["policy_version"])
+            elif when != "now":
+                raise Rejected("invalid_explain", "when must be now or recorded")
+            return explain(self._context(contract, policy, history, proposal, now, db))
 
     def _context(self, contract, policy, history, proposal, now, db):
         installed = {row["name"] for row in db.execute("SELECT name FROM actions")}

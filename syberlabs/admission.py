@@ -308,6 +308,15 @@ def admit(ctx: AdmissionContext) -> dict:
     raise RuntimeError("admission registry returned no decision")
 
 
+def proposal_prefix(history: list, proposal_id: str):
+    """Events admission saw for this proposal, and the proposal's recorded time."""
+    for index, event in enumerate(history):
+        body = event.get("body") or {}
+        if event.get("kind") == "proposed" and body.get("id") == proposal_id:
+            return history[:index], event["at"]
+    return None
+
+
 def explain(ctx: AdmissionContext) -> dict:
     """Admission plus the deciding rule's provenance. Nothing here is persisted."""
     decision = admit(ctx)
