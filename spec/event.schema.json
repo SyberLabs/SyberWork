@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/event.schema.json",
+  "title": "Event",
+  "description": "Hash-chain envelope. Protocol sdk.syberlabs.space/v0alpha1. The digest covers case_id, seq, kind, body, at, and previous, in canonical JSON. hash is stored beside that object and is not an input to itself.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["case_id", "seq", "kind", "body", "at", "previous", "hash"],
+  "properties": {
+    "case_id": {"type": "string", "minLength": 1},
+    "seq": {"type": "integer", "minimum": 1},
+    "kind": {
+      "enum": [
+        "case_created",
+        "observed",
+        "proposed",
+        "decision",
+        "approved",
+        "effect_started",
+        "effect_succeeded",
+        "effect_rejected",
+        "effect_unknown",
+        "reconciliation_checked",
+        "reconciled",
+        "signed",
+        "resolution_requested",
+        "resolution_checked",
+        "resolution_completed",
+        "resolution_escalated",
+        "case_cancelled"
+      ]
+    },
+    "body": {"type": "object"},
+    "at": {"type": "number"},
+    "previous": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

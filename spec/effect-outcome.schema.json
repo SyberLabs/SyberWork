@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/effect-outcome.schema.json",
+  "title": "EffectOutcome",
+  "description": "Protocol view of an external effect. SyberWork does not store a state field. Conformance projects effect_succeeded, effect_rejected, and effect_unknown onto state. Commit's return value uses status for the same three strings. effect_rejected events use status for an HTTP code instead. See GAPS.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["state", "proposal_id", "action"],
+  "properties": {
+    "state": {"enum": ["succeeded", "rejected", "unknown"]},
+    "proposal_id": {"type": "string", "minLength": 1},
+    "action": {"type": "string", "minLength": 1},
+    "output": {"type": "object"},
+    "claim_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "http_status": {"enum": [409, 412, 428]},
+    "error": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "succeeded"}}, "required": ["state"]},
+      "then": {"required": ["output", "claim_hash"]}
+    },
+    {
+      "if": {"properties": {"state": {"const": "rejected"}}, "required": ["state"]},
+      "then": {"required": ["http_status", "claim_hash"]}
+    },
+    {
+      "if": {"properties": {"state": {"const": "unknown"}}, "required": ["state"]},
+      "then": {"required": ["error"]}
+    }
+  ]
+}

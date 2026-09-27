@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/contract.schema.json",
+  "title": "Contract",
+  "description": "Immutable versioned work contract accepted by Work.install_contract. Protocol sdk.syberlabs.space/v0alpha1. Extra properties are retained because install stores the document it was given.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "version", "inputs", "actions", "acceptance"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "integer"},
+    "title": {"type": "string"},
+    "inputs": {"type": "object", "additionalProperties": {"type": "string"}},
+    "input_bindings": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^fact:"}
+    },
+    "cancel_role": {"type": "string", "minLength": 1},
+    "compiled_path": {"type": "array", "items": {"type": "string"}},
+    "actions": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/actionRule"}
+    },
+    "acceptance": {
+      "type": "array",
+      "items": {"$ref": "acceptance-clause.schema.json"}
+    },
+    "resolutions": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/resolution"}
+    }
+  },
+  "$defs": {
+    "actionRule": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "required_facts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "key": {"type": "string"},
+              "source": {"type": "string"},
+              "verified": {"type": "boolean"},
+              "max_age_seconds": {"type": "number"}
+            }
+          }
+        },
+        "arguments": {"type": "object", "additionalProperties": {"type": "string"}},
+        "requires_effect": {"type": "string"},
+        "approval_role": {"type": "string"},
+        "max_amount": {"type": "number"}
+      }
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["owner_role", "escalate_role", "due_seconds", "blocks_actions", "record_key_input", "trigger", "choices", "result"],
+      "properties": {
+        "owner_role": {"type": "string", "minLength": 1},
+        "escalate_role": {"type": "string", "minLength": 1},
+        "due_seconds": {"type": "integer", "minimum": 1, "maximum": 2592000},
+        "blocks_actions": {"type": "array", "items": {"type": "string"}},
+        "record_key_input": {"type": "string", "minLength": 1},
+        "trigger": {"$ref": "#/$defs/trigger"},
+        "choices": {"$ref": "#/$defs/choices"},
+        "result": {"$ref": "#/$defs/result"},
+        "confirmation": {"$ref": "#/$defs/confirmation"}
+      }
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["key", "source", "missing_path", "identity_path"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "missing_path": {"type": "string", "minLength": 1},
+        "identity_path": {"type": "string", "minLength": 1}
+      }
+    },
+    "choices": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["key", "source", "list_path", "identity_path"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "list_path": {"type": "string", "minLength": 1},
+        "identity_path": {"type": "string", "minLength": 1}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["key", "source", "value_path", "identity_path"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "value_path": {"type": "string", "minLength": 1},
+        "identity_path": {"type": "string", "minLength": 1}
+      }
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["key", "source", "value_path"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "value_path": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

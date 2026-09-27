@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/policy.schema.json",
+  "title": "Policy",
+  "description": "Versioned global action policy accepted by Work.install_policy. Protocol sdk.syberlabs.space/v0alpha1. Additional properties are stored. They are not interpreted by the current admission function.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["version", "actions"],
+  "properties": {
+    "version": {"type": "integer"},
+    "actions": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/actionPolicy"}
+    }
+  },
+  "$defs": {
+    "actionPolicy": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "roles": {"type": "array", "items": {"type": "string"}},
+        "approval_role": {"type": "string"},
+        "max_amount": {"type": "number"}
+      }
+    }
+  }
+}

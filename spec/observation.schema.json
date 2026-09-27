@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/observation.schema.json",
+  "title": "Observation",
+  "description": "Body of an observed event. Protocol sdk.syberlabs.space/v0alpha1. value is unconstrained because connectors return arbitrary JSON.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["key", "value", "source", "version", "actor", "verified"],
+  "properties": {
+    "key": {"type": "string", "minLength": 1},
+    "value": true,
+    "source": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "actor": {"type": "string"},
+    "verified": {"type": "boolean"}
+  }
+}
