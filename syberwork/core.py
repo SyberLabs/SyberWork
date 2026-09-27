@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import time
 import urllib.error
 import urllib.request
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 from urllib.parse import quote, urlsplit
+
+from syberlabs.canonical import canonical, digest
+from syberlabs.errors import Rejected
+from syberlabs.events import event_digest, verify_events
+from syberlabs.evidence import verified_reconciliation
+from syberlabs.values import at_path
+
+__all__ = ["Rejected", "Work", "canonical", "digest", "trusted_origin"]
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -19,34 +30,6 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 HTTP = urllib.request.build_opener(NoRedirect)
-import uuid
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Any
-
-
-def canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def digest(value: Any) -> str:
-    return hashlib.sha256(canonical(value).encode()).hexdigest()
-
-
-class Rejected(ValueError):
-    def __init__(self, code: str, detail: str):
-        self.code, self.detail = code, detail
-        super().__init__(f"{code}: {detail}")
-
-
-def verified_reconciliation(event: dict) -> bool:
-    """Legacy manager attestations do not establish external execution."""
-    body = event["body"]
-    return (event["kind"] == "reconciled" and body.get("success") is True
-            and isinstance(body.get("proof"), dict)
-            and body["proof"].get("verified") is True
-            and bool(body["proof"].get("external_id"))
-            and bool(body["proof"].get("response_digest")))
 
 
 def trusted_origin(url: str) -> tuple[str, str, int]:
@@ -64,12 +47,6 @@ def trusted_origin(url: str) -> tuple[str, str, int]:
     except (ValueError, AttributeError, TypeError):
         pass
     raise Rejected("invalid_target", "target must be HTTPS or loopback HTTP without URL credentials")
-
-
-def at_path(value: Any, path: str) -> Any:
-    for part in path.split("."):
-        value = value.get(part) if isinstance(value, dict) else None
-    return value
 
 
 class Work:
@@ -681,12 +658,7 @@ class Work:
 
     def verify_chain(self, case_id: str) -> bool:
         with self.tx() as db:
-            previous = "0" * 64
-            for event in self._events(db, case_id):
-                if event["previous"] != previous or event["hash"] != digest({k: event[k] for k in ("case_id", "seq", "kind", "body", "at", "previous")}):
-                    return False
-                previous = event["hash"]
-            return True
+            return verify_events(self._events(db, case_id))
 
     @staticmethod
     def _execute(action: dict, args: dict, key: str) -> dict:
@@ -736,7 +708,7 @@ class Work:
         previous = db.execute("SELECT seq,hash FROM events WHERE case_id=? ORDER BY seq DESC LIMIT 1", (case_id,)).fetchone()
         event = {"case_id": case_id, "seq": previous["seq"] + 1 if previous else 1, "kind": kind,
                  "body": body, "at": time.time(), "previous": previous["hash"] if previous else "0" * 64}
-        event["hash"] = digest(event)
+        event["hash"] = event_digest(event)
         db.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?)", (case_id, event["seq"], kind, canonical(body), event["at"], event["previous"], event["hash"]))
         return event
 
