@@ -7,7 +7,7 @@
   "additionalProperties": true,
   "required": ["kind"],
   "properties": {
-    "kind": {"enum": ["local", "http"]},
+    "kind": {"enum": ["local", "http", "economic_http"]},
     "title": {"type": "string"},
     "method": {"enum": ["POST", "PUT", "PATCH"]},
     "url": {"type": "string"},
@@ -15,12 +15,20 @@
     "no_write_statuses": {"type": "array", "items": {"enum": [409, 412, 428]}},
     "version_arg": {"type": "string"},
     "timeout_seconds": {"type": "number"},
-    "auth_env": {"type": "string"}
+    "auth_env": {"type": "string"},
+    "asset": {"type": "string", "minLength": 1},
+    "rail": {"type": "string", "minLength": 1},
+    "counterparty": {"type": "string", "minLength": 1},
+    "operation": {"enum": ["purchase_capability", "transfer"]}
   },
   "allOf": [
     {
       "if": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "http"}}},
       "then": {"required": ["url"]}
+    },
+    {
+      "if": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "economic_http"}}},
+      "then": {"required": ["url", "asset", "rail", "counterparty", "operation", "status_url"]}
     }
   ]
 }

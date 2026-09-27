@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from syberlabs.canonical import digest
+from syberlabs.economic import denial as economic_denial
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.values import at_path
 
 
-# economic.reserve from feat/economic-actions would be inserted after facts.required
-# and before bindings.inputs. Its own comment says source freshness was already checked.
+# economic.reserve sits after facts.required and before bindings.inputs.
+# Its source check says freshness was already checked. Non-economic actions return None.
 ECONOMIC_RULE = "economic.reserve"
 ECONOMIC_INSERT_AFTER = "facts.required"
 
@@ -46,6 +47,8 @@ class AdmissionContext:
     proposal: dict
     now: float
     installed_actions: Collection[str]
+    action_configs: dict | None = None
+    budget_reserved: Callable[[str, str], int] | None = None
 
     @property
     def action(self) -> Any:
@@ -60,6 +63,11 @@ class AdmissionContext:
 
     def global_action(self) -> dict:
         return self.policy["actions"][self.action]
+
+    def action_config(self) -> dict:
+        configs = self.action_configs or {}
+        found = configs.get(self.action) if isinstance(configs, dict) else None
+        return found if isinstance(found, dict) else {}
 
 
 @rule("case.not_cancelled", "case_cancelled")
@@ -179,6 +187,39 @@ def facts_required(ctx: AdmissionContext) -> dict | None:
     return None
 
 
+@rule(
+    "economic.reserve",
+    "economic_adapter_required",
+    "economic_policy_missing",
+    "economic_intent_invalid",
+    "economic_amount_unbound",
+    "economic_operation_denied",
+    "economic_policy_mismatch",
+    "economic_destination_denied",
+    "economic_purpose_required",
+    "economic_expired",
+    "economic_verified_evidence_required",
+    "economic_evidence_mismatch",
+    "economic_policy_invalid",
+    "economic_limit_exceeded",
+    "economic_budget_exceeded",
+)
+def economic_reserve(ctx: AdmissionContext) -> dict | None:
+    """No-op unless the action is economic_http or the policy action carries economic."""
+    config = ctx.action_config()
+    policy_action = ctx.global_action()
+    if config.get("kind") != "economic_http":
+        if isinstance(policy_action, dict) and "economic" in policy_action:
+            return deny("economic_adapter_required", "economic.reserve")
+        return None
+    reason = economic_denial(
+        config, policy_action, ctx.local_action(), ctx.history, ctx.args, ctx.now, ctx.budget_reserved,
+    )
+    if reason:
+        return deny(reason, "economic.reserve")
+    return None
+
+
 @rule("bindings.inputs", "input_provenance:")
 def bindings_inputs(ctx: AdmissionContext) -> dict | None:
     created = next((event for event in ctx.history if event["kind"] == "case_created"), None)
@@ -265,3 +306,14 @@ def admit(ctx: AdmissionContext) -> dict:
         if result is not None:
             return result
     raise RuntimeError("admission registry returned no decision")
+
+
+def explain(ctx: AdmissionContext) -> dict:
+    """Admission plus the deciding rule's provenance. Nothing here is persisted."""
+    decision = admit(ctx)
+    return {
+        "status": decision["status"],
+        "reason": decision["reason"],
+        "rule": decision["rule"],
+        "provenance": rule_provenance(decision["rule"]),
+    }

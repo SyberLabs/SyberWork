@@ -10,6 +10,7 @@ from typing import Any, Mapping, Protocol
 
 from syberlabs.canonical import canonical
 from syberlabs.errors import Rejected
+from syberlabs.targets import trusted_origin
 
 
 class PlannerRefusal(Rejected):
@@ -34,8 +35,10 @@ class HttpPlanner:
 
     def ensure_configured(self) -> str:
         target = os.getenv("SYBERWORK_PLANNER_URL", "")
-        if not target.startswith(("https://", "http://127.0.0.1:")):
-            raise PlannerRefusal("planner_unconfigured", "configure an HTTPS or local planner endpoint")
+        try:
+            trusted_origin(target)
+        except Rejected:
+            raise PlannerRefusal("planner_unconfigured", "configure an HTTPS or local planner endpoint") from None
         return target
 
     def propose(self, context: Mapping[str, Any]) -> dict[str, Any]:

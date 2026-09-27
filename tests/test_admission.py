@@ -29,6 +29,7 @@ EXPECTED_ORDER = [
     "limits.amount",
     "effect.prior",
     "facts.required",
+    "economic.reserve",
     "bindings.inputs",
     "bindings.arguments",
     "approval.required",
@@ -66,7 +67,8 @@ def context(history=None, proposal_doc=None, contract_actions=None, policy_actio
 class AdmissionRegistry(unittest.TestCase):
     def test_registry_order(self):
         self.assertEqual(rule_order(), EXPECTED_ORDER)
-        self.assertEqual(EXPECTED_ORDER.index("facts.required") + 1, EXPECTED_ORDER.index("bindings.inputs"))
+        self.assertEqual(EXPECTED_ORDER.index("facts.required") + 1, EXPECTED_ORDER.index("economic.reserve"))
+        self.assertEqual(EXPECTED_ORDER.index("economic.reserve") + 1, EXPECTED_ORDER.index("bindings.inputs"))
         self.assertEqual(ECONOMIC_INSERT_AFTER, "facts.required")
 
     def test_each_reason_code_has_one_rule(self):
@@ -127,6 +129,7 @@ class AdmissionRegistry(unittest.TestCase):
                 history=[{"kind": "observed", "at": 1_000_000.0, "body": {"key": "part", "value": "P-104", "source": "inventory", "verified": True}}],
             ),
             "approval_required:manager": context(policy_actions={"review": {"roles": ["operator"], "approval_role": "manager"}}),
+            "economic_adapter_required": context(policy_actions={"review": {"roles": ["operator"], "economic": {"budget_id": "ops"}}}),
             "all_checks_passed": context(),
         }
         seen = {}

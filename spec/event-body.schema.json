@@ -132,7 +132,11 @@
         "action": {"type": "string"},
         "actor": {"type": "string"},
         "policy_version": {"type": "integer"},
-        "idempotency_key": {"type": "string"}
+        "idempotency_key": {"type": "string"},
+        "policy_snapshot": {"$ref": "#/$defs/hash"},
+        "evidence_snapshot": {"$ref": "#/$defs/hash"},
+        "intent_snapshot": {"$ref": "#/$defs/hash"},
+        "budget_id": {"type": "string", "minLength": 1}
       }
     },
     "effect_succeeded": {
@@ -156,6 +160,12 @@
               "additionalProperties": false,
               "required": ["status", "body"],
               "properties": {"status": {"type": "integer"}, "body": {"type": "string"}}
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["settlement"],
+              "properties": {"settlement": {"type": "object"}}
             }
           ]
         }

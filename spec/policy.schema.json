@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/v0alpha1/policy.schema.json",
   "title": "Policy",
-  "description": "Versioned global action policy accepted by Work.install_policy. Protocol sdk.syberlabs.space/v0alpha1. Additional properties are stored. They are not interpreted by the current admission function.",
+  "description": "Versioned global action policy accepted by Work.install_policy. Protocol sdk.syberlabs.space/v0alpha1. An action may carry an economic budget. Other additional properties are stored and are not admission inputs.",
   "type": "object",
   "additionalProperties": true,
   "required": ["version", "actions"],
@@ -20,7 +20,24 @@
       "properties": {
         "roles": {"type": "array", "items": {"type": "string"}},
         "approval_role": {"type": "string"},
-        "max_amount": {"type": "number"}
+        "max_amount": {"type": "number"},
+        "economic": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["budget_id", "budget_units", "max_amount_units", "asset", "rail", "counterparties"],
+          "properties": {
+            "budget_id": {"type": "string", "minLength": 1},
+            "budget_units": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+            "max_amount_units": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+            "asset": {"type": "string", "minLength": 1},
+            "rail": {"type": "string", "minLength": 1},
+            "counterparties": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "string", "minLength": 1}
+            }
+          }
+        }
       }
     }
   }

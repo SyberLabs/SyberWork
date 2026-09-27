@@ -40,9 +40,10 @@
           "items": {
             "type": "object",
             "additionalProperties": true,
+            "required": ["key", "source"],
             "properties": {
-              "key": {"type": "string"},
-              "source": {"type": "string"},
+              "key": {"type": "string", "minLength": 1},
+              "source": {"type": "string", "minLength": 1},
               "verified": {"type": "boolean"},
               "max_age_seconds": {"type": "number"}
             }

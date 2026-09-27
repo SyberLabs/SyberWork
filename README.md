@@ -8,7 +8,17 @@
 
 This is a running application, with a browser operator console, a versioned contract studio, a policy boundary, source-system readers, action executors, an external planner interface, human approval, completion checks, and amendment replay. It is separate from SyberLabs' existing `cross-platform` instrument panel: the panel inspects existing research systems; SyberWork executes contracts.
 
-The `syberlabs` package is the reusable core: canonical JSON, the event hash chain, the admission rules, and the planner interface. `syberwork` is the application: storage, the HTTP API, the CLI, the console, and connectors. `syberlabs` does not import `syberwork`. Both install from this repository at one version. The protocol those objects follow is `sdk.syberlabs.space/v0alpha1` in `spec/`.
+The `syberlabs` package is the reusable core: canonical JSON, the event hash chain, the admission rules, the planner interface, and an in-memory `Session` for a project that does not use this application's database. `syberwork` is the application: storage, the HTTP API, the CLI, the console, and connectors. `syberlabs` does not import `syberwork`. Both install from this repository at one version. The protocol those objects follow is `sdk.syberlabs.space/v0alpha1` in `spec/`.
+
+## Use the SDK on another project
+
+`examples/release_gate.py` is a software release gate. It does not import `syberwork` and it does not talk to the procurement ERP.
+
+```sh
+PYTHONPATH=. python examples/release_gate.py
+```
+
+A project installs a contract, a policy, and local actions on `syberlabs.Session`, then observes, proposes, commits, approves, signs, explains, and replays. `Session.commit` runs admission again and only then records a local effect. `explain_admission` returns the deciding rule and its provenance and does not write them into the hash chain. HTTP effects and economic reservations stay on `syberwork.Work`.
 
 ## Start
 

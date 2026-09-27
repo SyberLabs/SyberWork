@@ -2,10 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/v0alpha1/acceptance-clause.schema.json",
   "title": "AcceptanceClause",
-  "description": "One acceptance clause. Protocol sdk.syberlabs.space/v0alpha1. install_contract requires id and kind only. Payload fields are what evaluation reads; see GAPS.md.",
+  "description": "One acceptance clause. Protocol sdk.syberlabs.space/v0alpha1. install_contract requires id, kind, and the field that acceptance evaluation indexes: action, role, or key.",
   "type": "object",
   "additionalProperties": true,
   "required": ["id", "kind"],
+  "allOf": [
+    {
+      "if": {"required": ["kind"], "properties": {"kind": {"const": "effect"}}},
+      "then": {"required": ["action"], "properties": {"action": {"type": "string", "minLength": 1}}}
+    },
+    {
+      "if": {"required": ["kind"], "properties": {"kind": {"const": "signoff"}}},
+      "then": {"required": ["role"], "properties": {"role": {"type": "string", "minLength": 1}}}
+    },
+    {
+      "if": {"required": ["kind"], "properties": {"kind": {"const": "fact"}}},
+      "then": {"required": ["key"], "properties": {"key": {"type": "string", "minLength": 1}}}
+    }
+  ],
   "properties": {
     "id": {"type": "string", "minLength": 1},
     "kind": {"enum": ["effect", "signoff", "fact"]},

@@ -13,12 +13,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from syberlabs.admission import AdmissionContext, admit, approval_roles
+from syberlabs.admission import AdmissionContext, admit, approval_roles, explain
 from syberlabs.canonical import canonical, digest
+from syberlabs.contracts import compile_path, prepare_contract
+from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
-from syberlabs.evidence import verified_reconciliation
+from syberlabs.evidence import acceptance_results, verified_reconciliation
 from syberlabs.planner import HttpPlanner
+from syberlabs.targets import trusted_origin
 from syberlabs.values import at_path
 
 __all__ = ["Rejected", "Work", "canonical", "digest", "trusted_origin"]
@@ -32,23 +35,6 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 HTTP = urllib.request.build_opener(NoRedirect)
-
-
-def trusted_origin(url: str) -> tuple[str, str, int]:
-    """Reject userinfo and non-loopback HTTP before a credential-bearing request."""
-    try:
-        parsed = urlsplit(url)
-        port = parsed.port
-        if (not isinstance(url, str) or not parsed.hostname or parsed.username
-                or parsed.password or parsed.fragment or not parsed.path.startswith("/")):
-            raise ValueError("invalid URL")
-        if parsed.scheme == "https":
-            return parsed.scheme, parsed.hostname, port or 443
-        if parsed.scheme == "http" and parsed.hostname == "127.0.0.1" and port:
-            return parsed.scheme, parsed.hostname, port
-    except (ValueError, AttributeError, TypeError):
-        pass
-    raise Rejected("invalid_target", "target must be HTTPS or loopback HTTP without URL credentials")
 
 
 class Work:
@@ -74,6 +60,10 @@ class Work:
                     case_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
                     body TEXT NOT NULL, at REAL NOT NULL, previous TEXT NOT NULL,
                     hash TEXT NOT NULL, PRIMARY KEY(case_id,seq));
+                CREATE TABLE IF NOT EXISTS economic_reservations (
+                    proposal_id TEXT PRIMARY KEY, case_id TEXT NOT NULL,
+                    budget_id TEXT NOT NULL, asset TEXT NOT NULL,
+                    amount_units INTEGER NOT NULL, state TEXT NOT NULL);
             """)
 
     @contextmanager
@@ -92,44 +82,7 @@ class Work:
             db.close()
 
     def install_contract(self, doc: dict) -> None:
-        required = ("id", "version", "inputs", "actions", "acceptance")
-        if any(k not in doc for k in required) or not isinstance(doc["version"], int):
-            raise Rejected("invalid_contract", "id, integer version, inputs, actions, acceptance are required")
-        if not isinstance(doc["actions"], dict) or not isinstance(doc["acceptance"], list):
-            raise Rejected("invalid_contract", "actions must be an object and acceptance a list")
-        if any(not isinstance(a, dict) or "id" not in a or a.get("kind") not in ("effect", "signoff", "fact") for a in doc["acceptance"]):
-            raise Rejected("invalid_contract", "acceptance clauses need IDs and known kinds")
-        if len({a["id"] for a in doc["acceptance"]}) != len(doc["acceptance"]):
-            raise Rejected("invalid_contract", "acceptance clause IDs must be unique")
-        bindings = doc.get("input_bindings", {})
-        if not isinstance(bindings, dict) or any(
-            key not in doc["inputs"] or not isinstance(binding, str) or not binding.startswith("fact:")
-            for key, binding in bindings.items()
-        ):
-            raise Rejected("invalid_contract", "input bindings must map declared input keys to fact paths")
-        resolutions = doc.get("resolutions", {})
-        if not isinstance(resolutions, dict):
-            raise Rejected("invalid_contract", "resolutions must be an object")
-        for name, spec in resolutions.items():
-            if (not isinstance(name, str) or not isinstance(spec, dict) or
-                    spec.get("record_key_input") not in doc["inputs"] or
-                    not isinstance(spec.get("due_seconds"), int) or not 0 < spec["due_seconds"] <= 2592000 or
-                    not isinstance(spec.get("blocks_actions"), list) or
-                    any(action not in doc["actions"] for action in spec["blocks_actions"]) or
-                    any(not isinstance(spec.get(field), str) or not spec[field] for field in ("owner_role", "escalate_role"))):
-                raise Rejected("invalid_contract", "resolution needs owner, escalation, due time, and input key")
-            for field, required_fields in (("trigger", ("key", "source", "missing_path", "identity_path")),
-                                           ("choices", ("key", "source", "list_path", "identity_path")),
-                                           ("result", ("key", "source", "value_path", "identity_path"))):
-                item = spec.get(field)
-                if not isinstance(item, dict) or any(not isinstance(item.get(k), str) or not item[k] for k in required_fields):
-                    raise Rejected("invalid_contract", "resolution requires a source-backed " + field)
-            if "confirmation" in spec and (not isinstance(spec["confirmation"], dict) or
-                    any(not isinstance(spec["confirmation"].get(k), str) or not spec["confirmation"][k]
-                        for k in ("key", "source", "value_path"))):
-                raise Rejected("invalid_contract", "invalid resolution confirmation")
-        path = self._compile_path(doc)
-        doc = {**doc, "compiled_path": path}
+        doc = prepare_contract(doc)
         with self.tx() as db:
             row = db.execute("SELECT body FROM contracts WHERE id=? AND version=?", (doc["id"], doc["version"])).fetchone()
             if row and row["body"] != canonical(doc):
@@ -138,33 +91,7 @@ class Work:
 
     @staticmethod
     def _compile_path(doc: dict) -> list[str]:
-        actions = doc["actions"]
-        if any(not isinstance(spec, dict) for spec in actions.values()):
-            raise Rejected("invalid_contract", "action rules must be objects")
-        for name, spec in actions.items():
-            dep = spec.get("requires_effect")
-            if dep and (dep not in actions or dep == name):
-                raise Rejected("invalid_contract", "unknown or self-referencing dependency: " + name)
-        path = []
-        pending = set(actions)
-        while pending:
-            ready = sorted(name for name in pending if not actions[name].get("requires_effect") or actions[name]["requires_effect"] in path)
-            if not ready:
-                raise Rejected("invalid_contract", "action dependency cycle")
-            path.extend(ready)
-            pending.difference_update(ready)
-        authored = doc.get("compiled_path")
-        if authored is not None:
-            if not isinstance(authored, list) or len(authored) != len(set(authored)) or any(a not in actions for a in authored):
-                raise Rejected("invalid_contract", "invalid compiled path")
-            visited = set()
-            for action in authored:
-                dep = actions[action].get("requires_effect")
-                if dep and dep not in visited:
-                    raise Rejected("invalid_contract", "compiled path violates dependency: " + action)
-                visited.add(action)
-            return authored
-        return path
+        return compile_path(doc)
 
     def artifacts(self, contract_id: str, version: int) -> dict:
         with self.tx() as db:
@@ -188,18 +115,30 @@ class Work:
                 raise Rejected("immutable_policy", "publish a new version")
             if current is not None and doc["version"] < current and not prior:
                 raise Rejected("policy_version", "new policy version must advance")
+            if not prior and policy_has_economic(doc):
+                prior_docs = [json.loads(row["body"]) for row in db.execute("SELECT body FROM policies")]
+                validate_policy_budgets(doc, prior_docs)
             db.execute("INSERT OR IGNORE INTO policies VALUES (?,?)", (doc["version"], canonical(doc)))
 
     def install_action(self, name: str, doc: dict) -> None:
-        if doc.get("kind") not in ("local", "http"):
-            raise Rejected("invalid_action", "action kind must be local or http")
-        if doc["kind"] == "http":
+        if doc.get("kind") not in ("local", "http", "economic_http"):
+            raise Rejected("invalid_action", "action kind must be local, http or economic_http")
+        if doc["kind"] in ("http", "economic_http"):
             origin = trusted_origin(doc.get("url", ""))
-            if doc.get("method", "POST") not in ("POST", "PUT", "PATCH"):
+            allowed_methods = ("POST",) if doc["kind"] == "economic_http" else ("POST", "PUT", "PATCH")
+            if doc.get("method", "POST") not in allowed_methods:
                 raise Rejected("invalid_action", "HTTP method must write")
+        if doc["kind"] == "economic_http":
+            if (not isinstance(doc.get("asset"), str) or not doc["asset"] or
+                    not isinstance(doc.get("rail"), str) or not doc["rail"] or
+                    not isinstance(doc.get("counterparty"), str) or not doc["counterparty"] or
+                    doc.get("operation") not in ("purchase_capability", "transfer") or
+                    not doc.get("status_url") or
+                    (origin[0] == "https" and not doc.get("auth_env"))):
+                raise Rejected("invalid_action", "economic adapter needs asset, rail, counterparty, credential and status lookup")
         status_url = doc.get("status_url")
         if status_url is not None:
-            if (doc["kind"] != "http" or trusted_origin(status_url) != origin or
+            if (doc["kind"] not in ("http", "economic_http") or trusted_origin(status_url) != origin or
                     status_url.count("{key}") != 1 or
                     urlsplit(status_url).path.count("{key}") != 1 or
                     any(c in status_url.replace("{key}", "") for c in "{}")):
@@ -214,7 +153,13 @@ class Work:
             db.execute("INSERT OR IGNORE INTO actions VALUES (?,?)", (name, canonical(doc)))
 
     def install_source(self, name: str, doc: dict) -> None:
-        if doc.get("kind") != "http" or not doc.get("url", "").startswith(("https://", "http://127.0.0.1:")) or "{key}" not in doc["url"]:
+        url = doc.get("url") if isinstance(doc.get("url"), str) else ""
+        try:
+            trusted_origin(url)
+            trusted = True
+        except Rejected:
+            trusted = False
+        if doc.get("kind") != "http" or not trusted or "{key}" not in url:
             raise Rejected("invalid_source", "source needs a fixed HTTPS or local URL with {key}")
         with self.tx() as db:
             prior = db.execute("SELECT body FROM sources WHERE name=?", (name,)).fetchone()
@@ -507,12 +452,24 @@ class Work:
                 self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision})
                 return {"decision": decision}
             action = json.loads(db.execute("SELECT body FROM actions WHERE name=?", (proposal["action"],)).fetchone()["body"])
-            claim = self._append(db, case_id, "effect_started", {"proposal_id": proposal_id, "action": proposal["action"], "actor": actor, "policy_version": policy["version"], "idempotency_key": proposal_id})
+            extra = {}
+            if action["kind"] == "economic_http":
+                rule = policy["actions"][proposal["action"]]["economic"]
+                amount = units(proposal["args"]["amount_units"])
+                db.execute("INSERT INTO economic_reservations VALUES (?,?,?,?,?,?)", (
+                    proposal_id, case_id, rule["budget_id"], action["asset"], amount, "reserved"))
+                extra = {"policy_snapshot": digest(policy),
+                         "evidence_snapshot": digest(proposal["args"]["evidence"]),
+                         "intent_snapshot": digest(proposal["args"]),
+                         "budget_id": rule["budget_id"]}
+            claim = self._append(db, case_id, "effect_started", {"proposal_id": proposal_id, "action": proposal["action"], "actor": actor, "policy_version": policy["version"], "idempotency_key": proposal_id, **extra})
         try:
             output = self._execute(action, proposal["args"], proposal_id)
         except urllib.error.HTTPError as exc:
             if exc.code in action.get("no_write_statuses", []):
                 with self.tx() as db:
+                    if action["kind"] == "economic_http":
+                        db.execute("UPDATE economic_reservations SET state='released' WHERE proposal_id=?", (proposal_id,))
                     event = self._append(db, case_id, "effect_rejected", {
                         "proposal_id": proposal_id, "action": proposal["action"],
                         "status": exc.code, "claim_hash": claim["hash"],
@@ -526,6 +483,8 @@ class Work:
                 self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": str(exc)[:400]})
             return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         with self.tx() as db:
+            if action["kind"] == "economic_http":
+                db.execute("UPDATE economic_reservations SET state='settled' WHERE proposal_id=?", (proposal_id,))
             result = self._append(db, case_id, "effect_succeeded", {"proposal_id": proposal_id, "action": proposal["action"], "output": output, "claim_hash": claim["hash"]})
         return {"status": "succeeded", "event": result}
 
@@ -566,10 +525,15 @@ class Work:
         except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
             status, reason, record = "pending", "status_unavailable", None
         else:
-            if (isinstance(record, dict) and record.get("state") == "committed"
+            matched = False
+            if config.get("kind") == "economic_http":
+                matched = receipt_matches(record, proposal_id, proposal["args"], digest(proposal["args"]))
+            elif (isinstance(record, dict) and record.get("state") == "committed"
                     and record.get("idempotency_key") == proposal_id
                     and record.get("request_digest") == digest(proposal["args"])
                     and isinstance(record.get("external_id"), str) and record["external_id"]):
+                matched = True
+            if matched:
                 status, reason = "verified", "destination_record_matched"
             else:
                 status, reason = "unverified", "destination_record_mismatch"
@@ -578,9 +542,14 @@ class Work:
             if any(verified_reconciliation(e) and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("reconciliation_denied", "already reconciled")
             if status == "verified":
+                if config.get("kind") == "economic_http":
+                    db.execute("UPDATE economic_reservations SET state='settled' WHERE proposal_id=? AND state='reserved'", (proposal_id,))
                 proof = {"verified": True, "external_id": record["external_id"],
                          "request_digest": record["request_digest"], "response_digest": digest(record),
                          "idempotency_key": proposal_id}
+                if config.get("kind") == "economic_http":
+                    proof.update({"amount_units": record["amount_units"], "asset": record["asset"],
+                                  "counterparty": record["counterparty"], "rail": config["rail"]})
                 event = self._append(db, case_id, "reconciled", {
                     "proposal_id": proposal_id, "action": proposal["action"],
                     "success": True, "proof": proof, "actor": actor,
@@ -668,6 +637,11 @@ class Work:
         req = urllib.request.Request(action["url"], data=canonical(args).encode(), headers=headers, method=action.get("method", "POST"))
         with HTTP.open(req, timeout=min(30, action.get("timeout_seconds", 10))) as response:
             raw = response.read(32768)
+            if action["kind"] == "economic_http":
+                record = json.loads(raw)
+                if not receipt_matches(record, key, args, digest(args)):
+                    raise ValueError("settlement receipt does not match the authorized intent")
+                return {"settlement": record}
             return {"status": response.status, "body": raw.decode("utf-8", errors="replace")}
 
     @staticmethod
@@ -715,28 +689,40 @@ class Work:
     def _approval_roles(contract, policy, action):
         return approval_roles(contract, policy, action)
 
-    def _admit(self, contract, policy, history, proposal, now, db):
+    def explain_admission(self, case_id: str, proposal_id: str) -> dict:
+        """Current admission of a stored proposal, including the deciding rule.
+
+        Does not append an event. ``rule`` and provenance stay out of the hash chain.
+        """
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+            policy = self._policy(db)
+            history = self._events(db, case_id)
+            proposal = self._proposal(history, proposal_id)
+            return explain(self._context(contract, policy, history, proposal, time.time(), db))
+
+    def _context(self, contract, policy, history, proposal, now, db):
         installed = {row["name"] for row in db.execute("SELECT name FROM actions")}
-        decision = admit(AdmissionContext(contract, policy, history, proposal, now, installed))
+        configs = {row["name"]: json.loads(row["body"]) for row in db.execute("SELECT name, body FROM actions")}
+
+        def reserved(budget_id, asset):
+            row = db.execute(
+                "SELECT COALESCE(SUM(amount_units),0) AS total FROM economic_reservations "
+                "WHERE budget_id=? AND asset=? AND state!='released'",
+                (budget_id, asset),
+            ).fetchone()
+            return int(row["total"])
+
+        return AdmissionContext(contract, policy, history, proposal, now, installed, configs, reserved)
+
+    def _admit(self, contract, policy, history, proposal, now, db):
+        decision = admit(self._context(contract, policy, history, proposal, now, db))
         return {"status": decision["status"], "reason": decision["reason"]}
 
     @staticmethod
     def _acceptance(contract, history):
-        results = []
-        for clause in contract["acceptance"]:
-            if clause["kind"] == "effect":
-                passed = any(e["kind"] == "effect_succeeded" and e["body"]["action"] == clause["action"] or verified_reconciliation(e) and e["body"]["action"] == clause["action"] for e in history)
-            elif clause["kind"] == "signoff":
-                completed_seq = next((e["seq"] for e in history if
-                                      (e["kind"] == "effect_succeeded" or verified_reconciliation(e))
-                                      and e["body"]["action"] == clause.get("after_action")), 0)
-                passed = any(e["kind"] == "signed" and e["body"]["role"] == clause["role"] and (not clause.get("after_action") or e["seq"] > completed_seq > 0) for e in history)
-            elif clause["kind"] == "fact":
-                passed = any(e["kind"] == "observed" and e["body"]["key"] == clause["key"] and e["body"]["value"] == clause.get("equals") for e in history)
-            else:
-                passed = False
-            results.append({"id": clause["id"], "passed": passed})
-        return results
+        return acceptance_results(contract, history)
 
     @staticmethod
     def _next_path(contract, history):
