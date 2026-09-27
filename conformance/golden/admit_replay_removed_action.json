@@ -1,0 +1,32 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "allowed",
+      "all_checks_passed"
+    ]
+  ],
+  "id": "admit_replay_removed_action",
+  "outcome": "action_not_in_contract",
+  "source": "admission"
+}

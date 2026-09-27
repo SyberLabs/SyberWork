@@ -1,0 +1,100 @@
+{
+  "command": "PYTHONPATH=. python3 -m case_studies.enterprise_procurement",
+  "commit": "a2f909bc4c638e07c9ae14cb8dc63f7c3347c06d",
+  "note": "Normalized from conformance capture on main. Raw case-study JSON also contains UUIDs, timestamps, and hashes, which are omitted here.",
+  "scenarios": [
+    {
+      "decisions": [
+        "all_checks_passed",
+        "resolution_open:quote",
+        "approval_required:manager"
+      ],
+      "event_count": 22,
+      "id": "ambiguous_quote",
+      "outcome": "resolved_quote"
+    },
+    {
+      "decisions": [
+        "all_checks_passed",
+        "approval_required:manager",
+        "approval_required:manager"
+      ],
+      "event_count": 16,
+      "id": "complete",
+      "outcome": "complete"
+    },
+    {
+      "decisions": [
+        "all_checks_passed",
+        "approval_required:manager",
+        "effect_unresolved:issue_order"
+      ],
+      "event_count": 17,
+      "id": "forged_claim",
+      "outcome": "blocked_unproven_claim"
+    },
+    {
+      "decisions": [
+        "all_checks_passed",
+        "approval_required:manager"
+      ],
+      "event_count": 16,
+      "id": "lost_ack",
+      "outcome": "reconciled_complete"
+    },
+    {
+      "decisions": [
+        "all_checks_passed",
+        "approval_required:manager"
+      ],
+      "event_count": 16,
+      "id": "mismatched_status",
+      "outcome": "blocked_mismatched_record"
+    },
+    {
+      "decisions": [],
+      "event_count": 0,
+      "id": "missing_input",
+      "outcome": "input_rejected"
+    },
+    {
+      "decisions": [
+        "resolution_open:site",
+        "all_checks_passed",
+        "approval_required:manager"
+      ],
+      "event_count": 23,
+      "id": "missing_site",
+      "outcome": "resolved_site"
+    },
+    {
+      "decisions": [
+        "all_checks_passed",
+        "approval_required:manager",
+        "action_not_in_global_policy"
+      ],
+      "event_count": 13,
+      "id": "policy_tightened",
+      "outcome": "blocked_at_commit"
+    },
+    {
+      "decisions": [
+        "all_checks_passed",
+        "resolution_open:quote"
+      ],
+      "event_count": 13,
+      "id": "quote_cancelled",
+      "outcome": "cancelled"
+    },
+    {
+      "decisions": [
+        "all_checks_passed",
+        "approval_required:manager",
+        "approval_required:manager"
+      ],
+      "event_count": 21,
+      "id": "stale_quote",
+      "outcome": "recovered_after_refresh"
+    }
+  ]
+}

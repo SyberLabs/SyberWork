@@ -1,0 +1,27 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "source_verification_required:part_number"
+    ]
+  ],
+  "id": "admit_unverified_fact",
+  "outcome": "source_verification_required:part_number",
+  "source": "admission"
+}
