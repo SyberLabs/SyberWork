@@ -202,6 +202,9 @@ class GitSearchSpace:
         except UnicodeDecodeError:
             return None  # a lossy decode would silently change the file if the provider wrote it back
 
+    def candidate(self, candidate: str) -> Candidate:
+        return Candidate.from_view(self._thread._view(candidate))
+
     def merge_base(self, a: str, b: str) -> str:
         found = self._thread.kit.repo.merge_base(self._commit_of(a), self._commit_of(b))
         by_commit = {commit: cid for cid, commit in self._commits.items()}

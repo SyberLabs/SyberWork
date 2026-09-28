@@ -99,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
     source = propose.add_mutually_exclusive_group(required=True)
     source.add_argument("--from-worktree", action="store_true", help="snapshot in-scope working-tree edits")
     source.add_argument("--command", dest="provider_command", help="external provider command (JSON on stdin and stdout)")
+    source.add_argument("--evolve", metavar="MUTATOR_COMMAND",
+                        help="EvoGit-style search; the command mutates one candidate (JSON on stdin and stdout)")
+    propose.add_argument("--population", type=int, default=4)
+    propose.add_argument("--generations", type=int, default=6)
+    propose.add_argument("--crossover-every", type=int, default=3)
+    propose.add_argument("--seed", type=int, default=0)
+    propose.add_argument("--from", dest="seeds", nargs="+", default=[], help="candidates to seed the population with")
     propose.add_argument("--message", default="")
     propose.add_argument("--name", default="command")
     propose.add_argument("--revision", default="1")
@@ -193,6 +200,13 @@ def _run(kit: Kit, args) -> int:
             if not changes:
                 raise Rejected("no_change", "no in-scope edits in the working tree")
             found = thread.propose(changes=changes, message=args.message or "working-tree edits")
+        elif args.evolve:
+            from syberlabs.evolve import CommandMutator, EvolutionaryProvider
+            mutator = CommandMutator(shlex.split(args.evolve), name=args.name, cwd=kit.repo.root)
+            provider = EvolutionaryProvider(mutator, population=args.population, generations=args.generations,
+                                            crossover_every=args.crossover_every, seeds=args.seeds,
+                                            revision=args.revision)
+            found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(shlex.split(args.provider_command), name=args.name, revision=args.revision,
                                        cwd=kit.repo.root)
@@ -201,7 +215,8 @@ def _run(kit: Kit, args) -> int:
         for candidate in found:
             scope = "" if candidate.in_scope else "  OUT OF SCOPE: " + ", ".join(candidate.scope_violations + candidate.limit_violations)
             print(f"{candidate.id}: {len(candidate.changed_paths)} files, {candidate.diff_bytes} diff bytes, provisional{scope}")
-        print(f"search {search['id']} {search['stopped']}" + (f" ({search['error']})" if search["error"] else ""))
+        print(f"search {search['id']} {search['stopped']}" + (f" ({search['error']})" if search["error"] else "")
+              + (f"; provider recommends {', '.join(search['recommended'])} (a signal, not a verdict)" if search["recommended"] else ""))
         if found:
             print(f"next: syberlabs check {found[-1].id}")
     elif args.command == "check":
