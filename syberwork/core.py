@@ -341,7 +341,7 @@ class Work:
                 if event["kind"] != "effect_started" or event["body"]["proposal_id"] in rejected:
                     continue
                 action = db.execute("SELECT body FROM actions WHERE name=?", (event["body"]["action"],)).fetchone()
-                if action and json.loads(action["body"])["kind"] == "http":
+                if action and json.loads(action["body"])["kind"] in ("http", "economic_http"):
                     raise Rejected("cancellation_denied", "an external effect was claimed; verify its outcome first")
             return self._append(db, case_id, "case_cancelled", {"actor": actor, "role": contract.get("cancel_role", "manager"), "reason": reason.strip()})
 
@@ -488,6 +488,9 @@ class Work:
         except urllib.error.HTTPError as exc:
             if exc.code in action.get("no_write_statuses", []):
                 with self.tx() as db:
+                    settled = self._verified(db, case_id, proposal_id)
+                    if settled:
+                        return {"status": "succeeded", "event": settled}
                     if action["kind"] == "economic_http":
                         db.execute("UPDATE economic_reservations SET state='released' WHERE proposal_id=?", (proposal_id,))
                     event = self._append(db, case_id, "effect_rejected", {
@@ -496,13 +499,22 @@ class Work:
                     })
                 return {"status": "rejected", "event": event}
             with self.tx() as db:
+                settled = self._verified(db, case_id, proposal_id)
+                if settled:
+                    return {"status": "succeeded", "event": settled}
                 self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": _destination_code(exc)})
             return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         except Exception as exc:
             with self.tx() as db:
+                settled = self._verified(db, case_id, proposal_id)
+                if settled:
+                    return {"status": "succeeded", "event": settled}
                 self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": _destination_code(exc)})
             return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
         with self.tx() as db:
+            settled = self._verified(db, case_id, proposal_id)
+            if settled:
+                return {"status": "succeeded", "event": settled}
             if action["kind"] == "economic_http":
                 db.execute("UPDATE economic_reservations SET state='settled' WHERE proposal_id=?", (proposal_id,))
             result = self._append(db, case_id, "effect_succeeded", {"proposal_id": proposal_id, "action": proposal["action"], "output": output, "claim_hash": claim["hash"]})
@@ -517,8 +529,9 @@ class Work:
         with self.tx() as db:
             history = self._events(db, case_id)
             proposal = self._proposal(history, proposal_id)
-            if not any(e["kind"] == "effect_unknown" and e["body"]["proposal_id"] == proposal_id for e in history):
-                raise Rejected("reconciliation_denied", "no unknown effect")
+            if not any(e["kind"] in ("effect_started", "effect_unknown") and e["body"]["proposal_id"] == proposal_id for e in history) or any(
+                    e["kind"] in ("effect_succeeded", "effect_rejected") and e["body"]["proposal_id"] == proposal_id for e in history):
+                raise Rejected("reconciliation_denied", "no unresolved effect")
             if any(verified_reconciliation(e) and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("reconciliation_denied", "already reconciled")
             config = json.loads(db.execute("SELECT body FROM actions WHERE name=?", (proposal["action"],)).fetchone()["body"])
@@ -563,6 +576,9 @@ class Work:
             history = self._events(db, case_id)
             if any(verified_reconciliation(e) and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("reconciliation_denied", "already reconciled")
+            if any(e["kind"] in ("effect_succeeded", "effect_rejected") and
+                   e["body"]["proposal_id"] == proposal_id for e in history):
+                raise Rejected("reconciliation_denied", "effect resolved during status lookup")
             if status == "verified":
                 if config.get("kind") == "economic_http":
                     db.execute("UPDATE economic_reservations SET state='settled' WHERE proposal_id=? AND state='reserved'", (proposal_id,))
@@ -759,6 +775,11 @@ class Work:
             (case_id, event["seq"], envelope_jcs(event), rule if kind == "decision" else None),
         )
         return event
+
+    def _verified(self, db, case_id, proposal_id):
+        """A verified reconciliation already recorded for this proposal, if any."""
+        return next((e for e in self._events(db, case_id) if verified_reconciliation(e) and
+                     e["body"]["proposal_id"] == proposal_id), None)
 
     @staticmethod
     def _proposal(history, proposal_id):
