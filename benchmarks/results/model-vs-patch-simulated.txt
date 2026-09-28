@@ -1,0 +1,14 @@
+SIMULATED MODEL: these numbers describe the harness, not a model. Budget K = 6 model calls per run; every arm stops at its first passing candidate.
+fixture     arm         solved  calls(med)  tokens in/out (mean)   evaluations(med)  $ (mean)
+pricing     single       2/10         1.0        150/102                  1.0        n/a
+pricing     best_of_k    9/10         3.5        540/373                  3.5        n/a
+pricing     repair      10/10         2.0        493/209                  2.0        n/a
+pricing     evolve       1/10         6.0       1208/439                  7.0        n/a
+slugify     single       1/10         1.0        171/128                  1.0        n/a
+slugify     best_of_k    6/10         4.0        684/514                  4.0        n/a
+slugify     repair       9/10         3.5       1116/424                  3.0        n/a
+slugify     evolve       0/10         6.0       1491/590                  7.0        n/a
+intervals   single       1/10         1.0        206/166                  1.0        n/a
+intervals   best_of_k    6/10         5.5        907/726                  5.0        n/a
+intervals   repair       6/10         4.0       1582/640                  3.0        n/a
+intervals   evolve       0/10         6.0       1921/813                  6.0        n/a

@@ -61,6 +61,7 @@ class CommandProvider:
         if not argv or any(not isinstance(arg, str) for arg in argv):
             raise Rejected("invalid_provider", "argv must be a non-empty list of strings")
         self.argv, self.name, self.revision, self.timeout, self.cwd = list(argv), name, revision, timeout, cwd
+        self.calls, self.usage = 0, []
 
     def search(self, space: SearchSpace) -> Sequence[str]:
         budget = space.remaining()
@@ -70,7 +71,11 @@ class CommandProvider:
             "context": [dict(item) for item in space.context],
             "files": space.files()[:2000],
         }
+        self.calls += 1
         response = run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
+        usage = model_usage(response)
+        if usage:
+            self.usage.append(usage)
         if not isinstance(response, dict) or not isinstance(response.get("candidates"), list):
             raise Rejected("provider_shape", "the command must print {\"candidates\": [...]}")
         submitted = []
@@ -80,11 +85,30 @@ class CommandProvider:
                 raise Rejected("provider_shape", "each candidate needs changes: {path: text or null}")
             message = item.get("message") if isinstance(item.get("message"), str) else ""
             signal = item.get("signal") if isinstance(item.get("signal"), dict) else None
+            if usage:
+                signal = {**(signal or {}), "model_usage": usage}
             submitted.append(space.submit(item["changes"], operator="patch", message=message[:500], signal=signal).id)
         chosen = response.get("recommended", [])
         if not isinstance(chosen, list):
             return []
         return [submitted[i] for i in chosen if type(i) is int and 0 <= i < len(submitted)]
+
+
+USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
+def model_usage(response) -> dict | None:
+    """The adapter's reported token usage for one call, reduced to known fields. A claim, not a measurement."""
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    found = {key: usage[key] for key in USAGE_FIELDS if type(usage.get(key)) is int and usage[key] >= 0}
+    for key in ("model", "stop_reason"):
+        if isinstance(usage.get(key), str) and len(usage[key]) <= 64:
+            found[key] = usage[key]
+    if usage.get("simulated") is True:
+        found["simulated"] = True
+    return found or None
 
 
 def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Path | None = None):
