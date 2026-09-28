@@ -79,6 +79,7 @@ class Candidate:
     promotion_reason: str | None = None
     proposal_id: str | None = None
     checks: tuple[CheckResult, ...] = field(default=(), compare=False)
+    origin: Mapping[str, str] | None = None
 
     @property
     def in_scope(self) -> bool:
@@ -101,6 +102,7 @@ class Candidate:
             proposal_id=view["promotion"]["proposal_id"],
             checks=tuple(CheckResult(c["name"], c["state"], c["exit_code"], c["duration_ms"], c["output_tail"])
                          for c in view["evaluation"]["checks"]),
+            origin=view.get("origin"),
         )
 
 
@@ -144,6 +146,13 @@ class SearchSpace(Protocol):
 
         ``None`` deletes a file. The host writes the commit on a non-authoritative
         ref, computes changed paths against the base, and records the candidate.
+        """
+
+    def migrate(self, commit: str, *, origin: Mapping[str, str]) -> Candidate:
+        """Register another host's commit as a provisional migrant (operator ``migration``).
+
+        The commit must already be fetched and descend from this thread's base.
+        Its origin is provenance; it is evaluated here like any other candidate.
         """
 
     def evaluate(self, candidate: str) -> Evaluation:

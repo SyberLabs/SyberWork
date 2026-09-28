@@ -108,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--crossover-every", type=int, default=3)
     propose.add_argument("--seed", type=int, default=0)
     propose.add_argument("--from", dest="seeds", nargs="+", default=[], help="candidates to seed the population with")
+    propose.add_argument("--exchange", metavar="REMOTE", help="share the population with other hosts through this git remote")
+    propose.add_argument("--host", help="this host's name in the exchange")
+    propose.add_argument("--topic", help="what the hosts are working on; hosts with the same topic and base exchange")
+    propose.add_argument("--migrate-every", type=int, default=2)
+    propose.add_argument("--migrants", type=int, default=1)
     propose.add_argument("--message", default="")
     propose.add_argument("--name", default="command")
     propose.add_argument("--revision", default="1")
@@ -236,9 +241,16 @@ def _run(kit: Kit, args) -> int:
         elif args.evolve:
             from syberlabs.evolve import CommandMutator, EvolutionaryProvider
             mutator = CommandMutator(shlex.split(args.evolve), name=args.name, cwd=kit.repo.root)
+            exchange = None
+            if args.exchange:
+                if not args.host or not args.topic:
+                    raise Rejected("invalid_exchange", "--exchange needs --host and --topic")
+                exchange = kit.exchange(args.exchange, host=args.host, topic=args.topic)
             provider = EvolutionaryProvider(mutator, population=args.population, generations=args.generations,
                                             crossover_every=args.crossover_every, seeds=args.seeds,
-                                            revision=args.revision)
+                                            revision=args.revision, exchange=exchange,
+                                            migrate_every=args.migrate_every if exchange else 0,
+                                            migrants=args.migrants)
             found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(shlex.split(args.provider_command), name=args.name, revision=args.revision,

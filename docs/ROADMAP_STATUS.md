@@ -56,7 +56,7 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 | Model-backed mutation | Implemented as a process seam | `CommandMutator`. No model adapter is included and no model was called. |
 | Baseline versus mutation only | Measured on a toy fixture | 22/30 either way. Median evaluations to first pass: 17.5 with crossover, 21.0 without. Not established as better. |
 | Evidence that evolutionary search beats a single model patch on a real repository | **Not measured** | Needs a model adapter, a real fixture with several productive alternatives, and matched cost |
-| Distributed hosts and migration between them (EvoGit's multi-host mode) | Proposed | One local repository only |
+| Distributed hosts and migration between them (EvoGit's multi-host mode) | Implemented | `syberlabs/exchange.py`, `EvolutionaryProvider(exchange=...)`, `propose --exchange`. Per-host namespaces on a shared remote; migrants are verified against the published ref and the local base, evaluated locally, and recorded with an `origin`. `tests/test_multihost.py` with two host clones and a bare remote. |
 
 ### Decisions that belong to the owner (not made here)
 

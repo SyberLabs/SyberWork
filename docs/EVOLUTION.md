@@ -78,6 +78,18 @@ Then approval applies as it does for any action. Commit rechecks everything, and
 | Human as product manager: goals, periodic review, human-tagged commits migrated into the population | The objective; `seeds=[...]` (or `--from c3 c7`) put a person's candidates into the population | Promotion always needs a person, through admission |
 | Git notes caching fitness | Evaluations are `candidate_evaluated` events in the thread's hash chain | Nothing reruns while a tree has a fresh result |
 
+### Several hosts
+
+EvoGit runs populations on several hosts that exchange individuals through a shared Git remote. `syberlabs.exchange.Exchange` does the same with a remote every host can push to:
+
+- A host writes only its own namespace: `refs/syberlabs/exchange/<topic>-<base12>/<host>/` holds its candidate commits and a `manifest` commit listing them with operator, local parents, and the host's own score.
+- Every `migrate_every` generations, `EvolutionaryProvider(..., exchange=kit.exchange("origin", host="a", topic="pricing"))` publishes its population, fetches the other hosts' namespaces, and tries up to `migrants` offers, the best-reported first.
+- A migrant becomes a local candidate with operator `migration`, which the contract must list. It has no local parents; its `origin` (host and candidate) records where it came from.
+- The receiving host verifies that the commit is exactly the one the other host published under that name, and that it descends from this thread's base. It recomputes scope and evaluates the migrant itself. A migrant outside scope is recorded and never run.
+- A migrant replaces the worst individual only if its local evaluation is better. A reported score only decides which offers to try; a forged score cannot get a failing migrant selected or accepted (tested).
+
+From the terminal: `syberlabs propose --evolve ./mutator --exchange origin --host a --topic pricing --migrate-every 2`. The namespaces are only as trustworthy as the remote's access control, but a migrant gains no authority whatever its source: it is judged locally and accepted only by a person.
+
 From the terminal: `syberlabs propose --evolve "./my-model-adapter" --population 4 --generations 6`. The provider's recommendation is printed as "a signal, not a verdict".
 
 ### Measured on a toy fixture
