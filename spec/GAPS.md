@@ -36,7 +36,7 @@ The schemas describe SyberWork as it behaves. They are not enforced at runtime e
 
 17. **The witness process is not a separate OS user.** `WitnessClient` has no seed and opens the log with SQLite `mode=ro`. A process running as the same user can still open that file writable. The witness rechecks hash links; it does not re-run admission.
 
-18. **Candidate records are host claims.** `Session.record_candidate` and `record_evaluation` validate shape, lineage, operators, and budget, and recompute scope from the changed paths they are given. They do not open the Git repository. The Build Thread is the host that computes those fields from Git. `Work` stores evolution contracts but has no candidate API, so its promotion proposals are denied `candidate_unknown`.
+18. **Candidate records are host claims.** `Session.record_candidate` and `record_evaluation` validate shape, lineage, operators, and budget, and recompute scope from the changed paths they are given. They do not open the Git repository. The Build Thread is the host that computes those fields from Git. In `Work`, a `search` or `operator` credential registers candidates and a separate `evaluator` credential (no automation role, not the registering actor) records evaluations; the application trusts those credentials and does not read Git.
 
 19. **One promotion per thread.** `effect.not_completed` denies a second effect of the promotion action in the same case. The schema does not express that limit.
 

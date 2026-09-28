@@ -40,6 +40,8 @@ def main():
             ("procurement", ["procurement"], []),
             ("inventory", ["observer"], ["inventory"]),
             ("supplier", ["observer"], ["supplier"]),
+            ("searcher", ["search"], []),
+            ("evaluator", ["evaluator"], []),
         ):
             token = secrets.token_urlsafe(32)
             users[name] = {"hash": hashlib.sha256(token.encode()).hexdigest(), "roles": roles, "sources": sources}

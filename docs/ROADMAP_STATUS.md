@@ -23,7 +23,7 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 | Provider-neutral `SearchProvider` / `SearchSpace` interface | Implemented as types | `syberlabs/search.py`. The Git-backed space is in the Build Thread PR. |
 | No model or agent can promote | Implemented | `candidate.promotable`: human origin, no automation role, a promotion role, plus any `approval_role`. |
 | Lineage is provenance, not evidence | Implemented and tested | The rule reads only the candidate's own newest evaluation of its exact tree. `test_lineage_is_provenance_not_evidence`. |
-| Candidates in `syberwork.Work` | Proposed | `Work` stores evolution contracts and fails closed. It has no candidate API or console view. |
+| Candidates in `syberwork.Work` | Implemented | `Work.record_candidate` / `record_evaluation` / `record_search` / `candidates`; HTTP routes; `searcher` and `evaluator` credentials, where an evaluator cannot hold an automation role or evaluate its own candidate; a console card. `tests/test_app_candidates.py` |
 
 ## Build Thread — phase 2 (roadmap §4, Gate 1 and part of Gate 2)
 

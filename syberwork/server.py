@@ -13,6 +13,13 @@ STATIC = Path(__file__).parent / "static"
 
 
 def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
+    httpd = make_server(work, users, host, port)
+    print(f"SyberWork listening at http://{host}:{httpd.server_port}", flush=True)
+    httpd.serve_forever()
+
+
+def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766) -> ThreadingHTTPServer:
+    """Build the loopback server without starting it. Port 0 picks a free port."""
     if host not in ("127.0.0.1", "::1", "localhost"):
         raise Rejected("unsafe_bind", "the operator service must bind to loopback")
 
@@ -65,6 +72,8 @@ def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
                     self._json(work.artifacts(parts[2], int(parts[3])))
                 elif len(parts) == 3 and parts[:2] == ["api", "cases"]:
                     self._json(work.inspect(parts[2]))
+                elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "candidates":
+                    self._json(work.candidates(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
                     self._json({"valid": work.verify_chain(parts[2])})
                 else:
@@ -132,6 +141,12 @@ def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
                         if "success" in data or "evidence" in data:
                             raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")
                         result = work.reconcile(case_id, data["proposal_id"], name, roles)
+                    elif operation == "candidates":
+                        result = work.record_candidate(case_id, data, name, roles)
+                    elif operation == "evaluations":
+                        result = work.record_evaluation(case_id, data, name, roles)
+                    elif operation == "searches":
+                        result = work.record_search(case_id, data["phase"], data["search"], name, roles)
                     elif operation == "replay":
                         result = work.replay(case_id, data["contract_version"], data["policy_version"])
                     else:
@@ -144,6 +159,4 @@ def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
             except Exception:
                 self._json({"error": "internal_error"}, 500)
 
-    httpd = ThreadingHTTPServer((host, port), Handler)
-    print(f"SyberWork listening at http://{host}:{port}", flush=True)
-    httpd.serve_forever()
+    return ThreadingHTTPServer((host, port), Handler)

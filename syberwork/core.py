@@ -23,6 +23,8 @@ from syberlabs.economic import policy_has_economic, receipt_matches, units, vali
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import acceptance_results, signer_is_effect_actor, verified_reconciliation
+from syberlabs.evolution import (AUTOMATION_ROLES, candidate_record, candidate_views, evaluation_record, registered,
+                                 search_record)
 from syberlabs.jcs import envelope_jcs
 from syberlabs.planner import HttpPlanner, planning_context
 from syberlabs.targets import guard_request, trusted_origin
@@ -345,6 +347,48 @@ class Work:
                     raise Rejected("cancellation_denied", "an external effect was claimed; verify its outcome first")
             return self._append(db, case_id, "case_cancelled", {"actor": actor, "role": contract.get("cancel_role", "manager"), "reason": reason.strip()})
 
+    # Candidates. The caller is a search host (role "search" or "operator"); evidence comes
+    # only from a separate "evaluator" credential that holds no automation role and did not
+    # register the candidate. Validation is shared with syberlabs.Session.
+
+    def _open_evolution(self, db, case_id):
+        row = self._case(db, case_id)
+        contract = self._contract(db, row["contract_id"], row["contract_version"])
+        history = self._events(db, case_id)
+        if any(e["kind"] == "case_cancelled" for e in history):
+            raise Rejected("case_cancelled", "case is closed")
+        return contract, history
+
+    def record_candidate(self, case_id: str, candidate: dict, actor: str, roles: list[str]) -> dict:
+        if not {"search", "operator"}.intersection(roles):
+            raise Rejected("candidate_denied", "search or operator role required to register a candidate")
+        with self.tx() as db:
+            contract, history = self._open_evolution(db, case_id)
+            return self._append(db, case_id, "candidate_registered", candidate_record(contract, history, candidate, actor))
+
+    def record_evaluation(self, case_id: str, evaluation: dict, actor: str, roles: list[str]) -> dict:
+        if "evaluator" not in roles or AUTOMATION_ROLES.intersection(roles):
+            raise Rejected("evaluation_denied", "an evaluator credential without model, compiled, or search roles is required")
+        with self.tx() as db:
+            contract, history = self._open_evolution(db, case_id)
+            body = evaluation_record(contract, history, evaluation, actor)
+            if registered(history, body["candidate"])["actor"] == actor:
+                raise Rejected("evaluation_denied", "the actor that registered a candidate cannot evaluate it")
+            return self._append(db, case_id, "candidate_evaluated", body)
+
+    def record_search(self, case_id: str, phase: str, body: dict, actor: str, roles: list[str]) -> dict:
+        if not {"search", "operator"}.intersection(roles):
+            raise Rejected("candidate_denied", "search or operator role required to record a search")
+        with self.tx() as db:
+            contract, history = self._open_evolution(db, case_id)
+            return self._append(db, case_id, "search_" + phase, search_record(contract, history, phase, body, actor))
+
+    def candidates(self, case_id: str) -> list[dict]:
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+            return candidate_views(contract, self._events(db, case_id), time.time())
+
     def observe(self, case_id: str, key: str, value: Any, source: str, version: str, actor: str, verified: bool = False) -> dict:
         if not all((key, source, version)):
             raise Rejected("invalid_observation", "key, source and source version are required")
@@ -628,11 +672,14 @@ class Work:
                 escalated = any(e["kind"] == "resolution_escalated" and e["body"]["task_id"] == task["id"] for e in history)
                 resolutions.append({**task, "status": "completed" if closed else "cancelled" if cancelled else "escalated" if escalated else "overdue" if time.time() >= task["due_at"] else "open",
                                     "choice": closed["body"]["choice"] if closed else None})
-            return {"case": dict(row), "contract": contract, "events": history,
-                    "acceptance": clauses, "complete": not cancelled and bool(clauses) and all(v["passed"] for v in clauses),
-                    "status": "cancelled" if cancelled else "complete" if bool(clauses) and all(v["passed"] for v in clauses) else "in_progress",
-                    "resolutions": resolutions,
-                    "next_compiled": None if cancelled else self._next_path(contract, history)}
+            found = {"case": dict(row), "contract": contract, "events": history,
+                     "acceptance": clauses, "complete": not cancelled and bool(clauses) and all(v["passed"] for v in clauses),
+                     "status": "cancelled" if cancelled else "complete" if bool(clauses) and all(v["passed"] for v in clauses) else "in_progress",
+                     "resolutions": resolutions,
+                     "next_compiled": None if cancelled else self._next_path(contract, history)}
+            if "evolution" in contract:
+                found["candidates"] = candidate_views(contract, history, time.time())
+            return found
 
     def list_cases(self) -> list[dict]:
         with self.tx() as db:
