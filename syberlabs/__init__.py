@@ -9,13 +9,16 @@ from syberlabs.events import event_digest, verify_events
 from syberlabs.interop import at_microseconds, cloudevent, witness
 from syberlabs.jcs import jcs_bytes, jcs_digest
 from syberlabs.mappings import translate_stabilize
+from syberlabs.search import Candidate, SearchProvider
 from syberlabs.session import Session
 from syberlabs.targets import trusted_origin
 from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import Witness, WitnessClient
 
 __all__ = [
+    "Candidate",
     "Rejected",
+    "SearchProvider",
     "Session",
     "TransparencyLog",
     "Witness",

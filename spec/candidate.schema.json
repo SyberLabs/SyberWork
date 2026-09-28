@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/candidate.schema.json",
+  "title": "Candidate",
+  "description": "Bodies of candidate_registered, candidate_evaluated, search_started, and search_finished events. A candidate is provisional. parents is lineage: provenance, not evidence. scope_violations and limit_violations are recomputed by the runtime from changed_paths and the contract; signal is the provider's own, unverified output.",
+  "$defs": {
+    "registered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "commit",
+        "tree",
+        "base",
+        "parents",
+        "operator",
+        "provider",
+        "changed_paths",
+        "scope_violations",
+        "limit_violations",
+        "diff",
+        "signal",
+        "note",
+        "actor"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "base": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "parents": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+          }
+        },
+        "operator": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+        },
+        "provider": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "revision"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        "changed_paths": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope_violations": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "string"
+          }
+        },
+        "limit_violations": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "max_files",
+              "max_diff_bytes"
+            ]
+          }
+        },
+        "diff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "digest",
+            "bytes",
+            "files"
+          ],
+          "properties": {
+            "digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "actor": {
+          "type": "string"
+        }
+      }
+    },
+    "evaluated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate",
+        "commit",
+        "tree",
+        "evaluator",
+        "checks",
+        "actor"
+      ],
+      "properties": {
+        "candidate": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "tree": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "evaluator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "state",
+              "exit_code",
+              "duration_ms",
+              "output_digest",
+              "output_tail"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+              },
+              "state": {
+                "enum": [
+                  "passed",
+                  "failed",
+                  "timed_out",
+                  "error"
+                ]
+              },
+              "exit_code": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "duration_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "output_digest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "output_tail": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          }
+        },
+        "actor": {
+          "type": "string"
+        }
+      }
+    },
+    "search_started": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "provider",
+        "operators",
+        "budget",
+        "base",
+        "context_digest",
+        "actor"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        },
+        "provider": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "revision"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        "operators": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+          }
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_candidates",
+            "max_evaluations",
+            "max_seconds"
+          ],
+          "properties": {
+            "max_candidates": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_evaluations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_seconds": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "base": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "context_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "type": "string"
+        }
+      }
+    },
+    "search_finished": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "stopped",
+        "candidates",
+        "recommended",
+        "evaluations",
+        "elapsed_ms",
+        "error",
+        "actor"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+        },
+        "stopped": {
+          "enum": [
+            "completed",
+            "budget_exhausted",
+            "deadline",
+            "cancelled",
+            "error"
+          ]
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+          }
+        },
+        "recommended": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+          }
+        },
+        "evaluations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actor": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

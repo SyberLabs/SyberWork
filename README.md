@@ -18,6 +18,8 @@ PYTHONPATH=. python examples/release_gate.py
 
 A project installs a contract, a policy, and local actions on `syberlabs.Session`, then observes, proposes, commits, approves, signs, explains, and replays. `Session.commit` runs admission again and only then records a local effect. `explain_admission` returns the deciding rule and its provenance and does not write them into the hash chain. HTTP effects and economic reservations stay on `syberwork.Work`.
 
+A contract may add an optional `evolution` section. It lets a search provider (a person's patch, a model adapter, or an EvoGit-style search) propose **provisional candidates** with Git lineage, and fixes the mutable scope, operators, budget, checks, and promotion authority. A candidate is promoted only through ordinary admission plus `candidate.promotable`: a human-origin proposal, the host's own passing evaluation of the candidate's exact tree, and any required approval. Lineage is provenance, not evidence of superiority. See [docs/EVOLUTION.md](docs/EVOLUTION.md).
+
 `examples/access_review.py` is a second project: a quarterly access review. Development notes are in [docs/SDK_FEEDBACK.md](docs/SDK_FEEDBACK.md). The standards gap and the order to close it are in [docs/SDK_REDTEAM.md](docs/SDK_REDTEAM.md).
 
 ```sh

@@ -21,6 +21,7 @@ from syberlabs.economic import policy_has_economic, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import acceptance_results, signer_is_effect_actor
+from syberlabs.evolution import candidate_record, candidate_views, evaluation_record, search_record
 from syberlabs.jcs import envelope_jcs
 from syberlabs.planner import HttpPlanner, planning_context
 
@@ -119,6 +120,49 @@ class Session:
         return self._append(case_id, "observed", {
             "key": key, "value": value, "source": source, "version": version, "actor": actor, "verified": verified,
         })
+
+    @_guard
+    def record_candidate(self, case_id: str, candidate: dict, actor: str) -> dict:
+        """Register a provisional candidate. The host computes its commit, tree, and changed paths.
+
+        Scope and size violations are recomputed from the contract. A candidate
+        outside scope is still recorded, so the attempt is visible, and cannot be
+        promoted. Registration is not evaluation and not promotion.
+        """
+        row = self._case(case_id)
+        contract = self._contract(row["contract_id"], row["contract_version"])
+        self._open(case_id)
+        body = candidate_record(contract, self.events[case_id], candidate, actor)
+        return self._append(case_id, "candidate_registered", body)
+
+    @_guard
+    def record_evaluation(self, case_id: str, evaluation: dict, actor: str) -> dict:
+        """Record the host's own check results for one candidate's exact commit and tree."""
+        row = self._case(case_id)
+        contract = self._contract(row["contract_id"], row["contract_version"])
+        self._open(case_id)
+        body = evaluation_record(contract, self.events[case_id], evaluation, actor)
+        return self._append(case_id, "candidate_evaluated", body)
+
+    @_guard
+    def record_search(self, case_id: str, phase: str, body: dict, actor: str) -> dict:
+        """Record that a search provider started or finished, with its revision and budget use."""
+        row = self._case(case_id)
+        contract = self._contract(row["contract_id"], row["contract_version"])
+        self._open(case_id)
+        record = search_record(contract, self.events[case_id], phase, body, actor)
+        return self._append(case_id, "search_" + phase, record)
+
+    @_guard
+    def candidates(self, case_id: str) -> list[dict]:
+        """Candidates with evaluation and promotion state, derived from the case history."""
+        row = self._case(case_id)
+        contract = self._contract(row["contract_id"], row["contract_version"])
+        return candidate_views(contract, list(self.events[case_id]), self.clock())
+
+    def _open(self, case_id: str) -> None:
+        if any(event["kind"] == "case_cancelled" for event in self.events[case_id]):
+            raise Rejected("case_cancelled", "case is closed")
 
     @_guard
     def propose(self, case_id: str, action: str, args: dict, actor: str, roles: list[str], origin: str = "human") -> dict:
@@ -262,7 +306,7 @@ class Session:
         clauses = acceptance_results(contract, history)
         cancelled = any(event["kind"] == "case_cancelled" for event in history)
         complete = not cancelled and bool(clauses) and all(item["passed"] for item in clauses)
-        return {
+        found = {
             "case": dict(row),
             "contract": contract,
             "events": history,
@@ -271,6 +315,9 @@ class Session:
             "status": "cancelled" if cancelled else "complete" if complete else "in_progress",
             "chain_valid": verify_events(history),
         }
+        if "evolution" in contract:
+            found["candidates"] = candidate_views(contract, history, self.clock())
+        return found
 
     @_guard
     def replay(self, case_id: str, contract_version: int, policy_version: int) -> dict:

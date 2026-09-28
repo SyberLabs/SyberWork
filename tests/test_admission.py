@@ -32,6 +32,7 @@ EXPECTED_ORDER = [
     "economic.reserve",
     "bindings.inputs",
     "bindings.arguments",
+    "candidate.promotable",
     "approval.required",
     "admission.passed",
 ]
@@ -62,6 +63,57 @@ def context(history=None, proposal_doc=None, contract_actions=None, policy_actio
         now=now,
         installed_actions={"review"} if installed is None else installed,
     )
+
+
+COMMIT, TREE, BASE = "a" * 40, "b" * 40, "c" * 40
+
+
+def promotion_cases():
+    """One context per candidate.promotable reason. Evaluations are host events."""
+    evolution = {
+        "scope": {"paths": ["src/"]},
+        "operators": ["patch"],
+        "budget": {"max_candidates": 4},
+        "evaluation": {"checks": {"tests": {"argv": ["true"]}, "lint": {"argv": ["true"]}},
+                       "required": ["tests", "lint"], "max_age_seconds": 60},
+        "promotion": {"action": "promote", "roles": ["developer"]},
+    }
+
+    def candidate(**extra):
+        return {"kind": "candidate_registered", "at": 1_000_000.0, "hash": "h", "body": {
+            "id": "c1", "commit": COMMIT, "tree": TREE, "base": BASE, "parents": [], "operator": "patch",
+            "provider": {"name": "p", "revision": "1"}, "changed_paths": ["src/a.py"], "scope_violations": [],
+            "limit_violations": [], "diff": {"digest": "d" * 64, "bytes": 1, "files": 1}, "signal": None,
+            "note": "", "actor": "host", **extra}}
+
+    def evaluation(at=1_000_000.0, **states):
+        return {"kind": "candidate_evaluated", "at": at, "hash": "e", "body": {
+            "candidate": "c1", "commit": COMMIT, "tree": TREE, "evaluator": "host",
+            "checks": [{"name": name, "state": state, "exit_code": 0 if state == "passed" else 1, "duration_ms": 1,
+                        "output_digest": "0" * 64, "output_tail": ""} for name, state in states.items()]}}
+
+    def ctx(history=(), args=None, roles=("developer",), origin="human"):
+        doc = proposal("promote", {"candidate": "c1", "commit": COMMIT, "base": BASE} if args is None else args,
+                       list(roles))
+        doc["origin"] = origin
+        found = context(history=list(history), proposal_doc=doc,
+                        contract_actions={"promote": {}}, policy_actions={"promote": {"roles": ["developer", "model", "reviewer"]}},
+                        installed={"promote"})
+        found.contract["evolution"] = evolution
+        return found
+
+    return {
+        "candidate_promotion_origin": ctx(roles=("developer", "model"), origin="model"),
+        "candidate_promotion_role": ctx(roles=("reviewer",)),
+        "candidate_args_invalid": ctx(args={"candidate": "c1"}),
+        "candidate_unknown": ctx(),
+        "candidate_mismatch": ctx([candidate(commit="f" * 40)]),
+        "candidate_out_of_scope": ctx([candidate(scope_violations=["setup.py"])]),
+        "candidate_not_evaluated": ctx([candidate()]),
+        "candidate_check_missing:lint": ctx([candidate(), evaluation(tests="passed")]),
+        "candidate_check_failed:tests": ctx([candidate(), evaluation(tests="failed", lint="passed")]),
+        "candidate_evidence_stale": ctx([candidate(), evaluation(at=0.0, tests="passed", lint="passed")]),
+    }
 
 
 class AdmissionRegistry(unittest.TestCase):
@@ -130,6 +182,7 @@ class AdmissionRegistry(unittest.TestCase):
             ),
             "approval_required:manager": context(policy_actions={"review": {"roles": ["operator"], "approval_role": "manager"}}),
             "economic_adapter_required": context(policy_actions={"review": {"roles": ["operator"], "economic": {"budget_id": "ops"}}}),
+            **promotion_cases(),
             "all_checks_passed": context(),
         }
         seen = {}

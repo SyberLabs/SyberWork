@@ -27,7 +27,11 @@
         "resolution_checked",
         "resolution_completed",
         "resolution_escalated",
-        "case_cancelled"
+        "case_cancelled",
+        "candidate_registered",
+        "candidate_evaluated",
+        "search_started",
+        "search_finished"
       ]
     },
     "body": {"type": "object"},

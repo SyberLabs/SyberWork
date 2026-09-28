@@ -28,7 +28,8 @@
     "resolutions": {
       "type": "object",
       "additionalProperties": {"$ref": "#/$defs/resolution"}
-    }
+    },
+    "evolution": {"$ref": "evolution.schema.json"}
   },
   "$defs": {
     "actionRule": {
