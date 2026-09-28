@@ -90,6 +90,7 @@ This output only creates a proposal. Admission rechecks the bound observation, g
 - `POST /api/cases/{id}/facts`: record a manually asserted fact, tagged as unverified.
 - `POST /api/cases/{id}/resolution-request`, `/resolution-resolve`, `/resolution-escalate`, `/cancel`: open a source-backed decision task, verify its authoritative resolution, escalate it after its deadline, or close the case explicitly.
 - `POST /api/cases/{id}/proposals`, `/compiled`, `/suggest`: human, compiled, or model proposal.
+- `POST /api/cases/{id}/candidates`, `/searches` (search or operator credential), `/evaluations` (evaluator credential); `GET /api/cases/{id}/candidates`: provisional candidates for a contract with an `evolution` section. See [docs/EVOLUTION.md](docs/EVOLUTION.md).
 - `POST /api/cases/{id}/approve`, `/commit`, `/signoff`, `/reconcile`: decision operations.
 - `GET /api/cases/{id}`, `/verify`; `POST /api/cases/{id}/replay`: inspection and counterfactual comparison.
 
