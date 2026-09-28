@@ -1,0 +1,21 @@
+Build Thread development measurements. Linux-6.18.44-fc-v37-x86_64-with-glibc2.39, CPython 3.11.15, 4 CPUs. Journal fsync on every record. Machine time only.
+
+Quickstart on the pinned fixture (examples/build_thread.py repository):
+  init                         13.1 ms
+  start                        11.1 ms
+  context                      24.2 ms
+  propose                      55.5 ms
+  check (runs tests)           82.6 ms
+  check again (no change)       3.2 ms
+  accept                       11.7 ms
+  first verdict (machine)     186.4 ms   acceptable=True accepted=succeeded
+  a repeat check of an unchanged tree ran 0 evaluations
+
+Scale: one search submitting N candidates, each carrying a ~96 KB file:
+  N     events  submit/cand  peak Python  preview p50/p95   reopen   journal
+  20        25      71.3 ms     0.44 MB   0.07/ 0.16 ms    11.7 ms    21.8 KB
+  100      105      74.2 ms     0.83 MB   0.11/ 0.14 ms    19.8 ms    90.4 KB
+
+Public Build Thread primitives: Kit, Thread, Verdict, Receipt, Candidate, SearchProvider (6)
+Thread methods (13): accept, approve, attach_source, candidates, check, context, diff, history, propose, read_scope, recover, status, worktree_changes
+Kit methods (9): close, contract_diff, export, local, memory, open, prune, start, threads
