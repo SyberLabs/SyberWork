@@ -129,6 +129,9 @@ class SearchSpace(Protocol):
     def read(self, ref: str, path: str) -> str | None:
         """Text of ``path`` at ``"base"`` or a candidate id; None if absent or out of scope."""
 
+    def candidate(self, candidate: str) -> Candidate:
+        """The current view of a candidate in this thread: lineage, changed paths, evaluation state."""
+
     def merge_base(self, a: str, b: str) -> str:
         """The nearest common ancestor of two candidates, as a candidate id or ``"base"``."""
 

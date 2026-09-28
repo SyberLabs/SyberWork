@@ -57,6 +57,7 @@ A provider gets a `SearchSpace` and nothing else. It can list and read files in 
 - `PatchProvider(changes)` submits one edit. `syberlabs propose --from-worktree` uses it with the working-tree edits inside both the attached sources and the contract scope, and lists what it left out.
 - `CommandProvider(argv)` is the model seam. It writes a JSON request to the command's stdin (objective, base, scope, budget, context excerpts, file list) and reads `{"candidates": [{"changes": {...}, "message": ..., "signal": ...}], "recommended": [...]}` from its stdout. The adapter for Kev, Jev, or any other model is that command. SyberLabs imports no model SDK and makes no model call itself.
 - `FunctionProvider(fn)` wraps a Python callable.
+- `EvolutionaryProvider(mutator)` is an EvoGit-style search. It keeps a population of candidates, mutates them, merges non-ancestors, and selects on the host's check results. It needs a contract whose `operators` include `mutation` and `crossover`. See [EVOLUTION.md](EVOLUTION.md).
 
 An in-process provider runs as Python code in your process. The interface keeps model *output* away from authority; it is not a sandbox for untrusted provider *code*. Run untrusted providers as a `CommandProvider`.
 

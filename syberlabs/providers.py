@@ -70,7 +70,7 @@ class CommandProvider:
             "context": [dict(item) for item in space.context],
             "files": space.files()[:2000],
         }
-        response = self._run(json.dumps(request).encode())
+        response = run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
         if not isinstance(response, dict) or not isinstance(response.get("candidates"), list):
             raise Rejected("provider_shape", "the command must print {\"candidates\": [...]}")
         submitted = []
@@ -86,33 +86,40 @@ class CommandProvider:
             return []
         return [submitted[i] for i in chosen if type(i) is int and 0 <= i < len(submitted)]
 
-    def _run(self, request: bytes):
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            try:
-                proc = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=out, stderr=err, cwd=self.cwd,
-                                        env=dict(os.environ), start_new_session=hasattr(os, "setsid"))
-            except OSError as exc:
-                raise Rejected("provider_unavailable", f"could not start {self.argv[0]!r}: {exc.strerror}") from None
-            try:
-                proc.stdin.write(request)
-                proc.stdin.close()
-            except BrokenPipeError:
-                pass
-            deadline = time.monotonic() + self.timeout
-            while proc.poll() is None:
-                if time.monotonic() > deadline or os.fstat(out.fileno()).st_size > MAX_RESPONSE_BYTES:
-                    proc.kill()
-                    proc.wait()
-                    raise Rejected("provider_timeout", "the provider command exceeded its time or output limit")
-                time.sleep(0.02)
-            if proc.returncode != 0:
-                err.seek(0)
-                raise Rejected("provider_failed", f"exit {proc.returncode}: {err.read(400).decode(errors='replace')}")
-            out.seek(0)
-            data = out.read(MAX_RESPONSE_BYTES + 1)
-        if len(data) > MAX_RESPONSE_BYTES:
-            raise Rejected("provider_timeout", "the provider response exceeded its output limit")
+
+def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Path | None = None):
+    """Run a command with ``payload`` as JSON on stdin; return its stdout parsed as JSON.
+
+    Bounded by ``timeout`` seconds and 4 MB of output. The command inherits the
+    caller's environment. Failures are ``Rejected`` with a ``provider_*`` code.
+    """
+    request = json.dumps(payload).encode()
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:
-            return json.loads(data)
-        except json.JSONDecodeError:
-            raise Rejected("provider_shape", "the command did not print JSON") from None
+            proc = subprocess.Popen(list(argv), stdin=subprocess.PIPE, stdout=out, stderr=err, cwd=cwd,
+                                    env=dict(os.environ), start_new_session=hasattr(os, "setsid"))
+        except OSError as exc:
+            raise Rejected("provider_unavailable", f"could not start {argv[0]!r}: {exc.strerror}") from None
+        try:
+            proc.stdin.write(request)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        deadline = time.monotonic() + timeout
+        while proc.poll() is None:
+            if time.monotonic() > deadline or os.fstat(out.fileno()).st_size > MAX_RESPONSE_BYTES:
+                proc.kill()
+                proc.wait()
+                raise Rejected("provider_timeout", "the provider command exceeded its time or output limit")
+            time.sleep(0.02)
+        if proc.returncode != 0:
+            err.seek(0)
+            raise Rejected("provider_failed", f"exit {proc.returncode}: {err.read(400).decode(errors='replace')}")
+        out.seek(0)
+        data = out.read(MAX_RESPONSE_BYTES + 1)
+    if len(data) > MAX_RESPONSE_BYTES:
+        raise Rejected("provider_timeout", "the provider response exceeded its output limit")
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        raise Rejected("provider_shape", "the command did not print JSON") from None

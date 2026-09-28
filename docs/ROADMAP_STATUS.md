@@ -45,6 +45,18 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 | Gate 1 exit: 2 of 3 unfamiliar developers finish the quickstart and change a contract within 15 minutes | **Not measured** | Needs people. The quickstart and contract-change path exist for that test. |
 | Local inspector UI | Proposed | The roadmap says CLI first |
 
+## Operational Module × EvoGit — phase 3: evolutionary provider
+
+| Item | Status | Where |
+| --- | --- | --- |
+| EvoGit-style mutation and crossover as a replaceable `SearchProvider` | Implemented | `syberlabs/evolve.py`, `syberlabs propose --evolve`. An independent implementation; no EvoGit code (AGPL-3.0). |
+| EvoGit-generated branches remain non-authoritative | Implemented and tested | Population on `refs/syberlabs/candidates/`; no `refs/heads` change until a person accepts |
+| Candidates provisional until contract, evidence, policy, and approval gates admit them | Implemented and tested | Selection uses host evaluations; promotion goes through `candidate.promotable` and approval |
+| Model-backed mutation | Implemented as a process seam | `CommandMutator`. No model adapter is included and no model was called. |
+| Baseline versus mutation only | Measured on a toy fixture | 22/30 either way. Median evaluations to first pass: 17.5 with crossover, 21.0 without. Not established as better. |
+| Evidence that evolutionary search beats a single model patch on a real repository | **Not measured** | Needs a model adapter, a real fixture with several productive alternatives, and matched cost |
+| Distributed hosts and migration between them (EvoGit's multi-host mode) | Proposed | One local repository only |
+
 ### Decisions that belong to the owner (not made here)
 
 1. **License.** There is no `LICENSE` file. Choosing one is a legal decision for SyberLabs. Until one is added, outside developers have no grant to use the code, which blocks the Gate 4 adoption test. EvoGit is AGPL-3.0. An EvoGit-style search provider in this repository must be an independent implementation of the published method and must not copy EvoGit code, or it would constrain this decision.

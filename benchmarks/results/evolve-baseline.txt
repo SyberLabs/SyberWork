@@ -1,0 +1,4 @@
+Pricing fixture, 30 seeds, population 4, 10 generations, budget 40 candidates and 40 evaluations.
+  crossover every 3rd generation   passing candidate found 22/30; evaluations to first pass: median 17.5, mean 18.7
+  mutation only                    passing candidate found 22/30; evaluations to first pass: median 21.0, mean 22.0
+A found candidate is still provisional: a person must check and accept it.

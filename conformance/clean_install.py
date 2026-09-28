@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXAMPLES = ("release_gate.py", "access_review.py", "build_thread.py")
+EXAMPLES = ("release_gate.py", "access_review.py", "build_thread.py", "evolve.py")
 
 
 def run(argv: list[str], *, cwd: Path, env: dict | None = None) -> str:

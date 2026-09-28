@@ -65,9 +65,35 @@ A promotion is a proposal of the contract's promotion action with exactly `{cand
 
 Then approval applies as it does for any action. Commit rechecks everything, and a policy or contract change between proposal and commit is caught there. Replay compares decisions under another contract version, for example one that adds a required check. The existing `effect.not_completed` rule allows one promotion per thread. Promoting another change means a new thread.
 
+## The EvoGit-style provider
+
+`syberlabs.evolve.EvolutionaryProvider` is an independent implementation of the method published as EvoGit (Huang et al., 2025, arXiv:2506.02049). It is one `SearchProvider` among others; removing it changes nothing on the authority side.
+
+| EvoGit idea | Here | Deliberate difference |
+| --- | --- | --- |
+| Population of Git commits; ancestry as a phylogenetic graph | Candidates on `refs/syberlabs/candidates/<thread>/cN`; parents recorded and matching the Git parents | Not branches under `refs/heads`, and never authoritative |
+| Mutation by a language model rewriting part of a file | A pluggable `Mutator`. `CommandMutator` is the model seam (JSON on stdin and stdout). | The contract must list `mutation`. Scope and size are recomputed by the host. |
+| Crossover by `git merge` of non-ancestor commits, with conflicts resolved at random | Three-way `git merge-file` per file from the merge base, with conflict regions settled by a seeded coin (`accept_ours`). Skipped when one parent contains the other. | The contract must list `crossover` |
+| Pairwise selection: a child replaces its parent if better; a merge replaces both parents if better than both | Same rule, comparing the host's `Evaluation.score()` (required checks passed, then all checks passed) | Fitness is the host's own run of the contract's checks. A model's opinion of a diff, which EvoGit also supports, is not used. |
+| Human as product manager: goals, periodic review, human-tagged commits migrated into the population | The objective; `seeds=[...]` (or `--from c3 c7`) put a person's candidates into the population | Promotion always needs a person, through admission |
+| Git notes caching fitness | Evaluations are `candidate_evaluated` events in the thread's hash chain | Nothing reruns while a tree has a fresh result |
+
+From the terminal: `syberlabs propose --evolve "./my-model-adapter" --population 4 --generations 6`. The provider's recommendation is printed as "a signal, not a verdict".
+
+### Measured on a toy fixture
+
+`examples/evolve.py` is a pricing module with three independently checked rules and a stand-in mutator. `benchmarks/evolve_baseline.py` compares the provider with and without crossover on 30 seeds, with the same budget. The result is in `benchmarks/results/evolve-baseline.txt`:
+
+| Arm | Passing candidate found | Evaluations to first pass (median, mean) |
+| --- | --- | --- |
+| Crossover every third generation | 22/30 | 17.5, 18.7 |
+| Mutation only | 22/30 | 21.0, 22.0 |
+
+On this fixture, crossover did not change how often a passing candidate was found. It used somewhat fewer evaluations when one was found; with 30 seeds that difference is not established. The fixture's three independent rules favor recombination by construction, so this says nothing about real repositories. No model was called. Whether a model-backed mutator beats a single patch from the same model at the same cost is the next measurement to make, not a claim.
+
 ## Trust boundaries
 
 - The records are the host's claims, like `observe(..., verified=True)`. The runtime recomputes scope from the host's changed paths. It does not re-read Git.
 - The Build Thread runs the project's own check commands against candidate code on the developer's machine, in a temporary worktree with a scrubbed environment, a timeout, and bounded output. That is not a sandbox. A contract that treats tests as the oracle should exclude the test files from mutable scope, so a candidate cannot weaken its own judge.
 - `syberwork.Work` validates and stores evolution contracts, but it has no API to register candidates, so its promotion proposals fail closed with `candidate_unknown`.
-- EvoGit is AGPL-3.0. SyberWork does not import it. An EvoGit-style provider behind `SearchProvider` must be an independent implementation of the published method, or run EvoGit as a separate program.
+- EvoGit is AGPL-3.0. SyberWork does not import it, and `syberlabs/evolve.py` is written from the published method, not from EvoGit's source. Running EvoGit itself would mean running it as a separate program behind a `CommandProvider`, which is a separate licensing decision.
