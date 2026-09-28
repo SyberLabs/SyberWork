@@ -275,7 +275,8 @@ def candidate_record(contract: dict, history: list, raw: dict, actor: str) -> di
         raise Rejected("evolution_not_enabled", "the contract has no evolution section")
     if not isinstance(raw, dict):
         raise _record_error("candidate must be an object")
-    allowed = {"id", "commit", "tree", "base", "parents", "operator", "provider", "changed_paths", "diff", "signal", "note"}
+    allowed = {"id", "commit", "tree", "base", "parents", "operator", "provider", "changed_paths", "diff", "signal", "note",
+               "origin"}
     if set(raw) - allowed or {"id", "commit", "tree", "base", "parents", "operator", "provider", "changed_paths", "diff"} - set(raw):
         raise _record_error("candidate fields are " + ", ".join(sorted(allowed)))
     candidate_id = raw["id"]
@@ -308,6 +309,12 @@ def candidate_record(contract: dict, history: list, raw: dict, actor: str) -> di
     note = raw.get("note", "")
     if not isinstance(note, str) or len(note) > 500:
         raise _record_error("note must be at most 500 characters")
+    origin = raw.get("origin")
+    if (operator == "migration") != (origin is not None):
+        raise _record_error("an origin is required for, and only for, the migration operator")
+    if origin is not None and (not isinstance(origin, dict) or set(origin) != {"host", "candidate"}
+                               or not all(isinstance(origin[k], str) and _ID.match(origin[k]) for k in origin) or parents):
+        raise _record_error("origin needs host and candidate ids; a migrant has no local parents")
     scope = config["scope"]
     limits = []
     if len(paths) > scope["max_files"] or diff["files"] > scope["max_files"]:
@@ -319,7 +326,7 @@ def candidate_record(contract: dict, history: list, raw: dict, actor: str) -> di
         "parents": list(parents), "operator": operator, "provider": _provider(raw["provider"]),
         "changed_paths": paths, "scope_violations": [p for p in paths if not in_scope(scope, p)],
         "limit_violations": limits, "diff": dict(diff), "signal": _signal(raw.get("signal")),
-        "note": note, "actor": actor,
+        "note": note, "actor": actor, **({"origin": dict(origin)} if origin is not None else {}),
     })
 
 
@@ -521,6 +528,7 @@ def candidate_views(contract: dict, history: list, now) -> list[dict]:
             **{key: candidate[key] for key in ("id", "commit", "tree", "base", "parents", "operator", "provider",
                                                "changed_paths", "scope_violations", "limit_violations", "diff",
                                                "signal", "note")},
+            "origin": candidate.get("origin"),
             "registered_hash": event["hash"],
             "evaluation": {"state": evaluated,
                            "checks": evaluation["body"]["checks"] if evaluation else [],

@@ -110,13 +110,16 @@ def resolve_conflicts(text: str, rng: random.Random, accept_ours: float) -> str:
 class EvolutionaryProvider:
     """Mutation, crossover, and pairwise selection over Git-lineaged candidates."""
 
-    operators = ("mutation", "crossover")
-
     def __init__(self, mutate: Mutator | Callable, *, population: int = 4, generations: int = 6,
                  crossover_every: int = 3, accept_ours: float = 0.5, seeds: Sequence[str] = (),
-                 stop_when_passing: bool = True, name: str = "evolutionary", revision: str = "1"):
+                 stop_when_passing: bool = True, name: str = "evolutionary", revision: str = "1",
+                 exchange=None, migrate_every: int = 0, migrants: int = 1):
         if population < 2 or generations < 1 or crossover_every < 1 or not 0 <= accept_ours <= 1:
             raise Rejected("invalid_provider", "population >= 2, generations >= 1, crossover_every >= 1, 0 <= accept_ours <= 1")
+        if exchange is not None and (migrate_every < 1 or migrants < 1):
+            raise Rejected("invalid_provider", "with an exchange, migrate_every and migrants must be at least 1")
+        self.operators = ("mutation", "crossover") + (("migration",) if exchange is not None else ())
+        self.exchange, self.migrate_every, self.migrants = exchange, migrate_every, migrants
         self.mutate, self.population, self.generations = mutate, population, generations
         self.crossover_every, self.accept_ours, self.seeds = crossover_every, accept_ours, tuple(seeds)
         self.stop_when_passing, self.name, self.revision = stop_when_passing, name, revision
@@ -175,6 +178,38 @@ class EvolutionaryProvider:
                 changes[path] = merged
         return self._child(space, changes, [a, b], "crossover", generation)
 
+    def _migration(self, space: SearchSpace, people: list, generation: int) -> None:
+        """Publish this population, then try the best-reported migrants from other hosts.
+
+        A migrant replaces the worst individual only if its local evaluation is better.
+        """
+        self._publish(space, people)
+        offers = sorted(self.exchange.offers(space.base), key=lambda o: o.score or (0, 0), reverse=True)
+        tried = 0
+        for offer in offers:
+            if tried >= self.migrants or not self._room(space):
+                break
+            try:
+                made = space.migrate(offer.commit, origin={"host": offer.host, "candidate": offer.candidate})
+            except Rejected as exc:
+                if exc.code in ("already_imported", "migration_base_mismatch", "migration_unavailable"):
+                    continue
+                raise
+            tried += 1
+            judged = self._judge(space, made.id) if made.in_scope and self._room(space) else (made.id, (0, 0), False)
+            worst = min(range(len(people)), key=lambda i: people[i][1])
+            if people and judged[1] > people[worst][1]:
+                people[worst] = judged
+            self.trace.append({"generation": generation, "migrant": made.id, "from": offer.host, "score": list(judged[1])})
+
+    def _publish(self, space: SearchSpace, people: list) -> None:
+        entries = []
+        for cid, score, _passed in dict.fromkeys(people):
+            found = space.candidate(cid)
+            entries.append({"candidate": cid, "commit": found.commit, "operator": found.operator,
+                            "parents": list(found.parents), "score": list(score)})
+        self.exchange.publish(space.base, entries)
+
     def search(self, space: SearchSpace) -> Sequence[str]:
         rng = random.Random(space.seed)
         people: list[tuple[str, Score, bool]] = []
@@ -202,7 +237,11 @@ class EvolutionaryProvider:
                     child = self._mutation(space, parent, rng, generation)
                     if child and child[1] > score:
                         people[index] = child
+            if self.exchange is not None and generation % self.migrate_every == 0 and self._room(space):
+                self._migration(space, people, generation)
             self.trace.append({"generation": generation, "population": [p[0] for p in people]})
+        if self.exchange is not None and people:
+            self._publish(space, people)
         ranked = sorted(dict.fromkeys(people), key=lambda p: p[1], reverse=True)
         passing = [p[0] for p in ranked if p[2]]
         return passing or [p[0] for p in ranked[:1]]

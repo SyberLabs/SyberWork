@@ -231,6 +231,16 @@ class GitSearchSpace:
         self._commits[found.id] = found.commit
         return found
 
+    def migrate(self, commit: str, *, origin: Mapping[str, str]) -> Candidate:
+        self._time()
+        if len(self.submitted) >= self.budget.max_candidates:
+            raise SearchStopped("budget_exhausted")
+        if "migration" not in self._provider.operators:
+            raise Rejected("operator_not_permitted", f"{self._provider.name} did not declare 'migration'")
+        found = self._thread._migrate(commit, origin, self._provider, self.submitted)
+        self._commits[found.id] = found.commit
+        return found
+
     def evaluate(self, candidate: str) -> Evaluation:
         self._time()
         if self.evaluations >= self.budget.max_evaluations:
@@ -479,6 +489,11 @@ class Kit:
                     removed += 1
         return removed
 
+    def exchange(self, remote: str, *, host: str, topic: str):
+        """Share evolutionary populations with other hosts through a Git remote."""
+        from syberlabs.exchange import Exchange
+        return Exchange(self.repo, remote, host, topic)
+
     def forget(self, thread_id: str, *, reason: str, actor: str | None = None) -> dict:
         """Delete a thread's history and its candidate refs, as the policy's retention rule allows.
 
@@ -663,16 +678,37 @@ class Thread:
         tree = repo.tree(commit)
         if len(parent_commits) == 1 and tree == repo.tree(parent_commits[0]):
             raise Rejected("no_change", "the edit leaves its parent's tree unchanged")
+        return self._register(cid, commit, tree, list(parents), operator, provider, message, signal, None, submitted)
+
+    def _register(self, cid, commit, tree, parents, operator, provider, message, signal, origin, submitted) -> Candidate:
+        """Keep the commit alive on a candidate ref and record what the host computed from Git."""
+        repo = self.kit.repo
         repo.git("update-ref", f"{CANDIDATE_REFS}/{self.id[:8]}/{cid}", commit)
         changed = repo.changed_paths(self.base, commit)
         _, size, sha = repo.diff(self.base, commit, max_bytes=0)
-        self.kit.session.record_candidate(self.id, {
-            "id": cid, "commit": commit, "tree": tree, "base": self.base, "parents": list(parents),
+        record = {
+            "id": cid, "commit": commit, "tree": tree, "base": self.base, "parents": parents,
             "operator": operator, "provider": {"name": provider.name, "revision": provider.revision},
             "changed_paths": changed, "diff": {"digest": sha, "bytes": size, "files": len(changed)},
-            "signal": dict(signal) if signal is not None else None, "note": (message or "")[:500]}, HOST)
+            "signal": dict(signal) if signal is not None else None, "note": (message or "")[:500]}
+        if origin is not None:
+            record["origin"] = dict(origin)
+        self.kit.session.record_candidate(self.id, record, HOST)
         submitted.append(cid)
         return Candidate.from_view(self._view(cid))
+
+    def _migrate(self, commit: str, origin: Mapping[str, str], provider, submitted) -> Candidate:
+        """Register a commit another host made. It is untrusted until evaluated here."""
+        repo = self.kit.repo
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", commit) or repo.rev(commit) != commit:
+            raise Rejected("migration_unavailable", "the migrant commit is not in this repository; fetch it first")
+        if not repo.is_ancestor(self.base, commit):
+            raise Rejected("migration_base_mismatch", "the migrant does not descend from this thread's base")
+        views = self._views()
+        if any(view["commit"] == commit for view in views):
+            raise Rejected("already_imported", "this commit is already a candidate here")
+        return self._register(f"c{len(views) + 1}", commit, repo.tree(commit), [], "migration", provider,
+                              f"migrant {origin.get('candidate')} from host {origin.get('host')}", None, origin, submitted)
 
     def worktree_changes(self) -> tuple[dict[str, str | None], list[str]]:
         """Working-tree edits relative to the thread base, and paths left out.

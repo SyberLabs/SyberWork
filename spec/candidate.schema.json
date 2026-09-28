@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/v0alpha1/candidate.schema.json",
   "title": "Candidate",
-  "description": "Bodies of candidate_registered, candidate_evaluated, search_started, and search_finished events. A candidate is provisional. parents is lineage: provenance, not evidence. scope_violations and limit_violations are recomputed by the runtime from changed_paths and the contract; signal is the provider's own, unverified output.",
+  "description": "Bodies of candidate_registered, candidate_evaluated, search_started, and search_finished events. A candidate is provisional. parents is lineage: provenance, not evidence. scope_violations and limit_violations are recomputed by the runtime from changed_paths and the contract; signal is the provider's own, unverified output. origin names the host and candidate a migrant came from; it is provenance, and the migrant is evaluated locally.",
   "$defs": {
     "registered": {
       "type": "object",
@@ -133,6 +133,24 @@
         },
         "actor": {
           "type": "string"
+        },
+        "origin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "host",
+            "candidate"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+            },
+            "candidate": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+            }
+          }
         }
       }
     },
