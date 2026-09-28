@@ -87,9 +87,10 @@ An administrator can install an `economic_http` action with a fixed settlement s
 ```sh
 PYTHONPATH=. python -m unittest discover -s tests -v
 PYTHONPATH=. python -m conformance.run
+python -m conformance.clean_install
 ```
 
-`conformance/run` recaptures the case-study and admission traces and diffs them against `conformance/golden`. It exits nonzero on any difference. The unit tests include a case database created on `main` (`a2f909b`) and check that `verify_chain` and `replay` still accept it.
+`conformance/clean_install` builds the wheel, installs it into a new virtual environment, and runs the two SDK examples from a directory outside this checkout. It fails if `syberlabs` or `syberwork` is imported from the repository instead of the installed wheel. `conformance/run` recaptures the case-study and admission traces and diffs them against `conformance/golden`. It exits nonzero on any difference. The unit tests include a case database created on `main` (`a2f909b`) and check that `verify_chain` and `replay` still accept it.
 
 The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, an HTTP effect with its idempotency key, and simulated economic settlements with shared budgets and reconciliation. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems, payment provider or policies have been integrated correctly.
 
