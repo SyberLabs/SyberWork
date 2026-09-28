@@ -69,6 +69,34 @@ For a team, set the same `approval_role` on the promotion action and on `evoluti
 
 To land an accepted change on `main`, merge `syberlabs/<thread>` yourself. Setting `promotion.target_ref` to an existing branch makes acceptance a fast-forward from the thread base instead: the branch must still be at the base (otherwise 412, no write), and it must not be checked out (otherwise 409, no write).
 
+## Publishing an accepted change
+
+Accepting never publishes. Pushing the branch, opening a pull request, and running a publish command are three more contract actions. Each has its own authority and its own effect, and all are admitted like any other action. Add them to a new contract version, list them in `policy.json`, and define their destinations in `.syberlabs/actions.json`:
+
+```json
+// contract actions
+"push_branch":       {"requires_effect": "accept_change", "required_facts": [{"key": "accepted", "source": "git", "verified": true}], "arguments": {"commit": "fact:accepted.commit"}},
+"open_pull_request": {"requires_effect": "push_branch",   "required_facts": [...same...], "arguments": {"commit": "fact:accepted.commit"}},
+"publish_package":   {"requires_effect": "accept_change", "required_facts": [...same...], "arguments": {"commit": "fact:accepted.commit"}, "approval_role": "maintainer"}
+
+// .syberlabs/actions.json (immutable by name, like every action definition)
+{"push_branch": {"kind": "local", "effect": "git_push", "remote": "origin"},
+ "open_pull_request": {"kind": "local", "effect": "github_pull_request", "api": "https://api.github.com",
+                       "repository": "owner/name", "base": "main", "token_env": "GITHUB_TOKEN"},
+ "publish_package": {"kind": "local", "effect": "command", "argv": ["./scripts/publish"],
+                     "status_argv": ["./scripts/publish-status"], "no_write_exit_codes": [75]}}
+```
+
+Then run `syberlabs publish push_branch`, `syberlabs publish open_pull_request`, or `syberlabs publish publish_package`. Before proposing, the host reads the target branch and records it as the verified `accepted` fact. The argument binding therefore makes it impossible to publish anything but the accepted commit.
+
+| Effect | Idempotency and no-write | Status lookup |
+| --- | --- | --- |
+| `git_push` | `--force-with-lease`: the branch must be absent, or at the thread base for a branch without `{thread}`. A refused ref is a guaranteed no-write (412). | `git ls-remote` |
+| `github_pull_request` | Looks for a pull request from the branch at that commit before creating one. 401, 403, 404, and 422 happen before creation (409, no write). The body cites the thread, the candidate, and the host's check results. | The same lookup |
+| `command` | Admin-fixed argv run in a worktree of the accepted commit, with `SYBERLABS_IDEMPOTENCY_KEY`, `SYBERLABS_COMMIT`, and `SYBERLABS_THREAD`. The last stdout line must be `{"external_id": ...}`. Declared `no_write_exit_codes` mean no write (409). | `status_argv` prints `{"state": "applied" \| "absent" \| "unknown", ...}` |
+
+A transport failure is `unknown`, and `syberlabs recover` asks the destination. A remote that does not show the write is `absent`. That becomes `not_applied`, which frees the action for a fresh proposal, only after the action's `settle_seconds` (120 by default). Inside that window the effect stays pending, because a remote that has not shown a write yet is not proof it never will.
+
 ## Durability and recovery
 
 Every installed document and event is one fsynced line in `.syberlabs/journal/` before memory changes. `Session(journal=Journal(path))` gives any SDK project the same store, and the same conformance run passes on the in-memory and durable sessions. On reopening:

@@ -19,7 +19,7 @@ syberlabs accept c1                    # moves refs/heads/syberlabs/<thread>; ne
 syberlabs status                       # resume from the journal in any terminal
 ```
 
-Candidates are Git commits on non-authoritative refs, written without touching your working tree. A model's claim that tests pass is shown as an unverified signal; only the host's own run counts. Acceptance is an admitted, compare-and-swap branch update, and an interrupted one is settled with `syberlabs recover`. `python examples/build_thread.py` runs the whole path without a model. See [docs/BUILD_THREAD.md](docs/BUILD_THREAD.md).
+Candidates are Git commits on non-authoritative refs, written without touching your working tree. A model's claim that tests pass is shown as an unverified signal; only the host's own run counts. Acceptance is an admitted, compare-and-swap branch update, and an interrupted one is settled with `syberlabs recover`. Pushing, opening a pull request, and running a publish command are separate admitted actions after acceptance (`syberlabs publish push_branch`), each idempotent and reconcilable. `python examples/build_thread.py` runs the whole path without a model. See [docs/BUILD_THREAD.md](docs/BUILD_THREAD.md).
 
 An EvoGit-style evolutionary search (`syberlabs propose --evolve ./mutator`, or `EvolutionaryProvider`) is one more provider behind the same interface. Its population lives on non-authoritative refs, its selection uses the host's own check results, and a person still accepts. `python examples/evolve.py` runs it on a toy fixture. See [docs/EVOLUTION.md](docs/EVOLUTION.md).
 

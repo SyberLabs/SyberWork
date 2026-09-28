@@ -41,3 +41,5 @@ The schemas describe SyberWork as it behaves. They are not enforced at runtime e
 19. **One promotion per thread.** `effect.not_completed` denies a second effect of the promotion action in the same case. The schema does not express that limit.
 
 20. **A local executor's no-write outcome.** `Session.reconcile` for a bound local executor (the Build Thread's Git ref update) records `effect_rejected` with `status: "not_applied"` when it reads the destination under the store lock and the write is absent. No commit can be in flight then, because commit holds the same lock across claim, write, and outcome. The protocol's other no-write codes remain the HTTP 409, 412, and 428. `EffectOutcome` projects the string as `local_status`.
+
+21. **Absent is not proof for a remote destination.** A publishing executor's status may report `absent`. `Session.reconcile` records `not_applied` only when the claim is older than the executor's `settle_seconds`, and `reconciliation_checked` with `absent_within_settle_window` before that. `effect.unresolved` treats an `effect_unknown` followed by that `effect_rejected` as settled. Publishing outputs are `{destination, external_id, url?}`.

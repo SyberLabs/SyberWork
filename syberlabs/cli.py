@@ -66,7 +66,9 @@ def _print_receipt(receipt) -> None:
     line = f"{receipt.status}: {receipt.candidate or ''}"
     if receipt.reason:
         line += f" ({receipt.reason})"
-    if receipt.status == "succeeded":
+    if receipt.status == "succeeded" and receipt.external_id:
+        line += f"\n{receipt.ref}: {receipt.external_id}" + (f" {receipt.url}" if receipt.url else "")
+    elif receipt.status == "succeeded" and receipt.commit and receipt.ref and receipt.ref.startswith("refs/"):
         line += f"\n{receipt.ref} now points at {receipt.commit[:10]}. Nothing was pushed or merged."
     print(line)
     if receipt.hint:
@@ -117,8 +119,11 @@ def main(argv: list[str] | None = None) -> int:
     diff.add_argument("candidate")
     accept = commands.add_parser("accept", help="accept a candidate: moves only the thread's target branch")
     accept.add_argument("candidate")
-    approve = commands.add_parser("approve", help="independently approve a pending acceptance")
-    approve.add_argument("candidate")
+    approve = commands.add_parser("approve", help="independently approve a pending acceptance or publishing action")
+    approve.add_argument("candidate", nargs="?")
+    approve.add_argument("--action", help="approve a pending publishing action instead of an acceptance")
+    publish = commands.add_parser("publish", help="run a publishing action after acceptance (push, pull request, command)")
+    publish.add_argument("action")
     commands.add_parser("recover", help="settle an interrupted acceptance by reading the target branch")
     commands.add_parser("log", help="the thread's events")
     export = commands.add_parser("export", help="the thread's full record as JSON")
@@ -239,7 +244,16 @@ def _run(kit: Kit, args) -> int:
         _print_receipt(receipt)
         return 0 if receipt.status == "succeeded" else 1
     elif args.command == "approve":
-        _print_receipt(thread.approve(args.candidate, actor=kit.actor, roles=kit.roles))
+        if args.action:
+            _print_receipt(thread.approve_action(args.action, actor=kit.actor, roles=kit.roles))
+        elif args.candidate:
+            _print_receipt(thread.approve(args.candidate, actor=kit.actor, roles=kit.roles))
+        else:
+            raise Rejected("nothing_to_approve", "name a candidate or --action")
+    elif args.command == "publish":
+        receipt = thread.publish(args.action)
+        _print_receipt(receipt)
+        return 0 if receipt.status == "succeeded" else 1
     elif args.command == "recover":
         receipts = thread.recover()
         for receipt in receipts:
