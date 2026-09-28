@@ -1,0 +1,22 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "required_prior_effect_missing"
+    ]
+  ],
+  "id": "admit_planner_denied",
+  "outcome": "required_prior_effect_missing",
+  "source": "admission"
+}

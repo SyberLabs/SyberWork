@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/event-body.schema.json",
+  "title": "EventBody",
+  "description": "Kind-specific event bodies emitted by Work._append. Protocol sdk.syberlabs.space/v0alpha1. Validated together with the event envelope.",
+  "type": "object",
+  "required": ["kind", "body"],
+  "properties": {
+    "kind": {"type": "string"},
+    "body": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "case_created"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/case_created"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "observed"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "observation.schema.json"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "proposed"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "proposal.schema.json"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "decision"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/decision"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "approved"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/approved"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "effect_started"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/effect_started"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "effect_succeeded"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/effect_succeeded"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "effect_rejected"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/effect_rejected"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "effect_unknown"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/effect_unknown"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "reconciliation_checked"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "reconciliation.schema.json#/$defs/checked"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "reconciled"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"oneOf": [
+        {"$ref": "reconciliation.schema.json#/$defs/verified"},
+        {"$ref": "reconciliation.schema.json#/$defs/legacy"}
+      ]}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "signed"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/signed"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "resolution_requested"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "resolution-task.schema.json"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "resolution_checked"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/resolution_checked"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "resolution_completed"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/resolution_completed"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "resolution_escalated"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/resolution_escalated"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "case_cancelled"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "#/$defs/case_cancelled"}}}
+    }
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "case_created": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor", "inputs", "contract"],
+      "properties": {
+        "actor": {"type": "string"},
+        "inputs": {"type": "object"},
+        "contract": {
+          "type": "array",
+          "prefixItems": [{"type": "string", "minLength": 1}, {"type": "integer"}],
+          "minItems": 2,
+          "maxItems": 2,
+          "items": false
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "policy_version", "status", "reason"],
+      "properties": {
+        "proposal_id": {"type": "string", "minLength": 1},
+        "policy_version": {"type": "integer"},
+        "status": {"enum": ["allowed", "needs_approval", "denied"]},
+        "reason": {"type": "string", "minLength": 1},
+        "phase": {"const": "commit"}
+      }
+    },
+    "approved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "actor", "role", "args_hash"],
+      "properties": {
+        "proposal_id": {"type": "string"},
+        "actor": {"type": "string"},
+        "role": {"type": "string"},
+        "args_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "effect_started": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "action", "actor", "policy_version", "idempotency_key"],
+      "properties": {
+        "proposal_id": {"type": "string"},
+        "action": {"type": "string"},
+        "actor": {"type": "string"},
+        "policy_version": {"type": "integer"},
+        "idempotency_key": {"type": "string"},
+        "policy_snapshot": {"$ref": "#/$defs/hash"},
+        "evidence_snapshot": {"$ref": "#/$defs/hash"},
+        "intent_snapshot": {"$ref": "#/$defs/hash"},
+        "budget_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "effect_succeeded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "action", "output", "claim_hash"],
+      "properties": {
+        "proposal_id": {"type": "string"},
+        "action": {"type": "string"},
+        "claim_hash": {"$ref": "#/$defs/hash"},
+        "output": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["recorded", "args"],
+              "properties": {"recorded": {"const": true}, "args": {"type": "object"}}
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "body"],
+              "properties": {"status": {"type": "integer"}, "body": {"type": "string"}}
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["settlement"],
+              "properties": {"settlement": {"type": "object"}}
+            }
+          ]
+        }
+      }
+    },
+    "effect_rejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "action", "status", "claim_hash"],
+      "properties": {
+        "proposal_id": {"type": "string"},
+        "action": {"type": "string"},
+        "status": {"enum": [409, 412, 428]},
+        "claim_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "effect_unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "action", "error"],
+      "properties": {
+        "proposal_id": {"type": "string"},
+        "action": {"type": "string"},
+        "error": {"type": "string"}
+      }
+    },
+    "signed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor", "role"],
+      "properties": {
+        "actor": {"type": "string"},
+        "role": {"type": "string"}
+      }
+    },
+    "resolution_checked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "status", "reason", "actor"],
+      "properties": {
+        "task_id": {"type": "string"},
+        "status": {"const": "pending"},
+        "reason": {"type": "string", "minLength": 1},
+        "actor": {"type": "string"},
+        "observation_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "resolution_completed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "key", "choice", "actor", "source", "version", "observation_hash", "confirmation_hash"],
+      "properties": {
+        "task_id": {"type": "string"},
+        "key": {"type": "string"},
+        "choice": {"type": "string"},
+        "actor": {"type": "string"},
+        "source": {"type": "string"},
+        "version": {"type": "string"},
+        "observation_hash": {"$ref": "#/$defs/hash"},
+        "confirmation_hash": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]}
+      }
+    },
+    "resolution_escalated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "actor", "role"],
+      "properties": {
+        "task_id": {"type": "string"},
+        "actor": {"type": "string"},
+        "role": {"type": "string"}
+      }
+    },
+    "case_cancelled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor", "role", "reason"],
+      "properties": {
+        "actor": {"type": "string"},
+        "role": {"type": "string"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

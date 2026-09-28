@@ -1,0 +1,42 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "allowed",
+      "all_checks_passed"
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "argument_provenance:part_number"
+    ]
+  ],
+  "id": "admit_commit_recheck",
+  "outcome": "argument_provenance:part_number",
+  "source": "admission"
+}

@@ -1,0 +1,82 @@
+[
+  {
+    "name": "ascii-keys",
+    "jcs": "{\"Z\":1,\"a\":2}",
+    "sha256": "b19fcf144d639e7ba9a9d01385685d8aa19699bff9fa3e916f61935afabcd8e9",
+    "document": {
+      "Z": 1,
+      "a": 2
+    }
+  },
+  {
+    "name": "nested",
+    "jcs": "{\"a\":[true,null,\"x\"],\"b\":1}",
+    "sha256": "54a65415ad370228851a1da4b31b6fd42dc58b19a50d35cae759325f7388ce64",
+    "document": {
+      "b": 1,
+      "a": [
+        true,
+        null,
+        "x"
+      ]
+    }
+  },
+  {
+    "name": "one",
+    "jcs": "1",
+    "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "construct": "1.0"
+  },
+  {
+    "name": "negative-zero",
+    "jcs": "0",
+    "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+    "construct": "-0.0"
+  },
+  {
+    "name": "integer",
+    "jcs": "1",
+    "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "document": 1
+  },
+  {
+    "name": "pi",
+    "jcs": "3.141592653589793",
+    "sha256": "f0a1b7875844c3ae0d28f3cc44e9a6241da33e2623a69f0a71263158dffb4e87",
+    "construct": "math.pi"
+  },
+  {
+    "name": "controls",
+    "jcs": "\"\\u0001\\n\"",
+    "sha256": "70fe76eb8ab67f694a2b482e6b0e842079b36ef3254654f2c53afd370a6fbbed",
+    "document": "\u0001\n"
+  },
+  {
+    "name": "utf16-key-order",
+    "jcs": "{\"😀\":1,\"\":2}",
+    "sha256": "04208f6cdb854e2ab1b07dd3633a39dec854344fe72824cf7f2fdb4e2e33129e",
+    "construct": "emoji-then-private-use"
+  },
+  {
+    "name": "empty-object",
+    "jcs": "{}",
+    "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "document": {}
+  },
+  {
+    "name": "safe-integer",
+    "jcs": "9007199254740991",
+    "sha256": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26",
+    "document": 9007199254740991
+  },
+  {
+    "name": "nan-rejected",
+    "construct": "nan",
+    "error": "non-finite number"
+  },
+  {
+    "name": "unsafe-integer-rejected",
+    "construct": "2**53",
+    "error": "integer exceeds the JSON safe range"
+  }
+]

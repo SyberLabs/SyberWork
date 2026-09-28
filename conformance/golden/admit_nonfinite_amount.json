@@ -1,0 +1,22 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "amount_required"
+    ]
+  ],
+  "id": "admit_nonfinite_amount",
+  "outcome": "amount_required",
+  "source": "admission"
+}

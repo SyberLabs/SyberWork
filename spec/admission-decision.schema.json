@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/admission-decision.schema.json",
+  "title": "AdmissionDecision",
+  "description": "Admission result returned by Work._admit. Protocol sdk.syberlabs.space/v0alpha1. This is not the decision event body; that wrapper also carries proposal_id, policy_version, and an optional phase.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "reason"],
+  "properties": {
+    "status": {"enum": ["allowed", "needs_approval", "denied"]},
+    "reason": {"type": "string", "minLength": 1}
+  }
+}

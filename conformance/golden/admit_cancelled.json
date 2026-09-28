@@ -1,0 +1,27 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "case_cancelled",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "case_cancelled"
+    ]
+  ],
+  "id": "admit_cancelled",
+  "outcome": "case_cancelled",
+  "source": "admission"
+}

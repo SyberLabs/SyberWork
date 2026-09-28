@@ -6,6 +6,25 @@
 
 This is a running application, with a browser operator console, a versioned contract studio, a policy boundary, source-system readers, action executors, an external planner interface, human approval, completion checks, and amendment replay. It is separate from SyberLabs' existing `cross-platform` instrument panel: the panel inspects existing research systems; SyberWork executes contracts.
 
+The `syberlabs` package is the reusable core: canonical JSON, the event hash chain, a JCS digest and rule id beside that chain, an HMAC witness and an Ed25519 signature of the chain head, an append-only transparency log in a separate file, a witness process that holds the signing key, the admission rules, the planner interface, and an in-memory `Session` for a project that does not use this application's database. New events record `at` as integer microseconds inside the hash. A case database from `main` still uses float seconds and still verifies. `syberwork` is the application: storage, the HTTP API, the CLI, the console, and connectors. `syberlabs` does not import `syberwork`. Both install from this repository at one version. The protocol those objects follow is `sdk.syberlabs.space/v0alpha1` in `spec/`.
+
+## Use the SDK on another project
+
+`examples/release_gate.py` is a software release gate. It does not import `syberwork` and it does not talk to the procurement ERP.
+
+```sh
+PYTHONPATH=. python examples/release_gate.py
+```
+
+A project installs a contract, a policy, and local actions on `syberlabs.Session`, then observes, proposes, commits, approves, signs, explains, and replays. `Session.commit` runs admission again and only then records a local effect. `explain_admission` returns the deciding rule and its provenance and does not write them into the hash chain. HTTP effects and economic reservations stay on `syberwork.Work`.
+
+`examples/access_review.py` is a second project: a quarterly access review. Development notes are in [docs/SDK_FEEDBACK.md](docs/SDK_FEEDBACK.md). The standards gap and the order to close it are in [docs/SDK_REDTEAM.md](docs/SDK_REDTEAM.md).
+
+```sh
+PYTHONPATH=. python examples/access_review.py
+PYTHONPATH=. python benchmarks/run_bench.py
+```
+
 ## Start
 
 Python 3.11 or newer; no runtime dependencies. In the project directory:
@@ -44,7 +63,7 @@ To run a planner, set `SYBERWORK_PLANNER_URL` to an HTTPS or loopback endpoint a
 {"action":"record_review","args":{"part_number":"P-104"}}
 ```
 
-This output only creates a proposal. Admission rechecks the bound observation, global policy, roles, prior effects, and required approval. The planner receives no executor credential. The `scheduler` credential generates the next proposed compiled step directly from fact bindings; neither proposer can bypass the case API.
+This output only creates a proposal. Admission rechecks the bound observation, global policy, roles, prior effects, and required approval. The planner receives no executor credential. The configured endpoint is the `HttpPlanner` behind the `syberlabs` planner interface; a planner cannot do anything except return `{action, args}`. The `scheduler` credential generates the next proposed compiled step directly from fact bindings; neither proposer can bypass the case API.
 
 ## API and data ownership
 
@@ -63,7 +82,10 @@ The case SQLite database is authoritative for *SyberWork decisions and observed 
 
 ```sh
 PYTHONPATH=. python -m unittest discover -s tests -v
+PYTHONPATH=. python -m conformance.run
 ```
+
+`conformance/run` recaptures the case-study and admission traces and diffs them against `conformance/golden`. It exits nonzero on any difference. The unit tests include a case database created on `main` (`a2f909b`) and check that `verify_chain` and `replay` still accept it.
 
 The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, and an HTTP effect with its idempotency key. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems or policies have been integrated correctly.
 

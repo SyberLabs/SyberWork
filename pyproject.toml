@@ -5,11 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "syberwork"
 version = "0.1.0"
-description = "Contract-governed work execution"
+description = "Contract-governed work execution and the SyberLabs SDK core"
 requires-python = ">=3.11"
 
 [project.scripts]
 syberwork = "syberwork.cli:main"
+
+[tool.setuptools]
+packages = ["syberwork", "syberlabs"]
 
 [tool.setuptools.package-data]
 syberwork = ["static/*", "examples/*.json"]

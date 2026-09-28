@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/resolution-task.schema.json",
+  "title": "ResolutionTask",
+  "description": "Body of resolution_requested. Protocol sdk.syberlabs.space/v0alpha1. Inspect projects status and choice onto a copy; those fields are not stored on the task event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "key", "actor", "owner_role", "escalate_role", "due_at", "choices", "record_key", "trigger_version", "trigger_hash", "choices_version", "choices_hash"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "key": {"type": "string", "minLength": 1},
+    "actor": {"type": "string"},
+    "owner_role": {"type": "string", "minLength": 1},
+    "escalate_role": {"type": "string", "minLength": 1},
+    "due_at": {"type": "number"},
+    "choices": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "record_key": {"type": "string", "minLength": 1},
+    "trigger_version": {"type": "string", "minLength": 1},
+    "trigger_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "choices_version": {"type": "string", "minLength": 1},
+    "choices_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

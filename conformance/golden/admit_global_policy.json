@@ -1,0 +1,32 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "action_not_in_global_policy"
+    ]
+  ],
+  "id": "admit_global_policy",
+  "outcome": "action_not_in_global_policy",
+  "source": "admission"
+}

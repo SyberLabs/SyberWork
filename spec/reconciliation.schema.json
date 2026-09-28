@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/reconciliation.schema.json",
+  "title": "Reconciliation",
+  "description": "Recorded reconciliation bodies. Protocol sdk.syberlabs.space/v0alpha1. verified is the only shape that licenses acceptance. checked does not. legacy is a historical text attestation the runtime still stores and still refuses to treat as proof.",
+  "oneOf": [
+    {"$ref": "#/$defs/verified"},
+    {"$ref": "#/$defs/checked"},
+    {"$ref": "#/$defs/legacy"}
+  ],
+  "$defs": {
+    "verified": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "action", "success", "proof", "actor"],
+      "properties": {
+        "proposal_id": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "minLength": 1},
+        "success": {"const": true},
+        "actor": {"type": "string"},
+        "proof": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verified", "external_id", "request_digest", "response_digest", "idempotency_key"],
+          "properties": {
+            "verified": {"const": true},
+            "external_id": {"type": "string", "minLength": 1},
+            "request_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "response_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "idempotency_key": {"type": "string", "minLength": 1},
+            "amount_units": {"type": "string", "minLength": 1},
+            "asset": {"type": "string", "minLength": 1},
+            "counterparty": {"type": "string", "minLength": 1},
+            "rail": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "checked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "action", "status", "reason", "actor"],
+      "properties": {
+        "proposal_id": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "minLength": 1},
+        "status": {"enum": ["pending", "unverified"]},
+        "reason": {"type": "string", "minLength": 1},
+        "actor": {"type": "string"}
+      }
+    },
+    "legacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proposal_id", "action", "success", "evidence", "actor"],
+      "properties": {
+        "proposal_id": {"type": "string"},
+        "action": {"type": "string"},
+        "success": {"type": "boolean"},
+        "evidence": {"type": "string"},
+        "actor": {"type": "string"}
+      }
+    }
+  }
+}

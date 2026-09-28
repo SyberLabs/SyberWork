@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/action-definition.schema.json",
+  "title": "ActionDefinition",
+  "description": "Administrator-installed action accepted by Work.install_action. Protocol sdk.syberlabs.space/v0alpha1. trusted_origin is procedural and is not fully encoded here; see GAPS.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["kind"],
+  "properties": {
+    "kind": {"enum": ["local", "http", "economic_http"]},
+    "title": {"type": "string"},
+    "method": {"enum": ["POST", "PUT", "PATCH"]},
+    "url": {"type": "string"},
+    "status_url": {"type": "string"},
+    "no_write_statuses": {"type": "array", "items": {"enum": [409, 412, 428]}},
+    "version_arg": {"type": "string"},
+    "timeout_seconds": {"type": "number"},
+    "auth_env": {"type": "string"},
+    "asset": {"type": "string", "minLength": 1},
+    "rail": {"type": "string", "minLength": 1},
+    "counterparty": {"type": "string", "minLength": 1},
+    "operation": {"enum": ["purchase_capability", "transfer"]}
+  },
+  "allOf": [
+    {
+      "if": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "http"}}},
+      "then": {"required": ["url"]}
+    },
+    {
+      "if": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "economic_http"}}},
+      "then": {"required": ["url", "asset", "rail", "counterparty", "operation", "status_url"]}
+    }
+  ]
+}
