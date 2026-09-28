@@ -21,7 +21,7 @@ from typing import Any, Callable
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
 from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
-from syberlabs.clock import stamp
+from syberlabs.clock import as_seconds, stamp
 from syberlabs.contracts import check_case_inputs, prepare_contract
 from syberlabs.economic import policy_has_economic, validate_policy_budgets
 from syberlabs.errors import Rejected
@@ -383,8 +383,11 @@ class Session:
 
         The executor's ``status`` reports ``applied`` (recorded as a verified
         reconciliation), ``not_applied`` (recorded as ``effect_rejected`` with
-        status ``not_applied``, which frees the action for a fresh proposal), or
-        anything else (recorded as pending). A caller cannot supply the outcome.
+        status ``not_applied``, which frees the action for a fresh proposal),
+        ``absent`` (a remote destination does not show the write: ``not_applied``
+        only once the claim is older than the executor's ``settle_seconds``,
+        pending before that), or anything else (pending). A caller cannot supply
+        the outcome.
         No commit can be in flight here: commit holds the same lock for its
         whole claim, write, and outcome.
         """
@@ -415,6 +418,13 @@ class Session:
                           "idempotency_key": proposal_id},
             })
             return {"status": "verified", "reason": "destination_state_matched", "event": event}
+        reason = "status_unavailable"
+        if state == "absent":
+            settle = getattr(executor, "settle_seconds", None)
+            if isinstance(settle, (int, float)) and as_seconds(stamp(self.clock())) - as_seconds(claim["at"]) >= settle:
+                state = "not_applied"
+            else:
+                reason = "absent_within_settle_window"
         if state == "not_applied":
             event = self._append(case_id, "effect_rejected", {
                 "proposal_id": proposal_id, "action": proposal["action"],
@@ -423,9 +433,9 @@ class Session:
             return {"status": "not_applied", "reason": "destination_state_unchanged", "event": event}
         event = self._append(case_id, "reconciliation_checked", {
             "proposal_id": proposal_id, "action": proposal["action"],
-            "status": "pending", "reason": "status_unavailable", "actor": actor,
+            "status": "pending", "reason": reason, "actor": actor,
         })
-        return {"status": "pending", "reason": "status_unavailable", "event": event}
+        return {"status": "pending", "reason": reason, "event": event}
 
     @_guard
     def signoff(self, case_id: str, actor: str, roles: list[str], role: str) -> dict:

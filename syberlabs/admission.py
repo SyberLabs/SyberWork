@@ -159,12 +159,14 @@ def _finished_proposal_ids(history: list) -> set:
 @rule("effect.unresolved", "effect_unresolved:")
 def effect_unresolved(ctx: AdmissionContext) -> dict | None:
     proposals = {event["body"]["id"]: event["body"]["action"] for event in ctx.history if event["kind"] == "proposed"}
-    verified_ids = {event["body"]["proposal_id"] for event in ctx.history if verified_reconciliation(event)}
+    # A verified reconciliation settles an unknown outcome, and so does an effect_rejected
+    # recorded by reconciliation when the destination shows no write.
+    settled_ids = _finished_proposal_ids(ctx.history)
     for event in ctx.history:
         if event["kind"] != "effect_unknown":
             continue
         effect = event["body"]
-        if effect.get("action", proposals.get(effect["proposal_id"])) == ctx.action and effect["proposal_id"] not in verified_ids:
+        if effect.get("action", proposals.get(effect["proposal_id"])) == ctx.action and effect["proposal_id"] not in settled_ids:
             return deny("effect_unresolved:" + ctx.action, "effect.unresolved")
     # An effect_started with no terminal outcome occupies the action.
     # effect_rejected is terminal, so a fresh proposal of that action can proceed.

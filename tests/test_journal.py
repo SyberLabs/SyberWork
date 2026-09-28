@@ -201,6 +201,31 @@ class Executors(unittest.TestCase):
             self.session.reconcile(self.case, pid, "engineer", ["engineer"])
         self.assertEqual(self.session.inspect(self.case)["acceptance"][0], {"id": "published", "passed": False})
 
+    def test_unknown_then_absent_frees_the_action_after_the_settle_window(self):
+        class Remote:
+            settle_seconds = 60
+            state = "absent"
+
+            def apply(self, case_id, args, key):
+                raise OSError("connection reset")
+
+            def status(self, case_id, args, key):
+                return self.state, {}
+
+        clock = [__import__("time").time()]
+        self.session.clock = lambda: clock[0]
+        self.session.bind_effect("record_checks", Remote())
+        pid = self.proposal()
+        self.assertEqual(self.session.commit(self.case, pid, "engineer")["status"], "unknown")
+        found = self.session.reconcile(self.case, pid, "engineer", ["engineer"])
+        self.assertEqual((found["status"], found["reason"]), ("pending", "absent_within_settle_window"))
+        self.assertEqual(self.session.propose(self.case, "record_checks", {"version": "1.4.0"}, "engineer",
+                                              ["engineer"])["decision"]["reason"], "effect_unresolved:record_checks")
+        clock[0] += 61
+        self.assertEqual(self.session.reconcile(self.case, pid, "engineer", ["engineer"])["status"], "not_applied")
+        self.assertEqual(self.session.propose(self.case, "record_checks", {"version": "1.4.0"}, "engineer",
+                                              ["engineer"])["decision"]["status"], "allowed")
+
 
 if __name__ == "__main__":
     unittest.main()

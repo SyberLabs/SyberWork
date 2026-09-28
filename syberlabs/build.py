@@ -53,11 +53,14 @@ HINTS = {
     "candidate_promotion_role": "Your roles do not include one of this contract's promotion roles.",
     "approval_required": "This contract needs an independent approver: syberlabs approve {cid} --actor NAME --role ROLE",
     "action_already_completed": "This thread already accepted a change. Start a new thread for the next one.",
-    "effect_unresolved": "An earlier acceptance was interrupted. Run syberlabs recover first.",
+    "effect_unresolved": "An earlier effect of this action has no known outcome. Run syberlabs recover first.",
     "action_not_in_global_policy": "The active policy does not allow this action.",
     "actor_role_missing": "The policy does not let your roles propose this action.",
     "target_moved": "The target branch no longer matches this thread's base. Start a new thread from the current commit.",
     "target_checked_out": "The target branch is checked out; SyberLabs will not move a branch under a working tree.",
+    "not_accepted": "Accept a candidate first: syberlabs accept CANDIDATE. Publishing never accepts.",
+    "required_prior_effect_missing": "The contract orders these actions; run the earlier one first (for example push before a pull request).",
+    "remote_moved": "The remote branch exists or moved; nothing was written. Inspect it before publishing under this name.",
     "budget_exhausted": "The thread used its contract budget. Start a new thread or publish a contract with a larger budget.",
 }
 
@@ -117,6 +120,8 @@ class Receipt:
     commit: str | None = None
     event: str | None = None
     hint: str | None = None
+    external_id: str | None = None
+    url: str | None = None
 
 
 class SearchStopped(Exception):
@@ -360,9 +365,22 @@ class Kit:
                 self.session.install_policy(doc)
             except Rejected as exc:
                 raise Rejected(exc.code, f"policy.json: {exc.detail}; bump its version to publish a change") from None
+        actions = self.home / "actions.json"
+        if actions.exists():
+            from syberlabs import publish
+            for name, doc in json.loads(actions.read_text()).items():
+                try:
+                    publish.validate(doc)
+                    self.session.install_action(name, doc)
+                except Rejected as exc:
+                    raise Rejected(exc.code, f"actions.json {name}: {exc.detail}"
+                                   + ("; use a new action name to change it" if exc.code == "immutable_action" else "")) from None
         for name, action in self.session.actions.items():
             if action.get("effect") == "git_ref":
                 self.session.bind_effect(name, self._effect)
+            elif action.get("effect") in ("git_push", "github_pull_request", "command"):
+                from syberlabs import publish
+                self.session.bind_effect(name, publish.executor(self, action))
 
     def _target(self, case_id: str) -> tuple[str, bool]:
         row = self.session.cases[case_id]
@@ -761,6 +779,67 @@ class Thread:
         return Receipt("unknown", candidate, proposal_id, "effect_unknown", self.target_ref,
                        hint=hint("effect_unresolved", candidate))
 
+    # Publishing: separate actions after acceptance, each with its own authority.
+
+    def _accepted(self) -> dict:
+        """Read the target branch and record it as the ``accepted`` fact publishing actions bind to."""
+        view = next((v for v in self._views() if v["authoritative"]), None)
+        current = self.kit.repo.read_ref(self.target_ref)
+        if view is None or current is None or not (current == view["commit"] or self.kit.repo.is_ancestor(view["commit"], current)):
+            raise Rejected("not_accepted", "accept a candidate before publishing it; publishing never accepts")
+        self.kit.session.observe(self.id, "accepted", {"commit": view["commit"], "candidate": view["id"], "ref": self.target_ref},
+                                 "git", view["commit"], HOST, verified=True)
+        return view
+
+    def _pending_action(self, action: str, actor: str | None = None) -> str | None:
+        events = self._events()
+        touched = {e["body"]["proposal_id"] for e in events
+                   if e["kind"] in ("effect_started", "effect_unknown", "effect_rejected", "effect_succeeded")}
+        decisions = {e["body"]["proposal_id"]: e["body"] for e in events if e["kind"] == "decision"}
+        for event in reversed(events):
+            body = event["body"]
+            if (event["kind"] == "proposed" and body["action"] == action and (actor is None or body["actor"] == actor)
+                    and body["id"] not in touched and decisions.get(body["id"], {}).get("status") in ("allowed", "needs_approval")):
+                return body["id"]
+        return None
+
+    def publish(self, action: str, *, actor: str | None = None, roles: Sequence[str] | None = None) -> Receipt:
+        """Propose and, if admitted, run a publishing action (push, pull request, publish command)."""
+        actor, roles = actor or self.kit.actor, list(roles or self.kit.roles)
+        contract = self.kit.session.contracts[self.contract]
+        config = self.kit.session.actions.get(action, {})
+        if action not in contract["actions"] or config.get("effect") not in ("git_push", "github_pull_request", "command"):
+            raise Rejected("unknown_action", f"{self.contract[0]}.v{self.contract[1]} has no publishing action {action!r}; "
+                           "add it to a new contract version, policy.json, and actions.json (docs/BUILD_THREAD.md)")
+        view = self._accepted()
+        session = self.kit.session
+        proposal_id = self._pending_action(action, actor)
+        if proposal_id is None:
+            proposed = session.propose(self.id, action, {"commit": view["commit"]}, actor, roles)
+            proposal_id, decision = proposed["proposal"]["id"], proposed["decision"]
+            if decision["status"] != "allowed":
+                return Receipt(decision["status"], view["id"], proposal_id, decision["reason"], hint=hint(decision["reason"]))
+        result = session.commit(self.id, proposal_id, actor)
+        if "decision" in result:
+            reason = result["decision"]["reason"]
+            return Receipt(result["decision"]["status"], view["id"], proposal_id, reason, hint=hint(reason))
+        if result["status"] == "succeeded":
+            output = result["event"]["body"]["output"]
+            return Receipt("succeeded", view["id"], proposal_id, None, output["destination"], view["commit"],
+                           result["event"]["hash"], external_id=output["external_id"], url=output.get("url") or None)
+        if result["status"] == "rejected":
+            return Receipt("rejected", view["id"], proposal_id, result.get("detail"), event=result["event"]["hash"])
+        return Receipt("unknown", view["id"], proposal_id, "effect_unknown", hint=hint("effect_unresolved"))
+
+    def approve_action(self, action: str, *, actor: str, roles: Sequence[str]) -> Receipt:
+        """Independent approval of a pending publishing proposal."""
+        proposal_id = self._pending_action(action)
+        if proposal_id is None:
+            raise Rejected("nothing_to_approve", f"no pending {action}")
+        event = self.kit.session.approve(self.id, proposal_id, actor, list(roles))
+        return Receipt("approved", None, proposal_id, event["body"]["role"], event=event["hash"],
+                       hint=f"The proposer can now run the {action} again")
+
     def approve(self, candidate: str, *, actor: str, roles: Sequence[str]) -> Receipt:
         """Independent approval of the pending promotion proposal for this candidate."""
         proposal_id = self._pending(candidate)
@@ -771,7 +850,7 @@ class Thread:
                        hint=f"The proposer can now run syberlabs accept {candidate}")
 
     def recover(self, *, actor: str | None = None, roles: Sequence[str] | None = None) -> list[Receipt]:
-        """Settle interrupted acceptances by reading the target branch."""
+        """Settle interrupted acceptances and publishing effects by reading their destinations."""
         actor, roles = actor or self.kit.actor, list(roles or self.kit.roles)
         events = self._events()
         done = {e["body"]["proposal_id"] for e in events
@@ -783,9 +862,12 @@ class Thread:
                 proposal = next(e["body"] for e in events if e["kind"] == "proposed" and e["body"]["id"] == body["proposal_id"])
                 found = self.kit.session.reconcile(self.id, body["proposal_id"], actor, roles)
                 status = {"verified": "succeeded"}.get(found["status"], found["status"])
+                promotion = proposal["action"] == self.config["promotion"]["action"]
+                proof = found["event"]["body"].get("proof", {}) if status == "succeeded" else {}
                 receipts.append(Receipt(status, proposal["args"].get("candidate"), body["proposal_id"], found["reason"],
-                                        self.target_ref, proposal["args"].get("commit") if status == "succeeded" else None,
-                                        found["event"]["hash"]))
+                                        self.target_ref if promotion else proposal["action"],
+                                        proposal["args"].get("commit") if status == "succeeded" else None,
+                                        found["event"]["hash"], external_id=proof.get("external_id")))
         return receipts
 
     # Resume
@@ -807,6 +889,12 @@ class Thread:
             if state == "needs_approval":
                 open_items.append(f"{view['id']} waits for approval ({view['promotion']['reason']})")
         accepted = next((v for v in views if v["authoritative"]), None)
+        contract = self.kit.session.contracts[self.contract]
+        published = {e["body"]["action"] for e in events if e["kind"] == "effect_succeeded" or verified_reconciliation(e)}
+        for name in contract["actions"]:
+            effect = self.kit.session.actions.get(name, {}).get("effect")
+            if accepted and effect in ("git_push", "github_pull_request", "command") and name not in published and not (started - done):
+                next_steps.append(f"syberlabs publish {name}")
         if inspected["status"] == "in_progress" and not (started - done):
             if not views:
                 next_steps.append("syberlabs propose")
