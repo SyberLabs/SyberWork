@@ -14,6 +14,7 @@ or ``--no-build-isolation`` to use the setuptools already installed.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXAMPLES = ("release_gate.py", "access_review.py")
+EXAMPLES = ("release_gate.py", "access_review.py", "build_thread.py")
 
 
 def run(argv: list[str], *, cwd: Path, env: dict | None = None) -> str:
@@ -57,7 +58,9 @@ def main() -> None:
 
         outside = work / "outside"
         outside.mkdir()
-        env = {"PATH": str(python.parent), "HOME": str(outside), "PYTHONNOUSERSITE": "1"}
+        # The venv comes first; the rest of PATH is kept so the Build Thread example can find git.
+        env = {"PATH": os.pathsep.join([str(python.parent), os.environ.get("PATH", "")]), "HOME": str(outside),
+               "PYTHONNOUSERSITE": "1"}
         origin = run([str(python), "-c", "import syberlabs, syberwork; print(syberlabs.__file__); print(syberwork.__file__)"],
                      cwd=outside, env=env).split()
         if any(str(ROOT) in path or "site-packages" not in path for path in origin):
@@ -65,7 +68,9 @@ def main() -> None:
         for name in EXAMPLES:
             copy = outside / name
             shutil.copy(ROOT / "examples" / name, copy)
-            print(run([str(python), str(copy)], cwd=outside, env=env).strip())
+            print(run([str(python), str(copy)], cwd=outside, env=env).strip().splitlines()[-1])
+        script = python.parent / ("syberlabs.exe" if sys.platform == "win32" else "syberlabs")
+        print(run([str(script), "--help"], cwd=outside, env=env).splitlines()[0])
         print(f"wheel={wheels[0].name} python={run([str(python), '-V'], cwd=outside, env=env).strip()} "
               f"seconds={time.monotonic() - started:.1f}")
     finally:

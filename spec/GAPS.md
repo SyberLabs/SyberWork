@@ -39,3 +39,5 @@ The schemas describe SyberWork as it behaves. They are not enforced at runtime e
 18. **Candidate records are host claims.** `Session.record_candidate` and `record_evaluation` validate shape, lineage, operators, and budget, and recompute scope from the changed paths they are given. They do not open the Git repository. The Build Thread is the host that computes those fields from Git. `Work` stores evolution contracts but has no candidate API, so its promotion proposals are denied `candidate_unknown`.
 
 19. **One promotion per thread.** `effect.not_completed` denies a second effect of the promotion action in the same case. The schema does not express that limit.
+
+20. **A local executor's no-write outcome.** `Session.reconcile` for a bound local executor (the Build Thread's Git ref update) records `effect_rejected` with `status: "not_applied"` when it reads the destination under the store lock and the write is absent. No commit can be in flight then, because commit holds the same lock across claim, write, and outcome. The protocol's other no-write codes remain the HTTP 409, 412, and 428. `EffectOutcome` projects the string as `local_status`.

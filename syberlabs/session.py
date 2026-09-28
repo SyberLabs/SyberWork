@@ -1,7 +1,13 @@
-"""In-memory case session for a project that does not use SyberWork's database.
+"""Case session for a project that does not use SyberWork's database.
 
-Local actions only. Admission is the only path to an effect. The hash chain
-uses the same digest as Work. This module does not import syberwork.
+In memory by default. With ``journal=Journal(path)`` every installed document
+and event is fsynced to an append-only file before memory changes, threads load
+lazily, and a restarted process resumes from the file after verifying each
+chain. Local actions only. A local action may be bound to an executor (for
+example a compare-and-swap Git ref update); its claim is durable before the
+executor runs, and ``reconcile`` reads the destination to settle an interrupted
+claim. Admission is the only path to an effect. The hash chain uses the same
+digest as Work. This module does not import syberwork.
 """
 
 from __future__ import annotations
@@ -22,8 +28,24 @@ from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import acceptance_results, signer_is_effect_actor
 from syberlabs.evolution import candidate_record, candidate_views, evaluation_record, search_record
+from syberlabs.evidence import verified_reconciliation
 from syberlabs.jcs import envelope_jcs
 from syberlabs.planner import HttpPlanner, planning_context
+
+
+class NoWrite(Exception):
+    """Raised by a local executor that guarantees the destination was not written.
+
+    ``status`` follows the HTTP no-write codes the protocol already uses:
+    409 (conflict, e.g. the target is checked out) or 412 (the expected prior
+    state no longer holds).
+    """
+
+    def __init__(self, status: int, detail: str):
+        if status not in (409, 412, 428):
+            raise ValueError("no-write status must be 409, 412 or 428")
+        super().__init__(detail)
+        self.status = status
 
 
 def _side_matches(events: list[dict], sides: dict) -> bool:
@@ -37,11 +59,19 @@ def _side_matches(events: list[dict], sides: dict) -> bool:
 
 
 def _guard(method):
-    """Serialize session mutations. Re-entrant so compiled_propose can call propose."""
+    """Serialize session operations. Re-entrant so compiled_propose can call propose.
+
+    With a journal, also hold its cross-process lock and read what other
+    processes appended before running the operation.
+    """
 
     def wrapped(self, *args, **kwargs):
         with self._lock:
-            return method(self, *args, **kwargs)
+            if self._journal is None:
+                return method(self, *args, **kwargs)
+            with self._journal.locked():
+                self._sync()
+                return method(self, *args, **kwargs)
 
     wrapped.__name__ = method.__name__
     wrapped.__doc__ = method.__doc__
@@ -49,7 +79,7 @@ def _guard(method):
 
 
 class Session:
-    def __init__(self, *, clock: Callable[[], float] | None = None):
+    def __init__(self, *, clock: Callable[[], float] | None = None, journal=None):
         self.clock = clock or time.time
         self._lock = threading.RLock()
         self.contracts: dict[tuple[str, int], dict] = {}
@@ -58,6 +88,64 @@ class Session:
         self.cases: dict[str, dict] = {}
         self.events: dict[str, list[dict]] = {}
         self._side: dict[str, dict[int, dict]] = {}
+        self._executors: dict[str, Any] = {}
+        self._journal = journal
+        if journal is not None:
+            with self._lock, journal.locked():
+                self._sync()
+
+    def _sync(self) -> None:
+        """Apply registry records and events other processes appended."""
+        for record in self._journal.read_new(self._journal.registry):
+            if record["t"] == "contract":
+                doc = record["doc"]
+                try:
+                    valid = json.loads(canonical(prepare_contract(doc))) == doc
+                except Rejected:
+                    valid = False
+                if not valid:
+                    raise Rejected("journal_corrupt", f"contract {doc.get('id')}@{doc.get('version')} does not validate")
+                self.contracts[(doc["id"], doc["version"])] = doc
+            elif record["t"] == "policy":
+                self.policies[record["doc"]["version"]] = record["doc"]
+            elif record["t"] == "action":
+                self.actions[record["name"]] = record["doc"]
+        for case_id in list(self.cases):
+            self._load(case_id)
+
+    def _load(self, case_id: str) -> None:
+        """Read a thread's new records and check each event links to the chain."""
+        records = self._journal.read_new(self._journal.thread_path(case_id))
+        events = self.events.setdefault(case_id, [])
+        for record in records:
+            if record["t"] == "case":
+                self.cases[case_id] = record["row"]
+                continue
+            event = record["event"]
+            previous = events[-1]["hash"] if events else "0" * 64
+            if (event["previous"] != previous or event["hash"] != event_digest(event)
+                    or event["case_id"] != case_id or event["seq"] != len(events) + 1):
+                raise Rejected("journal_corrupt", f"thread {case_id} breaks its hash chain at seq {event.get('seq')}")
+            side = record.get("side") or {}
+            if isinstance(side.get("jcs"), str) and side["jcs"] != envelope_jcs(event):
+                raise Rejected("journal_corrupt", f"thread {case_id} side record differs at seq {event['seq']}")
+            events.append(event)
+            self._side.setdefault(case_id, {})[event["seq"]] = side
+        if case_id not in self.cases:
+            raise Rejected("unknown_case", case_id)
+        self._journal.note_loaded(case_id, len(events))
+
+    @_guard
+    def bind_effect(self, action: str, executor) -> None:
+        """Run ``executor.apply(case_id, args, key)`` for this action's effect; ``status`` settles a claim.
+
+        Only an action whose definition names an ``effect`` can be bound, and
+        such an action cannot commit without its executor.
+        """
+        found = self.actions.get(action)
+        if not found or not isinstance(found.get("effect"), str):
+            raise Rejected("invalid_action", "only an installed local action that names an effect can be bound")
+        self._executors[action] = executor
 
     @_guard
     def install_contract(self, doc: dict) -> None:
@@ -67,6 +155,8 @@ class Session:
         prior = self.contracts.get(key)
         if prior is not None and prior != stored:
             raise Rejected("immutable_contract", "publish a new version")
+        if prior is None and self._journal is not None:
+            self._journal.add_registry({"t": "contract", "doc": stored})
         self.contracts[key] = stored
 
     @_guard
@@ -83,17 +173,23 @@ class Session:
         if prior is None and policy_has_economic(doc):
             validate_policy_budgets(doc, list(self.policies.values()))
         if prior is None:
+            if self._journal is not None:
+                self._journal.add_registry({"t": "policy", "doc": stored})
             self.policies[version] = stored
 
     @_guard
     def install_action(self, name: str, doc: dict) -> None:
         if doc.get("kind") != "local":
             raise Rejected("invalid_action", "the in-memory session executes local actions")
+        if "effect" in doc and (not isinstance(doc["effect"], str) or not doc["effect"]):
+            raise Rejected("invalid_action", "effect must name the executor kind")
         stored = json.loads(canonical(doc))
         prior = self.actions.get(name)
         if prior is not None and prior != stored:
             raise Rejected("immutable_action", "action definitions cannot change while cases exist; use a new name")
         if prior is None:
+            if self._journal is not None:
+                self._journal.add_registry({"t": "action", "name": name, "doc": stored})
             self.actions[name] = stored
 
     @_guard
@@ -101,13 +197,16 @@ class Session:
         contract = self._contract(contract_id, version)
         check_case_inputs(contract["inputs"], inputs)
         case_id = str(uuid.uuid4())
-        self.cases[case_id] = {
+        row = {
             "id": case_id,
             "contract_id": contract_id,
             "contract_version": version,
             "inputs": inputs,
             "created": self.clock(),
         }
+        if self._journal is not None:
+            self._journal.create_thread(row)
+        self.cases[case_id] = row
         self.events[case_id] = []
         self._append(case_id, "case_created", {"actor": actor, "inputs": inputs, "contract": [contract_id, version]})
         return case_id
@@ -152,6 +251,12 @@ class Session:
         self._open(case_id)
         record = search_record(contract, self.events[case_id], phase, body, actor)
         return self._append(case_id, "search_" + phase, record)
+
+    @_guard
+    def history(self, case_id: str) -> list[dict]:
+        """The case's events, oldest first. Cheaper than inspect: no projections, no chain check."""
+        self._case(case_id)
+        return list(self.events[case_id])
 
     @_guard
     def candidates(self, case_id: str) -> list[dict]:
@@ -244,15 +349,83 @@ class Session:
         action = self.actions.get(proposal["action"])
         if not action or action.get("kind") != "local":
             raise Rejected("unsupported_effect", "the in-memory session executes local actions")
+        executor = self._executors.get(proposal["action"])
+        if action.get("effect") and executor is None:
+            raise Rejected("effect_unavailable", f"no executor is bound for {action['effect']}; nothing was claimed")
         claim = self._append(case_id, "effect_started", {
             "proposal_id": proposal_id, "action": proposal["action"], "actor": actor,
             "policy_version": policy["version"], "idempotency_key": proposal_id,
         })
-        output = {"recorded": True, "args": proposal["args"]}
+        if executor is None:
+            output = {"recorded": True, "args": proposal["args"]}
+        else:
+            try:
+                output = executor.apply(case_id, proposal["args"], proposal_id)
+            except NoWrite as exc:
+                event = self._append(case_id, "effect_rejected", {
+                    "proposal_id": proposal_id, "action": proposal["action"],
+                    "status": exc.status, "claim_hash": claim["hash"],
+                })
+                return {"status": "rejected", "event": event, "detail": str(exc)}
+            except Exception as exc:
+                code = exc.code if isinstance(exc, Rejected) else "destination_error"
+                self._append(case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": code})
+                return {"status": "unknown", "proposal_id": proposal_id,
+                        "detail": "Check the destination with reconcile; the write might have happened"}
         result = self._append(case_id, "effect_succeeded", {
             "proposal_id": proposal_id, "action": proposal["action"], "output": output, "claim_hash": claim["hash"],
         })
         return {"status": "succeeded", "event": result}
+
+    @_guard
+    def reconcile(self, case_id: str, proposal_id: str, actor: str, roles: list[str]) -> dict:
+        """Settle an interrupted or unknown local effect by reading its destination.
+
+        The executor's ``status`` reports ``applied`` (recorded as a verified
+        reconciliation), ``not_applied`` (recorded as ``effect_rejected`` with
+        status ``not_applied``, which frees the action for a fresh proposal), or
+        anything else (recorded as pending). A caller cannot supply the outcome.
+        No commit can be in flight here: commit holds the same lock for its
+        whole claim, write, and outcome.
+        """
+        row = self._case(case_id)
+        history = self.events[case_id]
+        proposal = self._proposal(history, proposal_id)
+        executor = self._executors.get(proposal["action"])
+        if executor is None:
+            raise Rejected("reconciliation_unavailable", "no executor is bound for this action")
+        policy_roles = set(self._policy()["actions"].get(proposal["action"], {}).get("roles", []))
+        if not (policy_roles | {"manager"}).intersection(roles):
+            raise Rejected("reconciliation_denied", "a role that may propose this action, or manager, is required")
+        claim = next((e for e in history if e["kind"] == "effect_started" and e["body"]["proposal_id"] == proposal_id), None)
+        if claim is None or any(
+                (e["kind"] in ("effect_succeeded", "effect_rejected") or verified_reconciliation(e))
+                and e["body"]["proposal_id"] == proposal_id for e in history):
+            raise Rejected("reconciliation_denied", "no unresolved effect")
+        self._contract(row["contract_id"], row["contract_version"])
+        try:
+            state, proof = executor.status(case_id, proposal["args"], proposal_id)
+        except Exception as exc:
+            state, proof = "unknown", {"error": exc.code if isinstance(exc, Rejected) else "status_unavailable"}
+        if state == "applied":
+            event = self._append(case_id, "reconciled", {
+                "proposal_id": proposal_id, "action": proposal["action"], "success": True, "actor": actor,
+                "proof": {"verified": True, "external_id": proof["external_id"],
+                          "request_digest": digest(proposal["args"]), "response_digest": digest(proof),
+                          "idempotency_key": proposal_id},
+            })
+            return {"status": "verified", "reason": "destination_state_matched", "event": event}
+        if state == "not_applied":
+            event = self._append(case_id, "effect_rejected", {
+                "proposal_id": proposal_id, "action": proposal["action"],
+                "status": "not_applied", "claim_hash": claim["hash"],
+            })
+            return {"status": "not_applied", "reason": "destination_state_unchanged", "event": event}
+        event = self._append(case_id, "reconciliation_checked", {
+            "proposal_id": proposal_id, "action": proposal["action"],
+            "status": "pending", "reason": "status_unavailable", "actor": actor,
+        })
+        return {"status": "pending", "reason": "status_unavailable", "event": event}
 
     @_guard
     def signoff(self, case_id: str, actor: str, roles: list[str], role: str) -> dict:
@@ -266,6 +439,14 @@ class Session:
         if signer_is_effect_actor(contract, history, actor, role):
             raise Rejected("signoff_denied", "signer must differ from the effect actor")
         return self._append(case_id, "signed", {"actor": actor, "role": role})
+
+    @_guard
+    def preview(self, case_id: str, action: str, args: dict, actor: str, roles: list[str], origin: str = "human") -> dict:
+        """What admission would decide for this proposal now, with the deciding rule. Nothing is recorded."""
+        row = self._case(case_id)
+        contract = self._contract(row["contract_id"], row["contract_version"])
+        proposal = {"id": "preview", "action": action, "args": args, "actor": actor, "roles": list(roles), "origin": origin}
+        return explain(self._context(contract, self._policy(), list(self.events[case_id]), proposal, self.clock()))
 
     @_guard
     def explain_admission(self, case_id: str, proposal_id: str, *, when: str = "now") -> dict:
@@ -395,6 +576,11 @@ class Session:
 
     def _case(self, case_id: str) -> dict:
         found = self.cases.get(case_id)
+        if not found and self._journal is not None and isinstance(case_id, str):
+            path = self._journal.thread_path(case_id)
+            if path.exists():
+                self._load(case_id)
+                found = self.cases.get(case_id)
         if not found:
             raise Rejected("unknown_case", case_id)
         return found
@@ -416,10 +602,9 @@ class Session:
             "previous": previous["hash"] if previous else "0" * 64,
         }
         event["hash"] = event_digest(event)
+        side = {"seq": event["seq"], "jcs": envelope_jcs(event), "rule": rule if kind == "decision" else None}
+        if self._journal is not None:
+            self._journal.add_event(case_id, event, side)
         self.events[case_id].append(event)
-        self._side.setdefault(case_id, {})[event["seq"]] = {
-            "seq": event["seq"],
-            "jcs": envelope_jcs(event),
-            "rule": rule if kind == "decision" else None,
-        }
+        self._side.setdefault(case_id, {})[event["seq"]] = side
         return event

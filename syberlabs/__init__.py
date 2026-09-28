@@ -17,10 +17,14 @@ from syberlabs.witness import Witness, WitnessClient
 
 __all__ = [
     "Candidate",
+    "Kit",
+    "Receipt",
     "Rejected",
     "SearchProvider",
     "Session",
+    "Thread",
     "TransparencyLog",
+    "Verdict",
     "Witness",
     "WitnessClient",
     "at_microseconds",
@@ -39,3 +43,13 @@ __all__ = [
     "verify_events",
     "witness",
 ]
+
+_BUILD = {"Kit", "Thread", "Verdict", "Receipt"}
+
+
+def __getattr__(name):
+    """The Build Thread loads on first use, so ``import syberlabs`` stays small."""
+    if name in _BUILD:
+        from syberlabs import build
+        return getattr(build, name)
+    raise AttributeError(f"module 'syberlabs' has no attribute {name!r}")

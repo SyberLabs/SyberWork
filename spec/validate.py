@@ -230,7 +230,10 @@ def project_effect(event: dict) -> dict | None:
     if kind == "effect_rejected":
         projected = {key: value for key, value in body.items() if key != "status"}
         projected["state"] = "rejected"
-        projected["http_status"] = body["status"]
+        if body["status"] == "not_applied":
+            projected["local_status"] = "not_applied"
+        else:
+            projected["http_status"] = body["status"]
         return projected
     if kind == "effect_unknown":
         return {"state": "unknown", **body}

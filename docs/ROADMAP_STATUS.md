@@ -25,6 +25,26 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 | Lineage is provenance, not evidence | Implemented and tested | The rule reads only the candidate's own newest evaluation of its exact tree. `test_lineage_is_provenance_not_evidence`. |
 | Candidates in `syberwork.Work` | Proposed | `Work` stores evolution contracts and fails closed. It has no candidate API or console view. |
 
+## Build Thread — phase 2 (roadmap §4, Gate 1 and part of Gate 2)
+
+| Roadmap item | Status | Where |
+| --- | --- | --- |
+| Start: one initializer, visible scope, cost ceiling, source access; no account | Implemented | `syberlabs init` / `Kit.local`; contract budget and scope; `start --paths` |
+| Orient: path and symbol retrieval before embeddings; developer sees and removes sources | Implemented | `syberlabs/retrieval.py`, `syberlabs context [--drop]`. No embeddings. |
+| Propose: structured proposal, source references, provider revision, context digest, budget use, diff | Implemented | `search_started` / `candidate_registered` / `search_finished`; `syberlabs diff` |
+| Validate: project-owned checks in a controlled environment; passing test vs untested claim; model cannot turn red green | Implemented | `syberlabs/checks.py` (temporary worktree, argv, scrubbed env, timeouts, output cap), `Verdict`. It is not a sandbox. |
+| Accept: explicit, separate from publishing; idempotent; unknown stays unknown until reconciled | Implemented | `accept` = admitted compare-and-swap of `refs/heads/syberlabs/<thread>`. Push, PR, and publish are not implemented. |
+| Resume: rebuild from a compact event record; open obligations; next permissible action | Implemented | `Thread.status`, `syberlabs status` |
+| Durable store, restart test, one conformance suite across stores | Implemented | `syberlabs/journal.py`, `Session(journal=...)`, `tests/test_journal.py`, `tests/test_build_thread.py::Recovery` |
+| Crash after an effect claim cannot cause a duplicate effect | Implemented and tested | Crash before and after the ref write, then `recover` |
+| Memory inspect, export, prune | Implemented | `syberlabs memory`, `export`, `prune`. `forget` for a thread is **proposed**: deleting history that proves an effect needs a documented retention decision. |
+| Contract diff and guided fixes | Implemented | `syberlabs contract-diff`; `hint()` on every refusal |
+| Model seam | Implemented as a process boundary | `CommandProvider`. No Kev or Jev adapter is included, and no model call was made. |
+| Clean wheel runs the Build Thread | Measured | `conformance/clean_install.py` runs `examples/build_thread.py` and `syberlabs --help` from the installed wheel |
+| Machine time to first verdict on the fixture | Measured: 186 ms | `benchmarks/results/build-thread-dev.txt` |
+| Gate 1 exit: 2 of 3 unfamiliar developers finish the quickstart and change a contract within 15 minutes | **Not measured** | Needs people. The quickstart and contract-change path exist for that test. |
+| Local inspector UI | Proposed | The roadmap says CLI first |
+
 ### Decisions that belong to the owner (not made here)
 
 1. **License.** There is no `LICENSE` file. Choosing one is a legal decision for SyberLabs. Until one is added, outside developers have no grant to use the code, which blocks the Gate 4 adoption test. EvoGit is AGPL-3.0. An EvoGit-style search provider in this repository must be an independent implementation of the published method and must not copy EvoGit code, or it would constrain this decision.
@@ -34,4 +54,4 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 
 - `Session.observe(..., verified=True)` is the host's claim. The in-memory session does not independently read a source.
 - The witness is a separate process, not a separate OS user or a public transparency service.
-- Only `syberwork.Work` has durable HTTP effects. `Session` is in memory.
+- Only `syberwork.Work` has durable HTTP effects. `Session` is in memory unless given a `Journal`; its only durable local effect is the Build Thread's compare-and-swap ref update.

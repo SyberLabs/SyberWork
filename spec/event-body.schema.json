@@ -182,6 +182,16 @@
               "additionalProperties": false,
               "required": ["settlement"],
               "properties": {"settlement": {"type": "object"}}
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["ref", "old", "new"],
+              "properties": {
+                "ref": {"type": "string", "pattern": "^refs/heads/"},
+                "old": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"}, {"type": "null"}]},
+                "new": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"}
+              }
             }
           ]
         }
@@ -194,7 +204,7 @@
       "properties": {
         "proposal_id": {"type": "string"},
         "action": {"type": "string"},
-        "status": {"enum": [409, 412, 428]},
+        "status": {"enum": [409, 412, 428, "not_applied"]},
         "claim_hash": {"$ref": "#/$defs/hash"}
       }
     },

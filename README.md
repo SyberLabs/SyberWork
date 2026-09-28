@@ -8,6 +8,19 @@ This is a running application, with a browser operator console, a versioned cont
 
 The `syberlabs` package is the reusable core: canonical JSON, the event hash chain, a JCS digest and rule id beside that chain, an HMAC witness and an Ed25519 signature of the chain head, an append-only transparency log in a separate file, a witness process that holds the signing key, the admission rules, the planner interface, and an in-memory `Session` for a project that does not use this application's database. New events record `at` as integer microseconds inside the hash. A case database from `main` still uses float seconds and still verifies. `syberwork` is the application: storage, the HTTP API, the CLI, the console, and connectors. `syberlabs` does not import `syberwork`. Both install from this repository at one version. The protocol those objects follow is `sdk.syberlabs.space/v0alpha1` in `spec/`.
 
+## Build Thread: governed changes to your own repository
+
+```sh
+syberlabs init
+syberlabs start "Add a CSV export" --paths src tests
+syberlabs propose --from-worktree      # or --command ./your-model-adapter
+syberlabs check c1                     # the host runs your checks on c1's exact tree
+syberlabs accept c1                    # moves refs/heads/syberlabs/<thread>; never pushes or merges
+syberlabs status                       # resume from the journal in any terminal
+```
+
+Candidates are Git commits on non-authoritative refs, written without touching your working tree. A model's claim that tests pass is shown as an unverified signal; only the host's own run counts. Acceptance is an admitted, compare-and-swap branch update, and an interrupted one is settled with `syberlabs recover`. `python examples/build_thread.py` runs the whole path without a model. See [docs/BUILD_THREAD.md](docs/BUILD_THREAD.md).
+
 ## Use the SDK on another project
 
 `examples/release_gate.py` is a software release gate. It does not import `syberwork` and it does not talk to the procurement ERP.
