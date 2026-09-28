@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/source-definition.schema.json",
+  "title": "SourceDefinition",
+  "description": "Administrator-installed HTTP source accepted by Work.install_source. Protocol sdk.syberlabs.space/v0alpha1. The URL check in code is a prefix test plus a {key} substring, which this pattern records.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["kind", "url"],
+  "properties": {
+    "kind": {"const": "http"},
+    "url": {"type": "string", "pattern": "^(https://|http://127\\.0\\.0\\.1:).*\\{key\\}"},
+    "value_path": {"type": "array", "items": {"type": "string"}},
+    "roles": {"type": "array", "items": {"type": "string"}},
+    "auth_env": {"type": "string"},
+    "timeout_seconds": {"type": "number"}
+  }
+}

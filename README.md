@@ -6,6 +6,25 @@
 
 This is a running application, with a browser operator console, a versioned contract studio, a policy boundary, source-system readers, action executors, an external planner interface, human approval, completion checks, and amendment replay. It is separate from SyberLabs' existing `cross-platform` instrument panel: the panel inspects existing research systems; SyberWork executes contracts.
 
+The `syberlabs` package is the reusable core: canonical JSON, the event hash chain, a JCS digest and rule id beside that chain, an HMAC witness and an Ed25519 signature of the chain head, an append-only transparency log in a separate file, a witness process that holds the signing key, the admission rules, the planner interface, and an in-memory `Session` for a project that does not use this application's database. New events record `at` as integer microseconds inside the hash. A case database from `main` still uses float seconds and still verifies. `syberwork` is the application: storage, the HTTP API, the CLI, the console, and connectors. `syberlabs` does not import `syberwork`. Both install from this repository at one version. The protocol those objects follow is `sdk.syberlabs.space/v0alpha1` in `spec/`.
+
+## Use the SDK on another project
+
+`examples/release_gate.py` is a software release gate. It does not import `syberwork` and it does not talk to the procurement ERP.
+
+```sh
+PYTHONPATH=. python examples/release_gate.py
+```
+
+A project installs a contract, a policy, and local actions on `syberlabs.Session`, then observes, proposes, commits, approves, signs, explains, and replays. `Session.commit` runs admission again and only then records a local effect. `explain_admission` returns the deciding rule and its provenance and does not write them into the hash chain. HTTP effects and economic reservations stay on `syberwork.Work`.
+
+`examples/access_review.py` is a second project: a quarterly access review. Development notes are in [docs/SDK_FEEDBACK.md](docs/SDK_FEEDBACK.md). The standards gap and the order to close it are in [docs/SDK_REDTEAM.md](docs/SDK_REDTEAM.md).
+
+```sh
+PYTHONPATH=. python examples/access_review.py
+PYTHONPATH=. python benchmarks/run_bench.py
+```
+
 ## Start
 
 Python 3.11 or newer; no runtime dependencies. In the project directory:
@@ -44,7 +63,7 @@ To run a planner, set `SYBERWORK_PLANNER_URL` to an HTTPS or loopback endpoint a
 {"action":"record_review","args":{"part_number":"P-104"}}
 ```
 
-This output only creates a proposal. Admission rechecks the bound observation, global policy, roles, prior effects, and required approval. The planner receives no executor credential. The `scheduler` credential generates the next proposed compiled step directly from fact bindings; neither proposer can bypass the case API.
+This output only creates a proposal. Admission rechecks the bound observation, global policy, roles, prior effects, and required approval. The planner receives no executor credential. The configured endpoint is the `HttpPlanner` behind the `syberlabs` planner interface; a planner cannot do anything except return `{action, args}`. The `scheduler` credential generates the next proposed compiled step directly from fact bindings; neither proposer can bypass the case API.
 
 ## API and data ownership
 
@@ -59,13 +78,21 @@ This output only creates a proposal. Admission rechecks the bound observation, g
 
 The case SQLite database is authoritative for *SyberWork decisions and observed responses*. The source systems remain authoritative for inventory, quotes, and purchase orders. An observation stores its source, record version, observed value, observation time, and whether it came from a configured connector. An action rechecks admission when committed. The reference destination checks the quote version at write time. For an unknown result, a manager may trigger the installed destination status lookup. SyberWork requires a committed record with the original idempotency key and exact request digest before recording verified success. A 404 remains pending and blocks another effect of the same action; a manager cannot assert success with a text reference. Explicit adapter-declared no-write precondition rejections can release a fresh proposal. See [reconciliation contract](docs/RECONCILIATION.md).
 
+## Economic actions
+
+An administrator can install an `economic_http` action with a fixed settlement service URL, same-origin status lookup, asset, rail and counterparty. Its global policy gives the action an exact atomic-unit limit and a budget shared across cases. The contract binds `amount_units` to a verified quote and requires evidence observations; a proposed `purchase_capability` or `transfer` includes their hashes, purpose and expiry. SyberWork admission (the `economic.reserve` rule in `syberlabs.admission`) checks these again at commit, reserves budget atomically, and only then invokes the settlement service. A missing or mismatched receipt remains uncertain and keeps the reservation until destination status proves the outcome. The [economic action contract](docs/ECONOMIC_ACTIONS.md) includes the wire requirements and limits. The tests run against a local settlement simulator and move no funds. This adapter is not an x402 implementation or on-chain finality verifier.
+
 ## Verification
 
 ```sh
 PYTHONPATH=. python -m unittest discover -s tests -v
+PYTHONPATH=. python -m conformance.run
+python -m conformance.clean_install
 ```
 
-The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, and an HTTP effect with its idempotency key. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems or policies have been integrated correctly.
+`conformance/clean_install` builds the wheel, installs it into a new virtual environment, and runs the two SDK examples from a directory outside this checkout. It fails if `syberlabs` or `syberwork` is imported from the repository instead of the installed wheel. `conformance/run` recaptures the case-study and admission traces and diffs them against `conformance/golden`. It exits nonzero on any difference. The unit tests include a case database created on `main` (`a2f909b`) and check that `verify_chain` and `replay` still accept it.
+
+The tests cover the full case, independent approval, policy precedence, model and compiled proposals, amendment replay, tamper detection, concurrent-action claims, a real local HTTP source reader, an HTTP effect with its idempotency key, and simulated economic settlements with shared budgets and reconciliation. A passing test demonstrates those paths in this implementation. It does not establish that a new customer's source systems, payment provider or policies have been integrated correctly.
 
 ## Resolution tasks
 

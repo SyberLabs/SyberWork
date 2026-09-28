@@ -1,0 +1,36 @@
+{
+  "case_id": "32fe0084-fb13-494b-9864-42ba599611b8",
+  "chain_valid": true,
+  "complete": true,
+  "contract_id": "purchase-order",
+  "contract_version": 1,
+  "decision_events": [
+    [
+      "decision",
+      "allowed",
+      "all_checks_passed"
+    ],
+    [
+      "decision",
+      "needs_approval",
+      "approval_required:manager"
+    ]
+  ],
+  "event_kinds": [
+    "case_created",
+    "observed",
+    "observed",
+    "proposed",
+    "decision",
+    "effect_started",
+    "effect_succeeded",
+    "proposed",
+    "decision",
+    "approved",
+    "effect_started",
+    "effect_succeeded",
+    "signed"
+  ],
+  "policy_version": 1,
+  "source_commit": "a2f909bc4c638e07c9ae14cb8dc63f7c3347c06d"
+}

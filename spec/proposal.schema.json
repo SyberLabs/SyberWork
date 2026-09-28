@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v0alpha1/proposal.schema.json",
+  "title": "Proposal",
+  "description": "Body of a proposed event. Protocol sdk.syberlabs.space/v0alpha1. args is unconstrained because the event is appended before admission checks its shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "action", "args", "actor", "roles", "origin"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "action": {"type": "string"},
+    "args": true,
+    "actor": {"type": "string"},
+    "roles": {"type": "array"},
+    "origin": {"enum": ["human", "model", "compiled"]}
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "untrusted_fact_source:part_number"
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "denied",
+      "argument_provenance:part_number"
+    ]
+  ],
+  "id": "admit_untrusted_then_provenance",
+  "outcome": "argument_provenance:part_number",
+  "source": "admission"
+}

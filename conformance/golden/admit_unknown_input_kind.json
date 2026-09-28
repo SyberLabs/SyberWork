@@ -1,0 +1,6 @@
+{
+  "events": [],
+  "id": "admit_unknown_input_kind",
+  "outcome": "invalid_contract",
+  "source": "admission"
+}

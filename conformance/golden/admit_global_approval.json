@@ -1,0 +1,47 @@
+{
+  "events": [
+    [
+      "case_created",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "observed",
+      null,
+      null
+    ],
+    [
+      "proposed",
+      null,
+      null
+    ],
+    [
+      "decision",
+      "needs_approval",
+      "approval_required:compliance"
+    ],
+    [
+      "approved",
+      null,
+      null
+    ],
+    [
+      "effect_started",
+      null,
+      null
+    ],
+    [
+      "effect_succeeded",
+      null,
+      null
+    ]
+  ],
+  "id": "admit_global_approval",
+  "outcome": "succeeded",
+  "source": "admission"
+}

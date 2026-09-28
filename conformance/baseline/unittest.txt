@@ -1,0 +1,32 @@
+test_ten_isolated_scenarios_close_or_cancel_authoritatively (test_enterprise_case_study.EnterpriseProcurementStudy.test_ten_isolated_scenarios_close_or_cancel_authoritatively) ... ok
+test_declared_no_write_precondition_failure_allows_fresh_proposal (test_reconciliation.VerifiedExternalOutcome.test_declared_no_write_precondition_failure_allows_fresh_proposal) ... ok
+test_legacy_unverified_reconciliation_never_satisfies_acceptance (test_reconciliation.VerifiedExternalOutcome.test_legacy_unverified_reconciliation_never_satisfies_acceptance) ... ok
+test_matching_status_lookup_completes_only_after_signoff (test_reconciliation.VerifiedExternalOutcome.test_matching_status_lookup_completes_only_after_signoff) ... ok
+test_mismatched_external_record_never_counts_as_proof (test_reconciliation.VerifiedExternalOutcome.test_mismatched_external_record_never_counts_as_proof) ... ok
+test_not_found_is_pending_and_blocks_new_effect (test_reconciliation.VerifiedExternalOutcome.test_not_found_is_pending_and_blocks_new_effect) ... ok
+test_status_lookup_is_bound_to_the_action_origin (test_reconciliation.VerifiedExternalOutcome.test_status_lookup_is_bound_to_the_action_origin) ... ok
+test_text_claim_cannot_complete_order (test_reconciliation.VerifiedExternalOutcome.test_text_claim_cannot_complete_order) ... ok
+test_escalation_and_explicit_cancellation_are_terminal (test_resolution.AuthoritativeResolution.test_escalation_and_explicit_cancellation_are_terminal) ... ok
+test_open_site_task_blocks_review_even_after_source_changes (test_resolution.AuthoritativeResolution.test_open_site_task_blocks_review_even_after_source_changes) ... ok
+test_quote_choice_is_source_backed_and_case_bound (test_resolution.AuthoritativeResolution.test_quote_choice_is_source_backed_and_case_bound) ... ok
+test_site_task_needs_authoritative_choice_and_owner (test_resolution.AuthoritativeResolution.test_site_task_needs_authoritative_choice_and_owner) ... ok
+test_task_evidence_must_belong_to_case_input (test_resolution.AuthoritativeResolution.test_task_evidence_must_belong_to_case_input) ... ok
+test_admission_rechecks_source_and_policy_at_commit (test_work.WorkFlow.test_admission_rechecks_source_and_policy_at_commit) ... ok
+test_case_input_must_match_verified_fact_when_contract_binds_it (test_work.WorkFlow.test_case_input_must_match_verified_fact_when_contract_binds_it) ... ok
+test_competing_commits_claim_effect_once (test_work.WorkFlow.test_competing_commits_claim_effect_once) ... ok
+test_compiled_path_uses_observed_values_without_model_inference (test_work.WorkFlow.test_compiled_path_uses_observed_values_without_model_inference) ... ok
+test_complete_case_and_separate_approval (test_work.WorkFlow.test_complete_case_and_separate_approval) ... ok
+test_contract_compiles_path_and_rejects_cycles (test_work.WorkFlow.test_contract_compiles_path_and_rejects_cycles) ... ok
+test_denies_untrusted_and_inferred_facts (test_work.WorkFlow.test_denies_untrusted_and_inferred_facts) ... ok
+test_global_approval_cannot_be_overridden_by_contract (test_work.WorkFlow.test_global_approval_cannot_be_overridden_by_contract) ... ok
+test_global_policy_restriction_overrides_local_contract (test_work.WorkFlow.test_global_policy_restriction_overrides_local_contract) ... ok
+test_manual_source_assertion_cannot_substitute_for_connector_read (test_work.WorkFlow.test_manual_source_assertion_cannot_substitute_for_connector_read) ... ok
+test_planner_output_is_only_a_proposal (test_work.WorkFlow.test_planner_output_is_only_a_proposal) ... ok
+test_real_http_read_and_effect_with_idempotency_key (test_work.WorkFlow.test_real_http_read_and_effect_with_idempotency_key) ... ok
+test_replay_amendment_and_original_immutability (test_work.WorkFlow.test_replay_amendment_and_original_immutability) ... ok
+test_tamper_detection (test_work.WorkFlow.test_tamper_detection) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 16.475s
+
+OK
