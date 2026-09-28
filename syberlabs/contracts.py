@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from syberlabs.errors import Rejected
+from syberlabs.evolution import check_evolution
 
 
 def _text(value) -> bool:
@@ -126,4 +127,5 @@ def prepare_contract(doc: dict) -> dict:
                     for k in ("key", "source", "value_path"))):
             raise Rejected("invalid_contract", "invalid resolution confirmation")
     require_indexed_fields(doc)
+    check_evolution(doc)
     return {**doc, "compiled_path": compile_path(doc)}

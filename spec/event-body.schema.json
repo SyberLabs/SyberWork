@@ -80,6 +80,22 @@
     {
       "if": {"properties": {"kind": {"const": "case_cancelled"}}, "required": ["kind"]},
       "then": {"properties": {"body": {"$ref": "#/$defs/case_cancelled"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "candidate_registered"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "candidate.schema.json#/$defs/registered"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "candidate_evaluated"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "candidate.schema.json#/$defs/evaluated"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "search_started"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "candidate.schema.json#/$defs/search_started"}}}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "search_finished"}}, "required": ["kind"]},
+      "then": {"properties": {"body": {"$ref": "candidate.schema.json#/$defs/search_finished"}}}
     }
   ],
   "$defs": {

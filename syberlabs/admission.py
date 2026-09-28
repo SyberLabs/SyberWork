@@ -13,6 +13,7 @@ from syberlabs.canonical import digest
 from syberlabs.clock import as_seconds
 from syberlabs.economic import denial as economic_denial
 from syberlabs.evidence import verified_reconciliation
+from syberlabs.evolution import promotion_denial
 from syberlabs.values import at_path
 
 
@@ -275,6 +276,31 @@ def bindings_arguments(ctx: AdmissionContext) -> dict | None:
                 expected = expected.get(component) if isinstance(expected, dict) else None
             if not fact or expected is None or param not in ctx.args or ctx.args[param] != expected:
                 return deny("argument_provenance:" + param, "bindings.arguments")
+    return None
+
+
+@rule(
+    "candidate.promotable",
+    "candidate_promotion_origin",
+    "candidate_promotion_role",
+    "candidate_args_invalid",
+    "candidate_unknown",
+    "candidate_mismatch",
+    "candidate_out_of_scope",
+    "candidate_not_evaluated",
+    "candidate_check_missing:",
+    "candidate_check_failed:",
+    "candidate_evidence_stale",
+)
+def candidate_promotable(ctx: AdmissionContext) -> dict | None:
+    """No-op unless the contract has an evolution section and this is its promotion action.
+
+    Lineage is provenance, not evidence: the rule reads the candidate's own
+    host evaluation and never a parent's result or a provider's score.
+    """
+    reason = promotion_denial(ctx.contract, ctx.history, ctx.proposal, ctx.now)
+    if reason:
+        return deny(reason, "candidate.promotable")
     return None
 
 

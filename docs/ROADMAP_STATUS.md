@@ -14,6 +14,17 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 | Unit tests, conformance, schemas on the integrated head | Measured | 83 unit tests, 23 golden traces, schema validation of examples and golden events: all pass on CPython 3.11, 3.12, and 3.13 in this container. |
 | First public protocol vocabulary | Frozen as `sdk.syberlabs.space/v0alpha1` | `spec/`. |
 
+## Operational Module × EvoGit — phase 1: candidates and the evolution section
+
+| Item | Status | Where |
+| --- | --- | --- |
+| Optional `evolution` section in versioned contracts (scope, operators, budget, checks, promotion authority) | Implemented | `syberlabs/evolution.py`, `spec/evolution.schema.json`. Unknown fields fail closed. |
+| First-class candidates with Git lineage, provenance, evaluation evidence, status, and promotion state | Implemented | `candidate_registered` / `candidate_evaluated` / `search_*` events. `Session.candidates` and `inspect` project the evaluation state and promotion state. `syberlabs.search.Candidate` is the typed view. |
+| Provider-neutral `SearchProvider` / `SearchSpace` interface | Implemented as types | `syberlabs/search.py`. The Git-backed space is in the Build Thread PR. |
+| No model or agent can promote | Implemented | `candidate.promotable`: human origin, no automation role, a promotion role, plus any `approval_role`. |
+| Lineage is provenance, not evidence | Implemented and tested | The rule reads only the candidate's own newest evaluation of its exact tree. `test_lineage_is_provenance_not_evidence`. |
+| Candidates in `syberwork.Work` | Proposed | `Work` stores evolution contracts and fails closed. It has no candidate API or console view. |
+
 ### Decisions that belong to the owner (not made here)
 
 1. **License.** There is no `LICENSE` file. Choosing one is a legal decision for SyberLabs. Until one is added, outside developers have no grant to use the code, which blocks the Gate 4 adoption test. EvoGit is AGPL-3.0. An EvoGit-style search provider in this repository must be an independent implementation of the published method and must not copy EvoGit code, or it would constrain this decision.

@@ -29,6 +29,10 @@ EventKind = Literal[
     "resolution_completed",
     "resolution_escalated",
     "case_cancelled",
+    "candidate_registered",
+    "candidate_evaluated",
+    "search_started",
+    "search_finished",
 ]
 
 
