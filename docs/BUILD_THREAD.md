@@ -69,6 +69,10 @@ For a team, set the same `approval_role` on the promotion action and on `evoluti
 
 To land an accepted change on `main`, merge `syberlabs/<thread>` yourself. Setting `promotion.target_ref` to an existing branch makes acceptance a fast-forward from the thread base instead: the branch must still be at the base (otherwise 412, no write), and it must not be checked out (otherwise 409, no write).
 
+## Inspector
+
+`syberlabs inspect` serves a read-only page on 127.0.0.1 and prints its address. It shows threads, the candidate lineage graph (crossover edges dashed, each node colored by its own check result, the accepted candidate ringed), each candidate's verdict and diff, and the event history. It re-reads the journal on every request. It cannot change anything: only GET is served, and its verdicts never run checks. The address carries a per-run token in the URL fragment, which the page sends as a header and removes from the address bar. The API refuses requests without the token or with a non-loopback `Host`, which blocks DNS-rebinding pages. The page has a strict Content-Security-Policy and renders every value as text.
+
 ## Publishing an accepted change
 
 Accepting never publishes. Pushing the branch, opening a pull request, and running a publish command are three more contract actions. Each has its own authority and its own effect, and all are admitted like any other action. Add them to a new contract version, list them in `policy.json`, and define their destinations in `.syberlabs/actions.json`:

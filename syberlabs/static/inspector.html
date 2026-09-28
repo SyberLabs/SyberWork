@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>SyberLabs inspector</title>
+<link rel="stylesheet" href="/inspector.css">
+</head>
+<body>
+<header>
+  <strong>SyberLabs</strong><span>Build Thread inspector</span>
+  <span class="badge">read-only · local</span>
+</header>
+<main>
+  <aside>
+    <h2>Threads</h2>
+    <div id="threads" class="list">Loading…</div>
+    <h2>Memory</h2>
+    <pre id="memory" class="small"></pre>
+  </aside>
+  <section id="thread">
+    <div id="empty" class="muted">Choose a thread.</div>
+    <div id="detail" hidden>
+      <h1 id="objective"></h1>
+      <dl id="facts" class="facts"></dl>
+      <div id="obligations"></div>
+      <h2>Lineage</h2>
+      <p class="muted small">Parents are provenance, not evidence: each candidate is judged by its own checks. Promotion is a person's decision.</p>
+      <div class="lineage"><svg id="graph" role="img" aria-label="candidate lineage graph"></svg></div>
+      <h2>Candidates</h2>
+      <table><thead><tr><th>Candidate</th><th>Operator</th><th>From</th><th>Provider</th><th>Files</th><th>Checks</th><th>Promotion</th></tr></thead><tbody id="candidates"></tbody></table>
+      <div id="candidate" hidden>
+        <h2 id="candidate-title"></h2>
+        <div id="verdict" class="verdict"></div>
+        <pre id="checks" class="small"></pre>
+        <h3>Diff against the thread base</h3>
+        <pre id="diff" class="diff"></pre>
+      </div>
+      <h2>History</h2>
+      <div id="events"></div>
+    </div>
+  </section>
+</main>
+<p id="error" role="alert"></p>
+<script src="/inspector.js" defer></script>
+</body>
+</html>
