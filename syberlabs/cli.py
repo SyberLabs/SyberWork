@@ -129,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     export = commands.add_parser("export", help="the thread's full record as JSON")
     export.add_argument("--out")
     commands.add_parser("memory", help="what is stored, why, and how to remove it")
+    inspect = commands.add_parser("inspect", help="read-only local web inspector for threads, lineage, diffs, and history")
+    inspect.add_argument("--port", type=int, default=0)
     forget = commands.add_parser("forget", help="delete a thread's history as the policy's retention rule allows")
     forget.add_argument("id")
     forget.add_argument("--reason", required=True)
@@ -176,6 +178,18 @@ def _run(kit: Kit, args) -> int:
         thread = kit.open(args.id)
         (kit.home / "current").write_text(thread.id + "\n")
         print(f"current thread {thread.id[:8]}: {thread.objective}")
+        return 0
+    if args.command == "inspect":
+        from syberlabs.inspector import make_inspector
+        server = make_inspector(kit, port=args.port)
+        print(f"inspector (read-only): {server.url}")
+        print("The token in the address is this run's access key. Ctrl-C stops the inspector.")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
         return 0
     if args.command == "memory":
         print(json.dumps(kit.memory(), indent=2))

@@ -17,3 +17,4 @@ packages = ["syberwork", "syberlabs"]
 
 [tool.setuptools.package-data]
 syberwork = ["static/*", "examples/*.json"]
+syberlabs = ["static/*"]

@@ -69,6 +69,9 @@ def main() -> None:
             copy = outside / name
             shutil.copy(ROOT / "examples" / name, copy)
             print(run([str(python), str(copy)], cwd=outside, env=env).strip().splitlines()[-1])
+        run([str(python), "-c", "import syberlabs.inspector as i; "
+             "assert all((i.STATIC / name).is_file() for name in i.ASSETS), 'inspector assets missing from the wheel'"],
+            cwd=outside, env=env)
         script = python.parent / ("syberlabs.exe" if sys.platform == "win32" else "syberlabs")
         print(run([str(script), "--help"], cwd=outside, env=env).splitlines()[0])
         print(f"wheel={wheels[0].name} python={run([str(python), '-V'], cwd=outside, env=env).strip()} "

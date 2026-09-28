@@ -717,12 +717,16 @@ class Thread:
                         for c in body["checks"])
         return Evaluation(candidate, results, required), 1
 
-    def check(self, candidate: str, *, rerun: bool = False, actor: str | None = None,
+    def check(self, candidate: str, *, rerun: bool = False, run: bool = True, actor: str | None = None,
               roles: Sequence[str] | None = None) -> Verdict:
-        """Run the contract's checks if this tree has no fresh result, then ask admission."""
+        """Run the contract's checks if this tree has no fresh result, then ask admission.
+
+        ``run=False`` records nothing: it reports the existing evidence and what
+        admission would say, which is what a read-only view needs.
+        """
         view = self._view(candidate)
         in_scope_ = not view["scope_violations"] and not view["limit_violations"]
-        if in_scope_ and (rerun or view["evaluation"]["state"] in ("none", "stale")):
+        if run and in_scope_ and (rerun or view["evaluation"]["state"] in ("none", "stale")):
             try:
                 self._evaluate(candidate)
             except Rejected as exc:

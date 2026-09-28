@@ -44,7 +44,7 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 | Clean wheel runs the Build Thread | Measured | `conformance/clean_install.py` runs `examples/build_thread.py` and `syberlabs --help` from the installed wheel |
 | Machine time to first verdict on the fixture | Measured: 186 ms | `benchmarks/results/build-thread-dev.txt` |
 | Gate 1 exit: 2 of 3 unfamiliar developers finish the quickstart and change a contract within 15 minutes | **Not measured** | Needs people. The quickstart and contract-change path exist for that test. |
-| Local inspector UI | Proposed | The roadmap says CLI first |
+| Local inspector UI | Implemented, read-only | `syberlabs inspect`, `syberlabs/inspector.py`, `syberlabs/static/`. Token, loopback `Host` check, GET only, strict CSP, text-only rendering. `tests/test_inspector.py` includes a headless Chromium render with no console or CSP errors, when node and playwright are installed. Actions stay in the CLI. |
 
 ## Operational Module × EvoGit — phase 3: evolutionary provider
 
