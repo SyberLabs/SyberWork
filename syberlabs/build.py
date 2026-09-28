@@ -32,6 +32,7 @@ from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import clean_path, in_scope, settings
 from syberlabs.gitspace import CANDIDATE_REFS, MAX_FILE_BYTES, GitError, Repo
 from syberlabs.journal import Journal
+from syberlabs import retention
 from syberlabs.providers import PatchProvider
 from syberlabs.retrieval import Excerpt, context_digest, select
 from syberlabs.search import Budget, Candidate, CheckResult, Evaluation, MergeResult, SearchProvider
@@ -453,7 +454,10 @@ class Kit:
             "thread_records": {"threads": len(self.journal.thread_ids()), "bytes": self.journal.size(),
                                "where": str(self.journal.home),
                                "why": "hash-chained history of decisions, evidence, and effects; needed to verify an accepted change",
-                               "removal": "delete the journal directory; history that proves an effect goes with it"},
+                               "removal": "syberlabs forget THREAD --reason ...: allowed by policy.json retention; "
+                                          "history proving an effect is kept retention.effect_history_days and leaves a receipt",
+                               "retention": retention.check(self.session._policy()),
+                               "forgotten": len(self.journal.forgotten())},
             "context": {"stored": "paths, blob ids, line ranges, and a digest; excerpt text is re-read from Git for a provider call and not kept"},
             "candidate_refs": {"count": len(refs), "where": CANDIDATE_REFS,
                                "removal": "syberlabs prune deletes refs of unaccepted candidates in finished threads"},
@@ -474,6 +478,22 @@ class Kit:
                     self.repo.delete_ref(ref)
                     removed += 1
         return removed
+
+    def forget(self, thread_id: str, *, reason: str, actor: str | None = None) -> dict:
+        """Delete a thread's history and its candidate refs, as the policy's retention rule allows.
+
+        The target branch and anything published stay: forgetting never undoes an effect.
+        """
+        thread = self.open(thread_id)
+        result = self.session.forget(thread.id, actor or self.actor, reason)
+        removed = 0
+        for ref in self.repo.refs(f"{CANDIDATE_REFS}/{thread.id[:8]}/"):
+            self.repo.delete_ref(ref)
+            removed += 1
+        current = self.home / "current"
+        if current.exists() and current.read_text().strip() == thread.id:
+            current.unlink()
+        return {**result, "candidate_refs_removed": removed, "kept": thread.target_ref}
 
     def export(self, thread_id: str) -> dict:
         thread = self.open(thread_id)

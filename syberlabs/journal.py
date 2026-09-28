@@ -156,5 +156,37 @@ class Journal:
     def note_loaded(self, case_id: str, events: int) -> None:
         self._counts[case_id] = events
 
+    def record_forget(self, tombstone: dict, receipt: dict | None) -> None:
+        """Write the receipt and the tombstone, fsynced, before any history is deleted."""
+        if receipt is not None:
+            folder = self.home / "receipts"
+            folder.mkdir(exist_ok=True)
+            path = folder / f"{tombstone['thread']}.json"
+            with open(path, "wb") as handle:
+                handle.write((canonical(receipt) + "\n").encode())
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._sync_dir(folder)
+        path = self.home / "forgotten.jsonl"
+        with open(path, "ab") as handle:
+            handle.write((canonical(tombstone) + "\n").encode())
+            handle.flush()
+            os.fsync(handle.fileno())
+        self._sync_dir(self.home)
+
+    def remove_thread(self, case_id: str) -> None:
+        path = self.thread_path(case_id)
+        if path.exists():
+            path.unlink()
+            self._sync_dir(path.parent)
+        self._offsets.pop(path, None)
+        self._counts.pop(case_id, None)
+
+    def forgotten(self) -> list[dict]:
+        path = self.home / "forgotten.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
     def size(self) -> int:
         return sum(path.stat().st_size for path in self.home.rglob("*.jsonl"))

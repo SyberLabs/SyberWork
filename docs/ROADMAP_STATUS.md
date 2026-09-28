@@ -38,7 +38,7 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 | Resume: rebuild from a compact event record; open obligations; next permissible action | Implemented | `Thread.status`, `syberlabs status` |
 | Durable store, restart test, one conformance suite across stores | Implemented | `syberlabs/journal.py`, `Session(journal=...)`, `tests/test_journal.py`, `tests/test_build_thread.py::Recovery` |
 | Crash after an effect claim cannot cause a duplicate effect | Implemented and tested | Crash before and after the ref write, then `recover` |
-| Memory inspect, export, prune | Implemented | `syberlabs memory`, `export`, `prune`. `forget` for a thread is **proposed**: deleting history that proves an effect needs a documented retention decision. |
+| Memory inspect, export, prune, forget | Implemented | `syberlabs memory`, `export`, `prune`, `forget`. Forget follows `policy.json` `retention`: refused while an effect is unresolved; history proving an effect is kept `effect_history_days` (default 365), then leaves a receipt with no objective or bodies; a tombstone for every forget. `syberlabs/retention.py`, `tests/test_forget.py`. |
 | Contract diff and guided fixes | Implemented | `syberlabs contract-diff`; `hint()` on every refusal |
 | Model seam | Implemented as a process boundary | `CommandProvider`. No Kev or Jev adapter is included, and no model call was made. |
 | Clean wheel runs the Build Thread | Measured | `conformance/clean_install.py` runs `examples/build_thread.py` and `syberlabs --help` from the installed wheel |
