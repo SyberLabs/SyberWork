@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Protocol
 
 from syberlabs.errors import Rejected
-from syberlabs.providers import run_json
+from syberlabs.providers import model_usage, run_json
 from syberlabs.search import SearchSpace
 
 Score = tuple[int, int]
@@ -63,10 +63,18 @@ class CommandMutator:
     PROTOCOL = "syberlabs.mutate/v0alpha1"
 
     def __init__(self, argv: Sequence[str], *, name: str = "command", timeout: int = 300,
-                 cwd: str | Path | None = None, max_bytes: int = 65_536):
+                 cwd: str | Path | None = None, max_bytes: int = 65_536, max_calls: int | None = None):
         self.argv, self.name, self.timeout, self.cwd, self.max_bytes = list(argv), name, timeout, cwd, max_bytes
+        self.max_calls, self.calls, self.usage, self.last_usage = max_calls, 0, [], None
+
+    @property
+    def exhausted(self) -> bool:
+        return self.max_calls is not None and self.calls >= self.max_calls
 
     def __call__(self, space: SearchSpace, parent: str, rng: random.Random) -> Mapping[str, str | None] | None:
+        self.last_usage = None
+        if self.exhausted:
+            return None
         paths = list(dict.fromkeys([*(item["path"] for item in space.context),
                                     *(space.candidate(parent).changed_paths if parent != "base" else ())]))
         files, spent = {}, 0
@@ -76,9 +84,13 @@ class CommandMutator:
                 continue
             files[path] = text
             spent += len(text)
+        self.calls += 1
         response = run_json(self.argv, {"protocol": self.PROTOCOL, "objective": space.objective, "parent": parent,
                                         "files": files, "context": [dict(item) for item in space.context],
                                         "seed": rng.randrange(2**31)}, timeout=self.timeout, cwd=self.cwd)
+        self.last_usage = model_usage(response)
+        if self.last_usage:
+            self.usage.append(self.last_usage)
         changes = response.get("changes") if isinstance(response, dict) else None
         if not isinstance(changes, dict):
             return None
@@ -142,15 +154,23 @@ class EvolutionaryProvider:
         try:
             made = space.submit(changes, parents=[p for p in parents if p != "base"], operator=operator,
                                 message=f"{operator} g{generation}",
-                                signal={"generation": generation, "mutator": getattr(self.mutate, "name", "function")}
-                                if operator == "mutation" else {"generation": generation})
+                                signal=self._signal(operator, generation))
         except Rejected as exc:
-            if exc.code in ("no_change", "invalid_change"):
+            if exc.code in ("no_change", "invalid_change", "duplicate"):
                 return None
             raise
         if not made.in_scope or not self._room(space):
             return made.id, (0, 0), False
         return self._judge(space, made.id)
+
+    def _signal(self, operator: str, generation: int) -> dict:
+        if operator != "mutation":
+            return {"generation": generation}
+        found = {"generation": generation, "mutator": getattr(self.mutate, "name", "function")}
+        usage = getattr(self.mutate, "last_usage", None)
+        if usage:
+            found["model_usage"] = usage
+        return found
 
     def _mutation(self, space, parent, rng, generation):
         return self._child(space, self.mutate(space, parent, rng), [parent], "mutation", generation)
@@ -197,9 +217,12 @@ class EvolutionaryProvider:
                 raise
             tried += 1
             judged = self._judge(space, made.id) if made.in_scope and self._room(space) else (made.id, (0, 0), False)
-            worst = min(range(len(people)), key=lambda i: people[i][1])
-            if people and judged[1] > people[worst][1]:
-                people[worst] = judged
+            if len(people) < self.population:
+                people.append(judged)  # an unfilled slot takes the migrant; selection starts next generation
+            else:
+                worst = min(range(len(people)), key=lambda i: people[i][1])
+                if judged[1] > people[worst][1]:
+                    people[worst] = judged
             self.trace.append({"generation": generation, "migrant": made.id, "from": offer.host, "score": list(judged[1])})
 
     def _publish(self, space: SearchSpace, people: list) -> None:
@@ -224,14 +247,21 @@ class EvolutionaryProvider:
                 people.append(child)
         self.trace.append({"generation": 0, "population": [p[0] for p in people]})
         for generation in range(1, self.generations + 1):
-            if not self._room(space) or (self.stop_when_passing and any(p[2] for p in people)) or len(people) < 2:
+            if not self._room(space) or (self.stop_when_passing and any(p[2] for p in people)) or not people:
                 break
-            if generation % self.crossover_every == 0:
+            exhausted = getattr(self.mutate, "exhausted", False)
+            if generation % self.crossover_every == 0 or exhausted:
+                improved = False
                 order = rng.sample(range(len(people)), len(people))
                 for i, j in zip(order[::2], order[1::2]):
                     child = self._crossover(space, people[i][0], people[j][0], rng, generation)
                     if child and child[1] > people[i][1] and child[1] > people[j][1]:
                         people[i] = people[j] = child
+                        improved = True
+                if exhausted and not improved:
+                    # No model calls left and recombination found nothing better: stop spending evaluations.
+                    self.trace.append({"generation": generation, "population": [p[0] for p in people], "stopped": "exhausted"})
+                    break
             else:
                 for index, (parent, score, _passed) in enumerate(list(people)):
                     child = self._mutation(space, parent, rng, generation)

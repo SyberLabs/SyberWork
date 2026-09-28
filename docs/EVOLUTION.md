@@ -98,10 +98,10 @@ From the terminal: `syberlabs propose --evolve "./my-model-adapter" --population
 
 | Arm | Passing candidate found | Evaluations to first pass (median, mean) |
 | --- | --- | --- |
-| Crossover every third generation | 22/30 | 17.5, 18.7 |
-| Mutation only | 22/30 | 21.0, 22.0 |
+| Crossover every third generation | 25/30 | 16, 15.4 |
+| Mutation only | 19/30 | 17, 16.0 |
 
-On this fixture, crossover did not change how often a passing candidate was found. It used somewhat fewer evaluations when one was found; with 30 seeds that difference is not established. The fixture's three independent rules favor recombination by construction, so this says nothing about real repositories. No model was called. Whether a model-backed mutator beats a single patch from the same model at the same cost is the next measurement to make, not a claim.
+Re-measured after the host began refusing duplicate candidates and the provider stopped spending evaluations once exhausted; the first run, before those changes, was 22/30 either way. On this fixture, crossover found a passing candidate in 25 of 30 seeds against 19 without it, at similar evaluation counts. With 30 seeds that gap is suggestive, not established. The fixture's three independent rules favor recombination by construction, so this says nothing about real repositories. No model was called. Whether a model-backed mutator beats a single patch from the same model at the same cost is the next measurement to make, not a claim.
 
 ## Trust boundaries
 

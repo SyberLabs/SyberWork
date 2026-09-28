@@ -62,6 +62,7 @@ HINTS = {
     "not_accepted": "Accept a candidate first: syberlabs accept CANDIDATE. Publishing never accepts.",
     "required_prior_effect_missing": "The contract orders these actions; run the earlier one first (for example push before a pull request).",
     "remote_moved": "The remote branch exists or moved; nothing was written. Inspect it before publishing under this name.",
+    "duplicate": "An identical candidate already exists in this thread; check that one instead.",
     "budget_exhausted": "The thread used its contract budget. Start a new thread or publish a contract with a larger budget.",
 }
 
@@ -678,6 +679,9 @@ class Thread:
         tree = repo.tree(commit)
         if len(parent_commits) == 1 and tree == repo.tree(parent_commits[0]):
             raise Rejected("no_change", "the edit leaves its parent's tree unchanged")
+        duplicate = next((v["id"] for v in views.values() if v["tree"] == tree), None)
+        if duplicate is not None:
+            raise Rejected("duplicate", f"the result is identical to {duplicate}")
         return self._register(cid, commit, tree, list(parents), operator, provider, message, signal, None, submitted)
 
     def _register(self, cid, commit, tree, parents, operator, provider, message, signal, origin, submitted) -> Candidate:
