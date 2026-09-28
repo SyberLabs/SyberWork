@@ -30,6 +30,7 @@ from syberlabs.evidence import acceptance_results, signer_is_effect_actor
 from syberlabs.evolution import candidate_record, candidate_views, evaluation_record, search_record
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.jcs import envelope_jcs
+from syberlabs import retention
 from syberlabs.planner import HttpPlanner, planning_context
 
 
@@ -170,6 +171,8 @@ class Session:
             raise Rejected("immutable_policy", "publish a new version")
         if self.policies and version < max(self.policies) and prior is None:
             raise Rejected("policy_version", "new policy version must advance")
+        if prior is None and "retention" in doc:
+            retention.check(doc)
         if prior is None and policy_has_economic(doc):
             validate_policy_budgets(doc, list(self.policies.values()))
         if prior is None:
@@ -436,6 +439,48 @@ class Session:
             "status": "pending", "reason": reason, "actor": actor,
         })
         return {"status": "pending", "reason": reason, "event": event}
+
+    @_guard
+    def forget(self, case_id: str, actor: str, reason: str) -> dict:
+        """Delete a case's history under the active policy's retention rule.
+
+        Refused while any effect is unresolved, and, for history that proves an
+        effect, until ``retention.effect_history_days`` after the last one. A
+        history that proved an effect leaves a receipt (chain head, event count,
+        and each effect's destination and external id); every forget leaves a
+        tombstone. Both are durable before the history is removed. Effects
+        themselves are not undone.
+        """
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+            raise Rejected("forget_denied", "a reason of at most 500 characters is required")
+        row = self._case(case_id)
+        policy = self._policy()
+        history = list(self.events[case_id])
+        now = self.clock()
+        decision = retention.decide(history, row["created"], retention.check(policy), now)
+        if not decision["allowed"]:
+            until = decision.get("until")
+            detail = decision["detail"] + (time.strftime("; allowed from %Y-%m-%d", time.gmtime(until)) if until else "")
+            raise Rejected(decision["reason"], detail)
+        head = history[-1]["hash"] if history else "0" * 64
+        receipt = None
+        if decision["receipt"]:
+            receipt = {"thread": case_id, "contract": [row["contract_id"], row["contract_version"]],
+                       "created": row["created"], "forgotten_at": now, "actor": actor, "reason": reason.strip(),
+                       "policy_version": policy["version"], "events": len(history), "head": head,
+                       "chain_valid": verify_events(history),
+                       "effects": [{key: item[key] for key in ("action", "proposal_id", "destination", "external_id", "at")}
+                                   for item in decision["effects"]]}
+        tombstone = {"thread": case_id, "forgotten_at": now, "actor": actor, "reason": reason.strip(),
+                     "events": len(history), "head": head, "receipt": receipt is not None,
+                     "policy_version": policy["version"]}
+        if self._journal is not None:
+            self._journal.record_forget(tombstone, receipt)
+            self._journal.remove_thread(case_id)
+        self.cases.pop(case_id, None)
+        self.events.pop(case_id, None)
+        self._side.pop(case_id, None)
+        return {"forgotten": case_id, "receipt": receipt, "tombstone": tombstone}
 
     @_guard
     def signoff(self, case_id: str, actor: str, roles: list[str], role: str) -> dict:

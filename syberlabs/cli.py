@@ -129,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
     export = commands.add_parser("export", help="the thread's full record as JSON")
     export.add_argument("--out")
     commands.add_parser("memory", help="what is stored, why, and how to remove it")
+    forget = commands.add_parser("forget", help="delete a thread's history as the policy's retention rule allows")
+    forget.add_argument("id")
+    forget.add_argument("--reason", required=True)
+    forget.add_argument("--export", help="write the full record to this file first")
     prune = commands.add_parser("prune", help="delete refs of unaccepted candidates in finished threads")
     prune.add_argument("id", nargs="?")
     compare = commands.add_parser("contract-diff", help="field differences between two contract versions")
@@ -175,6 +179,16 @@ def _run(kit: Kit, args) -> int:
         return 0
     if args.command == "memory":
         print(json.dumps(kit.memory(), indent=2))
+        return 0
+    if args.command == "forget":
+        if args.export:
+            Path(args.export).write_text(json.dumps(kit.export(args.id), indent=2, sort_keys=True) + "\n")
+            print(f"wrote {args.export}")
+        found = kit.forget(args.id, reason=args.reason)
+        print(f"forgot {found['forgotten'][:8]}: history deleted, {found['candidate_refs_removed']} candidate refs removed; "
+              f"{found['kept']} and anything published are unchanged")
+        if found["receipt"]:
+            print(f"receipt kept: {len(found['receipt']['effects'])} effects, head {found['receipt']['head'][:12]}")
         return 0
     if args.command == "prune":
         print(f"removed {kit.prune(args.id)} candidate refs")

@@ -107,9 +107,23 @@ Every installed document and event is one fsynced line in `.syberlabs/journal/` 
 
 An acceptance interrupted after its durable claim shows as an open item, and `syberlabs recover` settles it from the branch. A thread holds at most 20,000 events.
 
-## Memory
+## Memory and forgetting
 
-`syberlabs memory` reports what is kept. The thread record (the journal) is kept until you delete it, because it is what proves an accepted change. Context is kept as references only. Candidate refs are removed by `syberlabs prune` for finished threads. There is no project-knowledge store and no personal profile. Bounds: context 24 KB per selection by default, 256 KB per file read, 1 MB per submitted file and 4 MB per candidate, check output capped per contract (64 KB by default; over the cap is an `error`), a 4 KB output tail in the record, and contract budgets on candidates, evaluations, and seconds.
+`syberlabs memory` reports what is kept. The thread record (the journal) is kept because it is what proves an accepted change. Context is kept as references only. Candidate refs are removed by `syberlabs prune` for finished threads. There is no project-knowledge store and no personal profile. Bounds: context 24 KB per selection by default, 256 KB per file read, 1 MB per submitted file and 4 MB per candidate, check output capped per contract (64 KB by default; over the cap is an `error`), a 4 KB output tail in the record, and contract budgets on candidates, evaluations, and seconds.
+
+`syberlabs forget THREAD --reason "..." [--export FILE]` deletes a thread's history and its candidate refs, under a retention rule in `policy.json`:
+
+```json
+"retention": {"effect_history_days": 365, "unaccepted_history_days": 0}
+```
+
+| Thread | Forget |
+| --- | --- |
+| An effect has no known outcome | Refused (`retention_unresolved`). Run `syberlabs recover` first. |
+| Its history proves an effect (accepted, pushed, pull request, published) | Refused until `effect_history_days` after the last effect (default 365; `retention_required` says from when). It then leaves `.syberlabs/journal/receipts/<thread>.json`: chain head hash, event count, and each effect's action, destination, external id, and time. The receipt keeps no objective, file content, or event bodies. |
+| Anything else | Allowed after `unaccepted_history_days` (default 0) |
+
+Every forget appends a tombstone (thread id, time, actor, reason, event count, head hash) to `forgotten.jsonl`. The receipt and tombstone are fsynced before the history is deleted. Forgetting never undoes an effect: the accepted branch, pushed refs, and pull requests stay. `--export` writes the full record first if you want a copy outside SyberLabs. A retention rule is policy, so a change is a new policy version.
 
 ## Measured
 
