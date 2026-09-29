@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Contract-governed work execution and the SyberLabs SDK core"
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+
 [project.scripts]
 syberwork = "syberwork.cli:main"
 syberlabs = "syberlabs.cli:main"

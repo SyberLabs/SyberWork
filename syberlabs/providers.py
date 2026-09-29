@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 import time
@@ -23,6 +24,11 @@ from syberlabs.search import SearchSpace
 
 PROTOCOL = "syberlabs.search/v0alpha1"
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
+def split_command(text: str) -> list[str]:
+    """Split a command line. On Windows, backslashes in paths are kept."""
+    return shlex.split(text, posix=(os.name != "nt"))
 
 
 class PatchProvider:

@@ -23,7 +23,7 @@ from syberwork.core import Work
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
 FIXTURE = ROOT / "conformance" / "fixtures"
-VECTORS = json.loads((ROOT / "conformance" / "jcs_vectors.json").read_text())
+VECTORS = json.loads((ROOT / "conformance" / "jcs_vectors.json").read_text(encoding="utf-8"))
 
 
 def _construct(name: str):

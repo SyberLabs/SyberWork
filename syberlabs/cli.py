@@ -17,13 +17,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import sys
 from pathlib import Path
 
 from syberlabs.build import Kit, hint
 from syberlabs.errors import Rejected
-from syberlabs.providers import CommandProvider
+from syberlabs.providers import CommandProvider, split_command
 
 
 def _kit(args) -> Kit:
@@ -240,7 +239,7 @@ def _run(kit: Kit, args) -> int:
             found = thread.propose(changes=changes, message=args.message or "working-tree edits")
         elif args.evolve:
             from syberlabs.evolve import CommandMutator, EvolutionaryProvider
-            mutator = CommandMutator(shlex.split(args.evolve), name=args.name, cwd=kit.repo.root)
+            mutator = CommandMutator(split_command(args.evolve), name=args.name, cwd=kit.repo.root)
             exchange = None
             if args.exchange:
                 if not args.host or not args.topic:
@@ -253,7 +252,7 @@ def _run(kit: Kit, args) -> int:
                                             migrants=args.migrants)
             found = thread.propose(provider, seed=args.seed)
         else:
-            provider = CommandProvider(shlex.split(args.provider_command), name=args.name, revision=args.revision,
+            provider = CommandProvider(split_command(args.provider_command), name=args.name, revision=args.revision,
                                        cwd=kit.repo.root)
             found = thread.propose(provider)
         search = [e for e in thread.history() if e["kind"] == "search_finished"][-1]["body"]
