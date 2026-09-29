@@ -12,7 +12,7 @@ Admission still lives in `syberlabs` and does not import the database. `Work` ca
 - Record principals (`human`, `service`, `agent`) with roles and an optional delegation. The token is stored as a hash. Loopback bearer tokens in `users.json` still authenticate the local appliance.
 - Append a semantic trace (`admission`, `effect_claim`, `effect_invocation`, `effect_settlement`, `reconciliation`) when a trace log is attached.
 - Export and restore a logical snapshot, and refuse a backup whose case chain does not verify.
-- Build a container with `docker compose`. The image runs as a non-root user. `.dockerignore` keeps `.syberwork`, `.env`, databases, and `.git` out of the build context. The worker is a second process on the same database. The server binds beyond loopback only when `SYBERWORK_BIND` is that address.
+- Build a container with `docker compose`. The image and Compose both use `/home/syber/cell`, owned by uid 10001. `.dockerignore` keeps `.syberwork`, `.env`, databases, and `.git` out of the build context. The worker is a second process on the same database. The server binds beyond loopback only when `SYBERWORK_BIND` is that address. `sh scripts/compose_cell.sh` initializes a cell, queues one local effect, lets the worker settle it, restarts both processes, and restores a backup into a fresh database.
 - Migrations take a lock, so a server and a worker can open the same database during an upgrade. A restore that fails chain verification rolls the import back.
 
 ## What this cell does not do

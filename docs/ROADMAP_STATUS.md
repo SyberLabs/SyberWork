@@ -74,7 +74,7 @@ The local appliance remains the default. A cell is one organization and one data
 | Effect worker and expired-lease uncertainty | Implemented | `syberwork/worker.py`. Inline commit remains the default |
 | Cell organization and principal records | Implemented | `bind_organization`, `register_principal`. Not SSO |
 | Semantic trace, backup/restore | Implemented | `syberwork/trace.py`, `syberwork/backup.py` |
-| Container and CI | Implemented | `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `.github/workflows/ci.yml`. Linux jobs are green. Making those checks required on `main` is a repository setting this agent cannot change. |
+| Container and CI | Implemented | `Dockerfile`, `.dockerignore`, and Compose share `/home/syber/cell`. `sh scripts/compose_cell.sh` boots that cell. Linux, PostgreSQL, and Windows jobs are green on the stabilized head. Making those checks required on `main` is a repository setting this agent cannot change. |
 | SSO, KMS witness, shared multi-tenant database, fleet control plane | **Not built** | Out of this slice |
 
 ### Limitations stated, not fixed
