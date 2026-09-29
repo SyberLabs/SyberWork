@@ -1,5 +1,5 @@
-# One organization, one database. The application listens on all interfaces
-# only when SYBERWORK_BIND is set to that address.
+# One organization, one database. Run `syberwork init` before `serve`.
+# The home directory is /home/syber/cell, owned by uid 10001, the same path the image creates.
 services:
   db:
     image: postgres:16
@@ -9,10 +9,15 @@ services:
       POSTGRES_DB: syberwork
     volumes:
       - syberwork-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syber -d syberwork"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
   syberwork:
     build: .
-    environment:
-      SYBERWORK_HOME: /var/lib/syberwork
+    environment: &cell
+      SYBERWORK_HOME: /home/syber/cell
       SYBERWORK_DATABASE: postgresql://syber:syber@db:5432/syberwork
       SYBERWORK_ORGANIZATION: example
       SYBERWORK_BIND: 0.0.0.0
@@ -21,20 +26,19 @@ services:
     ports:
       - "8766:8766"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     volumes:
-      - syberwork-home:/var/lib/syberwork
+      - syberwork-home:/home/syber/cell
   worker:
     build: .
-    command: ["syberwork", "--home", "/var/lib/syberwork", "worker"]
-    environment:
-      SYBERWORK_HOME: /var/lib/syberwork
-      SYBERWORK_DATABASE: postgresql://syber:syber@db:5432/syberwork
-      SYBERWORK_TRACE: "1"
+    command: ["syberwork", "worker"]
+    environment: *cell
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     volumes:
-      - syberwork-home:/var/lib/syberwork
+      - syberwork-home:/home/syber/cell
 
 volumes:
   syberwork-db:

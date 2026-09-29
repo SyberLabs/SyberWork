@@ -228,7 +228,12 @@ class CellGuards(unittest.TestCase):
             self.assertIn(name, ignored)
         dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("USER syber", dockerfile)
+        self.assertIn("/home/syber/cell", dockerfile)
         self.assertFalse(any(line.strip() == "COPY . ." for line in dockerfile.splitlines()))
+        compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("/home/syber/cell", compose)
+        self.assertNotIn("/var/lib/syberwork", compose)
+        self.assertIn('command: ["syberwork", "worker"]', compose)
 
 
 class PostgresCell(unittest.TestCase):
