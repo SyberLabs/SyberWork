@@ -44,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Boot a cell, settle an effect, restart, and restore
-        run: sh scripts/compose_cell.sh
+        run: bash scripts/compose_cell.sh
 
   windows:
     runs-on: windows-latest
