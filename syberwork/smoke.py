@@ -45,7 +45,8 @@ def _work(url: str | None = None) -> Work:
 def _install(work: Work) -> None:
     work.bind_organization(os.getenv("SYBERWORK_ORGANIZATION", "example"))
     work.install_contract(NOTE)
-    work.install_policy({"version": 1, "actions": {"note": {"roles": ["operator"]}}})
+    # init already published policy version 1 for the example contract.
+    work.install_policy({"version": 2, "actions": {"note": {"roles": ["operator"]}}})
     work.install_action("note", {"kind": "local"})
 
 

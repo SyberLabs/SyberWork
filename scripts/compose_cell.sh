@@ -1,6 +1,7 @@
 #!/bin/sh
 # Boot one cell from Compose, settle an effect with the worker, restart, then restore a backup.
 set -eu
+set -o pipefail
 
 cd "$(dirname "$0")/.."
 
