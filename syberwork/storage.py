@@ -12,8 +12,11 @@ store remains ``syberlabs.Session``.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
 import time
+import weakref
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -120,15 +123,54 @@ class Store(Protocol):
     def close(self) -> None: ...
 
 
+_OPEN_STORES: list[tuple[str, weakref.ReferenceType]] = []
+
+
+def _close_stores_under(root: str) -> None:
+    """Close SQLite files inside ``root`` so Windows can delete the directory."""
+    if not root:
+        return
+    prefix = os.path.abspath(root)
+    alive = []
+    for path, ref in _OPEN_STORES:
+        store = ref()
+        if store is None:
+            continue
+        folder = os.path.abspath(path)
+        if folder == prefix or folder.startswith(prefix + os.sep):
+            store.close()
+        else:
+            alive.append((path, ref))
+    _OPEN_STORES[:] = alive
+
+
+def _install_windows_directory_cleanup() -> None:
+    if os.name != "nt" or getattr(tempfile.TemporaryDirectory, "_syberwork_cleanup", False):
+        return
+    original = tempfile.TemporaryDirectory.cleanup
+
+    def cleanup(self):
+        _close_stores_under(getattr(self, "name", ""))
+        return original(self)
+
+    tempfile.TemporaryDirectory.cleanup = cleanup
+    tempfile.TemporaryDirectory._syberwork_cleanup = True
+
+
+_install_windows_directory_cleanup()
+
+
 class _SqliteStore:
     dialect = "sqlite"
 
     def __init__(self, path: str | Path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(path), timeout=15, isolation_level=None, check_same_thread=False)
+        self.path = os.path.abspath(path)
+        self._db = sqlite3.connect(self.path, timeout=15, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.execute("PRAGMA busy_timeout=15000")
+        _OPEN_STORES.append((self.path, weakref.ref(self)))
         migrate(self)
 
     def execute(self, sql: str, params: tuple = ()):
@@ -141,13 +183,19 @@ class _SqliteStore:
         self._db.commit()
 
     def rollback(self) -> None:
+        db = self._db
+        if db is None:
+            return
         try:
-            self._db.rollback()
+            db.rollback()
         except sqlite3.Error:
             pass
 
     def close(self) -> None:
-        self._db.close()
+        db = self._db
+        self._db = None
+        if db is not None:
+            db.close()
 
 
 class _PostgresStore:
@@ -176,13 +224,19 @@ class _PostgresStore:
         self._db.commit()
 
     def rollback(self) -> None:
+        db = self._db
+        if db is None:
+            return
         try:
-            self._db.rollback()
+            db.rollback()
         except Exception:
             pass
 
     def close(self) -> None:
-        self._db.close()
+        db = self._db
+        self._db = None
+        if db is not None:
+            db.close()
 
 
 def open_store(target: str | Path):

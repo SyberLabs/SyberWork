@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import statistics
 import sys
 import tempfile
@@ -39,7 +38,7 @@ from benchmarks.fixtures import FIXTURES, contract  # noqa: E402
 from examples.evolve import git  # noqa: E402
 from syberlabs import Kit, Rejected  # noqa: E402
 from syberlabs.evolve import CommandMutator, EvolutionaryProvider  # noqa: E402
-from syberlabs.providers import model_usage, run_json  # noqa: E402
+from syberlabs.providers import model_usage, run_json, split_command  # noqa: E402
 
 SIMULATED = f"{sys.executable} {ROOT / 'benchmarks' / 'simulated_model.py'}"
 ARMS = ("single", "best_of_k", "repair", "evolve")
@@ -116,7 +115,7 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
     doc = contract(fixture)
     (home / "contracts" / f"{doc['id']}.v1.json").write_text(json.dumps(doc))
     os.environ["SYBERLABS_FIXTURE"] = fixture
-    argv = shlex.split(adapter)
+    argv = split_command(adapter)
     kit = Kit.local(home, root, actor="bench")
     thread = kit.start(FIXTURES[fixture]["objective"], f"{doc['id']}.v1", paths=["src"])
     started = time.monotonic()
