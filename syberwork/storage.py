@@ -12,11 +12,8 @@ store remains ``syberlabs.Session``.
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import tempfile
 import time
-import weakref
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -123,41 +120,8 @@ class Store(Protocol):
     def close(self) -> None: ...
 
 
-_OPEN_STORES: list[tuple[str, weakref.ReferenceType]] = []
-
-
-def _close_stores_under(root: str) -> None:
-    """Close SQLite files inside ``root`` so Windows can delete the directory."""
-    if not root:
-        return
-    prefix = os.path.abspath(root)
-    alive = []
-    for path, ref in _OPEN_STORES:
-        store = ref()
-        if store is None:
-            continue
-        folder = os.path.abspath(path)
-        if folder == prefix or folder.startswith(prefix + os.sep):
-            store.close()
-        else:
-            alive.append((path, ref))
-    _OPEN_STORES[:] = alive
-
-
-def _install_windows_directory_cleanup() -> None:
-    if os.name != "nt" or getattr(tempfile.TemporaryDirectory, "_syberwork_cleanup", False):
-        return
-    original = tempfile.TemporaryDirectory.cleanup
-
-    def cleanup(self):
-        _close_stores_under(getattr(self, "name", ""))
-        return original(self)
-
-    tempfile.TemporaryDirectory.cleanup = cleanup
-    tempfile.TemporaryDirectory._syberwork_cleanup = True
-
-
-_install_windows_directory_cleanup()
+# Advisory lock key for PostgreSQL migration. It does not depend on cell_lock existing yet.
+_MIGRATION_LOCK = 87261001
 
 
 class _SqliteStore:
@@ -165,12 +129,11 @@ class _SqliteStore:
 
     def __init__(self, path: str | Path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.path = os.path.abspath(path)
+        self.path = str(path)
         self._db = sqlite3.connect(self.path, timeout=15, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.execute("PRAGMA busy_timeout=15000")
-        _OPEN_STORES.append((self.path, weakref.ref(self)))
         migrate(self)
 
     def execute(self, sql: str, params: tuple = ()):
@@ -268,25 +231,44 @@ def _column_names(store, table: str) -> set[str]:
 
 
 def migrate(store) -> list[str]:
-    """Apply unapplied migrations. Existing SQLite histories keep their rows and hashes."""
-    store.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
-    )
-    if store.dialect == "sqlite" and _column_names(store, "events") and "at_json" not in _column_names(store, "events"):
-        store.execute("ALTER TABLE events ADD COLUMN at_json TEXT")
-    applied = {row["version"] for row in store.execute("SELECT version FROM schema_migrations").fetchall()}
-    ran = []
-    for version, script in _MIGRATIONS:
-        if version in applied:
-            continue
-        for statement in _statements(script):
-            store.execute(statement)
+    """Apply unapplied migrations. One opener at a time; a second waits.
+
+    SQLite takes ``BEGIN IMMEDIATE``. PostgreSQL takes a session advisory lock,
+    which works before ``cell_lock`` exists. Existing histories keep their rows
+    and hashes.
+    """
+    if store.dialect == "sqlite":
+        store.execute("BEGIN IMMEDIATE")
+    else:
+        store.execute("SELECT pg_advisory_lock(?)", (_MIGRATION_LOCK,))
+    try:
         store.execute(
-            "INSERT INTO schema_migrations VALUES (?, ?)",
-            (version, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+            "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
-        ran.append(version)
-    return ran
+        if store.dialect == "sqlite" and _column_names(store, "events") and "at_json" not in _column_names(store, "events"):
+            store.execute("ALTER TABLE events ADD COLUMN at_json TEXT")
+        applied = {row["version"] for row in store.execute("SELECT version FROM schema_migrations").fetchall()}
+        ran = []
+        for version, script in _MIGRATIONS:
+            if version in applied:
+                continue
+            for statement in _statements(script):
+                store.execute(statement)
+            store.execute(
+                "INSERT INTO schema_migrations VALUES (?, ?)",
+                (version, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+            )
+            ran.append(version)
+        if store.dialect == "sqlite":
+            store.commit()
+        return ran
+    except BaseException:
+        if store.dialect == "sqlite":
+            store.rollback()
+        raise
+    finally:
+        if store.dialect == "postgres":
+            store.execute("SELECT pg_advisory_unlock(?)", (_MIGRATION_LOCK,))
 
 
 class ContractStore:

@@ -156,8 +156,8 @@ class CellRuntime(unittest.TestCase):
             server = make_server(work, {}, "127.0.0.1", 0)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            self.addCleanup(server.shutdown)
             self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
             request = urllib.request.Request(
                 f"http://127.0.0.1:{server.server_address[1]}/api/me",
                 headers={"Authorization": "Bearer cell-token"},
@@ -173,6 +173,62 @@ class CellRuntime(unittest.TestCase):
                 make_server(work, {}, "0.0.0.0", 0)
             self.assertEqual(blocked.exception.code, "unsafe_bind")
             work.close()
+
+
+class CellGuards(unittest.TestCase):
+    def test_concurrent_open_applies_each_migration_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "work.sqlite"
+            errors = []
+            barrier = threading.Barrier(4)
+
+            def open_db():
+                barrier.wait()
+                item = None
+                try:
+                    item = Work(path)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    if item is not None:
+                        item.close()
+
+            threads = [threading.Thread(target=open_db) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(errors, [])
+            check = Work(path)
+            versions = [row["version"] for row in check._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
+            self.assertEqual(versions, ["0001", "0002", "0003"])
+            check.close()
+
+    def test_failed_restore_does_not_keep_the_rows(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Work(Path(folder) / "source.sqlite")
+            case_id = _install(source)
+            source.propose(case_id, "note", {}, "operator", ["operator"])
+            snapshot = Path(folder) / "snapshot"
+            export_cell(source, snapshot)
+            events = json.loads((snapshot / "events.json").read_text(encoding="utf-8"))
+            events[0]["hash"] = "0" * 64
+            (snapshot / "events.json").write_text(json.dumps(events), encoding="utf-8")
+            restored = Work(Path(folder) / "restored.sqlite")
+            with self.assertRaises(Rejected) as refused:
+                restore_cell(restored, snapshot)
+            self.assertEqual(refused.exception.code, "restore_refused")
+            self.assertEqual(restored.list_cases(), [])
+            source.close()
+            restored.close()
+
+    def test_image_build_context_excludes_local_secrets(self):
+        ignored = (Path(__file__).resolve().parents[1] / ".dockerignore").read_text(encoding="utf-8")
+        for name in (".git", ".syberwork", ".env", "*.sqlite", "*.sqlite3"):
+            self.assertIn(name, ignored)
+        dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("USER syber", dockerfile)
+        self.assertFalse(any(line.strip() == "COPY . ." for line in dockerfile.splitlines()))
 
 
 class PostgresCell(unittest.TestCase):

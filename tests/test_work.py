@@ -18,6 +18,7 @@ class WorkFlow(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.db = Work(Path(self.tmp.name) / "work.db")
+        self.addCleanup(self.db.close)
         self.contract = json.loads((EXAMPLES / "contract.json").read_text())
         self.policy = json.loads((EXAMPLES / "policy.json").read_text())
         self.db.install_contract(self.contract)

@@ -12,6 +12,7 @@ import socket
 import sqlite3
 import tempfile
 import threading
+from contextlib import contextmanager
 import urllib.error
 import urllib.request
 import uuid
@@ -20,6 +21,20 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from syberwork.core import Rejected, Work, digest
+
+
+@contextmanager
+def sqlite_session(path, timeout=5.0):
+    """Open SQLite and close it. The stdlib context manager commits, but it does not close."""
+    connection = sqlite3.connect(path, timeout=timeout)
+    try:
+        yield connection
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 CONTRACT = {
@@ -90,7 +105,7 @@ class SimulatedERP:
         self.drop_after_write = False
         self.drop_before_write = False
         self.tokens = {role: uuid.uuid4().hex for role in ("logistics", "procurement")}
-        with sqlite3.connect(path) as db:
+        with sqlite_session(path) as db:
             db.executescript("""
                 CREATE TABLE requests(id TEXT PRIMARY KEY, part TEXT, quantity INTEGER,
                     site_id TEXT, cost_center TEXT, state TEXT, version TEXT);
@@ -134,7 +149,7 @@ class SimulatedERP:
 
             def do_GET(self):
                 parts = [unquote(p) for p in urlsplit(self.path).path.strip("/").split("/")]
-                with sqlite3.connect(path) as db:
+                with sqlite_session(path) as db:
                     db.row_factory = sqlite3.Row
                     if len(parts) == 3 and parts[:2] == ["orders", "by-key"]:
                         row = db.execute("SELECT * FROM orders WHERE idempotency_key=?", (parts[2],)).fetchone()
@@ -190,7 +205,7 @@ class SimulatedERP:
                         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                     except (ValueError, KeyError):
                         return self.respond({"error": "invalid_body"}, 400)
-                    with sqlite3.connect(path, timeout=10) as db:
+                    with sqlite_session(path, 10) as db:
                         db.row_factory = sqlite3.Row
                         db.execute("BEGIN IMMEDIATE")
                         key = parts[1]
@@ -230,7 +245,7 @@ class SimulatedERP:
                     body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 except (ValueError, KeyError):
                     return self.respond({"error": "invalid_body"}, 400)
-                with sqlite3.connect(path, timeout=10) as db:
+                with sqlite_session(path, 10) as db:
                     db.row_factory = sqlite3.Row
                     db.execute("BEGIN IMMEDIATE")
                     old = db.execute("SELECT id FROM orders WHERE idempotency_key=?", (key,)).fetchone()
@@ -280,7 +295,7 @@ class SimulatedERP:
         self.server.server_close()
 
     def change_quote_version(self, version: str):
-        with sqlite3.connect(self.path) as db:
+        with sqlite_session(self.path) as db:
             db.execute("UPDATE quotes SET version=? WHERE id='Q-881'", (version,))
 
     def order_for_key(self, key: str):
@@ -293,16 +308,16 @@ class SimulatedERP:
             raise
 
     def order_count(self):
-        with sqlite3.connect(self.path) as db:
+        with sqlite_session(self.path) as db:
             return db.execute("SELECT count(*) FROM orders").fetchone()[0]
 
     def select_site(self, role: str, request_id: str, site_id: str):
-        with sqlite3.connect(self.path) as db:
+        with sqlite_session(self.path) as db:
             version = db.execute("SELECT version FROM requests WHERE id=?", (request_id,)).fetchone()[0]
         return self._select(role, f"/requests/{request_id}/select-site", {"site_id": site_id}, version)
 
     def select_quote(self, role: str, request_id: str, quote_id: str):
-        with sqlite3.connect(self.path) as db:
+        with sqlite_session(self.path) as db:
             version = db.execute("SELECT version FROM quote_selections WHERE request_id=?", (request_id,)).fetchone()[0]
         return self._select(role, f"/quotes/{request_id}/select-quote", {"quote_id": quote_id}, f"selection:{version}")
 
@@ -317,7 +332,7 @@ class SimulatedERP:
             raise Rejected("source_update_denied", f"source returned {error.code}") from error
 
     def snapshot(self):
-        with sqlite3.connect(self.path) as db:
+        with sqlite_session(self.path) as db:
             db.row_factory = sqlite3.Row
             return {
                 "orders": [dict(row) for row in db.execute("SELECT * FROM orders ORDER BY id")],
@@ -497,7 +512,7 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
                         erp.drop_after_write = True
                         unknown = work.commit(case_id, key, "scheduler")
                         step("submit_response_lost", result=unknown["status"])
-                        with sqlite3.connect(erp.path) as db:
+                        with sqlite_session(erp.path) as db:
                             db.execute("UPDATE orders SET request_digest=? WHERE idempotency_key=?", ("0" * 64, key))
                         check = work.reconcile(case_id, key, "d.patel", ["manager"])
                         step("check_mismatched_destination_record", result=check["status"], reason=check["reason"])
@@ -528,6 +543,7 @@ def run_scenario(scenario_id: str, folder: Path) -> dict:
         return result
     finally:
         erp.close()
+        work.close()
 
 
 def run_study(directory: Path) -> dict:

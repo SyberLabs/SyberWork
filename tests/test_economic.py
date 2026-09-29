@@ -18,6 +18,7 @@ class EconomicActions(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.work = Work(Path(tmp.name) / "work.sqlite3")
+        self.addCleanup(self.work.close)
         self.records = {}
         self.mode = "success"
         owner = self

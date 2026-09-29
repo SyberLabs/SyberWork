@@ -31,3 +31,4 @@ class HistoryFromMain(unittest.TestCase):
             replay = work.replay(meta["case_id"], meta["contract_version"], meta["policy_version"])
             self.assertEqual(replay["changed_decisions"], [])
             self.assertEqual(replay["acceptance_before"], replay["acceptance_after"])
+            work.close()

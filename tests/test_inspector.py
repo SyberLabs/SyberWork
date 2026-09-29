@@ -81,7 +81,13 @@ class Inspector(RepoCase):
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_page_renders_in_a_browser_without_errors(self):
-        root = subprocess.run(["npm", "root", "-g"], capture_output=True, text=True).stdout.strip()
+        npm = shutil.which("npm")
+        if npm is None:
+            self.skipTest("npm is not installed")
+        try:
+            root = subprocess.run([npm, "root", "-g"], capture_output=True, text=True).stdout.strip()
+        except FileNotFoundError:
+            self.skipTest("npm is not installed")
         if not (Path(root) / "playwright").exists():
             self.skipTest("playwright for node is not installed")
         env = {**os.environ, "NODE_PATH": root, "INSPECTOR_URL": f"http://127.0.0.1:{self.port}/#token=secret-token",

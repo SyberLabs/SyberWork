@@ -321,11 +321,15 @@ class Kit:
         home.mkdir(parents=True, exist_ok=True)
         cls._exclude(repo, home)
         journal = Journal(home / "journal")
-        session = Session(journal=journal)
-        if actor is None:
-            actor = repo.git("config", "user.email", ok=(0, 1)).decode().strip() or "developer"
-        kit = cls(home, repo, session, journal, actor, roles)
-        kit._install_files()
+        try:
+            session = Session(journal=journal)
+            if actor is None:
+                actor = repo.git("config", "user.email", ok=(0, 1)).decode().strip() or "developer"
+            kit = cls(home, repo, session, journal, actor, roles)
+            kit._install_files()
+        except BaseException:
+            journal.close()
+            raise
         return kit
 
     def close(self) -> None:

@@ -15,6 +15,7 @@ class VerifiedExternalOutcome(unittest.TestCase):
         self.erp = SimulatedERP(Path(self.temp.name) / "erp.sqlite3")
         self.addCleanup(self.erp.close)
         self.work = Work(Path(self.temp.name) / "work.sqlite3")
+        self.addCleanup(self.work.close)
         configure(self.work, self.erp)
         self.case = self.work.create_case(CONTRACT["id"], 1, {"request_id": "REQ-4812"}, "analyst")
         for source, key, record in (("requisitions", "request", "REQ-4812"),
@@ -67,8 +68,12 @@ class VerifiedExternalOutcome(unittest.TestCase):
         key = self.order()
         self.erp.drop_after_write = True
         self.work.commit(self.case, key, "scheduler")
-        with sqlite3.connect(self.erp.path) as db:
-            db.execute("UPDATE orders SET request_digest=? WHERE idempotency_key=?", ("0" * 64, key))
+        connection = sqlite3.connect(self.erp.path)
+        try:
+            connection.execute("UPDATE orders SET request_digest=? WHERE idempotency_key=?", ("0" * 64, key))
+            connection.commit()
+        finally:
+            connection.close()
         result = self.work.reconcile(self.case, key, "manager", ["manager"])
         self.assertEqual(result["status"], "unverified")
         self.assertFalse(self.work.inspect(self.case)["complete"])

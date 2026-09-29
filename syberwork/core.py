@@ -777,17 +777,21 @@ class Work:
             events = self._events(db, case_id)
         return client.submit(events)
 
+    def chain_ok(self, db, case_id: str) -> bool:
+        """Check one case on a connection the caller already holds."""
+        events = self._events(db, case_id)
+        if not verify_events(events):
+            return False
+        stored = EventStore(db).side_digests(case_id)
+        for event in events:
+            digest = stored.get(event["seq"])
+            if isinstance(digest, str) and digest != envelope_jcs(event):
+                return False
+        return True
+
     def verify_chain(self, case_id: str) -> bool:
         with self.tx() as db:
-            events = self._events(db, case_id)
-            if not verify_events(events):
-                return False
-            stored = EventStore(db).side_digests(case_id)
-            for event in events:
-                digest = stored.get(event["seq"])
-                if isinstance(digest, str) and digest != envelope_jcs(event):
-                    return False
-            return True
+            return self.chain_ok(db, case_id)
 
     def side_channel(self, case_id: str) -> list[dict]:
         """JCS digest and deciding rule id for each new event. Neither is in the event hash.

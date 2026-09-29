@@ -77,143 +77,153 @@ def _case_study_traces() -> list[dict]:
 
 def _admission_traces() -> list[dict]:
     traces = []
+    opened: list[Work] = []
     with tempfile.TemporaryDirectory() as folder:
-        work = Work(Path(folder) / "work.sqlite3")
-        contract, policy = _load_examples(work)
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        _facts(work, case)
-        review = work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        work.commit(case, review["proposal"]["id"], "operator")
-        order = work.propose(
-            case, "issue_order",
-            {"part_number": "P-104", "quote": {"id": "Q-7", "price": 250}, "quote_id": "Q-7",
-             "amount": 250, "quote_version": "quote:1"},
-            "operator", ["operator", "model"], "model",
-        )
-        work.approve(case, order["proposal"]["id"], "manager", ["manager"])
-        work.commit(case, order["proposal"]["id"], "operator")
-        work.signoff(case, "manager", ["manager"], "manager")
-        state = work.inspect(case)
-        traces.append(_trace("admit_complete", "complete" if state["complete"] else state["status"], state["events"], source="admission"))
+        def open_work(name: str) -> Work:
+            item = Work(Path(folder) / name)
+            opened.append(item)
+            return item
 
-        work = Work(Path(folder) / "untrusted.sqlite3")
-        _load_examples(work)
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        work.observe(case, "part_number", "P-104", "user", "asserted", "operator")
-        work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        work.observe(case, "part_number", "P-104", "inventory", "v1", "inventory", verified=True)
-        work.propose(case, "record_review", {"part_number": "P-999"}, "operator", ["operator"])
-        state = work.inspect(case)
-        traces.append(_trace("admit_untrusted_then_provenance", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
-
-        bound = json.loads(json.dumps(contract))
-        bound["version"] = 2
-        bound["input_bindings"] = {"part_number": "fact:part_number"}
-        work.install_contract(bound)
-        case = work.create_case("purchase-order", 2, {"part_number": "P-104", "quantity": 2}, "operator")
-        work.observe(case, "part_number", "P-999", "inventory", "inventory:9", "inventory", verified=True)
-        work.propose(case, "record_review", {"part_number": "P-999"}, "operator", ["operator"])
-        state = work.inspect(case)
-        traces.append(_trace("admit_input_provenance", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
-
-        work = Work(Path(folder) / "policy.sqlite3")
-        _load_examples(work)
-        restrictive = json.loads(json.dumps(policy))
-        restrictive["version"] = 2
-        restrictive["actions"].pop("record_review")
-        work.install_policy(restrictive)
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        _facts(work, case)
-        work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        state = work.inspect(case)
-        traces.append(_trace("admit_global_policy", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
-
-        work = Work(Path(folder) / "unverified.sqlite3")
-        _load_examples(work)
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        work.observe(case, "part_number", "P-104", "inventory", "invented", "inventory")
-        work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        state = work.inspect(case)
-        traces.append(_trace("admit_unverified_fact", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
-
-        work = Work(Path(folder) / "approval.sqlite3")
-        _load_examples(work)
-        revised = json.loads(json.dumps(policy))
-        revised["version"] = 2
-        revised["actions"]["record_review"]["approval_role"] = "compliance"
-        work.install_policy(revised)
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        _facts(work, case)
-        proposed = work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        work.approve(case, proposed["proposal"]["id"], "compliance", ["compliance"])
-        work.commit(case, proposed["proposal"]["id"], "operator")
-        state = work.inspect(case)
-        traces.append(_trace("admit_global_approval", "succeeded", state["events"], source="admission"))
-
-        work = Work(Path(folder) / "recheck.sqlite3")
-        _load_examples(work)
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        _facts(work, case)
-        proposed = work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        work.observe(case, "part_number", "P-105", "inventory", "inv:8", "inventory", verified=True)
-        work.commit(case, proposed["proposal"]["id"], "operator")
-        state = work.inspect(case)
-        traces.append(_trace("admit_commit_recheck", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
-
-        work = Work(Path(folder) / "replay.sqlite3")
-        contract, _policy = _load_examples(work)
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        _facts(work, case)
-        work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        revised = json.loads(json.dumps(contract))
-        revised["version"] = 2
-        revised["actions"].pop("record_review")
-        revised["actions"]["issue_order"].pop("requires_effect")
-        revised["compiled_path"].remove("record_review")
-        work.install_contract(revised)
-        diff = work.replay(case, 2, 1)
-        state = work.inspect(case)
-        traces.append(_trace("admit_replay_removed_action", diff["changed_decisions"][0]["after"]["reason"], state["events"], source="admission"))
-
-        work = Work(Path(folder) / "cancelled.sqlite3")
-        _load_examples(work)
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        work.cancel_case(case, "withdrawn", "manager", ["manager"])
-        work.propose(case, "record_review", {}, "operator", ["operator"])
-        state = work.inspect(case)
-        traces.append(_trace("admit_cancelled", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
-
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        work.propose(case, "issue_order", {"amount": float("nan")}, "operator", ["operator"])
-        state = work.inspect(case)
-        traces.append(_trace("admit_nonfinite_amount", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
-
-        case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
-        _facts(work, case)
-        work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        with work.tx() as db:
-            work._append(db, case, "effect_started", {
-                "proposal_id": "inflight",
-                "action": "record_review",
-                "actor": "operator",
-                "policy_version": 1,
-                "idempotency_key": "inflight",
-            })
-        work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
-        state = work.inspect(case)
-        traces.append(_trace("admit_inflight_effect", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
-
-        bad = json.loads((EXAMPLES / "contract.json").read_text())
-        bad["id"] = "bad-input-kind"
-        bad["inputs"] = {"note": "boolean"}
         try:
-            work.install_contract(bad)
-            unknown_outcome = "published"
-        except Exception as exc:
-            unknown_outcome = getattr(exc, "code", "error")
-        traces.append(_trace("admit_unknown_input_kind", unknown_outcome, [], source="admission"))
+            work = open_work("work.sqlite3")
+            contract, policy = _load_examples(work)
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            _facts(work, case)
+            review = work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            work.commit(case, review["proposal"]["id"], "operator")
+            order = work.propose(
+                case, "issue_order",
+                {"part_number": "P-104", "quote": {"id": "Q-7", "price": 250}, "quote_id": "Q-7",
+                 "amount": 250, "quote_version": "quote:1"},
+                "operator", ["operator", "model"], "model",
+            )
+            work.approve(case, order["proposal"]["id"], "manager", ["manager"])
+            work.commit(case, order["proposal"]["id"], "operator")
+            work.signoff(case, "manager", ["manager"], "manager")
+            state = work.inspect(case)
+            traces.append(_trace("admit_complete", "complete" if state["complete"] else state["status"], state["events"], source="admission"))
 
-        traces.append(_planner_trace(Path(folder)))
+            work = open_work("untrusted.sqlite3")
+            _load_examples(work)
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            work.observe(case, "part_number", "P-104", "user", "asserted", "operator")
+            work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            work.observe(case, "part_number", "P-104", "inventory", "v1", "inventory", verified=True)
+            work.propose(case, "record_review", {"part_number": "P-999"}, "operator", ["operator"])
+            state = work.inspect(case)
+            traces.append(_trace("admit_untrusted_then_provenance", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+            bound = json.loads(json.dumps(contract))
+            bound["version"] = 2
+            bound["input_bindings"] = {"part_number": "fact:part_number"}
+            work.install_contract(bound)
+            case = work.create_case("purchase-order", 2, {"part_number": "P-104", "quantity": 2}, "operator")
+            work.observe(case, "part_number", "P-999", "inventory", "inventory:9", "inventory", verified=True)
+            work.propose(case, "record_review", {"part_number": "P-999"}, "operator", ["operator"])
+            state = work.inspect(case)
+            traces.append(_trace("admit_input_provenance", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+            work = open_work("policy.sqlite3")
+            _load_examples(work)
+            restrictive = json.loads(json.dumps(policy))
+            restrictive["version"] = 2
+            restrictive["actions"].pop("record_review")
+            work.install_policy(restrictive)
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            _facts(work, case)
+            work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            state = work.inspect(case)
+            traces.append(_trace("admit_global_policy", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+            work = open_work("unverified.sqlite3")
+            _load_examples(work)
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            work.observe(case, "part_number", "P-104", "inventory", "invented", "inventory")
+            work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            state = work.inspect(case)
+            traces.append(_trace("admit_unverified_fact", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+            work = open_work("approval.sqlite3")
+            _load_examples(work)
+            revised = json.loads(json.dumps(policy))
+            revised["version"] = 2
+            revised["actions"]["record_review"]["approval_role"] = "compliance"
+            work.install_policy(revised)
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            _facts(work, case)
+            proposed = work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            work.approve(case, proposed["proposal"]["id"], "compliance", ["compliance"])
+            work.commit(case, proposed["proposal"]["id"], "operator")
+            state = work.inspect(case)
+            traces.append(_trace("admit_global_approval", "succeeded", state["events"], source="admission"))
+
+            work = open_work("recheck.sqlite3")
+            _load_examples(work)
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            _facts(work, case)
+            proposed = work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            work.observe(case, "part_number", "P-105", "inventory", "inv:8", "inventory", verified=True)
+            work.commit(case, proposed["proposal"]["id"], "operator")
+            state = work.inspect(case)
+            traces.append(_trace("admit_commit_recheck", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+            work = open_work("replay.sqlite3")
+            contract, _policy = _load_examples(work)
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            _facts(work, case)
+            work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            revised = json.loads(json.dumps(contract))
+            revised["version"] = 2
+            revised["actions"].pop("record_review")
+            revised["actions"]["issue_order"].pop("requires_effect")
+            revised["compiled_path"].remove("record_review")
+            work.install_contract(revised)
+            diff = work.replay(case, 2, 1)
+            state = work.inspect(case)
+            traces.append(_trace("admit_replay_removed_action", diff["changed_decisions"][0]["after"]["reason"], state["events"], source="admission"))
+
+            work = open_work("cancelled.sqlite3")
+            _load_examples(work)
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            work.cancel_case(case, "withdrawn", "manager", ["manager"])
+            work.propose(case, "record_review", {}, "operator", ["operator"])
+            state = work.inspect(case)
+            traces.append(_trace("admit_cancelled", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            work.propose(case, "issue_order", {"amount": float("nan")}, "operator", ["operator"])
+            state = work.inspect(case)
+            traces.append(_trace("admit_nonfinite_amount", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+            case = work.create_case("purchase-order", 1, {"part_number": "P-104", "quantity": 2}, "operator")
+            _facts(work, case)
+            work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            with work.tx() as db:
+                work._append(db, case, "effect_started", {
+                    "proposal_id": "inflight",
+                    "action": "record_review",
+                    "actor": "operator",
+                    "policy_version": 1,
+                    "idempotency_key": "inflight",
+                })
+            work.propose(case, "record_review", {"part_number": "P-104"}, "operator", ["operator"])
+            state = work.inspect(case)
+            traces.append(_trace("admit_inflight_effect", state["events"][-1]["body"]["reason"], state["events"], source="admission"))
+
+            bad = json.loads((EXAMPLES / "contract.json").read_text())
+            bad["id"] = "bad-input-kind"
+            bad["inputs"] = {"note": "boolean"}
+            try:
+                work.install_contract(bad)
+                unknown_outcome = "published"
+            except Exception as exc:
+                unknown_outcome = getattr(exc, "code", "error")
+            traces.append(_trace("admit_unknown_input_kind", unknown_outcome, [], source="admission"))
+
+            traces.append(_planner_trace(Path(folder)))
+        finally:
+            for item in opened:
+                item.close()
     return traces
 
 
@@ -233,6 +243,7 @@ def _planner_trace(folder: Path) -> dict:
     server = ThreadingHTTPServer(("127.0.0.1", 0), Planner)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    work = None
     try:
         work = Work(folder / "planner.sqlite3")
         _load_examples(work)
@@ -243,6 +254,8 @@ def _planner_trace(folder: Path) -> dict:
     finally:
         server.shutdown()
         server.server_close()
+        if work is not None:
+            work.close()
     return _trace("admit_planner_denied", state["events"][-1]["body"]["reason"], state["events"], source="admission")
 
 
@@ -292,8 +305,14 @@ def write_fixture(directory: Path) -> None:
         destination = directory / "main_history.sqlite"
         if destination.exists():
             destination.unlink()
-        with sqlite3.connect(source) as origin, sqlite3.connect(destination) as copy:
+        origin = sqlite3.connect(source)
+        copy = sqlite3.connect(destination)
+        try:
             origin.backup(copy)
+        finally:
+            origin.close()
+            copy.close()
+        work.close()
         meta = {
             "case_id": case,
             "chain_valid": work.verify_chain(case),

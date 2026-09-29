@@ -149,6 +149,7 @@ def run_benchmark(*, session_cases: int = 100, work_cases: int = 40, observation
             raise RuntimeError("direct verify failed")
 
     rows.append(_row("verify_events", _samples(verify_direct, 20, warmup=1), f"{len(events)} events, no session lookup"))
+    work.close()
     work_dir.cleanup()
     return rows
 

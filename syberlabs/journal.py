@@ -49,19 +49,22 @@ class Journal:
         self._lock_file = open(self.home / ".lock", "a+b")
 
     def close(self) -> None:
-        self._lock_file.close()
+        handle = self._lock_file
+        self._lock_file = None
+        if handle is not None and not handle.closed:
+            handle.close()
 
     @contextmanager
     def locked(self):
         with self._mutex:
-            if self._depth == 0 and fcntl is not None:
+            if self._depth == 0 and fcntl is not None and self._lock_file is not None:
                 fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX)
             self._depth += 1
             try:
                 yield
             finally:
                 self._depth -= 1
-                if self._depth == 0 and fcntl is not None:
+                if self._depth == 0 and fcntl is not None and self._lock_file is not None:
                     fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
 
     def thread_path(self, case_id: str) -> Path:

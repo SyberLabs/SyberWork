@@ -77,6 +77,7 @@ class Surface(unittest.TestCase):
                 with self.assertRaises(Rejected) as planner:
                     work.model_propose(case, "planner", ["model"])
             self.assertEqual(planner.exception.code, "planner_unconfigured")
+            work.close()
 
     def test_publish_rejects_unindexed_clauses_and_keeps_examples(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -95,6 +96,7 @@ class Surface(unittest.TestCase):
                 work.install_contract(missing_fact)
             self.assertEqual(fact_error.exception.code, "invalid_contract")
             self.assertIn("required fact", fact_error.exception.detail)
+            work.close()
 
     def test_explain_does_not_enter_the_hash_chain(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -117,6 +119,7 @@ class Surface(unittest.TestCase):
                 if event["kind"] == "decision":
                     self.assertNotIn("rule", event["body"])
                     self.assertNotIn("provenance", event["body"])
+            work.close()
 
 
 class Economics(unittest.TestCase):
@@ -203,6 +206,7 @@ class Economics(unittest.TestCase):
             self.assertEqual(denied["decision"]["status"], "denied")
             self.assertEqual(denied["decision"]["reason"], "economic_budget_exceeded")
             self.assertNotIn("rule", denied["decision"])
+            work.close()
 
     def _pay(self, work, invoice_id, amount):
         case = work.create_case("pay-invoice", 1, {"invoice_id": invoice_id}, "operator")
