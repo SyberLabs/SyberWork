@@ -7,8 +7,14 @@ cd "$(dirname "$0")/.."
 docker compose build
 docker compose up -d db --wait
 docker compose run --rm -T syberwork syberwork init
+set +e
 output=$(docker compose run --rm -T syberwork python -m syberwork.smoke queue)
+status=$?
+set -e
 printf '%s\n' "$output"
+if [ "$status" -ne 0 ]; then
+  exit "$status"
+fi
 case_id=$(printf '%s\n' "$output" | sed -n 's/.*CASE //p' | tail -n 1)
 if [ -z "$case_id" ]; then
   echo "smoke queue did not print a case id" >&2

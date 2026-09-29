@@ -68,7 +68,7 @@ def queue() -> None:
             raise SystemExit("the effect settled before a worker ran")
     finally:
         work.close()
-    print(case_id, flush=True)
+    print(f"CASE {case_id}", flush=True)
 
 
 def wait(case_id: str) -> None:
