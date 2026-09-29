@@ -61,7 +61,7 @@ def restore_cell(work, directory: str | Path) -> dict:
                     f"INSERT INTO {table} ({quoted}) VALUES ({placeholders})",
                     tuple(row[column] for column in columns),
                 )
-    for case_id in manifest["cases"]:
-        if not work.verify_chain(case_id):
-            raise Rejected("restore_refused", f"restored case {case_id} failed verification")
+        for case_id in manifest["cases"]:
+            if not work.chain_ok(db, case_id):
+                raise Rejected("restore_refused", f"restored case {case_id} failed verification")
     return manifest

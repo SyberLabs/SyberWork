@@ -245,6 +245,7 @@ class AdmissionRegistry(unittest.TestCase):
             self.assertEqual(set(result["decision"]), {"status", "reason"})
             decision = next(event for event in work.inspect(case)["events"] if event["kind"] == "decision")
             self.assertNotIn("rule", decision["body"])
+            work.close()
 
 
 if __name__ == "__main__":

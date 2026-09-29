@@ -14,6 +14,7 @@ class AuthoritativeResolution(unittest.TestCase):
         self.erp = SimulatedERP(Path(self.temp.name) / "erp.sqlite3")
         self.addCleanup(self.erp.close)
         self.work = Work(Path(self.temp.name) / "work.sqlite3")
+        self.addCleanup(self.work.close)
         configure(self.work, self.erp)
 
     def site_case(self):

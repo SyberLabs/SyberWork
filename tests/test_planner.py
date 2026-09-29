@@ -17,6 +17,7 @@ class PlannerInterface(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.work = Work(Path(self.tmp.name) / "work.sqlite3")
+        self.addCleanup(self.work.close)
         self.work.install_contract(json.loads((EXAMPLES / "contract.json").read_text()))
         self.work.install_policy(json.loads((EXAMPLES / "policy.json").read_text()))
         self.work.install_action("record_review", {"kind": "local"})
