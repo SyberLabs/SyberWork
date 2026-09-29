@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-import sqlite3
 import threading
 import time
 import urllib.error
@@ -29,6 +29,16 @@ from syberlabs.jcs import envelope_jcs
 from syberlabs.planner import HttpPlanner, planning_context
 from syberlabs.targets import guard_request, trusted_origin
 from syberlabs.values import at_path
+from syberwork.storage import (
+    ActionRegistry,
+    CaseStore,
+    ContractStore,
+    EventStore,
+    PolicyStore,
+    ReservationStore,
+    SourceRegistry,
+    open_store,
+)
 
 __all__ = ["Rejected", "Work", "canonical", "digest", "trusted_origin"]
 
@@ -55,43 +65,15 @@ def _destination_code(exc: BaseException) -> str:
 
 
 class Work:
-    def __init__(self, database: str | Path):
+    def __init__(self, database: str | Path, *, effects: str = "inline", trace=None):
+        if effects not in ("inline", "worker"):
+            raise Rejected("invalid_runtime", "effects must be inline or worker")
         self.database = str(database)
-        Path(database).parent.mkdir(parents=True, exist_ok=True)
+        self.effects = effects
+        self.trace = trace
+        self.metrics = {"admission": 0, "effect_claim": 0, "effect_settlement": 0, "effect_unknown": 0, "reconciliation": 0}
         self._lock = threading.Lock()
-        self._db = sqlite3.connect(self.database, timeout=15, isolation_level=None, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA foreign_keys=ON")
-        self._db.execute("PRAGMA busy_timeout=15000")
-        self._db.executescript("""
-                CREATE TABLE IF NOT EXISTS contracts (
-                    id TEXT NOT NULL, version INTEGER NOT NULL, body TEXT NOT NULL,
-                    PRIMARY KEY(id, version));
-                CREATE TABLE IF NOT EXISTS policies (
-                    version INTEGER PRIMARY KEY, body TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS actions (
-                    name TEXT PRIMARY KEY, body TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS sources (
-                    name TEXT PRIMARY KEY, body TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS cases (
-                    id TEXT PRIMARY KEY, contract_id TEXT NOT NULL,
-                    contract_version INTEGER NOT NULL, inputs TEXT NOT NULL,
-                    created REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS events (
-                    case_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
-                    body TEXT NOT NULL, at REAL NOT NULL, previous TEXT NOT NULL,
-                    hash TEXT NOT NULL, at_json TEXT, PRIMARY KEY(case_id,seq));
-                CREATE TABLE IF NOT EXISTS economic_reservations (
-                    proposal_id TEXT PRIMARY KEY, case_id TEXT NOT NULL,
-                    budget_id TEXT NOT NULL, asset TEXT NOT NULL,
-                    amount_units INTEGER NOT NULL, state TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS event_side (
-                    case_id TEXT NOT NULL, seq INTEGER NOT NULL,
-                    jcs TEXT, rule TEXT, PRIMARY KEY(case_id, seq));
-            """)
-        columns = {row[1] for row in self._db.execute("PRAGMA table_info(events)")}
-        if "at_json" not in columns:
-            self._db.execute("ALTER TABLE events ADD COLUMN at_json TEXT")
+        self._db = open_store(database)
 
     def close(self) -> None:
         self._db.close()
@@ -102,28 +84,31 @@ class Work:
         except Exception:
             pass
 
+    def _emit(self, name: str, **fields) -> None:
+        self.metrics[name] = self.metrics.get(name, 0) + 1
+        if self.trace is not None:
+            self.trace.record(name, **fields)
+
     @contextmanager
     def tx(self):
         """One connection for the life of this Work. Callers must not nest tx()."""
         with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
+            self._db.begin()
             try:
                 yield self._db
                 self._db.commit()
             except BaseException:
-                try:
-                    self._db.rollback()
-                except sqlite3.Error:
-                    pass
+                self._db.rollback()
                 raise
 
     def install_contract(self, doc: dict) -> None:
         doc = prepare_contract(doc)
         with self.tx() as db:
-            row = db.execute("SELECT body FROM contracts WHERE id=? AND version=?", (doc["id"], doc["version"])).fetchone()
+            contracts = ContractStore(db)
+            row = contracts.get(doc["id"], doc["version"])
             if row and row["body"] != canonical(doc):
                 raise Rejected("immutable_contract", "publish a new version")
-            db.execute("INSERT OR IGNORE INTO contracts VALUES (?,?,?)", (doc["id"], doc["version"], canonical(doc)))
+            contracts.insert_new(doc["id"], doc["version"], canonical(doc))
 
     @staticmethod
     def _compile_path(doc: dict) -> list[str]:
@@ -145,16 +130,17 @@ class Work:
         if not isinstance(doc.get("version"), int) or not isinstance(doc.get("actions"), dict):
             raise Rejected("invalid_policy", "version and actions required")
         with self.tx() as db:
-            current = db.execute("SELECT max(version) AS v FROM policies").fetchone()["v"]
-            prior = db.execute("SELECT body FROM policies WHERE version=?", (doc["version"],)).fetchone()
+            policies = PolicyStore(db)
+            current = policies.max_version()
+            prior = policies.get(doc["version"])
             if prior and prior["body"] != canonical(doc):
                 raise Rejected("immutable_policy", "publish a new version")
             if current is not None and doc["version"] < current and not prior:
                 raise Rejected("policy_version", "new policy version must advance")
             if not prior and policy_has_economic(doc):
-                prior_docs = [json.loads(row["body"]) for row in db.execute("SELECT body FROM policies")]
+                prior_docs = [json.loads(row["body"]) for row in policies.bodies()]
                 validate_policy_budgets(doc, prior_docs)
-            db.execute("INSERT OR IGNORE INTO policies VALUES (?,?)", (doc["version"], canonical(doc)))
+            policies.insert_new(doc["version"], canonical(doc))
 
     def install_action(self, name: str, doc: dict) -> None:
         if doc.get("kind") not in ("local", "http", "economic_http"):
@@ -183,10 +169,11 @@ class Work:
         if not isinstance(no_write, list) or any(type(code) is not int or code not in (409, 412, 428) for code in no_write):
             raise Rejected("invalid_action", "no-write statuses must be explicit precondition rejections")
         with self.tx() as db:
-            prior = db.execute("SELECT body FROM actions WHERE name=?", (name,)).fetchone()
+            actions = ActionRegistry(db)
+            prior = actions.get(name)
             if prior and prior["body"] != canonical(doc):
                 raise Rejected("immutable_action", "action definitions cannot change while cases exist; use a new name")
-            db.execute("INSERT OR IGNORE INTO actions VALUES (?,?)", (name, canonical(doc)))
+            actions.insert_new(name, canonical(doc))
 
     def install_source(self, name: str, doc: dict) -> None:
         url = doc.get("url") if isinstance(doc.get("url"), str) else ""
@@ -198,17 +185,18 @@ class Work:
         if doc.get("kind") != "http" or not trusted or "{key}" not in url:
             raise Rejected("invalid_source", "source needs a fixed HTTPS or local URL with {key}")
         with self.tx() as db:
-            prior = db.execute("SELECT body FROM sources WHERE name=?", (name,)).fetchone()
+            sources = SourceRegistry(db)
+            prior = sources.get(name)
             if prior and prior["body"] != canonical(doc):
                 raise Rejected("immutable_source", "publish a new source name")
-            db.execute("INSERT OR IGNORE INTO sources VALUES (?,?)", (name, canonical(doc)))
+            sources.insert_new(name, canonical(doc))
 
     def create_case(self, contract_id: str, version: int, inputs: dict, actor: str) -> str:
         with self.tx() as db:
             contract = self._contract(db, contract_id, version)
             check_case_inputs(contract["inputs"], inputs)
             case_id = str(uuid.uuid4())
-            db.execute("INSERT INTO cases VALUES (?,?,?,?,?)", (case_id, contract_id, version, canonical(inputs), time.time()))
+            CaseStore(db).insert(case_id, contract_id, version, canonical(inputs), time.time())
             self._append(db, case_id, "case_created", {"actor": actor, "inputs": inputs, "contract": [contract_id, version]})
             return case_id
 
@@ -342,7 +330,7 @@ class Work:
             for event in history:
                 if event["kind"] != "effect_started" or event["body"]["proposal_id"] in rejected:
                     continue
-                action = db.execute("SELECT body FROM actions WHERE name=?", (event["body"]["action"],)).fetchone()
+                action = ActionRegistry(db).get(event["body"]["action"])
                 if action and json.loads(action["body"])["kind"] in ("http", "economic_http"):
                     raise Rejected("cancellation_denied", "an external effect was claimed; verify its outcome first")
             return self._append(db, case_id, "case_cancelled", {"actor": actor, "role": contract.get("cancel_role", "manager"), "reason": reason.strip()})
@@ -399,7 +387,7 @@ class Work:
     def refresh_fact(self, case_id: str, source: str, key: str, record_key: str, actor: str, roles: list[str]) -> dict:
         with self.tx() as db:
             self._case(db, case_id)
-            row = db.execute("SELECT body FROM sources WHERE name=?", (source,)).fetchone()
+            row = SourceRegistry(db).get(source)
             if not row:
                 raise Rejected("unknown_source", source)
             config = json.loads(row["body"])
@@ -455,6 +443,7 @@ class Work:
             full = self._decision(contract, policy, history, proposal, time.time(), db)
             result = {"status": full["status"], "reason": full["reason"]}
             self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], **result}, rule=full["rule"])
+            self._emit("admission", case_id=case_id, proposal_id=proposal_id, status=result["status"], reason=result["reason"], rule=full["rule"])
             return {"proposal": proposal, "decision": result}
 
     def compiled_propose(self, case_id: str, actor: str, roles: list[str]) -> dict:
@@ -515,54 +504,127 @@ class Work:
             if decision["status"] != "allowed":
                 self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision}, rule=full["rule"])
                 return {"decision": decision}
-            action = json.loads(db.execute("SELECT body FROM actions WHERE name=?", (proposal["action"],)).fetchone()["body"])
+            action = json.loads(ActionRegistry(db).get(proposal["action"])["body"])
             extra = {}
             if action["kind"] == "economic_http":
                 rule = policy["actions"][proposal["action"]]["economic"]
                 amount = units(proposal["args"]["amount_units"])
-                db.execute("INSERT INTO economic_reservations VALUES (?,?,?,?,?,?)", (
-                    proposal_id, case_id, rule["budget_id"], action["asset"], amount, "reserved"))
+                ReservationStore(db).reserve(proposal_id, case_id, rule["budget_id"], action["asset"], amount)
                 extra = {"policy_snapshot": digest(policy),
                          "evidence_snapshot": digest(proposal["args"]["evidence"]),
                          "intent_snapshot": digest(proposal["args"]),
                          "budget_id": rule["budget_id"]}
             claim = self._append(db, case_id, "effect_started", {"proposal_id": proposal_id, "action": proposal["action"], "actor": actor, "policy_version": policy["version"], "idempotency_key": proposal_id, **extra})
+            self._emit("effect_claim", case_id=case_id, proposal_id=proposal_id, mode=self.effects)
+            if self.effects == "worker":
+                db.execute(
+                    "INSERT INTO effect_obligations (proposal_id, case_id, state, lease_until, attempts) VALUES (?,?,?,?,?)",
+                    (proposal_id, case_id, "queued", None, 0),
+                )
+                return {"status": "queued", "proposal_id": proposal_id, "event": claim}
+        return self.finish_claimed(case_id, proposal_id, proposal, action, claim)
+
+    def finish_claimed(self, case_id: str, proposal_id: str, proposal: dict, action: dict, claim: dict) -> dict:
+        """Run a claimed effect and settle it. The claim is already durable."""
         try:
+            self._emit("effect_invocation", case_id=case_id, proposal_id=proposal_id, action=proposal["action"])
             output = self._execute(action, proposal["args"], proposal_id)
         except urllib.error.HTTPError as exc:
             if exc.code in action.get("no_write_statuses", []):
                 with self.tx() as db:
                     settled = self._verified(db, case_id, proposal_id)
                     if settled:
+                        self._close_obligation(db, proposal_id, "settled")
                         return {"status": "succeeded", "event": settled}
                     if action["kind"] == "economic_http":
-                        db.execute("UPDATE economic_reservations SET state='released' WHERE proposal_id=?", (proposal_id,))
+                        ReservationStore(db).set_state(proposal_id, "released")
                     event = self._append(db, case_id, "effect_rejected", {
                         "proposal_id": proposal_id, "action": proposal["action"],
                         "status": exc.code, "claim_hash": claim["hash"],
                     })
+                    self._close_obligation(db, proposal_id, "rejected")
+                self._emit("effect_settlement", case_id=case_id, proposal_id=proposal_id, status="rejected")
                 return {"status": "rejected", "event": event}
-            with self.tx() as db:
-                settled = self._verified(db, case_id, proposal_id)
-                if settled:
-                    return {"status": "succeeded", "event": settled}
-                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": _destination_code(exc)})
-            return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
+            return self._unknown_effect(case_id, proposal_id, proposal, exc)
         except Exception as exc:
-            with self.tx() as db:
-                settled = self._verified(db, case_id, proposal_id)
-                if settled:
-                    return {"status": "succeeded", "event": settled}
-                self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": _destination_code(exc)})
-            return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
+            return self._unknown_effect(case_id, proposal_id, proposal, exc)
         with self.tx() as db:
             settled = self._verified(db, case_id, proposal_id)
             if settled:
+                self._close_obligation(db, proposal_id, "settled")
                 return {"status": "succeeded", "event": settled}
             if action["kind"] == "economic_http":
-                db.execute("UPDATE economic_reservations SET state='settled' WHERE proposal_id=?", (proposal_id,))
+                ReservationStore(db).set_state(proposal_id, "settled")
             result = self._append(db, case_id, "effect_succeeded", {"proposal_id": proposal_id, "action": proposal["action"], "output": output, "claim_hash": claim["hash"]})
+            self._close_obligation(db, proposal_id, "settled")
+        self._emit("effect_settlement", case_id=case_id, proposal_id=proposal_id, status="succeeded")
         return {"status": "succeeded", "event": result}
+
+    def _unknown_effect(self, case_id: str, proposal_id: str, proposal: dict, exc: BaseException) -> dict:
+        with self.tx() as db:
+            settled = self._verified(db, case_id, proposal_id)
+            if settled:
+                self._close_obligation(db, proposal_id, "settled")
+                return {"status": "succeeded", "event": settled}
+            self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": _destination_code(exc)})
+            self._close_obligation(db, proposal_id, "unknown")
+        self._emit("effect_unknown", case_id=case_id, proposal_id=proposal_id, error=_destination_code(exc))
+        self._emit("effect_settlement", case_id=case_id, proposal_id=proposal_id, status="unknown")
+        return {"status": "unknown", "proposal_id": proposal_id, "detail": "Check destination before reconciliation; execution might have succeeded"}
+
+    def lease_obligation(self, *, now: float | None = None) -> dict | None:
+        """Take one queued obligation, or report a lease that expired during execution."""
+        now = time.time() if now is None else now
+        with self.tx() as db:
+            row = db.execute(
+                "SELECT proposal_id, case_id, state FROM effect_obligations "
+                "WHERE state='queued' OR (state='leased' AND lease_until IS NOT NULL AND lease_until <= ?) "
+                "ORDER BY proposal_id LIMIT 1",
+                (now,),
+            ).fetchone()
+            if not row:
+                return None
+            if row["state"] == "leased":
+                return {"state": "interrupted", "case_id": row["case_id"], "proposal_id": row["proposal_id"]}
+            db.execute(
+                "UPDATE effect_obligations SET state='leased', lease_until=?, attempts=attempts+1 "
+                "WHERE proposal_id=? AND state='queued'",
+                (now + 30, row["proposal_id"]),
+            )
+            history = self._events(db, row["case_id"])
+            proposal = self._proposal(history, row["proposal_id"])
+            action = json.loads(ActionRegistry(db).get(proposal["action"])["body"])
+            claim = next(event for event in history if event["kind"] == "effect_started" and event["body"]["proposal_id"] == row["proposal_id"])
+            return {
+                "state": "leased",
+                "case_id": row["case_id"],
+                "proposal_id": row["proposal_id"],
+                "proposal": proposal,
+                "action": action,
+                "claim": claim,
+            }
+
+    def settle_interrupted(self, job: dict) -> dict:
+        """A worker died during the destination call. The outcome stays unknown."""
+        case_id, proposal_id = job["case_id"], job["proposal_id"]
+        with self.tx() as db:
+            history = self._events(db, case_id)
+            if any(event["kind"] in ("effect_succeeded", "effect_rejected", "effect_unknown") and event["body"]["proposal_id"] == proposal_id for event in history):
+                self._close_obligation(db, proposal_id, "settled")
+                return {"status": "settled", "proposal_id": proposal_id}
+            action = next(event["body"]["action"] for event in history if event["kind"] == "effect_started" and event["body"]["proposal_id"] == proposal_id)
+            self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": action, "error": "worker_interrupted"})
+            self._close_obligation(db, proposal_id, "unknown")
+        self._emit("effect_unknown", case_id=case_id, proposal_id=proposal_id, error="worker_interrupted")
+        self._emit("effect_settlement", case_id=case_id, proposal_id=proposal_id, status="unknown")
+        return {"status": "unknown", "proposal_id": proposal_id, "detail": "worker interrupted during the destination call"}
+
+    @staticmethod
+    def _close_obligation(db, proposal_id: str, state: str) -> None:
+        db.execute(
+            "UPDATE effect_obligations SET state=?, lease_until=NULL WHERE proposal_id=?",
+            (state, proposal_id),
+        )
 
     def reconcile(self, case_id: str, proposal_id: str, actor: str, roles: list[str], *, success=None, evidence=None) -> dict:
         """Check the installed destination's authoritative status; caller supplies no outcome."""
@@ -578,7 +640,7 @@ class Work:
                 raise Rejected("reconciliation_denied", "no unresolved effect")
             if any(verified_reconciliation(e) and e["body"]["proposal_id"] == proposal_id for e in history):
                 raise Rejected("reconciliation_denied", "already reconciled")
-            config = json.loads(db.execute("SELECT body FROM actions WHERE name=?", (proposal["action"],)).fetchone()["body"])
+            config = json.loads(ActionRegistry(db).get(proposal["action"])["body"])
             status_url = config.get("status_url")
             if not status_url:
                 raise Rejected("reconciliation_unavailable", "action has no installed destination status lookup")
@@ -625,7 +687,7 @@ class Work:
                 raise Rejected("reconciliation_denied", "effect resolved during status lookup")
             if status == "verified":
                 if config.get("kind") == "economic_http":
-                    db.execute("UPDATE economic_reservations SET state='settled' WHERE proposal_id=? AND state='reserved'", (proposal_id,))
+                    ReservationStore(db).set_state(proposal_id, "settled", only_reserved=True)
                 proof = {"verified": True, "external_id": record["external_id"],
                          "request_digest": record["request_digest"], "response_digest": digest(record),
                          "idempotency_key": proposal_id}
@@ -641,6 +703,7 @@ class Work:
                     "proposal_id": proposal_id, "action": proposal["action"],
                     "status": status, "reason": reason, "actor": actor,
                 })
+            self._emit("reconciliation", case_id=case_id, proposal_id=proposal_id, status=status, reason=reason)
             return {"status": status, "reason": reason, "event": event}
 
     def signoff(self, case_id: str, actor: str, roles: list[str], role: str) -> dict:
@@ -683,7 +746,7 @@ class Work:
 
     def list_cases(self) -> list[dict]:
         with self.tx() as db:
-            return [dict(r) for r in db.execute("SELECT * FROM cases ORDER BY created DESC")]
+            return [dict(row) for row in CaseStore(db).list_all()]
 
     def replay(self, case_id: str, contract_version: int, policy_version: int) -> dict:
         with self.tx() as db:
@@ -719,10 +782,7 @@ class Work:
             events = self._events(db, case_id)
             if not verify_events(events):
                 return False
-            stored = {
-                row["seq"]: row["jcs"]
-                for row in db.execute("SELECT seq, jcs FROM event_side WHERE case_id=?", (case_id,))
-            }
+            stored = EventStore(db).side_digests(case_id)
             for event in events:
                 digest = stored.get(event["seq"])
                 if isinstance(digest, str) and digest != envelope_jcs(event):
@@ -736,10 +796,7 @@ class Work:
         """
         with self.tx() as db:
             self._case(db, case_id)
-            rows = db.execute(
-                "SELECT seq, jcs, rule FROM event_side WHERE case_id=? ORDER BY seq",
-                (case_id,),
-            ).fetchall()
+            rows = EventStore(db).side(case_id)
             return [{"seq": row["seq"], "jcs": row["jcs"], "rule": row["rule"]} for row in rows]
 
     @staticmethod
@@ -768,21 +825,22 @@ class Work:
 
     @staticmethod
     def _case(db, case_id):
-        row = db.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
+        row = CaseStore(db).get(case_id)
         if not row:
             raise Rejected("unknown_case", case_id)
         return row
 
     @staticmethod
     def _contract(db, contract_id, version):
-        row = db.execute("SELECT body FROM contracts WHERE id=? AND version=?", (contract_id, version)).fetchone()
+        row = ContractStore(db).get(contract_id, version)
         if not row:
             raise Rejected("unknown_contract", f"{contract_id}@{version}")
         return json.loads(row["body"])
 
     @staticmethod
     def _policy(db, version=None):
-        row = db.execute("SELECT body FROM policies WHERE version=?" if version is not None else "SELECT body FROM policies ORDER BY version DESC LIMIT 1", (version,) if version is not None else ()).fetchone()
+        policies = PolicyStore(db)
+        row = policies.get(version) if version is not None else policies.latest()
         if not row:
             raise Rejected("unknown_policy", "install policy first")
         return json.loads(row["body"])
@@ -790,10 +848,7 @@ class Work:
     @staticmethod
     def _events(db, case_id):
         events = []
-        rows = db.execute(
-            "SELECT case_id, seq, kind, body, at, previous, hash, at_json FROM events WHERE case_id=? ORDER BY seq",
-            (case_id,),
-        )
+        rows = EventStore(db).read(case_id)
         for row in rows:
             at = json.loads(row["at_json"]) if row["at_json"] is not None else row["at"]
             events.append({
@@ -809,18 +864,13 @@ class Work:
 
     @staticmethod
     def _append(db, case_id, kind, body, *, rule=None):
-        previous = db.execute("SELECT seq,hash FROM events WHERE case_id=? ORDER BY seq DESC LIMIT 1", (case_id,)).fetchone()
+        events = EventStore(db)
+        previous = events.previous(case_id)
         event = {"case_id": case_id, "seq": previous["seq"] + 1 if previous else 1, "kind": kind,
                  "body": body, "at": stamp(time.time()), "previous": previous["hash"] if previous else "0" * 64}
         event["hash"] = event_digest(event)
-        db.execute(
-            "INSERT INTO events (case_id, seq, kind, body, at, previous, hash, at_json) VALUES (?,?,?,?,?,?,?,?)",
-            (case_id, event["seq"], kind, canonical(body), event["at"], event["previous"], event["hash"], json.dumps(event["at"])),
-        )
-        db.execute(
-            "INSERT INTO event_side VALUES (?,?,?,?)",
-            (case_id, event["seq"], envelope_jcs(event), rule if kind == "decision" else None),
-        )
+        events.append(case_id, event["seq"], kind, canonical(body), event["at"], event["previous"], event["hash"], json.dumps(event["at"]))
+        events.append_side(case_id, event["seq"], envelope_jcs(event), rule if kind == "decision" else None)
         return event
 
     def _verified(self, db, case_id, proposal_id):
@@ -865,17 +915,68 @@ class Work:
                 raise Rejected("invalid_explain", "when must be now or recorded")
             return explain(self._context(contract, policy, history, proposal, now, db))
 
+    def bind_organization(self, organization: str) -> dict:
+        """Bind this database to one organization. A second organization is refused."""
+        if not isinstance(organization, str) or not organization.strip():
+            raise Rejected("invalid_cell", "organization name required")
+        name = organization.strip()
+        with self.tx() as db:
+            prior = db.execute("SELECT organization, cell_version FROM cell WHERE id=1").fetchone()
+            if prior and prior["organization"] != name:
+                raise Rejected("cell_bound", "this database already belongs to another organization")
+            if not prior:
+                db.execute("INSERT INTO cell VALUES (1, ?, ?)", (name, "0.1"))
+            row = db.execute("SELECT organization, cell_version FROM cell WHERE id=1").fetchone()
+        return {"organization": row["organization"], "cell_version": row["cell_version"], "isolation": "cell"}
+
+    def register_principal(self, principal_id: str, kind: str, name: str, organization: str, roles: list[str], *, token: str | None = None, delegation: str | None = None) -> dict:
+        """Record who can act in this cell. The token is stored only as a hash."""
+        if kind not in ("human", "service", "agent"):
+            raise Rejected("invalid_principal", "principal kind must be human, service, or agent")
+        if not isinstance(principal_id, str) or not principal_id or not isinstance(name, str) or not name:
+            raise Rejected("invalid_principal", "principal id and name are required")
+        if not isinstance(roles, list) or any(not isinstance(role, str) for role in roles):
+            raise Rejected("invalid_principal", "roles must be a list of strings")
+        cell = self.bind_organization(organization)
+        token_hash = hashlib.sha256(token.encode()).hexdigest() if token else None
+        with self.tx() as db:
+            prior = db.execute("SELECT id FROM principals WHERE id=?", (principal_id,)).fetchone()
+            if prior:
+                raise Rejected("principal_exists", principal_id)
+            db.execute(
+                "INSERT INTO principals VALUES (?,?,?,?,?,?,?)",
+                (principal_id, kind, name, cell["organization"], token_hash, json.dumps(roles), delegation),
+            )
+        return {"id": principal_id, "kind": kind, "name": name, "organization": cell["organization"], "roles": roles, "delegation": delegation}
+
+    def principal_for_token(self, token: str) -> dict | None:
+        if not isinstance(token, str) or not token:
+            return None
+        hashed = hashlib.sha256(token.encode()).hexdigest()
+        with self.tx() as db:
+            row = db.execute(
+                "SELECT id, kind, name, organization, roles, delegation FROM principals WHERE token_hash=?",
+                (hashed,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "name": row["name"],
+            "roles": json.loads(row["roles"]),
+            "sources": [],
+            "principal_id": row["id"],
+            "kind": row["kind"],
+            "organization": row["organization"],
+            "delegation": row["delegation"],
+        }
+
     def _context(self, contract, policy, history, proposal, now, db):
-        installed = {row["name"] for row in db.execute("SELECT name FROM actions")}
-        configs = {row["name"]: json.loads(row["body"]) for row in db.execute("SELECT name, body FROM actions")}
+        actions = ActionRegistry(db)
+        installed = actions.names()
+        configs = {name: json.loads(body) for name, body in actions.documents().items()}
 
         def reserved(budget_id, asset):
-            row = db.execute(
-                "SELECT COALESCE(SUM(amount_units),0) AS total FROM economic_reservations "
-                "WHERE budget_id=? AND asset=? AND state!='released'",
-                (budget_id, asset),
-            ).fetchone()
-            return int(row["total"])
+            return ReservationStore(db).reserved_total(budget_id, asset)
 
         return AdmissionContext(contract, policy, history, proposal, now, installed, configs, reserved)
 

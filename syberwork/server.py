@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -20,7 +21,8 @@ def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
 
 def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766) -> ThreadingHTTPServer:
     """Build the loopback server without starting it. Port 0 picks a free port."""
-    if host not in ("127.0.0.1", "::1", "localhost"):
+    loopback = host in ("127.0.0.1", "::1", "localhost")
+    if not loopback and os.getenv("SYBERWORK_BIND", "") != host:
         raise Rejected("unsafe_bind", "the operator service must bind to loopback")
 
     class Handler(BaseHTTPRequestHandler):
@@ -30,6 +32,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
             for name, info in users.items():
                 if token and hmac.compare_digest(info["hash"], hashed):
                     return {"name": name, **info}
+            principal = work.principal_for_token(token)
+            if principal:
+                return principal
             raise Rejected("unauthorized", "valid bearer token required")
 
         def _json(self, data, status=200):
@@ -65,7 +70,11 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     return
                 user = self._user()
                 if parts == ["api", "me"]:
-                    self._json({"name": user["name"], "roles": user.get("roles", []), "sources": user.get("sources", [])})
+                    profile = {"name": user["name"], "roles": user.get("roles", []), "sources": user.get("sources", [])}
+                    for key in ("principal_id", "kind", "organization", "delegation"):
+                        if key in user:
+                            profile[key] = user[key]
+                    self._json(profile)
                 elif parts == ["api", "cases"]:
                     self._json(work.list_cases())
                 elif len(parts) == 5 and parts[:2] == ["api", "contracts"] and parts[4] == "artifacts":

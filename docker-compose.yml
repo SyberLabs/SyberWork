@@ -1,0 +1,41 @@
+# One organization, one database. The application listens on all interfaces
+# only when SYBERWORK_BIND is set to that address.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: syber
+      POSTGRES_PASSWORD: syber
+      POSTGRES_DB: syberwork
+    volumes:
+      - syberwork-db:/var/lib/postgresql/data
+  syberwork:
+    build: .
+    environment:
+      SYBERWORK_HOME: /var/lib/syberwork
+      SYBERWORK_DATABASE: postgresql://syber:syber@db:5432/syberwork
+      SYBERWORK_ORGANIZATION: example
+      SYBERWORK_BIND: 0.0.0.0
+      SYBERWORK_EFFECTS: worker
+      SYBERWORK_TRACE: "1"
+    ports:
+      - "8766:8766"
+    depends_on:
+      - db
+    volumes:
+      - syberwork-home:/var/lib/syberwork
+  worker:
+    build: .
+    command: ["syberwork", "--home", "/var/lib/syberwork", "worker"]
+    environment:
+      SYBERWORK_HOME: /var/lib/syberwork
+      SYBERWORK_DATABASE: postgresql://syber:syber@db:5432/syberwork
+      SYBERWORK_TRACE: "1"
+    depends_on:
+      - db
+    volumes:
+      - syberwork-home:/var/lib/syberwork
+
+volumes:
+  syberwork-db:
+  syberwork-home:
