@@ -64,7 +64,7 @@ Mutations are HTTP POST. Coordination roles (`admin`, `operator`, `engineer`, `m
 
 ## Storage
 
-Migration `0004` adds the coordination tables to the cell database, SQLite and PostgreSQL. Migration `0005` adds the evaluation-world tables the same way, without altering `builder_generations`. They are included in logical snapshots. A snapshot taken before those files existed still restores when it has none of the Builder table files. A snapshot missing any older table, or only some of the Builder files, is refused. Case hashes are not rewritten. The migration statements use `IF NOT EXISTS`, so an interrupted open can be retried. They are not one database transaction.
+Migration `0004` adds the coordination tables to the cell database, SQLite and PostgreSQL. Migration `0005` adds the evaluation-world tables the same way, without altering `builder_generations`. They are included in logical snapshots. Restore accepts a whole missing migration group: a snapshot with no Builder files, and a snapshot with every `0004` Builder file and none of the three world files. A group that is only partly present is refused, as is a missing older table such as `policies.json`. Case hashes are not rewritten. The migration statements use `IF NOT EXISTS`, so an interrupted open can be retried. They are not one database transaction.
 
 ## Evaluation worlds
 

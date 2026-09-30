@@ -93,6 +93,79 @@ class Migration(unittest.TestCase):
             finally:
                 legacy.close()
 
+    def test_a_complete_pre_world_snapshot_restores_and_a_partial_world_group_does_not(self):
+        generation_body = {
+            "objective": "persist",
+            "base_revision": "abc123",
+            "mode": "harden",
+            "isolation": "independent",
+            "diversity_threshold": 0.3,
+            "min_approaches": 1,
+            "selection_policy_id": "review",
+            "selection_policy_version": 1,
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            source = Work(Path(folder) / "source.sqlite")
+            source.install_contract(NOTE)
+            source.install_policy({"version": 1, "actions": {"promote": {"roles": ["operator"]}}})
+            source.install_action("promote", {"kind": "local"})
+            case_id = source.create_case("repo-change", 1, {"objective": "a"}, "operator")
+            store = BuilderStore(source)
+            store.install_policy(POLICY, "operator")
+            generation = store.create_generation({**generation_body, "case_id": case_id}, "operator")
+            snapshot = Path(folder) / "pre-world"
+            export_cell(source, snapshot)
+            source.close()
+            for name in ("builder_worlds", "builder_generation_worlds", "builder_evaluation_bindings"):
+                (snapshot / f"{name}.json").unlink()
+            restored = Work(Path(folder) / "restored.sqlite")
+            restore_cell(restored, snapshot)
+            try:
+                self.assertTrue(restored.verify_chain(case_id))
+                view = BuilderStore(restored).generation_view(generation["id"])
+                self.assertEqual(view["generation"]["state"], "drafting")
+                self.assertNotIn("world_definition", view)
+            finally:
+                restored.close()
+            partial = Path(folder) / "partial"
+            fresh = Work(Path(folder) / "fresh.sqlite")
+            fresh.install_contract(NOTE)
+            fresh.install_policy({"version": 1, "actions": {"promote": {"roles": ["operator"]}}})
+            fresh.install_action("promote", {"kind": "local"})
+            fresh.create_case("repo-change", 1, {"objective": "a"}, "operator")
+            export_cell(fresh, partial)
+            fresh.close()
+            (partial / "builder_worlds.json").unlink()
+            broken = Work(Path(folder) / "broken.sqlite")
+            with self.assertRaises(Rejected) as refused:
+                restore_cell(broken, partial)
+            self.assertEqual(refused.exception.code, "restore_refused")
+            self.assertIn("builder_worlds", refused.exception.detail)
+            self.assertEqual(broken.list_cases(), [])
+            broken.close()
+            orphan = Path(folder) / "orphan"
+            again = Work(Path(folder) / "again.sqlite")
+            again.install_contract(NOTE)
+            again.install_policy({"version": 1, "actions": {"promote": {"roles": ["operator"]}}})
+            again.install_action("promote", {"kind": "local"})
+            again.create_case("repo-change", 1, {"objective": "a"}, "operator")
+            export_cell(again, orphan)
+            again.close()
+            for name in (
+                "coordination_events", "builder_works", "builder_policies", "builder_generations",
+                "builder_approaches", "builder_agents", "builder_feedback", "builder_integrity",
+                "builder_selections", "builder_architecture", "builder_prototypes", "builder_commands",
+                "builder_candidate_links",
+            ):
+                (orphan / f"{name}.json").unlink()
+            refused_orphan = Work(Path(folder) / "orphan.sqlite")
+            with self.assertRaises(Rejected) as older:
+                restore_cell(refused_orphan, orphan)
+            self.assertEqual(older.exception.code, "restore_refused")
+            self.assertIn("coordination_events", older.exception.detail)
+            self.assertEqual(refused_orphan.list_cases(), [])
+            refused_orphan.close()
+
 
     def test_world_tables_are_created_without_altering_generations(self):
         from syberwork.storage import _MIGRATIONS

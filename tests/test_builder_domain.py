@@ -174,6 +174,13 @@ class Domain(unittest.TestCase):
         later = world_body()
         later["time_policy"] = {"mode": "fixed", "epoch": 1700000000000001, "timezone": "UTC"}
         self.assertEqual(len({first["digest"], revised["digest"], world_definition(resnapped)["digest"], world_definition(later)["digest"]}), 4)
+        self.assertNotEqual(first["digest"], first["environment_snapshot"]["snapshot_digest"])
+        empty_snapshot = world_body()
+        empty_snapshot["environment_snapshot"] = {"snapshot_ref": None, "snapshot_digest": None}
+        self.assertNotEqual(world_definition(empty_snapshot)["digest"], first["digest"])
+        borrowed = world_body()
+        borrowed["environment_snapshot"] = {"snapshot_ref": "snap-1", "snapshot_digest": first["digest"]}
+        self.assertNotEqual(world_definition(borrowed)["digest"], first["digest"])
         claimed = world_body()
         claimed["digest"] = "0" * 64
         with self.assertRaises(Rejected) as mismatch:

@@ -16,9 +16,57 @@ from syberlabs.errors import Rejected
 from .storage import SNAPSHOT_TABLES
 
 
-# Tables introduced by migration 0004. A snapshot from before that migration
-# has no file for them. Every older table is authoritative and must be present.
-OPTIONAL_SNAPSHOT_TABLES = frozenset(name for name in SNAPSHOT_TABLES if name == "coordination_events" or name.startswith("builder_"))
+# Optional tables arrive in migration groups. A snapshot from before a group
+# has none of that group's files. Restore skips a whole group only when every
+# file in it is absent. A group that is partly present is a damaged snapshot.
+# A later group that is present while an earlier group is absent is damaged too.
+# Every table outside these groups is authoritative and must be present.
+SNAPSHOT_GROUPS = (
+    (
+        "coordination_events",
+        "builder_works",
+        "builder_policies",
+        "builder_generations",
+        "builder_approaches",
+        "builder_agents",
+        "builder_feedback",
+        "builder_integrity",
+        "builder_selections",
+        "builder_architecture",
+        "builder_prototypes",
+        "builder_commands",
+        "builder_candidate_links",
+    ),
+    (
+        "builder_worlds",
+        "builder_generation_worlds",
+        "builder_evaluation_bindings",
+    ),
+)
+OPTIONAL_SNAPSHOT_TABLES = frozenset(name for group in SNAPSHOT_GROUPS for name in group)
+
+
+def _optional_skip(directory: Path) -> set[str]:
+    """Tables a complete older snapshot is allowed to omit."""
+    skip = set()
+    earlier_absent = False
+    for group in SNAPSHOT_GROUPS:
+        present = [name for name in group if (directory / f"{name}.json").exists()]
+        if not present:
+            skip.update(group)
+            earlier_absent = True
+            continue
+        if len(present) != len(group):
+            missing = next(name for name in group if name not in present)
+            raise Rejected("restore_refused", f"snapshot is missing {missing}")
+        if earlier_absent:
+            missing = next(
+                name for earlier in SNAPSHOT_GROUPS for name in earlier
+                if not (directory / f"{name}.json").exists()
+            )
+            raise Rejected("restore_refused", f"snapshot is missing {missing}")
+        earlier_absent = False
+    return skip
 
 
 def _columns(store, table: str) -> list[str]:
@@ -54,11 +102,11 @@ def restore_cell(work, directory: str | Path) -> dict:
         existing = db.execute("SELECT id FROM cases LIMIT 1").fetchone()
         if existing:
             raise Rejected("restore_refused", "restore only into an empty cell database")
-        legacy = not any((directory / f"{name}.json").exists() for name in OPTIONAL_SNAPSHOT_TABLES)
+        skip = _optional_skip(directory)
         for table in SNAPSHOT_TABLES:
             path = directory / f"{table}.json"
             if not path.exists():
-                if legacy and table in OPTIONAL_SNAPSHOT_TABLES:
+                if table in skip:
                     continue
                 raise Rejected("restore_refused", f"snapshot is missing {table}")
             rows = json.loads(path.read_text(encoding="utf-8"))

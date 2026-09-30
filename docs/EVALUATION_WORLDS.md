@@ -135,7 +135,7 @@ EvaluationWorldDefinition
 
 `provider.revision` is part of the digest. `provider.name = doubleagent` is not an identity: two revisions of the same fake can implement GitHub differently. For a Phase 1 static document the revision is the content hash of the fixture text the operator names, not a running server.
 
-`snapshot_digest` is the proof. `snapshot_ref` is how a later provider finds the bytes. Phase 1 may set both to the digest of the static document itself, which claims nothing about an OS image. A missing toolchain does not hash as "any toolchain." The field is explicit: either a digest, or null. Null means runtime identity is not part of this definition.
+`snapshot_digest` is the proof of a separate artifact. `snapshot_ref` is how a later provider finds those bytes. Null for both means this definition does not name a snapshot. The definition digest is not a legal value for `snapshot_digest`: that field is inside the hashed document, so using the definition's own digest would be a self-reference. A missing toolchain does not hash as "any toolchain."
 
 `time_policy` is the world's clock, not the clock of the evaluation run. Software depends on dates, expiry, and calendars. A fixed epoch and timezone belong in the digest. The wall time at which the host happened to run the checks does not. The same split applies to `entropy_policy`: a fixed seed or an explicit `none`, never the host's live RNG.
 
@@ -326,7 +326,7 @@ builder_evaluation_bindings
     UNIQUE (evaluation_event_hash)
 ```
 
-`SNAPSHOT_TABLES` in `syberwork/storage.py` is an explicit list. These three names have to be added there. `OPTIONAL_SNAPSHOT_TABLES` is derived from the `builder_` prefix, so a pre-builder snapshot still restores, and a snapshot that already contains any builder file must contain these too or `restore_refused` names the missing table. That is the current backup rule. Do not special-case the new tables out of it.
+`SNAPSHOT_TABLES` in `syberwork/storage.py` is an explicit list. Restore treats optional files as migration groups (`SNAPSHOT_GROUPS` in `syberwork/backup.py`). A pre-builder snapshot, which has none of the Builder files, still restores. A complete Builder snapshot from before the world tables, which has every `0004` file and none of the three world files, restores with those tables empty. A group that is only partly present is refused, and so is a world-table file that arrives without the earlier Builder files. A missing authoritative file such as `policies.json` is refused. The refusal rolls the restore transaction back.
 
 Seal inserts `builder_generation_worlds` in the same transaction that moves the generation to `sealed`, and only when the operator supplied a digest that already exists in `builder_worlds`. A generation with no row there has no world. Existing generations stay valid. The row is immutable after seal.
 
