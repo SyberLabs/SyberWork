@@ -30,6 +30,7 @@ from syberlabs.builder import (
     evaluate_selection,
     feedback_dimensions,
     generation_summary,
+    instance_equivalence,
     integrity_projection,
     nodes_for_paths,
     normalize_activity,
@@ -41,6 +42,8 @@ from syberlabs.builder import (
     normalize_policy,
     normalize_prototype,
     validate_snapshot,
+    world_definition,
+    world_definition_matches,
 )
 from syberlabs.canonical import canonical, digest
 from syberlabs.clock import stamp
@@ -181,11 +184,25 @@ class BuilderStore(BuilderRecords):
             })
             return self._approach(db, approach_id)
 
-    def seal(self, generation_id: str, actor: str) -> dict:
+    def register_world(self, document: dict, actor: str) -> dict:
+        defined = world_definition(document)
+        body = {key: value for key, value in defined.items() if key != "digest"}
+        with self.work.tx() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO builder_worlds (digest, body, created_by, created_at) VALUES (?,?,?,?)",
+                (defined["digest"], canonical(body), actor, _now()),
+            )
+            return self._world(db, defined["digest"])
+
+    def seal(self, generation_id: str, actor: str, world_digest: str | None = None) -> dict:
+        if world_digest is not None and (not isinstance(world_digest, str) or len(world_digest) != 64):
+            raise Rejected("invalid_world", "world digest must be a sha256 hex string")
         with self.work.tx() as db:
             generation = self._generation(db, generation_id)
             if generation["state"] != "drafting":
                 raise Rejected("generation_state", "only a drafting generation can be sealed")
+            if world_digest is not None:
+                self._world(db, world_digest)
             active = [item for item in self._approaches(db, generation_id) if item["state"] == "active"]
             minimum = generation["diversity_policy"]["min_approaches"]
             if len(active) < minimum:
@@ -202,12 +219,55 @@ class BuilderStore(BuilderRecords):
                 pairs.extend(report["evidence"]["pairs"])
             db.execute("UPDATE builder_approaches SET state='frozen' WHERE generation_id=? AND state='active'", (generation_id,))
             db.execute("UPDATE builder_generations SET state='sealed' WHERE id=?", (generation_id,))
+            if world_digest is not None:
+                db.execute(
+                    "INSERT INTO builder_generation_worlds (generation_id, world_digest, sealed_at) VALUES (?,?,?)",
+                    (generation_id, world_digest, _now()),
+                )
             self._append(db, generation["case_id"], generation_id, "generation_sealed", actor, {
                 "approach_ids": [item["id"] for item in active],
                 "pairwise": pairs,
                 "evidence_digest": digest(pairs),
             })
             return self._generation(db, generation_id)
+
+    def bind_evaluation(self, generation_id: str, event_hash: str, actor: str) -> dict:
+        """A caller-supplied event hash is already history. The host records the binding with the evaluation."""
+        del generation_id, event_hash, actor
+        raise Rejected("binding_retrospective", "a binding is recorded with the evaluation, not after it")
+
+    def record_bound_evaluation(self, generation_id: str, evaluation: dict, actor: str, roles: list[str]) -> dict:
+        """Record a case evaluation and, when this generation froze a world, bind that new event to it."""
+        with self.work.tx() as db:
+            generation = self._generation(db, generation_id)
+            frozen = self._generation_world(db, generation_id)
+        event = self.work.record_evaluation(generation["case_id"], evaluation, actor, roles)
+        if frozen is None:
+            return {"event": event, "binding": None}
+        with self.work.tx() as db:
+            head = db.execute(
+                "SELECT hash FROM events WHERE case_id=? ORDER BY seq DESC LIMIT 1",
+                (generation["case_id"],),
+            ).fetchone()
+            if head is None or head["hash"] != event["hash"] or event.get("kind") != "candidate_evaluated":
+                raise Rejected("binding_retrospective", "the evaluation is no longer the case head")
+            if event["body"].get("actor") != actor:
+                raise Rejected("binding_retrospective", "the evaluator does not match the evaluation")
+            current = self._generation_world(db, generation_id)
+            if current is None or current["digest"] != frozen["digest"]:
+                raise Rejected("unknown_world", "the generation world changed before the binding")
+            identifier = _id()
+            created = _now()
+            db.execute(
+                "INSERT INTO builder_evaluation_bindings (id, generation_id, candidate_id, evaluation_event_hash, evaluator, "
+                "world_digest, world_instance_digest, trace_digest, evaluation_run_id, actor, at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (identifier, generation_id, event["body"]["candidate"], event["hash"], actor, frozen["digest"],
+                 None, None, _id(), actor, created),
+            )
+            binding = self._bindings(db, generation_id)
+        stored = next(item for item in binding if item["id"] == identifier)
+        return {"event": event, "binding": stored}
 
     def launch(self, generation_id: str, actor: str) -> dict:
         with self.work.tx() as db:
@@ -663,11 +723,17 @@ class BuilderStore(BuilderRecords):
             prototypes = self._prototypes(db, generation_id)
             selections = self._selections(db, generation_id)
             snapshot = self._latest_snapshot(db, generation["case_id"], generation_id)
+            world = self._generation_world(db, generation_id)
+            bindings = self._bindings(db, generation_id) if world is not None else []
             candidates = [
                 self._candidate_projection(generation, link, snapshot, feedback, integrity, prototypes)
                 for link in links
             ]
-        return {
+            if world is not None:
+                bound = {item["candidate_id"] for item in bindings}
+                for candidate in candidates:
+                    candidate["evaluation_binding_present"] = candidate["candidate_id"] in bound
+        view = {
             "protocol": PROTOCOL,
             "kind": "GenerationProjection",
             "authoritative": False,
@@ -681,6 +747,15 @@ class BuilderStore(BuilderRecords):
             "selection": selections[-1] if selections else None,
             "architecture_snapshot_id": None if snapshot is None else snapshot["id"],
         }
+        if world is not None:
+            identifiers = [item["candidate_id"] for item in links]
+            view["world_definition"] = world
+            view["evaluation_binding_present"] = bool(identifiers) and all(
+                item["candidate_id"] in {binding["candidate_id"] for binding in bindings} for item in links
+            )
+            view["world_definition_matches"] = world_definition_matches(world["digest"], identifiers, bindings)
+            view["instance_equivalence"] = instance_equivalence(world["reproducibility"])
+        return view
 
     def candidate_views(self, generation_id: str) -> list[dict]:
         return self.generation_view(generation_id)["candidates"]

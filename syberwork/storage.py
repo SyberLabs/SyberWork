@@ -247,6 +247,33 @@ _MIGRATIONS: list[tuple[str, str]] = [
             UNIQUE (generation_id, candidate_id)
         );
     """),
+    ("0005", """
+        CREATE TABLE IF NOT EXISTS builder_worlds (
+            digest TEXT PRIMARY KEY,
+            body TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_generation_worlds (
+            generation_id TEXT PRIMARY KEY,
+            world_digest TEXT NOT NULL,
+            sealed_at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_evaluation_bindings (
+            id TEXT PRIMARY KEY,
+            generation_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL,
+            evaluation_event_hash TEXT NOT NULL,
+            evaluator TEXT NOT NULL,
+            world_digest TEXT NOT NULL,
+            world_instance_digest TEXT,
+            trace_digest TEXT,
+            evaluation_run_id TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            at BIGINT NOT NULL,
+            UNIQUE (evaluation_event_hash)
+        );
+    """),
 ]
 
 
@@ -606,4 +633,7 @@ SNAPSHOT_TABLES = (
     "builder_prototypes",
     "builder_commands",
     "builder_candidate_links",
+    "builder_worlds",
+    "builder_generation_worlds",
+    "builder_evaluation_bindings",
 )

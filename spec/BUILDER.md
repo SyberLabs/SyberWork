@@ -64,8 +64,12 @@ Mutations are HTTP POST. Coordination roles (`admin`, `operator`, `engineer`, `m
 
 ## Storage
 
-Migration `0004` adds the coordination tables to the cell database, SQLite and PostgreSQL. They are included in logical snapshots. A snapshot taken before those files existed still restores when it has none of the Builder table files. A snapshot missing any older table, or only some of the Builder files, is refused. Case hashes are not rewritten. The migration statements use `IF NOT EXISTS`, so an interrupted open can be retried. They are not one database transaction.
+Migration `0004` adds the coordination tables to the cell database, SQLite and PostgreSQL. Migration `0005` adds the evaluation-world tables the same way, without altering `builder_generations`. They are included in logical snapshots. A snapshot taken before those files existed still restores when it has none of the Builder table files. A snapshot missing any older table, or only some of the Builder files, is refused. Case hashes are not rewritten. The migration statements use `IF NOT EXISTS`, so an interrupted open can be retried. They are not one database transaction.
 
-## Not in this version
+## Evaluation worlds
 
-A generation does not freeze an evaluation world. `docs/EVALUATION_WORLDS.md` describes a later builder revision that would store an immutable world definition and let the host bind a `candidate_evaluated` event hash to its digest. That binding is not an integrity class and does not enter selection. This protocol and the case chain stay as they are.
+Migration `0005` adds `builder_worlds`, `builder_generation_worlds`, and `builder_evaluation_bindings`. A generation row is unchanged. Seal may name an existing world digest; omitting it leaves the generation without a world. The definition is content-addressed. `deterministic` and `snapshot_replayable` are refused.
+
+`BuilderStore.record_bound_evaluation` appends `candidate_evaluated` through the existing evaluator rule and inserts a binding to the generation's frozen digest, with null instance and trace digests. `bind_evaluation` refuses. The HTTP API can register a world and can pass `world_digest` to seal. It cannot insert a binding.
+
+The generation projection then carries `world_definition`, `evaluation_binding_present`, `world_definition_matches`, and `instance_equivalence` (`unverified` or `impossible`). Selection does not read those fields. `docs/EVALUATION_WORLDS.md` describes the later phases. This does not change the case chain.

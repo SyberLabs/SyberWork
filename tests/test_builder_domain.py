@@ -12,15 +12,18 @@ from syberlabs.builder import (
     derive_authorities,
     diversity_evidence,
     evaluate_selection,
+    instance_equivalence,
     nodes_for_paths,
     normalize_integrity,
     structural_distance,
     validate_snapshot,
+    world_definition,
+    world_definition_matches,
 )
 from syberlabs.errors import Rejected
 from syberlabs.protocol import SIDE_PROTOCOL, EventKind
 
-from tests.builder_fixtures import POLICY, architecture, descriptor
+from tests.builder_fixtures import POLICY, architecture, descriptor, world_body
 
 class Domain(unittest.TestCase):
     def test_protocol_is_separate_from_the_frozen_case_vocabulary(self):
@@ -160,5 +163,35 @@ class Domain(unittest.TestCase):
         self.assertEqual([node["id"] for node in diff["added_nodes"]], ["extra"])
         self.assertIn("core", {node["id"] for node in diff["removed_nodes"]})
         self.assertEqual(diff["added_edges"], [{"from": "extra", "to": "api"}])
+
+    def test_world_definition_digest_tracks_revision_snapshot_and_epoch(self):
+        first = world_definition(world_body())
+        self.assertEqual(first["digest"], world_definition(world_body())["digest"])
+        self.assertEqual(len(first["digest"]), 64)
+        revised = world_definition(world_body(provider={"name": "static", "revision": "fixture-2"}))
+        resnapped = world_body()
+        resnapped["environment_snapshot"] = {"snapshot_ref": "snap-1", "snapshot_digest": "ef" * 32}
+        later = world_body()
+        later["time_policy"] = {"mode": "fixed", "epoch": 1700000000000001, "timezone": "UTC"}
+        self.assertEqual(len({first["digest"], revised["digest"], world_definition(resnapped)["digest"], world_definition(later)["digest"]}), 4)
+        claimed = world_body()
+        claimed["digest"] = "0" * 64
+        with self.assertRaises(Rejected) as mismatch:
+            world_definition(claimed)
+        self.assertEqual(mismatch.exception.code, "world_digest_mismatch")
+        live = world_body(reproducibility="deterministic")
+        with self.assertRaises(Rejected) as early:
+            world_definition(live)
+        self.assertEqual(early.exception.code, "world_reproducibility")
+        secret = world_body()
+        secret["network_policy"] = {"allowed": [], "denied": [], "record_denied": True, "authorization": "Bearer x"}
+        with self.assertRaises(Rejected) as hidden:
+            world_definition(secret)
+        self.assertEqual(hidden.exception.code, "world_secret")
+        self.assertEqual(instance_equivalence("unknown"), "unverified")
+        self.assertEqual(instance_equivalence("externally_mutable"), "impossible")
+        self.assertFalse(world_definition_matches(first["digest"], ["c1"], []))
+        self.assertTrue(world_definition_matches(first["digest"], ["c1"], [{"candidate_id": "c1", "world_digest": first["digest"]}]))
+        self.assertFalse(world_definition_matches(first["digest"], ["c1", "c2"], [{"candidate_id": "c1", "world_digest": first["digest"]}]))
 
 

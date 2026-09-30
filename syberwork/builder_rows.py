@@ -306,6 +306,45 @@ class BuilderRecords:
         rows = db.execute("SELECT * FROM builder_prototypes WHERE generation_id=? ORDER BY created_at", (generation_id,)).fetchall()
         return [self._prototype_row(row) for row in rows]
 
+    def _world(self, db, digest: str) -> dict:
+        row = db.execute("SELECT digest, body FROM builder_worlds WHERE digest=?", (digest,)).fetchone()
+        if row is None:
+            raise Rejected("unknown_world", digest)
+        body = _loads(row["body"])
+        body["digest"] = row["digest"]
+        return body
+
+    def _generation_world(self, db, generation_id: str) -> dict | None:
+        row = db.execute(
+            "SELECT world_digest FROM builder_generation_worlds WHERE generation_id=?",
+            (generation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._world(db, row["world_digest"])
+
+    def _bindings(self, db, generation_id: str) -> list[dict]:
+        rows = db.execute(
+            "SELECT * FROM builder_evaluation_bindings WHERE generation_id=? ORDER BY at, id",
+            (generation_id,),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "generation_id": row["generation_id"],
+                "candidate_id": row["candidate_id"],
+                "evaluation_event_hash": row["evaluation_event_hash"],
+                "evaluator": row["evaluator"],
+                "world_digest": row["world_digest"],
+                "world_instance_digest": row["world_instance_digest"],
+                "trace_digest": row["trace_digest"],
+                "evaluation_run_id": row["evaluation_run_id"],
+                "actor": row["actor"],
+                "at": row["at"],
+            }
+            for row in rows
+        ]
+
     def _event(self, row) -> dict:
         return {
             "protocol": PROTOCOL,

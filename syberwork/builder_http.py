@@ -100,8 +100,10 @@ def dispatch_post(work, user, parts: list[str], data: dict) -> dict:
             return store.create_generation(data, actor)
         case ["generations", generation_id, "approaches"]:
             return store.register_approach(generation_id, data.get("descriptor", data), actor)
+        case ["worlds"]:
+            return store.register_world(data, actor)
         case ["generations", generation_id, "seal"]:
-            return store.seal(generation_id, actor)
+            return store.seal(generation_id, actor, data.get("world_digest"))
         case ["generations", generation_id, "launch"]:
             return store.launch(generation_id, actor)
         case ["generations", generation_id, "close"]:

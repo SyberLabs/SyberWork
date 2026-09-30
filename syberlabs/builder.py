@@ -285,6 +285,177 @@ def normalize_generation(document: dict) -> dict:
     }
 
 
+_WORLD_FIELDS = frozenset({
+    "provider",
+    "services",
+    "seed_ref",
+    "seed_digest",
+    "environment_snapshot",
+    "network_policy",
+    "time_policy",
+    "entropy_policy",
+    "reproducibility",
+    "parent_world_digest",
+    "intent",
+    "digest",
+})
+_WORLD_INTENTS = frozenset({"comparison", "mutated", "adversarial", "historical", "customer"})
+_PHASE1_REPRODUCIBILITY = frozenset({"unknown", "externally_mutable"})
+_SECRET_KEYS = frozenset({"token", "secret", "authorization", "password", "api_key", "credential", "auth_env", "bearer"})
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def _optional_sha(value, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise Rejected("invalid_world", f"{field} must be a sha256 hex string or null")
+    return value
+
+
+def _refuse_secret(value) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and key.lower() in _SECRET_KEYS:
+                raise Rejected("world_secret", "a world definition cannot carry a credential")
+            _refuse_secret(item)
+    elif isinstance(value, list):
+        for item in value:
+            _refuse_secret(item)
+
+
+def _name_list(value, field: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        raise Rejected("invalid_world", f"{field} must be a list of strings")
+    return sorted({item.strip() for item in value})
+
+
+def normalize_world_definition(document: dict) -> dict:
+    """Canonical world definition. The digest is not part of this object.
+
+    Explicit nulls stay in the result so two documents that differ by an
+    absent snapshot do not hash as the same world. ``deterministic`` and
+    ``snapshot_replayable`` are refused until a host has observed them.
+    """
+    if not isinstance(document, dict):
+        raise Rejected("invalid_world", "world definition must be an object")
+    _refuse_secret(document)
+    if set(document) - _WORLD_FIELDS:
+        raise Rejected("invalid_world", "unknown world field")
+    provider = document.get("provider")
+    if not isinstance(provider, dict) or set(provider) != {"name", "revision"}:
+        raise Rejected("invalid_world", "provider needs a name and a revision")
+    name, revision = provider["name"], provider["revision"]
+    if not isinstance(name, str) or not name.strip() or len(name) > 64:
+        raise Rejected("invalid_world", "provider name required")
+    if not isinstance(revision, str) or not revision.strip() or len(revision) > 200:
+        raise Rejected("invalid_world", "provider revision required")
+    services = document.get("services")
+    if not isinstance(services, list):
+        raise Rejected("invalid_world", "services must be a list")
+    cleaned_services = []
+    seen = set()
+    for service in services:
+        if not isinstance(service, dict) or set(service) != {"name", "mode"}:
+            raise Rejected("invalid_world", "service needs a name and a mode")
+        if service["mode"] not in ("simulated", "real"):
+            raise Rejected("invalid_world", "service mode must be simulated or real")
+        if not isinstance(service["name"], str) or not service["name"].strip() or len(service["name"]) > 64:
+            raise Rejected("invalid_world", "service name required")
+        service_name = service["name"].strip()
+        if service_name in seen:
+            raise Rejected("invalid_world", "service names must be unique")
+        seen.add(service_name)
+        cleaned_services.append({"name": service_name, "mode": service["mode"]})
+    snapshot = document.get("environment_snapshot")
+    if not isinstance(snapshot, dict) or set(snapshot) != {"snapshot_ref", "snapshot_digest"}:
+        raise Rejected("invalid_world", "environment_snapshot needs a ref and a digest")
+    ref = snapshot.get("snapshot_ref")
+    if ref is not None and (not isinstance(ref, str) or not ref.strip() or len(ref) > 200):
+        raise Rejected("invalid_world", "snapshot_ref must be a string or null")
+    seed_ref = document.get("seed_ref")
+    if seed_ref is not None and (not isinstance(seed_ref, str) or not seed_ref.strip() or len(seed_ref) > 200):
+        raise Rejected("invalid_world", "seed_ref must be a string or null")
+    policy = document.get("network_policy")
+    if not isinstance(policy, dict) or set(policy) != {"allowed", "denied", "record_denied"}:
+        raise Rejected("invalid_world", "network_policy needs allowed, denied, and record_denied")
+    if type(policy.get("record_denied")) is not bool:
+        raise Rejected("invalid_world", "record_denied must be a boolean")
+    clock = document.get("time_policy")
+    if not isinstance(clock, dict) or set(clock) != {"mode", "epoch", "timezone"}:
+        raise Rejected("invalid_world", "time_policy needs mode, epoch, and timezone")
+    if clock.get("mode") != "fixed":
+        raise Rejected("invalid_world", "time_policy mode must be fixed")
+    if type(clock.get("epoch")) is not int or clock["epoch"] < 0:
+        raise Rejected("invalid_world", "epoch must be a non-negative integer")
+    timezone = clock.get("timezone")
+    if not isinstance(timezone, str) or not timezone.strip() or len(timezone) > 64:
+        raise Rejected("invalid_world", "timezone required")
+    entropy = document.get("entropy_policy")
+    if not isinstance(entropy, dict) or set(entropy) != {"mode", "seed_digest"}:
+        raise Rejected("invalid_world", "entropy_policy needs mode and seed_digest")
+    if entropy.get("mode") not in ("none", "fixed"):
+        raise Rejected("invalid_world", "entropy mode must be none or fixed")
+    entropy_digest = _optional_sha(entropy.get("seed_digest"), "seed_digest")
+    if entropy["mode"] == "none" and entropy_digest is not None:
+        raise Rejected("invalid_world", "entropy mode none has no seed")
+    if entropy["mode"] == "fixed" and entropy_digest is None:
+        raise Rejected("invalid_world", "fixed entropy needs a seed digest")
+    reproducibility = document.get("reproducibility")
+    if reproducibility not in ("unknown", "externally_mutable", "deterministic", "snapshot_replayable"):
+        raise Rejected("invalid_world", "reproducibility is not recognized")
+    if reproducibility not in _PHASE1_REPRODUCIBILITY:
+        raise Rejected("world_reproducibility", "that reproducibility class is not established yet")
+    intent = document.get("intent")
+    if intent not in _WORLD_INTENTS:
+        raise Rejected("invalid_world", "intent is not recognized")
+    return {
+        "provider": {"name": name.strip(), "revision": revision.strip()},
+        "services": sorted(cleaned_services, key=lambda item: item["name"]),
+        "seed_ref": None if seed_ref is None else seed_ref.strip(),
+        "seed_digest": _optional_sha(document.get("seed_digest"), "seed_digest"),
+        "environment_snapshot": {
+            "snapshot_ref": None if ref is None else ref.strip(),
+            "snapshot_digest": _optional_sha(snapshot.get("snapshot_digest"), "snapshot_digest"),
+        },
+        "network_policy": {
+            "allowed": _name_list(policy.get("allowed"), "allowed"),
+            "denied": _name_list(policy.get("denied"), "denied"),
+            "record_denied": policy["record_denied"],
+        },
+        "time_policy": {"mode": "fixed", "epoch": clock["epoch"], "timezone": timezone.strip()},
+        "entropy_policy": {"mode": entropy["mode"], "seed_digest": entropy_digest},
+        "reproducibility": reproducibility,
+        "parent_world_digest": _optional_sha(document.get("parent_world_digest"), "parent_world_digest"),
+        "intent": intent,
+    }
+
+
+def world_definition(document: dict) -> dict:
+    """Definition plus the digest of its canonical body. A supplied digest must match."""
+    claimed = document.get("digest") if isinstance(document, dict) else None
+    normalized = normalize_world_definition(document)
+    artifact = digest(normalized)
+    if claimed is not None and claimed != artifact:
+        raise Rejected("world_digest_mismatch", "world digest does not match the definition")
+    return {**normalized, "digest": artifact}
+
+
+def instance_equivalence(reproducibility: str) -> str:
+    """Phase 1 never returns ``verified``. A live service cannot share instance state."""
+    if reproducibility == "externally_mutable":
+        return "impossible"
+    return "unverified"
+
+
+def world_definition_matches(world_digest: str, candidate_ids: list[str], bindings: list[dict]) -> bool:
+    """True only when every linked candidate has a binding to this definition."""
+    if not candidate_ids:
+        return False
+    by_candidate = {item["candidate_id"]: item["world_digest"] for item in bindings}
+    return all(by_candidate.get(identifier) == world_digest for identifier in candidate_ids)
+
+
 def normalize_agent(document: dict) -> dict:
     if not isinstance(document, dict):
         raise Rejected("invalid_agent", "agent session must be an object")

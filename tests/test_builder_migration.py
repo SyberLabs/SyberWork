@@ -27,7 +27,7 @@ class Migration(unittest.TestCase):
             try:
                 versions = [row["version"] for row in opened._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
                 self.assertIn("0004", versions)
-                self.assertNotIn("0005", versions)
+                self.assertIn("0005", versions)
                 self.assertTrue(opened.verify_chain(meta["case_id"]))
                 self.assertEqual(opened.inspect(meta["case_id"])["events"][0]["kind"], "case_created")
                 after = [row["hash"] for row in opened._db.execute("SELECT hash FROM events ORDER BY case_id, seq")]
@@ -79,6 +79,9 @@ class Migration(unittest.TestCase):
                 "builder_prototypes",
                 "builder_commands",
                 "builder_candidate_links",
+                "builder_worlds",
+                "builder_generation_worlds",
+                "builder_evaluation_bindings",
             ):
                 (snapshot / f"{name}.json").unlink()
             legacy = Work(Path(folder) / "legacy.sqlite")
@@ -89,6 +92,30 @@ class Migration(unittest.TestCase):
                 self.assertEqual(BuilderStore(legacy).world(case_id)["generations"], [])
             finally:
                 legacy.close()
+
+
+    def test_world_tables_are_created_without_altering_generations(self):
+        from syberwork.storage import _MIGRATIONS
+
+        script = dict(_MIGRATIONS)["0005"]
+        self.assertNotIn("ALTER", script.upper())
+        for name in ("builder_worlds", "builder_generation_worlds", "builder_evaluation_bindings"):
+            self.assertIn(f"CREATE TABLE IF NOT EXISTS {name}", script)
+        with tempfile.TemporaryDirectory() as folder:
+            copy = Path(folder) / "main.sqlite"
+            shutil.copy(FIXTURE, copy)
+            before = sqlite3.connect(copy)
+            hashes = [row[0] for row in before.execute("SELECT hash FROM events ORDER BY case_id, seq")]
+            before.close()
+            opened = Work(copy)
+            try:
+                versions = [row["version"] for row in opened._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
+                self.assertIn("0005", versions)
+                self.assertEqual([row["hash"] for row in opened._db.execute("SELECT hash FROM events ORDER BY case_id, seq")], hashes)
+                columns = {row[1] for row in opened._db.execute("PRAGMA table_info(builder_generations)")}
+                self.assertNotIn("world_digest", columns)
+            finally:
+                opened.close()
 
 
 if __name__ == "__main__":

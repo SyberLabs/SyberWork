@@ -70,7 +70,7 @@ The local appliance remains the default. A cell is one organization and one data
 | Item | Status | Where |
 | --- | --- | --- |
 | Storage seam: SQLite and PostgreSQL, same statements | Implemented | `syberwork/storage.py`. `tests/test_cell.py` compares one case on both when PostgreSQL is reachable |
-| Migration ledger, including a pre-migration SQLite history | Implemented | `0001`–`0004`. The `main` fixture still verifies. `0004` is Builder coordination, not case history |
+| Migration ledger, including a pre-migration SQLite history | Implemented | `0001`–`0005`. The `main` fixture still verifies. `0004` is Builder coordination. `0005` adds evaluation-world tables and does not alter `builder_generations` |
 | Effect worker and expired-lease uncertainty | Implemented | `syberwork/worker.py`. Inline commit remains the default |
 | Cell organization and principal records | Implemented | `bind_organization`, `register_principal`. Not SSO |
 | Semantic trace, backup/restore | Implemented | `syberwork/trace.py`, `syberwork/backup.py` |
@@ -96,6 +96,6 @@ The future Builder UI has a coordination, integrity, and projection backend. It 
 | Architecture graph snapshots and prototype registry | Implemented | Graph AST with repository paths. No diagram vendor. The prototype record hides how it was provisioned. |
 | Projections, role lens, Builder HTTP, SSE | Implemented | `GET /api/builder/...` and `GET /api/builder/work/:id/stream`. Existing case routes are unchanged. |
 | Final Builder visual system | **Not built** | This slice is the substrate those screens can read. |
-| Evaluation worlds (Islo and DoubleAgent as replaceable providers) | **Proposed** | [EVALUATION_WORLDS.md](EVALUATION_WORLDS.md). Phase 1 would record a host binding to an immutable world definition. It would not change selection, admission, or `candidate_evaluated`. |
+| Evaluation world identity and host binding | Implemented | [EVALUATION_WORLDS.md](EVALUATION_WORLDS.md) phase 1. Migration `0005`. Selection, admission, and `candidate_evaluated` are unchanged. Traces, providers, and runtimes are not built. |
 
 A coordination record is not a case event. A displayed comment, diversity score, agent claim, or architecture snapshot does not admit or promote anything. The command adapter does not attach to a process. Integrity digests are stored, not verified.

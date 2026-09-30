@@ -83,6 +83,24 @@ def descriptor(trait: str) -> dict:
     }
 
 
+def world_body(**overrides) -> dict:
+    document = {
+        "provider": {"name": "static", "revision": "fixture-1"},
+        "services": [{"name": "github", "mode": "simulated"}],
+        "seed_ref": "seed.json",
+        "seed_digest": "ab" * 32,
+        "environment_snapshot": {"snapshot_ref": "snap-1", "snapshot_digest": "cd" * 32},
+        "network_policy": {"allowed": ["github.example"], "denied": ["evil.example"], "record_denied": True},
+        "time_policy": {"mode": "fixed", "epoch": 1700000000000000, "timezone": "UTC"},
+        "entropy_policy": {"mode": "none", "seed_digest": None},
+        "reproducibility": "unknown",
+        "parent_world_digest": None,
+        "intent": "comparison",
+    }
+    document.update(overrides)
+    return document
+
+
 def architecture(case_id: str, generation_id: str, revision: str = "abc123") -> dict:
     return {
         "case_id": case_id,

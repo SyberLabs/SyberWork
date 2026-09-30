@@ -1,6 +1,6 @@
 # Evaluation worlds
 
-Status: **proposed**, revised after review of `a47c8ee`. Nothing in this document is implemented. It does not change `sdk.syberlabs.space/v0alpha1`, migration `0004`, or `sdk.syberlabs.space/builder/v0alpha1`. Phase 1 is provenance only: a host binding to an immutable world definition. It does not change selection, and it does not claim a candidate experienced that world.
+Status: **Phase 1 implemented**. Phases 2–5 remain proposed. Phase 1 does not change `sdk.syberlabs.space/v0alpha1` or migration `0004`. Migration `0005` adds world tables with `CREATE TABLE IF NOT EXISTS` and does not alter `builder_generations`. A host binding cites a `candidate_evaluated` event. It is not an integrity class, it does not enter selection, and it does not claim the candidate experienced the world.
 
 SyberWork should stay the governance, evolution, evidence, and authority layer. Persistent computers and simulated external services are replaceable infrastructure. Adopting either product wholesale would collapse the cell into a coding-agent orchestrator or a sandbox vendor. Each recommendation below is labeled **KEEP**, **ADAPT**, **INTEGRATE**, **ABSTRACT**, **DEFER**, or **REJECT**.
 
@@ -297,7 +297,7 @@ This is an experimental record of software evolution: each generation names the 
 
 **KEEP** `builder_generations` as migration `0004` created it. Do not add a world column to that table.
 
-**ADAPT** with three new tables, in a later migration, not in this commit. `migrate` runs one shared statement list on both dialects. SQLite wraps that list in `BEGIN IMMEDIATE`. PostgreSQL connects with `autocommit=True` and holds `pg_advisory_lock` around the statements, so a failure leaves earlier statements committed and does not insert `schema_migrations`. The next open retries every statement. `CREATE TABLE IF NOT EXISTS` survives that retry. `ADD COLUMN` does not, unless each dialect grows its own existence check. The only such check today is `_column_names` for SQLite's `events.at_json`, outside the shared scripts. New world state therefore follows `0004`: new tables, not `ALTER`.
+**ADAPT** with three new tables in migration `0005`. `migrate` runs one shared statement list on both dialects. SQLite wraps that list in `BEGIN IMMEDIATE`. PostgreSQL connects with `autocommit=True` and holds `pg_advisory_lock` around the statements, so a failure leaves earlier statements committed and does not insert `schema_migrations`. The next open retries every statement. `CREATE TABLE IF NOT EXISTS` survives that retry. `ADD COLUMN` does not, unless each dialect grows its own existence check. The only such check today is `_column_names` for SQLite's `events.at_json`, outside the shared scripts. New world state therefore follows `0004`: new tables, not `ALTER`.
 
 ```text
 builder_worlds
@@ -443,7 +443,7 @@ Replay, when a provider exists, is the provider restoring a snapshot digest. The
 | Phase | What it licenses | Lands in the repository | Does not include |
 | --- | --- | --- | --- |
 | 0. This document | The distinctions in this file | `docs/EVALUATION_WORLDS.md` | Schema, migration, runtime |
-| 1. World identity and binding | "The host bound these evaluation events to the same immutable definition." | Definition table, generation freeze row, host binding, projection fields in section 6 | Trace, instance, selection rule, integrity class, provider protocol, runner |
+| 1. World identity and binding | "The host bound these evaluation events to the same immutable definition." | Implemented. `world_definition` in `syberlabs/builder.py`. Migration `0005`. `BuilderStore.register_world`, `seal(..., world_digest)`, `record_bound_evaluation`. `bind_evaluation` refuses. HTTP `POST /api/builder/worlds` registers a definition. There is no bind route. | Trace, instance, selection rule, integrity class, provider protocol, runner |
 | 2. World execution and trace verification | "The host observed these candidates execute in isolated instances of that definition." | Instance digest, `BehaviorEvent`, `record_host_integrity` citing the trace, `instance_equivalence: verified` only then | A new independence class. Claim kind stays separate from independence |
 | 3. Provider reproducibility | "Another implementation can reconstruct and replay the definition." | A second observer. `WorldProvider` appears because two implementations exist. `compare` stays in `syberlabs` | Vendoring DoubleAgent or Islo |
 | 4. Runtime adapter | The cell can name who runs the checks | A local process beside `DisconnectedRuntime` | Kubernetes, microVMs, browsers |
@@ -451,9 +451,9 @@ Replay, when a provider exists, is the provider restoring a snapshot digest. The
 
 Phase 1 is provenance. Phase 2 is the first time the cell may say a candidate experienced a world. Phase 3 is the first time a second party can replay that world. Selection policy grows a `required_evidence` entry only with Phase 2, and only as `{claim, independence}`, never as a new value inside `verified_independence`.
 
-## Smallest slice that would prove the idea
+## Smallest slice
 
-Implement Phase 1 only.
+Phase 1, as specified below, is what landed. `tests/test_evaluation_worlds.py` covers the binding, the retrospective refusal, a partial match, `externally_mutable` as `impossible`, and a selection result that matches `evaluate_selection` with no world input.
 
 1. A pure function canonicalizes an `EvaluationWorldDefinition` and returns its digest. The document includes provider name and revision, services and mode, seed digest, snapshot ref and snapshot digest, network policy, time policy, entropy policy, reproducibility, parent digest, and intent. No I/O. Two documents that differ by provider revision, snapshot digest, or fixed epoch hash differently. Explicit nulls are part of the canonical form.
 2. `builder_worlds`, `builder_generation_worlds`, and `builder_evaluation_bindings`, created with `CREATE TABLE IF NOT EXISTS` and added to `SNAPSHOT_TABLES`. No `ALTER` of `builder_generations`.

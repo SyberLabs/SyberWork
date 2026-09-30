@@ -71,11 +71,13 @@ class HttpCases(CellCase):
             "policies", "work/x", "generations", "generations/g/approaches", "generations/g/seal",
             "generations/g/launch", "generations/g/close", "generations/g/candidates", "generations/g/selection",
             "approaches/a/revisions", "agents", "agents/a/commands", "agents/a/activity", "architecture",
-            "prototypes", "prototypes/p/state", "nope",
+            "prototypes", "prototypes/p/state", "worlds", "nope",
         ):
             status, body = self.call("observer", "/api/builder/" + route, {})
             self.assertEqual((status, body["error"]), (409, "forbidden"), route)
         self.assertEqual(self.call("operator", "/api/builder/policies", POLICY)[0], 200)
+        status, missing_bind = self.call("operator", "/api/builder/generations/g/bindings", {"event_hash": "ab" * 32})
+        self.assertEqual((status, missing_bind["error"]), (409, "not_found"))
         self.assertEqual(self.call("operator", f"/api/builder/work/{self.case}", {"objective": "Ship a reviewable export"})[0], 200)
         status, generation = self.call("operator", "/api/builder/generations", {
             "case_id": self.case,
