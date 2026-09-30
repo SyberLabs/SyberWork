@@ -65,3 +65,7 @@ Mutations are HTTP POST. Coordination roles (`admin`, `operator`, `engineer`, `m
 ## Storage
 
 Migration `0004` adds the coordination tables to the cell database, SQLite and PostgreSQL. They are included in logical snapshots. A snapshot taken before those files existed still restores when it has none of the Builder table files. A snapshot missing any older table, or only some of the Builder files, is refused. Case hashes are not rewritten. The migration statements use `IF NOT EXISTS`, so an interrupted open can be retried. They are not one database transaction.
+
+## Not in this version
+
+A generation does not freeze an evaluation world. `docs/EVALUATION_WORLDS.md` describes how a later builder revision could name a shared world digest beside `candidate_evaluated` without changing this protocol or the case chain.
