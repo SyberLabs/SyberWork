@@ -249,17 +249,31 @@ def normalize_policy(document: dict) -> dict:
         raise Rejected("invalid_policy", "selection policy id required")
     if type(version) is not int or version < 1:
         raise Rejected("invalid_policy", "selection policy version must advance from 1")
+    if "stakeholder_authority" in document:
+        raise Rejected("invalid_policy", "name grants per role and feedback kind; authority is not one rank")
     required = document.get("required_integrity", [])
     if not isinstance(required, list) or any(item not in INTEGRITY_CLASSES for item in required):
         raise Rejected("invalid_policy", "required integrity classes are not recognized")
-    mapping = document.get("stakeholder_authority")
-    if not isinstance(mapping, dict) or not mapping:
-        raise Rejected("invalid_policy", "stakeholder authority map required")
-    authority = {}
-    for role, level in mapping.items():
-        if not isinstance(role, str) or not role.strip() or level not in AUTHORITIES:
-            raise Rejected("invalid_policy", "stakeholder authority must name a known class")
-        authority[role.strip()] = level
+    raw_grants = document.get("grants")
+    if not isinstance(raw_grants, list) or not raw_grants:
+        raise Rejected("invalid_policy", "selection policy needs grants")
+    grants = []
+    for grant in raw_grants:
+        if not isinstance(grant, dict):
+            raise Rejected("invalid_policy", "each grant is an object")
+        role, kind, level = grant.get("role"), grant.get("kind"), grant.get("authority")
+        if not isinstance(role, str) or not role.strip() or kind not in FEEDBACK_KINDS or level not in AUTHORITIES:
+            raise Rejected("invalid_policy", "a grant names a role, a feedback kind, and an authority class")
+        item = {"role": role.strip(), "kind": kind, "authority": level}
+        if item not in grants:
+            grants.append(item)
+    raw_consensus = document.get("consensus_authorities", ["consensus"])
+    if not isinstance(raw_consensus, list) or not raw_consensus or any(item not in AUTHORITIES for item in raw_consensus):
+        raise Rejected("invalid_policy", "consensus_authorities must list authority classes")
+    consensus_authorities = []
+    for item in raw_consensus:
+        if item not in consensus_authorities:
+            consensus_authorities.append(item)
     dimensions = document.get("advisory_dimensions", list(FEEDBACK_KINDS))
     if not isinstance(dimensions, list) or any(item not in FEEDBACK_KINDS for item in dimensions):
         raise Rejected("invalid_policy", "advisory dimensions must be feedback kinds")
@@ -284,7 +298,8 @@ def normalize_policy(document: dict) -> dict:
         "id": identifier.strip(),
         "version": version,
         "required_integrity": list(required),
-        "stakeholder_authority": authority,
+        "grants": grants,
+        "consensus_authorities": consensus_authorities,
         "advisory_dimensions": list(dimensions),
         "consensus_threshold": threshold,
         "promotion_roles": list(promotion),
@@ -292,13 +307,15 @@ def normalize_policy(document: dict) -> dict:
     }
 
 
-def derive_authority(roles: list[str], policy: dict) -> str:
-    """Highest class granted to the participant's roles. The caller cannot choose it."""
-    mapping = policy["stakeholder_authority"]
-    found = [mapping[role] for role in roles if role in mapping]
+def derive_authorities(roles: list[str], kind: str, policy: dict) -> list[str]:
+    """Every class this feedback kind grants. Roles do not collapse into one rank."""
+    found = []
+    for grant in policy["grants"]:
+        if grant["role"] in roles and grant["kind"] == kind and grant["authority"] not in found:
+            found.append(grant["authority"])
     if not found:
-        raise Rejected("feedback_authority", "participant role has no configured authority")
-    return max(found, key=lambda item: AUTHORITY_RANK[item])
+        raise Rejected("feedback_authority", "participant role has no configured authority for this feedback")
+    return found
 
 
 def normalize_feedback(document: dict, roles: list[str], policy: dict) -> dict:
@@ -317,20 +334,24 @@ def normalize_feedback(document: dict, roles: list[str], policy: dict) -> dict:
         raise Rejected("invalid_feedback", "feedback target id required")
     if not isinstance(text, str) or not text.strip() or len(text) > 8000:
         raise Rejected("invalid_feedback", "feedback text required")
-    if "authority" in document:
-        # Present only so a caller cannot smuggle it. The stored class is derived.
-        if document["authority"] not in AUTHORITIES and document["authority"] is not None:
-            raise Rejected("invalid_feedback", "unknown authority field")
+    for supplied in ("authority", "authorities"):
+        if supplied in document and document[supplied] is not None:
+            value = document[supplied]
+            if supplied == "authority" and value not in AUTHORITIES:
+                raise Rejected("invalid_feedback", "unknown authority field")
+            if supplied == "authorities" and (not isinstance(value, list) or any(item not in AUTHORITIES for item in value)):
+                raise Rejected("invalid_feedback", "unknown authority field")
     return {
         "target_kind": target,
         "target_id": identifier.strip(),
         "kind": kind,
         "text": text.strip(),
-        "authority": derive_authority(roles, policy),
+        "authorities": derive_authorities(roles, kind, policy),
     }
 
 
 def normalize_integrity(document: dict) -> dict:
+    """The caller's claim. This does not decide whether the class was verified."""
     if not isinstance(document, dict):
         raise Rejected("invalid_integrity", "integrity observation must be an object")
     _refuse_hidden(document)
@@ -360,11 +381,52 @@ def normalize_integrity(document: dict) -> dict:
         "claim": document["claim"].strip(),
         "source": document["source"].strip(),
         "verifier": document["verifier"].strip(),
-        "independence": independence,
+        "independence_claim": independence,
         "evidence_refs": [item.strip() for item in refs],
         "result": result,
         "digest": artifact,
-        "runtime_verified": False,
+    }
+
+
+class IntegrityVerifier(Protocol):
+    """Checks external or signed evidence. The HTTP body cannot implement this."""
+
+    name: str
+
+    def verify(self, observation: dict) -> dict: ...
+
+
+def assess_integrity(observation: dict, *, principal_kind: str | None = None, host: bool = False, verifier: IntegrityVerifier | None = None) -> dict:
+    """Separate the claimed class from the class a mechanism actually established.
+
+    Selection reads ``verified_independence`` only. A digest, by itself, verifies nothing.
+    """
+    claim = observation["independence_claim"]
+    status, method, verified = "unverified", None, None
+    if host:
+        if claim != "host_verified":
+            raise Rejected("integrity_verifier", "the host mechanism records host_verified observations")
+        status, method, verified = "verified", "host_mechanism", "host_verified"
+    elif claim == "internal":
+        status, method, verified = "verified", "self_report", "internal"
+    elif claim == "human_reviewed" and principal_kind == "human":
+        status, method, verified = "verified", "authenticated_human", "human_reviewed"
+    elif claim in ("external", "signed_external") and verifier is not None:
+        outcome = verifier.verify(observation)
+        if not isinstance(outcome, dict) or outcome.get("status") not in ("verified", "failed"):
+            raise Rejected("integrity_verifier", "verifier result is not recognized")
+        if outcome.get("independence") != claim:
+            raise Rejected("integrity_verifier", "a verifier cannot upgrade or relabel the claimed class")
+        method = outcome.get("method") if isinstance(outcome.get("method"), str) and outcome["method"] else verifier.name
+        if outcome["status"] == "verified":
+            status, verified = "verified", claim
+        else:
+            status = "failed"
+    return {
+        **observation,
+        "verification_status": status,
+        "verification_method": method,
+        "verified_independence": verified,
     }
 
 
@@ -379,14 +441,15 @@ def feedback_dimensions(records: list[dict]) -> dict:
             "target_kind": record["target_kind"],
             "target_id": record["target_id"],
             "kind": record["kind"],
-            "authority": record["authority"],
+            "authorities": list(record["authorities"]),
             "actor": record["actor"],
             "text": record["text"],
             "at": record["at"],
         }
         items.append(item)
         by_kind[record["kind"]].append(item)
-        by_authority[record["authority"]].append(item)
+        for level in record["authorities"]:
+            by_authority[level].append(item)
     return {"records": items, "by_kind": by_kind, "by_authority": by_authority}
 
 
@@ -400,9 +463,32 @@ def integrity_projection(observations: list[dict], target: str | None = None) ->
         "authoritative": False,
         "target": target,
         "observations": rows,
-        "by_class": {name: [row for row in rows if row["independence"] == name] for name in INTEGRITY_CLASSES},
-        "self_report": [row for row in rows if row["independence"] == "internal"],
-        "independent_evidence": [row for row in rows if row["independence"] in INDEPENDENT_CLASSES],
+        "by_class": {
+            name: [row for row in rows if row.get("verified_independence") == name]
+            for name in INTEGRITY_CLASSES
+        },
+        "by_claim": {name: [row for row in rows if row.get("independence_claim") == name] for name in INTEGRITY_CLASSES},
+        "self_report": [row for row in rows if row.get("verified_independence") == "internal"],
+        "independent_evidence": [row for row in rows if row.get("verified_independence") in INDEPENDENT_CLASSES],
+        "unverified_claims": [row for row in rows if row.get("verification_status") != "verified"],
+    }
+
+
+def _integrity_dimension(item: dict) -> dict:
+    return {
+        key: item.get(key)
+        for key in (
+            "id",
+            "independence_claim",
+            "verification_status",
+            "verification_method",
+            "verified_independence",
+            "result",
+            "claim",
+            "verifier",
+            "digest",
+            "source",
+        )
     }
 
 
@@ -419,22 +505,36 @@ def evaluate_selection(policy: dict, candidates: list[dict], feedback: list[dict
         notes = [item for item in feedback if item["target_kind"] == "candidate" and item["target_id"] == identifier]
         observations = [item for item in integrity if item["target_kind"] == "candidate" and item["target_id"] == identifier]
         reasons = []
-        vetoes = [item for item in notes if item["authority"] == "veto" and item["kind"] in ("concern", "dissent", "critique")]
-        dissents = [item for item in notes if item["authority"] == "decision" and item["kind"] == "dissent"]
+        if candidate.get("eligible") is not True:
+            entry = {
+                "feedback": feedback_dimensions(notes),
+                "integrity": [_integrity_dimension(item) for item in observations],
+                "reasons": ["candidate_unrecorded"],
+            }
+            if policy.get("weights"):
+                entry["aggregate"] = sum(policy["weights"].get(item["kind"], 0) for item in notes)
+            unresolved.append({"id": identifier, "reasons": entry["reasons"]})
+            dimensions[identifier] = entry
+            continue
+        vetoes = [item for item in notes if "veto" in item["authorities"] and item["kind"] in ("concern", "dissent", "critique")]
+        dissents = [item for item in notes if "decision" in item["authorities"] and item["kind"] == "dissent"]
         missing = [
             name for name in policy["required_integrity"]
-            if not any(item["independence"] == name and item["result"] in PASSING_RESULTS for item in observations)
+            if not any(
+                item.get("verification_status") == "verified"
+                and item.get("verified_independence") == name
+                and item["result"] in PASSING_RESULTS
+                for item in observations
+            )
         ]
         preferences = [item for item in notes if item["kind"] == "preference"]
-        decision_preferences = [item for item in preferences if item["authority"] == "decision"]
-        consensus_actors = {item["actor"] for item in preferences if item["authority"] in ("advisory", "consensus", "decision")}
+        decision_preferences = [item for item in preferences if "decision" in item["authorities"]]
+        consensus_levels = set(policy.get("consensus_authorities") or ["consensus"])
+        consensus_actors = {item["actor"] for item in preferences if consensus_levels.intersection(item["authorities"])}
         consensus = len(consensus_actors) >= policy["consensus_threshold"]
         entry = {
             "feedback": feedback_dimensions(notes),
-            "integrity": [
-                {key: item[key] for key in ("id", "independence", "result", "claim", "verifier", "digest", "source")}
-                for item in observations
-            ],
+            "integrity": [_integrity_dimension(item) for item in observations],
             "reasons": [],
         }
         if policy.get("weights"):

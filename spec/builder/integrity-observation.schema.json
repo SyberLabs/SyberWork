@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/builder/v0alpha1/integrity-observation.schema.json",
   "title": "IntegrityObservation",
-  "description": "Attributed integrity evidence. internal is a self-report. runtime_verified false means the cell stored the claim and did not itself check a signature.",
+  "description": "Attributed integrity evidence. independence_claim is what the caller said. verified_independence is set only after a mechanism checks that class. Selection reads the verified class.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["protocol", "id", "case_id", "target_kind", "target_id", "claim", "source", "verifier", "independence", "evidence_refs", "result", "digest", "runtime_verified", "at"],
+  "required": ["protocol", "id", "case_id", "target_kind", "target_id", "claim", "source", "verifier", "independence_claim", "verification_status", "verification_method", "verified_independence", "evidence_refs", "result", "digest", "at"],
   "properties": {
     "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
     "id": {"type": "string", "minLength": 1},
@@ -16,11 +16,13 @@
     "claim": {"type": "string", "minLength": 1},
     "source": {"type": "string", "minLength": 1},
     "verifier": {"type": "string", "minLength": 1},
-    "independence": {"enum": ["internal", "host_verified", "human_reviewed", "external", "signed_external"]},
+    "independence_claim": {"enum": ["internal", "host_verified", "human_reviewed", "external", "signed_external"]},
+    "verification_status": {"enum": ["unverified", "verified", "failed"]},
+    "verification_method": {"type": ["string", "null"]},
+    "verified_independence": {"type": ["string", "null"]},
     "evidence_refs": {"type": "array", "items": {"type": "string"}},
     "result": {"enum": ["pass", "fail", "concern", "unknown"]},
     "digest": {"type": ["string", "null"]},
-    "runtime_verified": {"const": false},
     "at": {"type": "integer", "minimum": 0}
   }
 }

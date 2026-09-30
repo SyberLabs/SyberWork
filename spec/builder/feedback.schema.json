@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/builder/v0alpha1/feedback.schema.json",
   "title": "Feedback",
-  "description": "Attributed stakeholder feedback. authority is derived from policy and is not a caller-supplied fitness score.",
+  "description": "Attributed stakeholder feedback. authorities are the grants for this role and kind. The caller does not pick them, and they are not collapsed to one rank.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["protocol", "id", "case_id", "generation_id", "target_kind", "target_id", "kind", "authority", "actor", "text", "at"],
+  "required": ["protocol", "id", "case_id", "generation_id", "target_kind", "target_id", "kind", "authorities", "actor", "text", "at"],
   "properties": {
     "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
     "id": {"type": "string", "minLength": 1},
@@ -14,7 +14,11 @@
     "target_kind": {"enum": ["generation", "approach", "candidate", "architecture_node", "prototype"]},
     "target_id": {"type": "string", "minLength": 1},
     "kind": {"enum": ["comment", "critique", "preference", "concern", "dissent", "trait_request"]},
-    "authority": {"enum": ["informative", "advisory", "veto", "consensus", "decision"]},
+    "authorities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"enum": ["informative", "advisory", "veto", "consensus", "decision"]}
+    },
     "actor": {"type": "string", "minLength": 1},
     "text": {"type": "string", "minLength": 1},
     "at": {"type": "integer", "minimum": 0}

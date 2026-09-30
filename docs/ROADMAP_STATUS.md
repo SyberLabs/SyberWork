@@ -91,7 +91,7 @@ The future Builder UI has a coordination, integrity, and projection backend. It 
 | --- | --- | --- |
 | Generations, approach descriptors, diversity gate, isolation manifests | Implemented | `syberlabs/builder.py`, `syberwork/coordination.py`. A candidate cannot link before seal. Sealed descriptors are immutable. Embeddings are not the gate. |
 | Coordination log, separate from the case chain | Implemented | Migration `0004`. SQLite and PostgreSQL. |
-| Feedback authority, selection policy, integrity classes | Implemented | Authority is derived. Selection sets `promotes_git` false and does not call admission. `internal` stays a self-report. |
+| Feedback authority, selection policy, integrity classes | Implemented | Grants are per role and feedback kind, and they are not collapsed to one rank. Advisory preferences do not select unless the policy lists them. Selection reads verified integrity only. `promotes_git` is false. |
 | Agent sessions, activity causality, command contract | Implemented | No chain-of-thought field. The default command result is `runtime_not_connected`. `send_context` and `redirect` are different operations. |
 | Architecture graph snapshots and prototype registry | Implemented | Graph AST with repository paths. No diagram vendor. The prototype record hides how it was provisioned. |
 | Projections, role lens, Builder HTTP, SSE | Implemented | `GET /api/builder/...` and `GET /api/builder/work/:id/stream`. Existing case routes are unchanged. |

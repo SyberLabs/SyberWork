@@ -21,10 +21,12 @@ A later promotion still goes through SyberWork admission. `promotion_reference` 
 - Sealing requires the configured number of approach descriptors and a passing diversity gate. Rejected approaches do not count.
 - After seal, approach descriptors are immutable.
 - A candidate link requires a sealed generation and a frozen approach in that generation. The link does not call `record_candidate`.
-- Feedback authority is the highest class granted to the caller's roles by the generation's selection policy. A field named `authority` on the request is not the stored class.
+- Feedback stores every grant that matches the caller's roles and that feedback kind. A person who holds both veto and decision keeps both. The request cannot supply the class. Advisory preferences do not advance a candidate and do not count toward consensus unless `consensus_authorities` lists `advisory`.
 - Feedback is not a fitness number. Projections list kind and authority separately. A policy may store an aggregate beside those lists. The aggregate is not the decision.
+- A candidate link resolves a `candidate_registered` case event. Changed paths, commit, tree, base, operator, and provider are copied from that event. An id that is not in the case is `candidate_unrecorded` and cannot be selected. Selection marks any link that is not `eligible` as `candidate_unrecorded` and does not advance it.
+- Feedback and integrity targets must resolve: the generation belongs to the case, the approach or prototype belongs to the generation, the candidate is linked there, and an architecture node exists in the current snapshot.
 - Selection does not promote Git state and does not append a case event.
-- Integrity class `internal` is projected as `self_report`. `host_verified`, `human_reviewed`, `external`, and `signed_external` are projected as `independent_evidence`. `signed_external` requires a SHA-256 digest.
+- Integrity keeps `independence_claim` apart from `verified_independence`. Selection gates read only a `verification_status` of `verified`. `internal` is verified as a self-report. `human_reviewed` is verified when the principal kind is `human`. `host_verified` is emitted only by the host mechanism, which the HTTP API does not call. `external` and `signed_external` are verified only by a registered verifier adapter, which cannot relabel the claim. A SHA-256 digest does not, by itself, verify a signature.
 - Isolation is a context manifest. `independent` is the common root plus the agent's own approach. `aware` adds sibling descriptors and not implementations. `collaborative` adds sibling implementation summaries (candidate id, approach id, changed paths) and not private hypotheses.
 - Diversity is a structural Jaccard distance plus an explicit distinguishing-claim check. A semantic distance may be stored on the evidence and cannot flip the gate. A failure reason is `approach_too_similar:<sibling-id>`.
 - Architecture snapshots are a graph of nodes, edges, and repository paths. Mermaid is refused. Nothing in this package imports a diagram vendor. `ArchitectureProvider` is the seam.
@@ -55,6 +57,8 @@ Reads:
 - `GET /api/builder/work/:id/stream`
 
 The stream is Server-Sent Events. `id` is the coordination sequence. `Last-Event-ID` resumes after that sequence. The first frame is a heartbeat comment. A reconnect reads the log in the cell database. The replay window is 200 events. `?once=1` ends after the current window so a client can test the tail without holding the connection. There is no WebSocket.
+
+The current tail is a development transport. Each client polls the coordination log about once a second through the cell's single transaction path, and the response carries `X-Syber-Stream: development-poll`. The database remains the source of truth. That poll is not the production wakeup path. A later revision should use PostgreSQL `NOTIFY` or a SQLite condition, then read the durable rows after the cursor, so Builder traffic does not take the authoritative transaction path on a timer.
 
 Mutations are HTTP POST. Coordination roles (`admin`, `operator`, `engineer`, `manager`, `decision`) create generations, approaches, agents, links, architecture, prototypes, and selections. Any authenticated principal may submit feedback; the policy assigns the authority class. Integrity observations are attributed to the caller (`verifier` must be that principal).
 

@@ -4,7 +4,7 @@
   "title": "SelectionPolicy",
   "type": "object",
   "additionalProperties": false,
-  "required": ["protocol", "id", "version", "required_integrity", "stakeholder_authority", "advisory_dimensions", "consensus_threshold", "promotion_roles", "weights"],
+  "required": ["protocol", "id", "version", "required_integrity", "grants", "consensus_authorities", "advisory_dimensions", "consensus_threshold", "promotion_roles", "weights"],
   "properties": {
     "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
     "id": {"type": "string", "minLength": 1},
@@ -13,7 +13,25 @@
       "type": "array",
       "items": {"enum": ["internal", "host_verified", "human_reviewed", "external", "signed_external"]}
     },
-    "stakeholder_authority": {"type": "object"},
+    "grants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "kind", "authority"],
+        "properties": {
+          "role": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["comment", "critique", "preference", "concern", "dissent", "trait_request"]},
+          "authority": {"enum": ["informative", "advisory", "veto", "consensus", "decision"]}
+        }
+      }
+    },
+    "consensus_authorities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"enum": ["informative", "advisory", "veto", "consensus", "decision"]}
+    },
     "advisory_dimensions": {
       "type": "array",
       "items": {"enum": ["comment", "critique", "preference", "concern", "dissent", "trait_request"]}

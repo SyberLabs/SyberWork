@@ -19,6 +19,7 @@ from syberlabs.builder import (
     DisconnectedRuntime,
     agent_authority,
     architecture_diff,
+    assess_integrity,
     command_effect,
     context_manifest,
     diversity_evidence,
@@ -397,10 +398,12 @@ class BuilderStore:
             }
         return stored
 
-    def link_candidate(self, generation_id: str, approach_id: str, candidate_id: str, changed_paths: list, actor: str) -> dict:
+    def link_candidate(self, generation_id: str, approach_id: str, candidate_id: str, actor: str, changed_paths: list | None = None) -> dict:
         if not isinstance(candidate_id, str) or not candidate_id.strip():
             raise Rejected("invalid_candidate", "candidate id required")
-        if not isinstance(changed_paths, list) or any(not isinstance(item, str) or not item.strip() for item in changed_paths):
+        if changed_paths is not None and (
+            not isinstance(changed_paths, list) or any(not isinstance(item, str) or not item.strip() for item in changed_paths)
+        ):
             raise Rejected("invalid_candidate", "changed paths must be a list of strings")
         with self.work.tx() as db:
             generation = self._generation(db, generation_id)
@@ -409,25 +412,35 @@ class BuilderStore:
             approach = self._approach(db, approach_id)
             if approach["generation_id"] != generation_id or approach["state"] != "frozen":
                 raise Rejected("candidate_approach", "candidate must belong to a sealed approach in this generation")
+            authority = self._authority_candidate(db, generation["case_id"], candidate_id.strip())
+            if authority is None:
+                raise Rejected("candidate_unrecorded", "candidate is not in the case history")
+            paths = list(authority["changed_paths"])
+            if changed_paths is not None and sorted(item.strip() for item in changed_paths) != sorted(paths):
+                raise Rejected("candidate_paths_mismatch", "changed paths come from the case candidate")
             existing = db.execute(
                 "SELECT id FROM builder_candidate_links WHERE generation_id=? AND candidate_id=?",
-                (generation_id, candidate_id),
+                (generation_id, candidate_id.strip()),
             ).fetchone()
             if existing:
                 raise Rejected("candidate_linked", "this candidate is already linked")
             identifier = _id()
             created = _now()
-            paths = [item.strip() for item in changed_paths]
             db.execute(
-                "INSERT INTO builder_candidate_links (id, case_id, generation_id, approach_id, candidate_id, changed_paths, actor, at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (identifier, generation["case_id"], generation_id, approach_id, candidate_id.strip(), canonical(paths), actor, created),
+                "INSERT INTO builder_candidate_links (id, case_id, generation_id, approach_id, candidate_id, changed_paths, actor, at, authority) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (identifier, generation["case_id"], generation_id, approach_id, candidate_id.strip(), canonical(paths), actor, created,
+                 canonical(authority)),
             )
             self._append(db, generation["case_id"], generation_id, "candidate_linked", actor, {
                 "link_id": identifier,
                 "approach_id": approach_id,
                 "candidate_id": candidate_id.strip(),
                 "changed_paths": paths,
+                "commit": authority["commit"],
+                "tree": authority["tree"],
+                "link_state": "recorded",
+                "selection_state": "eligible",
             })
             return self._link(db, identifier)
 
@@ -445,13 +458,15 @@ class BuilderStore:
             else:
                 policy = self._latest_policy(db, document.get("selection_policy_id"))
             feedback = normalize_feedback(document, roles, policy)
+            self._resolve_target(db, document["case_id"], generation_id, feedback["target_kind"], feedback["target_id"])
             identifier = _id()
             created = _now()
             db.execute(
-                "INSERT INTO builder_feedback (id, case_id, generation_id, target_kind, target_id, kind, authority, actor, body, at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO builder_feedback (id, case_id, generation_id, target_kind, target_id, kind, authority, actor, body, at, authorities) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (identifier, document["case_id"], generation_id, feedback["target_kind"], feedback["target_id"],
-                 feedback["kind"], feedback["authority"], actor, canonical({"text": feedback["text"]}), created),
+                 feedback["kind"], canonical(feedback["authorities"]), actor, canonical({"text": feedback["text"]}), created,
+                 canonical(feedback["authorities"])),
             )
             stored = self._feedback_row(db, identifier)
             self._append(db, document["case_id"], generation_id, "feedback_recorded", actor, {
@@ -459,12 +474,17 @@ class BuilderStore:
                 "target_kind": stored["target_kind"],
                 "target_id": stored["target_id"],
                 "kind": stored["kind"],
-                "authority": stored["authority"],
+                "authorities": stored["authorities"],
             })
             return stored
 
-    def record_integrity(self, document: dict, actor: str) -> dict:
-        observation = normalize_integrity(document)
+    def record_integrity(self, document: dict, actor: str, *, principal_kind: str | None = None, host: bool = False, verifier=None) -> dict:
+        observation = assess_integrity(
+            normalize_integrity(document),
+            principal_kind=principal_kind,
+            host=host,
+            verifier=verifier,
+        )
         if observation["verifier"] != actor:
             raise Rejected("verifier_mismatch", "verifier principal is the caller")
         case_id = document.get("case_id") if isinstance(document, dict) else None
@@ -477,25 +497,34 @@ class BuilderStore:
                 generation = self._generation(db, generation_id)
                 if generation["case_id"] != case_id:
                     raise Rejected("invalid_integrity", "generation is not in this case")
+            self._resolve_target(db, case_id, generation_id, observation["target_kind"], observation["target_id"])
             identifier = _id()
             created = _now()
             db.execute(
                 "INSERT INTO builder_integrity (id, case_id, generation_id, target_kind, target_id, claim, source, verifier, "
-                "independence, evidence_refs, result, digest, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "independence, evidence_refs, result, digest, at, independence_claim, verification_status, verification_method, "
+                "verified_independence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (identifier, case_id, generation_id, observation["target_kind"], observation["target_id"], observation["claim"],
-                 observation["source"], observation["verifier"], observation["independence"], canonical(observation["evidence_refs"]),
-                 observation["result"], observation["digest"], created),
+                 observation["source"], observation["verifier"], observation["independence_claim"], canonical(observation["evidence_refs"]),
+                 observation["result"], observation["digest"], created, observation["independence_claim"], observation["verification_status"],
+                 observation["verification_method"], observation["verified_independence"]),
             )
             stored = self._integrity_row(db, identifier)
             self._append(db, case_id, generation_id, "integrity_observation_recorded", actor, {
                 "observation_id": identifier,
                 "target_kind": stored["target_kind"],
                 "target_id": stored["target_id"],
-                "independence": stored["independence"],
+                "independence_claim": stored["independence_claim"],
+                "verification_status": stored["verification_status"],
+                "verified_independence": stored["verified_independence"],
                 "result": stored["result"],
                 "digest": stored["digest"],
             })
             return stored
+
+    def record_host_integrity(self, document: dict, actor: str) -> dict:
+        """Host mechanism only. The HTTP API does not call this."""
+        return self.record_integrity(document, actor, host=True)
 
     def select(self, generation_id: str, actor: str, roles: list[str]) -> dict:
         with self.work.tx() as db:
@@ -506,7 +535,10 @@ class BuilderStore:
             links = self._links(db, generation_id)
             feedback = [item for item in self._feedback(db, generation["case_id"]) if item["generation_id"] == generation_id]
             integrity = [item for item in self._integrity(db, generation["case_id"]) if item["generation_id"] == generation_id]
-            candidates = [{"id": item["candidate_id"]} for item in links]
+            candidates = [{
+                "id": item["candidate_id"],
+                "eligible": item["selection_state"] == "eligible",
+            } for item in links]
             evaluation = evaluate_selection(policy, candidates, feedback, integrity, roles)
             evaluation["evidence_digest"] = digest({
                 "advanced": evaluation["advanced"],
@@ -588,6 +620,7 @@ class BuilderStore:
                 generation = self._generation(db, generation_id)
                 if generation["case_id"] != document["case_id"]:
                     raise Rejected("invalid_prototype", "generation is not in this case")
+            self._resolve_target(db, document["case_id"], generation_id, "candidate", prototype["candidate_id"])
             identifier = _id()
             created = _now()
             db.execute(
@@ -905,16 +938,86 @@ class BuilderStore:
         row = db.execute("SELECT * FROM builder_candidate_links WHERE id=?", (link_id,)).fetchone()
         if row is None:
             raise Rejected("unknown_candidate", link_id)
+        authority = _loads(row["authority"]) if row["authority"] else None
+        recorded = authority is not None
         return {
             "id": row["id"],
             "case_id": row["case_id"],
             "generation_id": row["generation_id"],
             "approach_id": row["approach_id"],
             "candidate_id": row["candidate_id"],
-            "changed_paths": _loads(row["changed_paths"]),
+            "changed_paths": list(authority["changed_paths"]) if recorded else _loads(row["changed_paths"]),
+            "commit": None if not recorded else authority["commit"],
+            "tree": None if not recorded else authority["tree"],
+            "base": None if not recorded else authority["base"],
+            "operator": None if not recorded else authority["operator"],
+            "provider": None if not recorded else authority["provider"],
+            "link_state": "recorded" if recorded else "unverified",
+            "selection_state": "eligible" if recorded else "ineligible",
             "actor": row["actor"],
             "at": row["at"],
         }
+
+    def _authority_candidate(self, db, case_id: str, candidate_id: str):
+        for row in db.execute(
+            "SELECT body FROM events WHERE case_id=? AND kind='candidate_registered'",
+            (case_id,),
+        ).fetchall():
+            body = _loads(row["body"])
+            if body.get("id") == candidate_id:
+                return {
+                    "id": body["id"],
+                    "commit": body["commit"],
+                    "tree": body["tree"],
+                    "base": body["base"],
+                    "operator": body["operator"],
+                    "provider": body["provider"],
+                    "changed_paths": list(body["changed_paths"]),
+                }
+        return None
+
+    def _resolve_target(self, db, case_id: str, generation_id: str | None, target_kind: str, target_id: str) -> None:
+        if target_kind == "case":
+            if target_id != case_id:
+                raise Rejected("unknown_target", "case target must be this case")
+            return
+        if target_kind == "generation":
+            generation = self._generation(db, target_id)
+            if generation["case_id"] != case_id or generation_id not in (None, target_id):
+                raise Rejected("unknown_target", "generation is not in this case")
+            return
+        if generation_id is None:
+            raise Rejected("unknown_target", "this target needs a generation")
+        generation = self._generation(db, generation_id)
+        if generation["case_id"] != case_id:
+            raise Rejected("unknown_target", "generation is not in this case")
+        if target_kind == "approach":
+            approach = self._approach(db, target_id)
+            if approach["generation_id"] != generation_id:
+                raise Rejected("unknown_target", "approach is not in this generation")
+            return
+        if target_kind == "candidate":
+            link = db.execute(
+                "SELECT id FROM builder_candidate_links WHERE generation_id=? AND candidate_id=?",
+                (generation_id, target_id),
+            ).fetchone()
+            if link is None or self._authority_candidate(db, case_id, target_id) is None:
+                raise Rejected("unknown_target", "candidate is not linked in this generation")
+            return
+        if target_kind == "prototype":
+            row = db.execute(
+                "SELECT case_id, generation_id FROM builder_prototypes WHERE id=?",
+                (target_id,),
+            ).fetchone()
+            if row is None or row["case_id"] != case_id or row["generation_id"] != generation_id:
+                raise Rejected("unknown_target", "prototype is not in this generation")
+            return
+        if target_kind == "architecture_node":
+            snapshot = self._latest_snapshot(db, case_id, generation_id)
+            if snapshot is None or not any(node["id"] == target_id for node in snapshot["nodes"]):
+                raise Rejected("unknown_target", "architecture node is not in the current snapshot")
+            return
+        raise Rejected("unknown_target", "target is not recognized")
 
     def _links(self, db, generation_id: str) -> list[dict]:
         rows = db.execute(
@@ -933,7 +1036,7 @@ class BuilderStore:
             "target_kind": row["target_kind"],
             "target_id": row["target_id"],
             "kind": row["kind"],
-            "authority": row["authority"],
+            "authorities": _loads(row["authorities"]) if row["authorities"] else _loads(row["authority"]),
             "actor": row["actor"],
             "text": _loads(row["body"])["text"],
             "at": row["at"],
@@ -955,11 +1058,13 @@ class BuilderStore:
             "claim": row["claim"],
             "source": row["source"],
             "verifier": row["verifier"],
-            "independence": row["independence"],
+            "independence_claim": row["independence_claim"] or row["independence"],
+            "verification_status": row["verification_status"] or "unverified",
+            "verification_method": row["verification_method"],
+            "verified_independence": row["verified_independence"],
             "evidence_refs": _loads(row["evidence_refs"]),
             "result": row["result"],
             "digest": row["digest"],
-            "runtime_verified": False,
             "at": row["at"],
         }
 
@@ -1043,13 +1148,6 @@ class BuilderStore:
 
     def _candidate_projection(self, db, generation, link, snapshot, feedback, integrity, prototypes) -> dict:
         nodes = [] if snapshot is None else nodes_for_paths(snapshot, link["changed_paths"])
-        recorded = False
-        for row in db.execute(
-            "SELECT body FROM events WHERE case_id=? AND kind='candidate_registered'",
-            (generation["case_id"],),
-        ).fetchall():
-            if _loads(row["body"]).get("id") == link["candidate_id"]:
-                recorded = True
         prototype = next((item for item in prototypes if item["candidate_id"] == link["candidate_id"]), None)
         notes = [item for item in feedback if item["target_kind"] == "candidate" and item["target_id"] == link["candidate_id"]]
         observations = [item for item in integrity if item["target_kind"] == "candidate" and item["target_id"] == link["candidate_id"]]
@@ -1061,10 +1159,17 @@ class BuilderStore:
             "generation_id": link["generation_id"],
             "approach_id": link["approach_id"],
             "changed_paths": link["changed_paths"],
+            "commit": link["commit"],
+            "tree": link["tree"],
+            "base": link["base"],
+            "operator": link["operator"],
+            "provider": link["provider"],
+            "link_state": link["link_state"],
+            "selection_state": link["selection_state"],
             "architecture_nodes": nodes,
             "prototype": prototype,
             "feedback_dimensions": feedback_dimensions(notes),
             "integrity": integrity_projection(observations, link["candidate_id"]),
-            "case_candidate_recorded": recorded,
+            "case_candidate_recorded": link["link_state"] == "recorded",
             "promotion_state": None,
         }

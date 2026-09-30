@@ -80,7 +80,7 @@ class CellRuntime(unittest.TestCase):
             self.assertEqual(committed["status"], "succeeded")
             self.assertTrue(work.verify_chain(case_id))
             versions = [row["version"] for row in work._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
-            self.assertEqual(versions, ["0001", "0002", "0003", "0004"])
+            self.assertEqual(versions, ["0001", "0002", "0003", "0004", "0005"])
             work.close()
             copy = Path(folder) / "main.sqlite"
             shutil.copy(FIXTURE, copy)
@@ -201,7 +201,7 @@ class CellGuards(unittest.TestCase):
             self.assertEqual(errors, [])
             check = Work(path)
             versions = [row["version"] for row in check._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
-            self.assertEqual(versions, ["0001", "0002", "0003", "0004"])
+            self.assertEqual(versions, ["0001", "0002", "0003", "0004", "0005"])
             check.close()
 
     def test_failed_restore_does_not_keep_the_rows(self):

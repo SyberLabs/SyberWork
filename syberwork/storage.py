@@ -244,6 +244,14 @@ _MIGRATIONS: list[tuple[str, str]] = [
             UNIQUE (generation_id, candidate_id)
         );
     """),
+    ("0005", """
+        ALTER TABLE builder_feedback ADD COLUMN authorities TEXT;
+        ALTER TABLE builder_integrity ADD COLUMN independence_claim TEXT;
+        ALTER TABLE builder_integrity ADD COLUMN verification_status TEXT;
+        ALTER TABLE builder_integrity ADD COLUMN verification_method TEXT;
+        ALTER TABLE builder_integrity ADD COLUMN verified_independence TEXT;
+        ALTER TABLE builder_candidate_links ADD COLUMN authority TEXT;
+    """),
 ]
 
 

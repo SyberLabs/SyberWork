@@ -119,11 +119,14 @@ def dispatch_post(work, user, parts: list[str], data: dict) -> dict:
         return store.command(parts[3], data.get("command"), data.get("body") or {}, actor)
     if len(parts) == 5 and parts[:3] == ["api", "builder", "generations"] and parts[4] == "candidates":
         _require_mutation(user)
-        return store.link_candidate(parts[3], data["approach_id"], data["candidate_id"], data.get("changed_paths", []), actor)
+        return store.link_candidate(
+            parts[3], data["approach_id"], data["candidate_id"], actor,
+            changed_paths=data["changed_paths"] if "changed_paths" in data else None,
+        )
     if parts == ["api", "builder", "feedback"]:
         return store.record_feedback(data, actor, roles)
     if parts == ["api", "builder", "integrity"]:
-        return store.record_integrity(data, actor)
+        return store.record_integrity(data, actor, principal_kind=user.get("kind"))
     if len(parts) == 5 and parts[:3] == ["api", "builder", "generations"] and parts[4] == "selection":
         _require_mutation(user)
         return store.select(parts[3], actor, roles)
@@ -140,7 +143,14 @@ def dispatch_post(work, user, parts: list[str], data: dict) -> dict:
 
 
 def iter_sse(work, case_id: str, roles: list[str], after_seq: int, once: bool):
-    """Monotonic ``id`` fields are coordination sequence numbers."""
+    """Development transport. The database is the source of truth.
+
+    This loop polls through the cell's single transaction path about once a
+    second. That is enough for tests and a local console. It is not the
+    production wakeup path: a later revision should NOTIFY on PostgreSQL, or
+    signal a local condition on SQLite, and then read the durable log after
+    the cursor. The poll must not become the only copy of the events.
+    """
     yield ": heartbeat\n\n"
     store = _store(work)
     events, truncated = store.replay(case_id, after_seq, REPLAY_LIMIT)
