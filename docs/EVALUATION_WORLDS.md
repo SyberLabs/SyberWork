@@ -1,6 +1,6 @@
 # Evaluation worlds
 
-Status: **proposed**. Nothing in this document is implemented. It does not change `sdk.syberlabs.space/v0alpha1`, migration `0004`, or `sdk.syberlabs.space/builder/v0alpha1`.
+Status: **proposed**, revised after review of `a47c8ee`. Nothing in this document is implemented. It does not change `sdk.syberlabs.space/v0alpha1`, migration `0004`, or `sdk.syberlabs.space/builder/v0alpha1`. Phase 1 is provenance only: a host binding to an immutable world definition. It does not change selection, and it does not claim a candidate experienced that world.
 
 SyberWork should stay the governance, evolution, evidence, and authority layer. Persistent computers and simulated external services are replaceable infrastructure. Adopting either product wholesale would collapse the cell into a coding-agent orchestrator or a sandbox vendor. Each recommendation below is labeled **KEEP**, **ADAPT**, **INTEGRATE**, **ABSTRACT**, **DEFER**, or **REJECT**.
 
@@ -43,7 +43,7 @@ Islo, as publicly described, is a persistent computer for an agent: its own kern
 | --- | --- | --- |
 | Persistent per-agent computer, microVM, own kernel | **REJECT** as a SyberWork subsystem | VM lifecycle, image builds, and kernel isolation are commodity infrastructure. Competing there abandons the cell's thesis. |
 | Long-running session that survives disconnect | **ABSTRACT** | The cell already has a durable agent session and a command log. Liveness belongs to a runtime adapter. The coordination row stays the assignment. |
-| Snapshot of filesystem and database | **ADAPT** | A generation should be able to name an environment snapshot digest. SyberWork stores the digest and the provider id. The provider stores the bytes. |
+| Snapshot of filesystem and database | **ADAPT** | The world definition names `snapshot_ref` for operations and `snapshot_digest` for identity. A provider label such as `snapshot-17` does not prove the bytes. SyberWork stores both. The provider stores the bytes. |
 | Credential injection outside the agent | **ADAPT** | This matches `auth_env`. Generalize the name from "effect secret" to "capability binding" without ever putting the secret in a case body, a coordination row, or a prompt. |
 | Outbound allow/deny and an exportable call log | **ADAPT** as evidence | The policy and the log digest are world facts. The firewall is not ours. A denied call is useful integrity evidence only if a party other than the acting agent records it. |
 | LLM judge on egress | **REJECT** | A model must not acquire authority by classifying its own or a sibling's traffic. Policy is data, checked by a verifier. |
@@ -60,11 +60,22 @@ Related work that should not be copied: hosted scoring of agent traces, and capt
 | DoubleAgent idea | SyberWork stance | Why |
 | --- | --- | --- |
 | Service state machine instead of a canned mock | **ABSTRACT** behind a world provider | The cell needs reproducible external state. It does not need to implement GitHub. |
-| Contract tests of the fake against the real service | **DEFER** to the provider | That is how a world provider earns trust. SyberWork records the provider name and the world digest. It does not re-run the provider's contract suite. |
-| Reset, seed, snapshot, event log | **ABSTRACT** | These are the operations a generation needs in order to freeze a world and compare siblings. |
+| Contract tests of the fake against the real service | **DEFER** to the provider | That is how a world provider earns trust. SyberWork records the provider name, the provider revision, and the world-definition digest. It does not re-run the provider's contract suite. |
+| Reset, seed, snapshot, event log | **ABSTRACT** | These are provider operations. Comparison of the observations they return stays in SyberWork. |
 | Official SDK compatibility | **REJECT** as a SyberWork concern | Candidates talk to whatever URL the world gives them. The cell never imports a vendor SDK. |
-| Isolated world per agent | **ADAPT** | Sibling candidates in one generation should share one world definition and receive isolated instances of it. Sharing the definition is what makes the comparison mean something. Sharing one mutable instance would let candidate A poison candidate B. |
+| Isolated world per agent | **ADAPT** | Siblings share one world *definition* and, later, receive isolated *instances* of it. A shared definition digest does not by itself mean they experienced the same state. One shared mutable instance would let candidate A poison candidate B. |
 | Hosted trace scoring | **REJECT** | Selection already lists reasons. A score would hide veto, dissent, and missing evidence. |
+
+These four distinctions govern every later section:
+
+```text
+world identity           ≠  integrity independence
+declared world           ≠  experienced world
+same definition          ≠  same mutable state
+snapshot reference       ≠  snapshot proof
+```
+
+Integrity classes answer who verified a claim. A world digest answers which definition was named. A host binding answers that the evaluator mechanism attached an evaluation event to that definition. An instance digest, present only after a runner consumes the definition, is what would support a claim that the candidate executed inside it. Phase 1 records the first two and does not pretend to record the third.
 
 ## 4. Own, integrate, or defer
 
@@ -72,131 +83,284 @@ Related work that should not be copied: hosted scoring of agent traces, and capt
 | --- | --- | --- |
 | Case history, admission, effects, reconciliation | SyberWork | **KEEP** |
 | Generation barrier, diversity, isolation manifests, selection without promotion | SyberWork | **KEEP** |
-| Integrity classes and the rule that selection ignores unverified claims | SyberWork | **KEEP** |
-| Which world a generation froze, as an id and a digest | SyberWork coordination record | **ADAPT** |
-| Whether sibling evaluations cite that same digest | SyberWork projection | **ADAPT** |
+| Integrity classes (`internal`, `human_reviewed`, `host_verified`, `external`, `signed_external`) | SyberWork | **KEEP** |
+| Immutable world definition, content-addressed | SyberWork coordination record | **ADAPT** |
+| Generation freezes a definition digest, not a copy of the document | SyberWork | **ADAPT** |
+| Host binding from a `candidate_evaluated` event hash to that digest | The evaluator mechanism, same trust path as `record_host_integrity` | **ADAPT** |
+| Whether sibling bindings cite that digest | SyberWork projection. No selection effect in Phase 1 | **ADAPT** |
 | Check argv, exit codes, output digests | Existing host evaluator | **KEEP** |
-| Binding a check record to a world digest and a behavior-trace digest | Builder coordination record that cites the case event | **ADAPT** |
-| Classifying a trace as host-verified or externally verified | Existing `assess_integrity` | **KEEP** |
-| Creating, seeding, snapshotting, and destroying a world | World provider | **ABSTRACT** |
-| Compute, filesystem, process lifecycle, browser, installed tools | Agent runtime | **ABSTRACT**, and **DEFER** until a second adapter exists |
+| Claim kind versus independence, once a trace exists | A later policy shape. Not an extra integrity class | **DEFER** |
+| Creating, seeding, snapshotting, restoring, connecting, observing, destroying a world | World provider | **ABSTRACT**, and **DEFER** until Phase 3 |
+| Comparing traces | SyberWork pure function. Providers return observations | **ADAPT** |
+| Compute, filesystem, process lifecycle, browser, installed tools | Agent runtime | **DEFER** until a second adapter exists |
 | Credential material | Broker outside the agent. The cell stores the binding name, as `auth_env` already does | **ADAPT** |
 | Packet filter, microVM, Kubernetes, customer VPC | External infrastructure | **DEFER** |
+| `world_bound` as an integrity class | Nobody | **REJECT** |
 | Becoming the fake GitHub, Slack, or Stripe | Nobody in this repository | **REJECT** |
 | Importing Islo or DoubleAgent as a library | Nobody in this repository | **REJECT** |
+| An operator POSTing a binding onto an evaluation that already finished | Nobody | **REJECT** |
 
 **INTEGRATE** means a later adapter may speak a provider's HTTP. It does not mean a dependency in `syberlabs` or `syberwork`. `syberlabs` must not import `syberwork`. A provider adapter, when one exists, lives at the edge the way `CommandProvider` does: a process boundary, no vendor SDK in the core.
 
 ## 5. Missing abstractions
 
-Do not add a fifth plane. The objects below are coordination facts and integrity inputs.
+Do not add a fifth plane. The objects below are coordination facts. They become integrity inputs only in Phase 2, and only through the existing independence classes.
 
-**ABSTRACT** `EvaluationWorld`. A frozen input to a generation, the same kind of fact as `base_revision`. Fields the cell needs, and no others: `id`, `provider` (a short name), `digest` (SHA-256 of the canonical world document), `services` (names and `simulated` or `real`), `network_policy_ref`, `snapshot_ref`. The digest covers the seed, the policy, and the snapshot identity. It does not cover live process memory.
+**ADAPT** `EvaluationWorldDefinition`. An immutable document addressed by the SHA-256 of its canonical form. The generation stores the digest, not a growing embedded object. Two generations can name the same digest. A mutated world is a new document whose `parent_world_digest` names the previous one.
 
-**ABSTRACT** `WorldProvider` only as a protocol once two implementations exist. The operations are `create`, `seed`, `snapshot`, `restore`, `connect`, `observe`, `compare`, `destroy`. The first implementation should be in-process and static (section 12). A DoubleAgent-shaped HTTP adapter is the second, and it is what justifies the protocol. Until then, a module function is enough. This repeats the reason `AgentRuntime` was deleted: a protocol with one implementation is a fiction.
+```text
+EvaluationWorldDefinition
+├── digest
+├── provider
+│     ├── name
+│     └── revision
+├── services[]
+│     ├── name
+│     └── mode: simulated | real
+├── seed_ref
+├── seed_digest
+├── environment_snapshot
+│     ├── snapshot_ref
+│     └── snapshot_digest
+├── network_policy
+├── time_policy
+│     ├── mode: fixed
+│     ├── epoch
+│     └── timezone
+├── entropy_policy
+├── reproducibility: deterministic | snapshot_replayable | externally_mutable | unknown
+├── parent_world_digest
+└── intent: comparison | mutated | adversarial | historical | customer
+```
 
-**ABSTRACT** `BehaviorTrace` as a content-addressed list of external actions: `{service, method, path, outcome, at_seq}` plus a digest. `at_seq` is the world's sequence, not wall-clock time, so two runs can be compared. The trace is evidence. It is not an effect, and it is not a case event.
+`provider.revision` is part of the digest. `provider.name = doubleagent` is not an identity: two revisions of the same fake can implement GitHub differently. For a Phase 1 static document the revision is the content hash of the fixture text the operator names, not a running server.
 
-**ADAPT** `EnvironmentSnapshot` as a digest the world document names. The prototype row's `environment` string is a display label, not this object. Do not overload it.
+`snapshot_digest` is the proof. `snapshot_ref` is how a later provider finds the bytes. Phase 1 may set both to the digest of the static document itself, which claims nothing about an OS image. A missing toolchain does not hash as "any toolchain." The field is explicit: either a digest, or null. Null means runtime identity is not part of this definition.
 
-**ADAPT** `NetworkPolicy` as data inside the world document: allowed destinations, denied destinations, and whether a denied attempt must appear in the trace. SyberWork does not enforce it. A verifier checks that the trace respects it.
+`time_policy` is the world's clock, not the clock of the evaluation run. Software depends on dates, expiry, and calendars. A fixed epoch and timezone belong in the digest. The wall time at which the host happened to run the checks does not. The same split applies to `entropy_policy`: a fixed seed or an explicit `none`, never the host's live RNG.
 
-**ADAPT** `CredentialBroker` as the existing `auth_env` rule, extended in documentation and in the world document. A capability is a name (`github_issue_write`). The runtime or the gateway resolves the name. The agent session's `assignment` may list capability names. It must not gain a secret field. `_refuse_hidden` already rejects hidden reasoning fields; a secret key belongs on that refusal list when the world document is normalized.
+`reproducibility` is a claim about the definition, not a measurement of a run. Phase 1 accepts `unknown` and `externally_mutable` only. `externally_mutable` is the class for a live service such as GitHub. `unknown` is the class when nobody has shown that two instances can be reconstructed. `deterministic` and `snapshot_replayable` stay refused until Phase 2 records a host observation of isolated instances, or Phase 3 shows a second provider can replay them. An operator cannot write those two values in advance.
 
-**DEFER** `AgentRuntime` as a protocol. `DisconnectedRuntime` stays the default. The next real adapter should be a local process that runs `syberlabs.checks` against a static world, not an Islo client. When a second adapter exists, the protocol returns `{applied, reason}` as `DisconnectedRuntime` already does, plus a trace digest when the command was an evaluation. It does not gain a method that mutates Git.
+**REJECT** storing `{id, provider, digest}` on the generation as the world. That triple cannot answer which services, which policy, which parent, or which intent, and it invites a later column for each new field. The generation freezes `world_digest` only.
 
-**REJECT** restoring `PrototypeProvider`. Prototype state (`building|ready|failed|expired`) is a registry. Provisioning stays outside.
+**ABSTRACT** `WorldProvider`, and **DEFER** the protocol until a second implementation exists. Operations, when that day comes: `create`, `seed`, `snapshot`, `restore`, `connect`, `observe`, `destroy`. **REJECT** `compare` on the provider. The provider returns observations. `syberlabs` decides whether two traces differ. A protocol with one implementation is the fiction that got `AgentRuntime` deleted.
 
-**REJECT** `ExternalServiceSimulation` as a SyberWork type. That is an implementation detail of a world provider. The cell sees service names and a simulated-or-real flag.
+**DEFER** `BehaviorTrace` to Phase 2. The event shape has to be fixed before a runner emits one, because `{service, method, path, outcome}` cannot support the predicates in section 8. `POST /issues` proves an endpoint was called. It does not prove which issue, which body, or which state change.
+
+```text
+BehaviorEvent
+├── seq                  # world sequence, not wall-clock time
+├── service
+├── operation            # github.issues.create, not only POST /issues
+├── request_digest
+├── response_digest
+├── resource_ref
+├── outcome
+├── policy_decision      # allowed | denied
+└── state_transition
+      ├── before_digest
+      └── after_digest
+```
+
+No raw credentials. No raw request body in the coordination row. The digests address the bodies, which stay with the provider. A structural diff of two traces is then a diff of operations, resource refs, and state-transition digests. Phase 1 records `trace_digest` as null.
+
+**ADAPT** `EnvironmentSnapshot` as the pair above. The prototype row's `environment` string remains a display label. Do not overload it. OS image, language version, dependency set, database engine, and browser version land here when a definition claims them. Phase 1 does not require them. Their absence is visible because `snapshot_digest` is null rather than omitted from the canonical document.
+
+**ADAPT** `NetworkPolicy` as data inside the definition. SyberWork does not enforce it. A Phase 2 verifier checks that a trace respects it.
+
+**ADAPT** `CredentialBroker` as the existing `auth_env` rule. A capability is a name. The agent session may list names. It must not gain a secret field. Normalization of a world definition refuses secret-like keys, for the same reason `_refuse_hidden` refuses hidden reasoning fields.
+
+**DEFER** `AgentRuntime`. `DisconnectedRuntime` stays the only runtime. Phase 1 does not run a world.
+
+**REJECT** restoring `PrototypeProvider`.
+
+**REJECT** `ExternalServiceSimulation` as a SyberWork type. The definition's `services[].mode` is the whole distinction the cell needs.
+
+**REJECT** adding `world_bound` to the integrity classes. Those classes are `internal`, `human_reviewed`, `host_verified`, `external`, and `signed_external`. They answer who established a claim. "This evaluation is bound to world W" answers what was established. A bound evaluation can later be `host_verified` or `signed_external`. Those are combinations, so they are different axes. The later policy shape, not used in Phase 1, is:
+
+```text
+required_evidence:
+  - claim: evaluation_world_bound
+    independence: host_verified
+```
+
+`_verdict` keeps matching `verification_status`, `verified_independence`, and `result`. A claim kind is a further predicate on the observation, added only when a policy of that shape exists. Phase 1 does not add it, and selection does not read world rows.
 
 ## 6. Proposed architecture
+
+Two statements stay independent.
+
+```text
+AUTHORITY
+
+"The registered tree passed the contract's required checks."
+```
+
+That statement is `candidate_evaluated` plus admission. Its shape does not change.
+
+```text
+EXPERIMENTAL CONTEXT
+
+Phase 1: "The host bound that evaluation event to world definition W."
+Phase 2: "The host observed the candidate execute in an isolated instance of W, and trace T is that observation."
+```
+
+Phase 1 does not license the Phase 2 sentence. A binding is provenance. Experience is a later observation.
 
 ```text
 case chain (authority)
   candidate_registered
-  candidate_evaluated          # unchanged shape
-        ▲
-        │ cites event hash
-coordination log (not authority)
-  generation
-    base_revision
-    evaluation_world {id, provider, digest}    # frozen at seal
-  evaluation_binding
-    candidate_id, case_event_hash, world_digest, trace_digest
-  behavior_trace
-    digest, events[]
-  integrity_observation
-    verified_independence, digest = trace_digest
+  candidate_evaluated                 # unchanged shape
+        │
+        │ exact event hash, written by the evaluator mechanism
+        ▼
+coordination (not authority)
+  EvaluationWorldDefinition           # immutable, content-addressed
+        │
+        │ digest only
+        ▼
+  Generation.world_digest             # frozen at seal
+        │
+        ├── Candidate A
+        │     └── EvaluationBinding → definition digest
+        └── Candidate B
+              └── EvaluationBinding → definition digest
 
-world provider (replaceable)
-  static fixture  |  later: DoubleAgent HTTP  |  later: customer staging
-        ▲
-runtime (replaceable)
-  disconnected  |  later: local process  |  not a microVM product
+Phase 2, not Phase 1:
+  world instance digest
+  BehaviorTrace
+  integrity observation
+    claim_kind: evaluation_world_bound
+    verified_independence: host_verified | signed_external | …
 ```
 
-SyberWork governs assignment, context permissions (`context_manifest`), lifecycle commands, authority, generation and candidate association, and which evidence selection is allowed to read.
+SyberWork governs assignment, context permissions (`context_manifest`), lifecycle commands, authority, which definition a generation froze, and which evidence selection is allowed to read. In Phase 1, selection is allowed to read nothing new.
 
-The runtime governs compute, filesystem, process lifetime, installed tools, and browser. The world provider governs external service state. Neither one appends a case event. The host evaluator, which is already forbidden from being the registering actor, is the only component that may call `record_host_integrity` for a trace it observed. The agent that produced the candidate may record `internal` only.
+The runtime, when one exists, governs compute, filesystem, process lifetime, installed tools, and browser. The world provider, when one exists, governs external service state and returns observations. Neither appends a case event. Comparison of those observations is a pure function in `syberlabs`. The host evaluator, already forbidden from being the registering actor, is the only component that may record a binding, and later the only component that may call `record_host_integrity` for a trace it observed. `record_host_integrity` is not an HTTP route. The binding follows that pattern: the HTTP API does not offer it to a coordination role.
 
-An evaluation the cell can defend becomes:
+An operator may register a definition and freeze its digest onto a generation before any evaluation. That is intent. The operator may not, afterward, attach that digest to an evaluation that already exists. The binding is written in the evaluator workflow that just appended `candidate_evaluated`, and it carries that event's hash.
 
-> Candidate C was evaluated by evaluator E inside world W at snapshot S, and the external behavior trace is T.
+```text
+evaluator principal
+    runs the contract checks
+        ↓
+records candidate_evaluated
+        ↓
+receives the exact event hash
+        ↓
+host records EvaluationBinding
+    candidate_id
+    evaluation_event_hash
+    evaluator principal
+    world_definition_digest
+    world_instance_digest    # null in Phase 1
+    trace_digest             # null in Phase 1
+    evaluation_run_id
+```
 
-The check record remains the admission input. The binding is how a Builder projection and a later proposal show that the checks ran in a named world. A proposal may cite the binding's digest the way it may already cite a selection `evidence_digest`. Admission does not start requiring a world until a new contract field says so, in a later protocol version. Until then, a missing world means "world not recorded," which selection can treat as unresolved when the policy lists a required integrity class, and which admission ignores.
+The evaluator principal on the binding must be the actor on the case event. The definition digest must equal the generation's frozen digest. A second binding for the same event hash is a replay of the same record or a refusal, not a chance to name a different world.
 
-Sibling candidates share one world digest because the generation freezes it at seal, next to the approach descriptors. Each candidate receives its own instance, created from that digest. Comparison is meaningful when the binding digests match. A projection field `worlds_differ` is true when any linked candidate's binding names another digest. That is a fact, not a score.
+Sibling candidates share a definition because the generation freezes one digest. Phase 1 does not create instances. The projection therefore reports:
 
-Worlds across generations:
+```text
+world_definition_matches
+evaluation_binding_present
+world_definition
+instance_equivalence: unverified | impossible
+```
+
+`world_definition_matches` is true only when every linked candidate has a host binding and every binding's definition digest equals the generation digest. A missing binding is not a match. `instance_equivalence` is `unverified` when reproducibility is `unknown`, because Phase 1 has no instance digest. It is `impossible` when reproducibility is `externally_mutable`, because a live service at two times is two universes even when the definition digest matches. Phase 1 never emits `verified`. That value waits until Phase 2 records instance digests from isolated runs and the host checks them.
+
+`worlds_differ: false` is the wrong field. It reads as "equivalent environments."
+
+Worlds across generations are references to immutable definitions:
+
+```text
+Generation 4 → W17
+Generation 5 → W17
+Generation 6 → W18 (parent W17, intent adversarial)
+```
 
 | Use | How it is represented | Label |
 | --- | --- | --- |
-| Controlled comparison | Child generation copies the parent world digest | **ADAPT** |
-| Deliberate mutation | New world document, new digest, `parent_world_digest` set | **ADAPT** |
-| Adversarial | A world whose policy or seed is marked `intent: adversarial` by the operator who sealed the generation | **ADAPT** |
-| Historical | A digest that already exists. No clock is rewound inside the cell | **ADAPT** |
-| Customer-specific | `provider` names the customer's world provider. The digest is still what siblings share | **DEFER** the provider; **KEEP** the digest rule |
+| Controlled comparison | Another generation stores the same definition digest | **ADAPT** |
+| Deliberate mutation | New definition, new digest, `parent_world_digest` set, `intent: mutated` | **ADAPT** |
+| Adversarial | New definition, `intent: adversarial`, parent set | **ADAPT** |
+| Historical | An existing digest. The cell does not rewind a clock. `time_policy` inside that definition is the clock that counts | **ADAPT** |
+| Customer-specific | `provider.name` names the customer's provider, and `provider.revision` is inside the digest | **DEFER** the provider; **KEEP** the digest rule |
 
-This is an experimental record of software evolution: each generation names the system it varied and the world it varied against. It is not an agent-development UI.
+This is an experimental record of software evolution: each generation names the system it varied and the world definition it varied against. It is not an agent-development UI. The environment of selection is that frozen definition. It is not yet evidence that the candidates experienced it.
 
 ## 7. Data and event model changes
 
-**KEEP** `candidate_evaluated` frozen. Adding `world_id` to that body would change `evaluation_record`'s exact field set, the golden traces, and every admission rule that assumes the newest evaluation of a tree is comparable to an older one. Do not do that in v0alpha1.
+**KEEP** `candidate_evaluated` frozen. Adding a world field to that body would change `evaluation_record`'s exact field set, the golden traces, and every admission rule that assumes the newest evaluation of a tree is comparable to an older one. Do not do that in v0alpha1.
 
-**ADAPT** the builder protocol, in a later change, not in this document's commit:
+**KEEP** `builder_generations` as migration `0004` created it. Do not add a world column to that table.
 
-- `normalize_generation` gains an optional `evaluation_world`. When present it is `{id, provider, digest}` with `provider` a short token and `digest` 64 hex characters. When absent, current generations stay valid. Seal copies it onto the generation row and refuses a later rewrite, the same way descriptors freeze.
-- A coordination event `evaluation_bound` (builder namespace only) carries `candidate_id`, `case_event_hash`, `world_digest`, `trace_digest`. The case event hash must be a `candidate_evaluated` event for that candidate. The world digest must equal the generation's frozen digest.
-- A coordination event `behavior_trace_recorded` carries the canonical event list and its digest. The actor is the host or a registered verifier, never the candidate's registering principal.
-- `builder_integrity.digest` already exists. A host or external observation sets it to the trace digest. `evidence_refs` may name the coordination sequence. Selection already ignores the row unless `verified_independence` matches.
+**ADAPT** with three new tables, in a later migration, not in this commit. `migrate` runs one shared statement list on both dialects. SQLite wraps that list in `BEGIN IMMEDIATE`. PostgreSQL connects with `autocommit=True` and holds `pg_advisory_lock` around the statements, so a failure leaves earlier statements committed and does not insert `schema_migrations`. The next open retries every statement. `CREATE TABLE IF NOT EXISTS` survives that retry. `ADD COLUMN` does not, unless each dialect grows its own existence check. The only such check today is `_column_names` for SQLite's `events.at_json`, outside the shared scripts. New world state therefore follows `0004`: new tables, not `ALTER`.
 
-No new case-event kind. No new migration in the slice that only writes the report. The implementation slice adds columns with `IF NOT EXISTS` semantics inside the next builder migration, or stores the world document in the generation's existing JSON if a column is unnecessary. Prefer a column for `world_digest` so sibling comparison is a predicate, not a scan of bodies. Do not reopen `0004`: deployed databases already applied it. A new migration is `0005` only when the code lands, and only as `ADD COLUMN` statements that are safe to retry, which the removed `0005` was not.
+```text
+builder_worlds
+    digest          PRIMARY KEY
+    body            canonical EvaluationWorldDefinition, minus the digest field
+    created_by
+    created_at
 
-Content to hash into the world digest: provider name, service list and simulated-or-real flags, seed document, network policy, snapshot id. Exclude: endpoints that contain secrets, wall-clock time, process ids, and the candidate id. The instance is derived; the definition is addressed.
+builder_generation_worlds
+    generation_id   PRIMARY KEY
+    world_digest
+    sealed_at
+
+builder_evaluation_bindings
+    id              PRIMARY KEY
+    generation_id
+    candidate_id
+    evaluation_event_hash
+    evaluator
+    world_digest
+    world_instance_digest    NULL in Phase 1
+    trace_digest             NULL in Phase 1
+    evaluation_run_id
+    actor
+    at
+    UNIQUE (evaluation_event_hash)
+```
+
+`SNAPSHOT_TABLES` in `syberwork/storage.py` is an explicit list. These three names have to be added there. `OPTIONAL_SNAPSHOT_TABLES` is derived from the `builder_` prefix, so a pre-builder snapshot still restores, and a snapshot that already contains any builder file must contain these too or `restore_refused` names the missing table. That is the current backup rule. Do not special-case the new tables out of it.
+
+Seal inserts `builder_generation_worlds` in the same transaction that moves the generation to `sealed`, and only when the operator supplied a digest that already exists in `builder_worlds`. A generation with no row there has no world. Existing generations stay valid. The row is immutable after seal.
+
+The binding insert is not an HTTP mutation for `admin`, `operator`, `engineer`, `manager`, or `decision`. It is a host method beside `record_host_integrity`. It refuses unless all of the following hold: the case event is `candidate_evaluated` for `candidate_id`; its actor equals `evaluator`; the generation is sealed with `world_digest`; the event was appended by this same host call, not selected from older history. Phase 1 stores null instance and trace digests. A coordination role cannot update them later. Phase 2 fills them in the host call that observed the run, not in a second operator request.
+
+No new case-event kind. `evaluate_selection` does not query these tables. `builder_integrity` is unchanged in Phase 1.
+
+Content hashed into the definition digest: `provider.name`, `provider.revision`, services and their mode, `seed_digest`, `snapshot_ref`, `snapshot_digest` (including an explicit null), `network_policy`, `time_policy`, `entropy_policy`, `reproducibility`, `parent_world_digest`, `intent`. Excluded: secret-bearing endpoints, the wall-clock time of a run, process ids, candidate ids, and instance digests. The instance is not part of the definition. A live service's definition digest can match while its instances do not, which is why `externally_mutable` forces `instance_equivalence: impossible`.
 
 ## 8. Authority and integrity implications
 
-The failure this must not repeat is an agent certifying its own integrity.
+The failure this must not repeat is an agent certifying its own integrity, or an operator certifying an evaluation's world after the fact.
 
-| Evidence | Who may verify it | Class | Selection |
+Phase 1 bindings are not integrity observations and do not enter `_verdict`. The table below is the Phase 2 classification, using the classes that already exist. The claim kind is `evaluation_world_bound` or a narrower predicate. It is not a new independence class.
+
+| Evidence | Who may verify it | Independence | Selection |
 | --- | --- | --- | --- |
 | "I created one issue" | The acting agent | `internal` / `self_report` | Only if the policy requires `internal` |
 | A person inspected the trace | Authenticated human principal | `human_reviewed` | When required |
-| The host runner observed the trace file the world returned | `record_host_integrity` | `host_verified` | When required |
+| The host runner observed the trace | `record_host_integrity` | `host_verified` | When a future policy requires that class for that claim |
 | A verifier recomputed the digest and checked predicates | `IntegrityVerifier`, independence unchanged | `external` or `signed_external` | When required |
 | A SHA-256 that merely looks like a signature | Nobody | stays `unverified` | Ignored |
+| A coordination role asserts the world after the checks finished | Nobody | not recorded | Ignored |
 
-Predicates worth recording, each as a claim string on an observation whose digest is the trace:
+Predicates worth recording in Phase 2, each as a claim whose digest addresses the trace, and whose independence is whatever mechanism actually checked it:
 
-- the trace contains one `github.issues.create` and no other GitHub write;
-- no event destination is outside the world policy;
-- a named database key changed from the seed value to the expected value, and no other seeded key changed;
-- denied destinations appear as denied, not as missing;
-- a budget counter on the world did not exceed the generation's declared ceiling.
+- one `github.issues.create` whose `request_digest` matches the expected body digest, and no other GitHub write;
+- every event's `policy_decision` is `allowed`, or each `denied` event names a destination the policy forbids;
+- `state_transition.before_digest` and `after_digest` match the seed and the expected mutation, and no other seeded key changed;
+- a budget counter on the instance did not exceed the generation's declared ceiling.
 
-The cell does not interpret GitHub. The world document lists the predicates. The verifier returns pass or fail for each claim. A failed verifier sets `verification_status` to `failed` and does not upgrade the class (`assess_integrity` already does this).
+`POST /issues` alone satisfies none of these. The cell does not interpret GitHub. The definition lists the predicates. The verifier returns pass or fail for each claim and cannot relabel independence (`assess_integrity` already refuses that).
 
-Network activity is evidence only as events inside the trace. SyberWork does not capture packets. A runtime that cannot produce a trace cannot produce `host_verified` network evidence. Silence is `unverified`, not a pass.
+Network activity is evidence only as events inside a Phase 2 trace. SyberWork does not capture packets. Silence is `unverified`, not a pass. A definition digest is not a substitute for that trace.
 
 Effects stay the authority path for real side effects. A simulated GitHub write is a trace event. It must not become an `effect_started` case event and must not satisfy an effect contract. A real staging write is still an effect, with `auth_env`, idempotency, and reconciliation, if the contract says so. The world binding does not replace that.
 
@@ -221,74 +385,82 @@ This is the same shape as an installed action: the definition names `auth_env`, 
 
 The visual Builder is not part of this work. The substrate should make the following questions answerable from projections, which already set `authoritative: false`.
 
-| Question | Read from |
-| --- | --- |
-| What world did this candidate experience? | Generation `evaluation_world`, repeated on the candidate view. |
-| Were the services simulated or real? | World document `services`. |
-| What did the candidate actually do? | `BehaviorTrace` events, not the agent's activity text. |
-| What evidence did those actions produce? | Integrity projection: `independent_evidence` versus `self_report` versus `unverified_claims`. |
-| Was the evidence independent? | `verified_independence` and `verification_method`. |
-| How did behavior differ from siblings? | A structural diff of traces that share a world digest. `worlds_differ` when they do not. |
-| Why was it selected? | Existing selection `reasons`. Do not add a rank. |
-| Who had authority to promote it? | Existing `promotion_authorized` and the case admission rule. The Builder does not gain a promote button that skips admission. |
+| Question | Phase 1 reads | Later |
+| --- | --- | --- |
+| Which definition was this generation sealed with? | `world_definition` loaded by digest: services, mode, policy, snapshot digest, time policy, parent, intent, provider revision | Same object |
+| Were the evaluations bound to it? | `evaluation_binding_present` per candidate, `world_definition_matches` for the generation | Same |
+| Did they experience equivalent instances? | `instance_equivalence` is `unverified` or `impossible`. Never `verified` | `verified` only after host-recorded instance digests |
+| Were the services simulated or real? | `services[].mode` on the definition | A real service displays `impossible` for instance equivalence |
+| What did the candidate actually do? | Not answered. `trace_digest` is null | `BehaviorEvent` fields, compared by a pure function |
+| Was the evidence independent? | Not a world question yet | Existing integrity projection |
+| Why was it selected? | Existing selection `reasons`. Bindings are not among them | Still not a rank |
+| Who had authority to promote it? | Existing `promotion_authorized` and case admission | Unchanged |
 
-**REJECT** a DevOps dashboard: CPU, pod status, image tags, and a live desktop of the sandbox. Runtime health, if shown at all, is the command result the cell already stores (`applied`, `reason`) plus whether the bound trace digest matches the generation world. Architecture diffs stay the graph diff `architecture_diff` already computes. A behavioral diff is a second panel on the same candidate comparison, not a new product surface.
+**REJECT** a DevOps dashboard. **REJECT** a Phase 1 screen that says the candidate experienced the world. Architecture diffs stay `architecture_diff`. A behavioral diff is a Phase 2 panel that compares traces SyberWork already stored, not a call to the provider's `compare`.
 
-Replay is "restore this world digest and re-read the trace," performed by the provider. The UI stores nothing that would let it become the provider.
+Replay, when a provider exists, is the provider restoring a snapshot digest. The UI does not become the provider.
 
 ## 10. Failure modes and architectural risks
 
 | Risk | What goes wrong | Guard |
 | --- | --- | --- |
-| Self-certifying trace | The candidate's agent posts the trace and a passing observation | Trace actor cannot be the registering principal. HTTP cannot call `record_host_integrity`. |
-| Shared mutable world | Sibling A consumes the only issue id sibling B needed | One definition, isolated instances. Compare digests, not live servers. |
-| World digest omits the seed | Two generations share an id and differ in behavior | Digest covers seed, policy, and snapshot id. Id alone is not identity. |
-| Frozen protocol drift | World fields slipped into `candidate_evaluated` | Exact field set in `evaluation_record` stays the admission contract. Bindings cite the event hash from the builder log. |
+| Integrity class used as a property | `world_bound` sits beside `host_verified`, so a claim cannot be both | **REJECT** the class. Claim kind and independence stay separate axes. Phase 1 has neither in selection. |
+| Declared world read as experienced world | A shared digest is shown as "both candidates ran in W" | Projection copy is `world_definition_matches`. Phase 1 `instance_equivalence` is `unverified` or `impossible`, never `verified`. |
+| Live service, shared definition | Candidate A sees GitHub at T1 and candidate B at T2 | `reproducibility: externally_mutable` forces `instance_equivalence: impossible`. |
+| Provider name without revision | DoubleAgent v1 and v3 hash as one world | `provider.revision` is inside the definition digest. |
+| Snapshot id without a digest | `snapshot-17` is treated as immutable | `snapshot_digest` is the identity. `snapshot_ref` is a locator. |
+| Clock stripped entirely | Expiry, calendars, and token lifetime fall out of the world | `time_policy` is a fixed epoch and timezone. The run's wall clock stays out. |
+| Retrospective binding | An operator attaches today's world to last week's evaluation | Host method only, in the call that just appended the case event. HTTP coordination roles cannot write it. |
+| Self-certifying trace | The candidate's agent posts the trace and a passing observation | Phase 2. Trace actor cannot be the registering principal. HTTP cannot call `record_host_integrity`. |
+| Shared mutable instance | Sibling A consumes the only issue id sibling B needed | Phase 2 isolates instances. Phase 1 creates none. |
+| Frozen protocol drift | World fields slip into `candidate_evaluated` | Exact field set in `evaluation_record` stays the admission contract. |
 | Provider becomes authority | A simulated merge is treated as promotion | `promotes_git` stays false. Traces are not effects. |
-| Verifier relabels a self-report as signed | Selection treats the agent as an independent party | `assess_integrity` already rejects an independence mismatch. |
-| Non-determinism | Trace timestamps and map iteration make digests differ for the same actions | Canonical JSON, world sequence numbers, sorted keys. The same `canonical()` rules as the case hash, without putting the trace in the chain. |
-| Secret in the world document | A seed file contains a token, which then enters a snapshot and a backup | Normalization refuses secret-like keys. Backups already export builder tables; a world body must be safe to export. |
-| Partial migration | An `ALTER` in the middle of `0005` leaves PostgreSQL half-applied | Do not add `0005` until the statements are individually retryable. `0004` stays a sequence of `CREATE TABLE IF NOT EXISTS` and is not wrapped in a transaction. |
-| Runtime protocol fiction | One adapter and a protocol, again | No `AgentRuntime` protocol until the static world runner and one other adapter both exist. |
-| Comparison theater | Candidates share a digest but one check reached the public internet | Network policy is inside the digest. A trace that contains a destination outside the policy fails the verifier. A runtime that cannot see the network cannot claim `host_verified` for that predicate. |
+| Comparison delegated to the provider | The world vendor decides which candidate behaved better | `compare` is not a provider operation. |
+| Secret in the world document | A seed contains a token, which then enters a backup | Normalization refuses secret-like keys. New tables join `SNAPSHOT_TABLES` and are exported with the other builder tables. |
+| Partial migration | An `ALTER` on PostgreSQL survives a crash and fails on retry | New `CREATE TABLE IF NOT EXISTS` tables. Do not reopen `0004`. Do not `ADD COLUMN` on `builder_generations`. |
+| Runtime protocol fiction | One adapter and a protocol, again | No `AgentRuntime` and no `WorldProvider` protocol in Phase 1. |
 
 ## 11. Opportunities to simplify
 
-**KEEP** the four planes. An evaluation world is a frozen generation input, not a new plane and not a second hash chain.
+**KEEP** the four planes. A world definition is a coordination object the generation references. It is not a new plane and not a second hash chain.
 
-**REJECT** putting traces, world documents, or runtime logs into `events`. The coordination log already exists so that Builder facts do not move the case hash.
+**REJECT** putting definitions, bindings, traces, or runtime logs into `events`.
 
-**ADAPT** by not growing `candidate_evaluated`. The temptation is one richer evaluation event. The exact field set is what keeps old trees comparable and the 23 golden traces stable. Cite the event from the side.
+**ADAPT** by not growing `candidate_evaluated`, and by not growing `builder_generations`. The definition lives in `builder_worlds`. The freeze is a row in `builder_generation_worlds`. The exact check-record field set stays what keeps old trees comparable.
 
-**KEEP** `DisconnectedRuntime` as the only runtime type until a second one is real. Deleting the unused protocol was the simplification. Do not undo it in the same change that adds a world digest.
+**KEEP** `DisconnectedRuntime` as the only runtime type. Phase 1 does not add a second one.
 
-**KEEP** selection as reasons in three buckets. A world does not add a fitness term, a weight, or an embedding.
+**KEEP** selection as reasons in three buckets. Phase 1 does not add a required class, a claim kind, a fitness term, or a read of the binding tables.
 
-**ADAPT** the prototype `environment` string: leave it as a label. Do not make prototypes the world store. Worlds attach to generations so that every sibling shares them. A prototype is one candidate's deployed artifact.
+**ADAPT** the prototype `environment` string: leave it as a label. The world store is the definition table.
 
-**DEFER** PostgreSQL `NOTIFY`. The SSE poll is already documented as a development transport. World events use the same coordination log and the same cursor. They do not justify a new wakeup path.
+**DEFER** PostgreSQL `NOTIFY`. World rows do not justify a new wakeup path.
+
+**REJECT** `compare` on a future provider. One less method is the simplification.
 
 ## 12. Phased roadmap
 
-| Phase | Lands in the repository | Label | Does not include |
+| Phase | What it licenses | Lands in the repository | Does not include |
 | --- | --- | --- | --- |
-| 0. This document | `docs/EVALUATION_WORLDS.md` | — | Schema, migration, or runtime |
-| 1. Static world digest | Optional `evaluation_world` frozen at seal. In-process fixture: seed JSON, predicates, no socket. Binding cites `candidate_evaluated`. Sibling projection sets `worlds_differ`. | **ADAPT** | DoubleAgent, Islo, Docker, a new case event |
-| 2. Host trace | The check runner, when given a world, writes a `BehaviorTrace` and the host records `host_verified` through `record_host_integrity`. The agent cannot. One predicate: expected actions only. | **ADAPT** | Packet capture, a sandbox |
-| 3. Second provider | HTTP adapter with `seed`, `reset`, `events`, matching DoubleAgent's shape but importing nothing. Protocol appears here because two implementations exist. | **ABSTRACT** | Vendoring DoubleAgent |
-| 4. Runtime adapter | Local process runtime beside `DisconnectedRuntime`. Commands stay coordination commands. Evaluation is a host action, not `redirect`. | **ABSTRACT** | Kubernetes, microVMs, browsers |
-| 5. Contract opt-in | A future evolution-section field may require a world digest before promotion. That is a new protocol version, with new goldens. | **DEFER** | Silent change to v0alpha1 |
+| 0. This document | The distinctions in this file | `docs/EVALUATION_WORLDS.md` | Schema, migration, runtime |
+| 1. World identity and binding | "The host bound these evaluation events to the same immutable definition." | Definition table, generation freeze row, host binding, projection fields in section 6 | Trace, instance, selection rule, integrity class, provider protocol, runner |
+| 2. World execution and trace verification | "The host observed these candidates execute in isolated instances of that definition." | Instance digest, `BehaviorEvent`, `record_host_integrity` citing the trace, `instance_equivalence: verified` only then | A new independence class. Claim kind stays separate from independence |
+| 3. Provider reproducibility | "Another implementation can reconstruct and replay the definition." | A second observer. `WorldProvider` appears because two implementations exist. `compare` stays in `syberlabs` | Vendoring DoubleAgent or Islo |
+| 4. Runtime adapter | The cell can name who runs the checks | A local process beside `DisconnectedRuntime` | Kubernetes, microVMs, browsers |
+| 5. Contract opt-in | Admission may require a world digest | A new protocol version and new goldens | A silent change to v0alpha1 |
 
-Phases 1 and 2 are the experiment. Phases 3 through 5 wait until a generation with two candidates produces a comparison that admission-quality evidence could not: same base revision, same world digest, different traces, integrity classified by a party that did not register the candidate.
+Phase 1 is provenance. Phase 2 is the first time the cell may say a candidate experienced a world. Phase 3 is the first time a second party can replay that world. Selection policy grows a `required_evidence` entry only with Phase 2, and only as `{claim, independence}`, never as a new value inside `verified_independence`.
 
 ## Smallest slice that would prove the idea
 
-Implement phase 1 only, in the builder protocol.
+Implement Phase 1 only.
 
-1. Extend `normalize_generation` with optional `evaluation_world`. Seal freezes it. Existing callers that omit it keep today's behavior, so current builder tests stay valid.
-2. Add a pure function, next to `diversity_evidence`, that canonicalizes a static world document and returns its digest. The document is seed plus predicates plus a network policy. No I/O.
-3. When a candidate is linked and the generation has a world, require an `evaluation_bound` coordination record before selection can treat a new integrity class `world_bound` as satisfied. Do not add that class to any default policy. A policy that does not list it selects exactly as it does now.
-4. Project `worlds_differ` on the generation candidate view: false when every binding digest equals the generation digest, true otherwise, absent when the generation has no world.
-5. Tests: two linked candidates, one shared digest, `worlds_differ` false; a second generation with a one-field seed change, digests differ; an agent principal attempting `host_verified` is refused, which is already true and should be re-stated against a trace digest; `candidate_evaluated` schema and the 23 golden traces unchanged; `promotes_git` still false.
+1. A pure function canonicalizes an `EvaluationWorldDefinition` and returns its digest. The document includes provider name and revision, services and mode, seed digest, snapshot ref and snapshot digest, network policy, time policy, entropy policy, reproducibility, parent digest, and intent. No I/O. Two documents that differ by provider revision, snapshot digest, or fixed epoch hash differently. Explicit nulls are part of the canonical form.
+2. `builder_worlds`, `builder_generation_worlds`, and `builder_evaluation_bindings`, created with `CREATE TABLE IF NOT EXISTS` and added to `SNAPSHOT_TABLES`. No `ALTER` of `builder_generations`.
+3. Seal optionally freezes an existing definition digest. Omitting it leaves current generations valid. The freeze row cannot be updated.
+4. The host method that records `candidate_evaluated` may also insert a binding to the generation's frozen digest, with null instance and trace digests. A later call that names an older event hash is refused. HTTP coordination roles cannot insert a binding.
+5. The generation candidate view adds `world_definition`, `evaluation_binding_present`, `world_definition_matches`, and `instance_equivalence`. It does not add `worlds_differ`. `instance_equivalence` is `impossible` for `externally_mutable` and `unverified` otherwise. It is never `verified` in this slice.
+6. `evaluate_selection` is unchanged. Tests assert a sealed world and two matching bindings do not move a candidate between `advanced`, `unresolved`, and `rejected`.
+7. `candidate_evaluated` and the 23 golden traces stay as they are. `promotes_git` stays false.
 
-That slice answers one question: can two sibling candidates be shown to have been judged against the same world, with the world identity independent of either candidate's claim? If the projection is unused by selection unless a policy asks for it, the slice cannot accidentally become a second promotion path. If the digest is too weak to capture the differences that matter, the failure shows up as two worlds that hash the same and behave differently, which is the predicate phase 2 exists to catch. No VM is required to learn that.
+That slice answers one question: can the cell show that the trusted evaluator bound two sibling evaluations to one immutable world definition, without claiming they experienced it, and without letting that fact change selection? A runner, a trace, and a provider are how Phase 2 and Phase 3 earn the stronger sentences. They are not required to learn whether the provenance record is honest.

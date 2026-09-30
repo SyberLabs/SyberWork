@@ -68,4 +68,4 @@ Migration `0004` adds the coordination tables to the cell database, SQLite and P
 
 ## Not in this version
 
-A generation does not freeze an evaluation world. `docs/EVALUATION_WORLDS.md` describes how a later builder revision could name a shared world digest beside `candidate_evaluated` without changing this protocol or the case chain.
+A generation does not freeze an evaluation world. `docs/EVALUATION_WORLDS.md` describes a later builder revision that would store an immutable world definition and let the host bind a `candidate_evaluated` event hash to its digest. That binding is not an integrity class and does not enter selection. This protocol and the case chain stay as they are.

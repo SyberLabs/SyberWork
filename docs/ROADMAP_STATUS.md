@@ -96,6 +96,6 @@ The future Builder UI has a coordination, integrity, and projection backend. It 
 | Architecture graph snapshots and prototype registry | Implemented | Graph AST with repository paths. No diagram vendor. The prototype record hides how it was provisioned. |
 | Projections, role lens, Builder HTTP, SSE | Implemented | `GET /api/builder/...` and `GET /api/builder/work/:id/stream`. Existing case routes are unchanged. |
 | Final Builder visual system | **Not built** | This slice is the substrate those screens can read. |
-| Evaluation worlds (Islo and DoubleAgent as replaceable providers) | **Proposed** | [EVALUATION_WORLDS.md](EVALUATION_WORLDS.md). Not a schema, a migration, or a runtime. `candidate_evaluated` stays frozen. |
+| Evaluation worlds (Islo and DoubleAgent as replaceable providers) | **Proposed** | [EVALUATION_WORLDS.md](EVALUATION_WORLDS.md). Phase 1 would record a host binding to an immutable world definition. It would not change selection, admission, or `candidate_evaluated`. |
 
 A coordination record is not a case event. A displayed comment, diversity score, agent claim, or architecture snapshot does not admit or promote anything. The command adapter does not attach to a process. Integrity digests are stored, not verified.
