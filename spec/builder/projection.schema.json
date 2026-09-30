@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/projection.schema.json",
+  "title": "Projection",
+  "description": "Read model. authoritative is always false. A role lens may add lens and redacted without creating another store of record.",
+  "type": "object",
+  "required": ["protocol", "kind", "authoritative"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "kind": {"enum": ["WorldProjection", "GenerationProjection", "CandidateProjection", "ActorProjection", "IntegrityProjection", "ArchitectureProjection", "ArchitectureDiff"]},
+    "authoritative": {"const": false},
+    "lens": {"type": "array", "items": {"type": "string"}},
+    "redacted": {"type": "array", "items": {"type": "string"}}
+  }
+}

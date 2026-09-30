@@ -50,7 +50,10 @@ def restore_cell(work, directory: str | Path) -> dict:
         if existing:
             raise Rejected("restore_refused", "restore only into an empty cell database")
         for table in SNAPSHOT_TABLES:
-            rows = json.loads((directory / f"{table}.json").read_text(encoding="utf-8"))
+            path = directory / f"{table}.json"
+            if not path.exists():
+                continue
+            rows = json.loads(path.read_text(encoding="utf-8"))
             if not rows:
                 continue
             columns = list(rows[0])

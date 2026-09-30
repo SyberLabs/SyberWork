@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/approach.schema.json",
+  "title": "Approach",
+  "description": "Approach descriptor that exists before a Git candidate. Frozen when its generation seals.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "generation_id", "state", "descriptor", "evidence", "created_at"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "generation_id": {"type": "string", "minLength": 1},
+    "state": {"enum": ["active", "rejected", "frozen"]},
+    "created_at": {"type": "integer", "minimum": 0},
+    "descriptor": {"$ref": "approach-descriptor.schema.json"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "authoritative", "inputs", "pairs"],
+      "properties": {
+        "method": {"const": "structural_jaccard"},
+        "authoritative": {"const": "structural"},
+        "inputs": {"type": "object"},
+        "pairs": {"type": "array"}
+      }
+    }
+  }
+}

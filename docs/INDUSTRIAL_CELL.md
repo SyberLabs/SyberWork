@@ -2,7 +2,7 @@
 
 A cell is one organization and one database. Tenant isolation is that boundary. Case rows do not carry a tenant id.
 
-Admission still lives in `syberlabs` and does not import the database. `Work` calls `ContractStore`, `PolicyStore`, `ActionRegistry`, `SourceRegistry`, `CaseStore`, `EventStore`, and `ReservationStore`. `open_store` selects SQLite for a file path and PostgreSQL for a `postgresql://` URL. Migrations `0001` through `0003` are applied on open. A database created before those migrations keeps its event hashes; `at_json` is added when it is missing.
+Admission still lives in `syberlabs` and does not import the database. `Work` calls `ContractStore`, `PolicyStore`, `ActionRegistry`, `SourceRegistry`, `CaseStore`, `EventStore`, and `ReservationStore`. `open_store` selects SQLite for a file path and PostgreSQL for a `postgresql://` URL. Migrations `0001` through `0004` are applied on open. A database created before those migrations keeps its event hashes; `at_json` is added when it is missing. Migration `0004` adds Builder coordination tables. They are not case events. A logical snapshot from before that migration still restores: missing table files are skipped.
 
 ## What this cell does
 

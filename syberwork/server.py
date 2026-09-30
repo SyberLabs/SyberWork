@@ -85,10 +85,18 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._json(work.candidates(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
                     self._json({"valid": work.verify_chain(parts[2])})
+                elif parts[:2] == ["api", "builder"]:
+                    from .builder_http import dispatch_get
+                    outcome = dispatch_get(work, user, parts, urlsplit(self.path).query, self.headers.get("Last-Event-ID"))
+                    if outcome[0] == "sse":
+                        self._sse(outcome[1])
+                    else:
+                        self._json(outcome[1], outcome[2])
                 else:
                     self._json({"error": "not_found"}, 404)
             except Rejected as e:
-                self._json({"error": e.code, "detail": e.detail}, 401 if e.code == "unauthorized" else 409)
+                status = 401 if e.code == "unauthorized" else 404 if e.code == "not_found" else 409
+                self._json({"error": e.code, "detail": e.detail}, status)
             except Exception:
                 self._json({"error": "internal_error"}, 500)
 
@@ -101,6 +109,19 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
             self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'")
             self.end_headers()
             self.wfile.write(body)
+
+        def _sse(self, chunks):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                for chunk in chunks:
+                    self.wfile.write(chunk.encode())
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
 
         def do_POST(self):
             try:
@@ -160,6 +181,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                         result = work.replay(case_id, data["contract_version"], data["policy_version"])
                     else:
                         raise Rejected("unknown_route", operation)
+                elif parts[:2] == ["api", "builder"]:
+                    from .builder_http import dispatch_post
+                    result = dispatch_post(work, user, parts, data)
                 else:
                     raise Rejected("forbidden", "route unavailable or admin role required")
                 self._json(result)

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/feedback.schema.json",
+  "title": "Feedback",
+  "description": "Attributed stakeholder feedback. authority is derived from policy and is not a caller-supplied fitness score.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "case_id", "generation_id", "target_kind", "target_id", "kind", "authority", "actor", "text", "at"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "case_id": {"type": "string", "minLength": 1},
+    "generation_id": {"type": ["string", "null"]},
+    "target_kind": {"enum": ["generation", "approach", "candidate", "architecture_node", "prototype"]},
+    "target_id": {"type": "string", "minLength": 1},
+    "kind": {"enum": ["comment", "critique", "preference", "concern", "dissent", "trait_request"]},
+    "authority": {"enum": ["informative", "advisory", "veto", "consensus", "decision"]},
+    "actor": {"type": "string", "minLength": 1},
+    "text": {"type": "string", "minLength": 1},
+    "at": {"type": "integer", "minimum": 0}
+  }
+}

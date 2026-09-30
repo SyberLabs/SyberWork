@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/prototype.schema.json",
+  "title": "Prototype",
+  "description": "Registry record for a candidate prototype. The reader does not need to know how it was provisioned.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "case_id", "candidate_id", "artifact_ref", "environment", "provider", "state", "created_by", "created_at"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "case_id": {"type": "string", "minLength": 1},
+    "generation_id": {"type": ["string", "null"]},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "artifact_ref": {"type": "string", "minLength": 1},
+    "environment": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "endpoint": {"type": ["string", "null"]},
+    "state": {"enum": ["building", "ready", "failed", "expired"]},
+    "created_by": {"type": "string", "minLength": 1},
+    "created_at": {"type": "integer", "minimum": 0},
+    "expires_at": {"type": ["integer", "null"]},
+    "digest": {"type": ["string", "null"]}
+  }
+}

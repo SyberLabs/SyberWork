@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/selection-policy.schema.json",
+  "title": "SelectionPolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "version", "required_integrity", "stakeholder_authority", "advisory_dimensions", "consensus_threshold", "promotion_roles", "weights"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "required_integrity": {
+      "type": "array",
+      "items": {"enum": ["internal", "host_verified", "human_reviewed", "external", "signed_external"]}
+    },
+    "stakeholder_authority": {"type": "object"},
+    "advisory_dimensions": {
+      "type": "array",
+      "items": {"enum": ["comment", "critique", "preference", "concern", "dissent", "trait_request"]}
+    },
+    "consensus_threshold": {"type": "integer", "minimum": 1},
+    "promotion_roles": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "weights": {"type": ["object", "null"]},
+    "actor": {"type": "string"}
+  }
+}

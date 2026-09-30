@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/agent-command.schema.json",
+  "title": "AgentCommand",
+  "description": "Persistent command and result. send_context and redirect are different commands. The default runtime result is runtime_not_connected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "agent_id", "command", "body", "result", "actor", "at"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "agent_id": {"type": "string", "minLength": 1},
+    "command": {"enum": ["pause", "resume", "cancel", "send_context", "restrict_scope", "redirect"]},
+    "body": {"type": "object"},
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applied", "reason"],
+      "properties": {
+        "applied": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "actor": {"type": "string", "minLength": 1},
+    "at": {"type": "integer", "minimum": 0}
+  }
+}
