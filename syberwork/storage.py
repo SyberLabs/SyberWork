@@ -167,7 +167,7 @@ _MIGRATIONS: list[tuple[str, str]] = [
             target_kind TEXT NOT NULL,
             target_id TEXT NOT NULL,
             kind TEXT NOT NULL,
-            authority TEXT NOT NULL,
+            authorities TEXT NOT NULL,
             actor TEXT NOT NULL,
             body TEXT NOT NULL,
             at BIGINT NOT NULL
@@ -181,7 +181,10 @@ _MIGRATIONS: list[tuple[str, str]] = [
             claim TEXT NOT NULL,
             source TEXT NOT NULL,
             verifier TEXT NOT NULL,
-            independence TEXT NOT NULL,
+            independence_claim TEXT NOT NULL,
+            verification_status TEXT NOT NULL,
+            verification_method TEXT,
+            verified_independence TEXT,
             evidence_refs TEXT NOT NULL,
             result TEXT NOT NULL,
             digest TEXT,
@@ -241,16 +244,9 @@ _MIGRATIONS: list[tuple[str, str]] = [
             changed_paths TEXT NOT NULL,
             actor TEXT NOT NULL,
             at BIGINT NOT NULL,
+            authority TEXT NOT NULL,
             UNIQUE (generation_id, candidate_id)
         );
-    """),
-    ("0005", """
-        ALTER TABLE builder_feedback ADD COLUMN authorities TEXT;
-        ALTER TABLE builder_integrity ADD COLUMN independence_claim TEXT;
-        ALTER TABLE builder_integrity ADD COLUMN verification_status TEXT;
-        ALTER TABLE builder_integrity ADD COLUMN verification_method TEXT;
-        ALTER TABLE builder_integrity ADD COLUMN verified_independence TEXT;
-        ALTER TABLE builder_candidate_links ADD COLUMN authority TEXT;
     """),
 ]
 

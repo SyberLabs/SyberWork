@@ -30,31 +30,9 @@ PROTOCOL = "sdk.syberlabs.space/builder/v0alpha1"
 
 MODES = ("explore", "refine", "harden")
 ISOLATIONS = ("independent", "aware", "collaborative")
-GENERATION_STATES = ("drafting", "sealed", "launched", "evaluating", "selecting", "closed")
-LINKABLE_STATES = ("sealed", "launched", "evaluating", "selecting")
-APPROACH_STATES = ("active", "rejected", "frozen")
-
-EVENT_KINDS = (
-    "generation_created",
-    "generation_sealed",
-    "generation_launched",
-    "generation_closed",
-    "approach_registered",
-    "approach_rejected",
-    "approach_revised",
-    "candidate_linked",
-    "prototype_registered",
-    "prototype_state_changed",
-    "agent_registered",
-    "agent_assignment_changed",
-    "agent_state_changed",
-    "agent_activity_recorded",
-    "feedback_recorded",
-    "integrity_observation_recorded",
-    "selection_started",
-    "selection_recorded",
-    "architecture_snapshot_published",
-)
+RUNNING_STATES = ("launched", "evaluating", "selecting")
+LINKABLE_STATES = ("sealed", *RUNNING_STATES)
+COORDINATION_ROLES = frozenset({"admin", "operator", "engineer", "manager", "decision"})
 
 DESCRIPTOR_FIELDS = (
     "intent",
@@ -95,7 +73,6 @@ _STRUCTURAL_KEYS = (
 FEEDBACK_TARGETS = ("generation", "approach", "candidate", "architecture_node", "prototype")
 FEEDBACK_KINDS = ("comment", "critique", "preference", "concern", "dissent", "trait_request")
 AUTHORITIES = ("informative", "advisory", "veto", "consensus", "decision")
-AUTHORITY_RANK = {name: index for index, name in enumerate(AUTHORITIES)}
 
 INTEGRITY_CLASSES = ("internal", "host_verified", "human_reviewed", "external", "signed_external")
 INDEPENDENT_CLASSES = ("host_verified", "human_reviewed", "external", "signed_external")
@@ -123,8 +100,13 @@ AGENT_AUTHORITY = {
     "operator": "informative",
     "search": "informative",
 }
-AGENT_STATES = ("registered", "active", "paused", "cancelled", "complete")
 PROTOTYPE_STATES = ("building", "ready", "failed", "expired")
+PROTOTYPE_TRANSITIONS = {
+    "building": frozenset({"ready", "failed"}),
+    "ready": frozenset({"expired", "failed"}),
+    "failed": frozenset(),
+    "expired": frozenset(),
+}
 HIDDEN_KEYS = {"chain_of_thought", "reasoning", "hidden_thought", "private_thought"}
 REPLAY_LIMIT = 200
 
@@ -193,50 +175,34 @@ def structural_distance(left: dict, right: dict) -> float:
     return round(1.0 - (len(a & b) / len(a | b)), 6)
 
 
-class SemanticDistance(Protocol):
-    """Optional, replaceable signal. Never the diversity gate."""
-
-    def distance(self, left: dict, right: dict) -> float: ...
-
-
-def diversity_evidence(descriptor: dict, siblings: list[dict], threshold: float, semantic: SemanticDistance | None = None) -> dict:
-    """Pairwise evidence against the approaches already accepted in the generation."""
-    if type(threshold) not in (int, float) or isinstance(threshold, bool) or not 0 <= float(threshold) <= 1:
+def diversity_evidence(descriptor: dict, siblings: list[dict], threshold: float) -> dict:
+    """Pairwise structural evidence. A later embedding provider can be added with its own storage."""
+    if type(threshold) not in (int, float) or not 0 <= float(threshold) <= 1:
         raise Rejected("invalid_generation", "diversity threshold must be between 0 and 1")
     pairs = []
     failure = None
     inputs = {
         "descriptor_digest": digest(descriptor),
         "threshold": float(threshold),
-        "semantic": semantic is not None,
         "siblings": [{"id": sibling["id"], "descriptor_digest": digest(sibling["descriptor"])} for sibling in siblings],
     }
     for sibling in siblings:
         distance = structural_distance(descriptor, sibling["descriptor"])
         claims_equal = set(descriptor["distinguishing_claims"]) == set(sibling["descriptor"]["distinguishing_claims"])
-        semantic_distance = None
-        if semantic is not None:
-            semantic_distance = semantic.distance(descriptor, sibling["descriptor"])
-            if type(semantic_distance) not in (int, float) or isinstance(semantic_distance, bool):
-                raise Rejected("invalid_approach", "semantic distance must be a number")
         passed = (not claims_equal) and distance >= float(threshold)
-        pair = {
+        pairs.append({
             "sibling_id": sibling["id"],
             "structural_distance": distance,
             "claims_equal": claims_equal,
-            "semantic_distance": semantic_distance,
             "passed": passed,
-        }
-        pairs.append(pair)
+        })
         if not passed and failure is None:
             failure = sibling["id"]
-    evidence = {
-        "method": "structural_jaccard",
-        "authoritative": "structural",
-        "inputs": inputs,
-        "pairs": pairs,
+    return {
+        "passed": failure is None,
+        "sibling_id": failure,
+        "evidence": {"method": "structural_jaccard", "authoritative": "structural", "inputs": inputs, "pairs": pairs},
     }
-    return {"passed": failure is None, "sibling_id": failure, "evidence": evidence}
 
 
 def normalize_policy(document: dict) -> dict:
@@ -270,29 +236,15 @@ def normalize_policy(document: dict) -> dict:
     raw_consensus = document.get("consensus_authorities", ["consensus"])
     if not isinstance(raw_consensus, list) or not raw_consensus or any(item not in AUTHORITIES for item in raw_consensus):
         raise Rejected("invalid_policy", "consensus_authorities must list authority classes")
-    consensus_authorities = []
-    for item in raw_consensus:
-        if item not in consensus_authorities:
-            consensus_authorities.append(item)
-    dimensions = document.get("advisory_dimensions", list(FEEDBACK_KINDS))
-    if not isinstance(dimensions, list) or any(item not in FEEDBACK_KINDS for item in dimensions):
-        raise Rejected("invalid_policy", "advisory dimensions must be feedback kinds")
+    consensus_authorities = list(dict.fromkeys(raw_consensus))
     threshold = document.get("consensus_threshold", 1)
     if type(threshold) is not int or threshold < 1:
         raise Rejected("invalid_policy", "consensus threshold must be a positive integer")
     promotion = document.get("promotion_roles", [])
     if not isinstance(promotion, list) or any(not isinstance(item, str) or not item for item in promotion):
         raise Rejected("invalid_policy", "promotion roles must be a list of strings")
-    weights = document.get("weights")
-    if weights is not None:
-        if not isinstance(weights, dict):
-            raise Rejected("invalid_policy", "weights must be an object of feedback kinds")
-        cleaned = {}
-        for kind, weight in weights.items():
-            if kind not in FEEDBACK_KINDS or type(weight) not in (int, float) or isinstance(weight, bool):
-                raise Rejected("invalid_policy", "weights must be numbers on feedback kinds")
-            cleaned[kind] = weight
-        weights = cleaned
+    if "weights" in document or "advisory_dimensions" in document:
+        raise Rejected("invalid_policy", "feedback is not reduced to a weight or a stored dimension list")
     return {
         "protocol": PROTOCOL,
         "id": identifier.strip(),
@@ -300,10 +252,79 @@ def normalize_policy(document: dict) -> dict:
         "required_integrity": list(required),
         "grants": grants,
         "consensus_authorities": consensus_authorities,
-        "advisory_dimensions": list(dimensions),
         "consensus_threshold": threshold,
         "promotion_roles": list(promotion),
-        "weights": weights,
+    }
+
+
+def normalize_generation(document: dict) -> dict:
+    if not isinstance(document, dict):
+        raise Rejected("invalid_generation", "generation must be an object")
+    case_id = document.get("case_id")
+    objective = document.get("objective")
+    revision = document.get("base_revision")
+    threshold = document.get("diversity_threshold", 0.3)
+    minimum = document.get("min_approaches", 2)
+    policy_id = document.get("selection_policy_id")
+    policy_version = document.get("selection_policy_version")
+    if not isinstance(case_id, str) or not isinstance(objective, str) or not objective.strip():
+        raise Rejected("invalid_generation", "case and objective required")
+    if not isinstance(revision, str) or not revision.strip() or len(revision) > 200:
+        raise Rejected("invalid_generation", "base revision required")
+    if document.get("mode") not in MODES:
+        raise Rejected("invalid_mode", "mode must be explore, refine, or harden")
+    if document.get("isolation") not in ISOLATIONS:
+        raise Rejected("invalid_isolation", "isolation must be independent, aware, or collaborative")
+    if type(threshold) not in (int, float) or not 0 <= float(threshold) <= 1:
+        raise Rejected("invalid_generation", "diversity threshold must be between 0 and 1")
+    if type(minimum) is not int or minimum < 1:
+        raise Rejected("invalid_generation", "min_approaches must be a positive integer")
+    if not isinstance(policy_id, str) or type(policy_version) is not int:
+        raise Rejected("invalid_generation", "selection policy reference required")
+    return {
+        "case_id": case_id,
+        "objective": objective.strip(),
+        "base_revision": revision.strip(),
+        "mode": document["mode"],
+        "isolation": document["isolation"],
+        "diversity_threshold": float(threshold),
+        "min_approaches": minimum,
+        "selection_policy_id": policy_id,
+        "selection_policy_version": policy_version,
+    }
+
+
+def normalize_agent(document: dict) -> dict:
+    if not isinstance(document, dict):
+        raise Rejected("invalid_agent", "agent session must be an object")
+    _refuse_hidden(document)
+    generation_id = document.get("generation_id")
+    principal = document.get("principal")
+    role = document.get("role")
+    if not isinstance(generation_id, str) or not isinstance(principal, str) or not principal.strip():
+        raise Rejected("invalid_agent", "generation and principal required")
+    if not isinstance(role, str):
+        raise Rejected("invalid_agent", "agent role is not recognized")
+    hypothesis = document.get("hypothesis_summary", "")
+    if not isinstance(hypothesis, str) or len(hypothesis) > 2000:
+        raise Rejected("invalid_agent", "hypothesis summary must be a short string")
+    lists = {}
+    for name in ("open_uncertainties", "evidence_refs", "working_set"):
+        value = document.get(name, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise Rejected("invalid_agent", f"{name} must be a list of strings")
+        lists[name] = list(value)
+    approach_id = document.get("approach_id")
+    if approach_id is not None and not isinstance(approach_id, str):
+        raise Rejected("invalid_agent", "approach id must be a string")
+    return {
+        "generation_id": generation_id,
+        "approach_id": approach_id,
+        "principal": principal.strip(),
+        "role": role,
+        "authority": agent_authority(role),
+        "hypothesis_summary": hypothesis,
+        **lists,
     }
 
 
@@ -334,13 +355,8 @@ def normalize_feedback(document: dict, roles: list[str], policy: dict) -> dict:
         raise Rejected("invalid_feedback", "feedback target id required")
     if not isinstance(text, str) or not text.strip() or len(text) > 8000:
         raise Rejected("invalid_feedback", "feedback text required")
-    for supplied in ("authority", "authorities"):
-        if supplied in document and document[supplied] is not None:
-            value = document[supplied]
-            if supplied == "authority" and value not in AUTHORITIES:
-                raise Rejected("invalid_feedback", "unknown authority field")
-            if supplied == "authorities" and (not isinstance(value, list) or any(item not in AUTHORITIES for item in value)):
-                raise Rejected("invalid_feedback", "unknown authority field")
+    if document.get("authority") is not None or document.get("authorities") is not None:
+        raise Rejected("invalid_feedback", "authority is derived from the policy grants, not supplied")
     return {
         "target_kind": target,
         "target_id": identifier.strip(),
@@ -492,88 +508,68 @@ def _integrity_dimension(item: dict) -> dict:
     }
 
 
-def evaluate_selection(policy: dict, candidates: list[dict], feedback: list[dict], integrity: list[dict], actor_roles: list[str]) -> dict:
-    """Say why each candidate advanced, stayed unresolved, or was rejected.
+def _verdict(policy: dict, notes: list[dict], observations: list[dict]) -> tuple[str, list[str]]:
+    """Veto and dissent beat missing evidence, which beats advancement."""
+    blockers = [
+        f"veto:{item['actor']}" for item in notes
+        if "veto" in item["authorities"] and item["kind"] in ("concern", "dissent", "critique")
+    ] + [
+        f"decision_dissent:{item['actor']}" for item in notes
+        if "decision" in item["authorities"] and item["kind"] == "dissent"
+    ]
+    if blockers:
+        return "rejected", blockers
+    missing = [
+        f"integrity_required:{name}" for name in policy["required_integrity"]
+        if not any(
+            item.get("verification_status") == "verified"
+            and item.get("verified_independence") == name
+            and item["result"] in PASSING_RESULTS
+            for item in observations
+        )
+    ]
+    if missing:
+        return "unresolved", missing
+    preferences = [item for item in notes if item["kind"] == "preference"]
+    decided = [item for item in preferences if "decision" in item["authorities"]]
+    levels = set(policy["consensus_authorities"])
+    consensus = {item["actor"] for item in preferences if levels.intersection(item["authorities"])}
+    reasons = []
+    if decided:
+        reasons.append(f"advanced:decision:{decided[0]['actor']}")
+    if len(consensus) >= policy["consensus_threshold"]:
+        reasons.append(f"advanced:consensus:{len(consensus)}")
+    if reasons:
+        return "advanced", reasons
+    return "unresolved", ["selection_unresolved"]
 
-    An optional weight may add an aggregate. The lists above are the decision.
+
+def evaluate_selection(policy: dict, candidates: list, feedback: list[dict], integrity: list[dict], actor_roles: list[str]) -> dict:
+    """Say why each linked candidate advanced, stayed unresolved, or was rejected.
+
     ``promotes_git`` is always false. Promotion remains a SyberWork admission.
     """
-    advanced, unresolved, rejected = [], [], []
+    buckets = {"advanced": [], "unresolved": [], "rejected": []}
     dimensions = {}
     for candidate in candidates:
-        identifier = candidate["id"]
+        identifier = candidate if isinstance(candidate, str) else candidate["id"]
         notes = [item for item in feedback if item["target_kind"] == "candidate" and item["target_id"] == identifier]
         observations = [item for item in integrity if item["target_kind"] == "candidate" and item["target_id"] == identifier]
-        reasons = []
-        if candidate.get("eligible") is not True:
-            entry = {
-                "feedback": feedback_dimensions(notes),
-                "integrity": [_integrity_dimension(item) for item in observations],
-                "reasons": ["candidate_unrecorded"],
-            }
-            if policy.get("weights"):
-                entry["aggregate"] = sum(policy["weights"].get(item["kind"], 0) for item in notes)
-            unresolved.append({"id": identifier, "reasons": entry["reasons"]})
-            dimensions[identifier] = entry
-            continue
-        vetoes = [item for item in notes if "veto" in item["authorities"] and item["kind"] in ("concern", "dissent", "critique")]
-        dissents = [item for item in notes if "decision" in item["authorities"] and item["kind"] == "dissent"]
-        missing = [
-            name for name in policy["required_integrity"]
-            if not any(
-                item.get("verification_status") == "verified"
-                and item.get("verified_independence") == name
-                and item["result"] in PASSING_RESULTS
-                for item in observations
-            )
-        ]
-        preferences = [item for item in notes if item["kind"] == "preference"]
-        decision_preferences = [item for item in preferences if "decision" in item["authorities"]]
-        consensus_levels = set(policy.get("consensus_authorities") or ["consensus"])
-        consensus_actors = {item["actor"] for item in preferences if consensus_levels.intersection(item["authorities"])}
-        consensus = len(consensus_actors) >= policy["consensus_threshold"]
-        entry = {
+        bucket, reasons = _verdict(policy, notes, observations)
+        dimensions[identifier] = {
             "feedback": feedback_dimensions(notes),
             "integrity": [_integrity_dimension(item) for item in observations],
-            "reasons": [],
+            "reasons": reasons,
         }
-        if policy.get("weights"):
-            entry["aggregate"] = sum(policy["weights"].get(item["kind"], 0) for item in notes)
-        if vetoes or dissents:
-            entry["reasons"] = [f"veto:{item['actor']}" for item in vetoes] + [f"decision_dissent:{item['actor']}" for item in dissents]
-            rejected.append({"id": identifier, "reasons": entry["reasons"]})
-        elif missing:
-            entry["reasons"] = [f"integrity_required:{name}" for name in missing]
-            unresolved.append({"id": identifier, "reasons": entry["reasons"]})
-        elif decision_preferences or consensus:
-            if decision_preferences:
-                reasons.append(f"advanced:decision:{decision_preferences[0]['actor']}")
-            if consensus:
-                reasons.append(f"advanced:consensus:{len(consensus_actors)}")
-            entry["reasons"] = reasons
-            advanced.append({"id": identifier, "reasons": reasons})
-        else:
-            entry["reasons"] = ["selection_unresolved"]
-            unresolved.append({"id": identifier, "reasons": entry["reasons"]})
-        dimensions[identifier] = entry
+        buckets[bucket].append({"id": identifier, "reasons": reasons})
     return {
         "protocol": PROTOCOL,
-        "advanced": advanced,
-        "unresolved": unresolved,
-        "rejected": rejected,
+        "advanced": buckets["advanced"],
+        "unresolved": buckets["unresolved"],
+        "rejected": buckets["rejected"],
         "dimensions": dimensions,
         "promotes_git": False,
         "promotion_authorized": bool(set(policy["promotion_roles"]) & set(actor_roles)),
-    }
-
-
-def promotion_reference(selection: dict) -> dict:
-    """Digest a later SyberWork proposal may cite. This does not admit or promote."""
-    return {
-        "protocol": PROTOCOL,
-        "selection_id": selection["id"],
-        "evidence_digest": selection["evidence_digest"],
-        "promotes_git": False,
     }
 
 
@@ -661,25 +657,25 @@ def command_effect(agent: dict, command: str, body: dict) -> dict:
     if command == "pause":
         if agent["state"] not in ("registered", "active"):
             raise Rejected("invalid_command", "agent cannot pause from this state")
-        effect.update(state="paused", events=["agent_state_changed"])
+        effect.update(state="paused", events=[("agent_state_changed", {"state": "paused"})])
     elif command == "resume":
         if agent["state"] != "paused":
             raise Rejected("invalid_command", "agent is not paused")
-        effect.update(state="active", events=["agent_state_changed"])
+        effect.update(state="active", events=[("agent_state_changed", {"state": "active"})])
     elif command == "cancel":
         if agent["state"] == "cancelled":
             raise Rejected("invalid_command", "agent is already cancelled")
-        effect.update(state="cancelled", events=["agent_state_changed"])
+        effect.update(state="cancelled", events=[("agent_state_changed", {"state": "cancelled"})])
     elif command == "send_context":
         text = body.get("text")
         if not isinstance(text, str) or not text.strip():
             raise Rejected("invalid_command", "send_context needs text")
-        effect.update(activity="send_context", text=text.strip(), events=["agent_activity_recorded"])
+        effect.update(events=[("agent_activity_recorded", {"activity": "send_context", "text": text.strip(), "caused_by": []})])
     elif command == "restrict_scope":
         paths = body.get("paths")
         if not isinstance(paths, list) or any(not isinstance(item, str) for item in paths):
             raise Rejected("invalid_command", "restrict_scope needs paths")
-        effect.update(working_set=list(paths), events=["agent_state_changed"])
+        effect.update(working_set=list(paths), events=[("agent_state_changed", {"state": agent["state"], "working_set": list(paths)})])
     elif command == "redirect":
         objective = body.get("objective")
         if not isinstance(objective, str) or not objective.strip():
@@ -690,7 +686,7 @@ def command_effect(agent: dict, command: str, body: dict) -> dict:
             if not isinstance(body["approach_id"], str):
                 raise Rejected("invalid_command", "approach id must be a string")
             assignment["approach_id"] = body["approach_id"]
-        effect.update(assignment=assignment, events=["agent_assignment_changed"])
+        effect.update(assignment=assignment, events=[("agent_assignment_changed", {"assignment": assignment})])
     return effect
 
 
@@ -794,7 +790,7 @@ def architecture_diff(baseline: dict, candidate: dict) -> dict:
     cand_edges = {(edge["from"], edge["to"]) for edge in candidate["edges"]}
     changed = [
         {"id": identifier, "baseline": base_nodes[identifier], "candidate": cand_nodes[identifier]}
-        for identifier in base_nodes.keys() & cand_nodes.keys()
+        for identifier in sorted(base_nodes.keys() & cand_nodes.keys())
         if base_nodes[identifier] != cand_nodes[identifier]
     ]
     return {
@@ -803,55 +799,12 @@ def architecture_diff(baseline: dict, candidate: dict) -> dict:
         "authoritative": False,
         "baseline_id": baseline.get("id"),
         "candidate_id": candidate.get("id"),
-        "added_nodes": [cand_nodes[identifier] for identifier in cand_nodes.keys() - base_nodes.keys()],
-        "removed_nodes": [base_nodes[identifier] for identifier in base_nodes.keys() - cand_nodes.keys()],
+        "added_nodes": [cand_nodes[identifier] for identifier in sorted(cand_nodes.keys() - base_nodes.keys())],
+        "removed_nodes": [base_nodes[identifier] for identifier in sorted(base_nodes.keys() - cand_nodes.keys())],
         "changed_nodes": changed,
         "added_edges": [{"from": pair[0], "to": pair[1]} for pair in sorted(cand_edges - base_edges)],
         "removed_edges": [{"from": pair[0], "to": pair[1]} for pair in sorted(base_edges - cand_edges)],
     }
-
-
-class ArchitectureProvider(Protocol):
-    """Builds a snapshot document. A future GitDiagramProvider can implement this.
-
-    This module does not import a diagram vendor.
-    """
-
-    name: str
-
-    def build(self, repository: str, revision: str) -> dict: ...
-
-
-class StaticArchitectureProvider:
-    def __init__(self, document: dict):
-        self.name = "static"
-        self.document = document
-
-    def build(self, repository: str, revision: str) -> dict:
-        document = dict(self.document)
-        document["repository"] = repository
-        document["revision"] = revision
-        document["provider"] = self.name
-        return validate_snapshot(document)
-
-
-class PrototypeProvider(Protocol):
-    """Fills a launch reference. Reading a prototype does not call this."""
-
-    name: str
-
-    def describe(self, record: dict) -> dict: ...
-
-
-class RegistryPrototypeProvider:
-    name = "registry"
-
-    def describe(self, record: dict) -> dict:
-        return {
-            "endpoint": record.get("endpoint"),
-            "state": record.get("state", "building"),
-            "provider": record.get("provider", self.name),
-        }
 
 
 def normalize_prototype(document: dict) -> dict:
@@ -884,14 +837,22 @@ def normalize_prototype(document: dict) -> dict:
     }
 
 
+_UNREDACTED_ROLES = {"engineer", "manager", "decision", "admin"}
+
+
+def redacts(roles) -> bool:
+    """The intended_user lens hides agent reasoning summaries and agent activity."""
+    roles = set(roles or [])
+    return "intended_user" in roles and not roles & _UNREDACTED_ROLES
+
+
 def project(view: dict, principal: dict) -> dict:
     """Role lens. The stored records stay shared; this copy is filtered."""
-    roles = set(principal.get("roles") or [])
+    roles = principal.get("roles") or []
     framed = copy.deepcopy(view)
-    framed["lens"] = sorted(roles)
+    framed["lens"] = sorted(set(roles))
     framed["authoritative"] = False
-    hide = "intended_user" in roles and not roles.intersection({"engineer", "manager", "decision", "admin"})
-    if hide:
+    if redacts(roles):
         framed["redacted"] = ["hypothesis_summary", "open_uncertainties"]
         _redact(framed)
     return framed
@@ -910,11 +871,7 @@ def _redact(value) -> None:
 
 def visible_event(event: dict, roles: list[str] | set[str]) -> bool:
     """Stream filter. Omitted events keep their sequence numbers, so ids may gap."""
-    role_set = set(roles or [])
-    hide = "intended_user" in role_set and not role_set.intersection({"engineer", "manager", "decision", "admin"})
-    if hide and event["kind"] == "agent_activity_recorded":
-        return False
-    return True
+    return not (redacts(roles) and event["kind"] == "agent_activity_recorded")
 
 
 def generation_summary(generation: dict, approach_count: int) -> dict:

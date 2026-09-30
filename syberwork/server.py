@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .builder_http import dispatch_get, dispatch_post
 from .core import Rejected, Work
 
 STATIC = Path(__file__).parent / "static"
@@ -86,16 +87,15 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
                     self._json({"valid": work.verify_chain(parts[2])})
                 elif parts[:2] == ["api", "builder"]:
-                    from .builder_http import dispatch_get
                     outcome = dispatch_get(work, user, parts, urlsplit(self.path).query, self.headers.get("Last-Event-ID"))
-                    if outcome[0] == "sse":
-                        self._sse(outcome[1])
+                    if isinstance(outcome, dict):
+                        self._json(outcome)
                     else:
-                        self._json(outcome[1], outcome[2])
+                        self._sse(outcome)
                 else:
                     self._json({"error": "not_found"}, 404)
             except Rejected as e:
-                status = 401 if e.code == "unauthorized" else 404 if e.code == "not_found" else 409
+                status = {"unauthorized": 401, "not_found": 404}.get(e.code, 409)
                 self._json({"error": e.code, "detail": e.detail}, status)
             except Exception:
                 self._json({"error": "internal_error"}, 500)
@@ -183,7 +183,6 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     else:
                         raise Rejected("unknown_route", operation)
                 elif parts[:2] == ["api", "builder"]:
-                    from .builder_http import dispatch_post
                     result = dispatch_post(work, user, parts, data)
                 else:
                     raise Rejected("forbidden", "route unavailable or admin role required")

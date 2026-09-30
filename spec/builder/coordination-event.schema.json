@@ -30,7 +30,6 @@
         "agent_activity_recorded",
         "feedback_recorded",
         "integrity_observation_recorded",
-        "selection_started",
         "selection_recorded",
         "architecture_snapshot_published"
       ]

@@ -4,7 +4,7 @@
   "title": "SelectionPolicy",
   "type": "object",
   "additionalProperties": false,
-  "required": ["protocol", "id", "version", "required_integrity", "grants", "consensus_authorities", "advisory_dimensions", "consensus_threshold", "promotion_roles", "weights"],
+  "required": ["protocol", "id", "version", "required_integrity", "grants", "consensus_authorities", "consensus_threshold", "promotion_roles"],
   "properties": {
     "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
     "id": {"type": "string", "minLength": 1},
@@ -32,13 +32,7 @@
       "minItems": 1,
       "items": {"enum": ["informative", "advisory", "veto", "consensus", "decision"]}
     },
-    "advisory_dimensions": {
-      "type": "array",
-      "items": {"enum": ["comment", "critique", "preference", "concern", "dissent", "trait_request"]}
-    },
     "consensus_threshold": {"type": "integer", "minimum": 1},
-    "promotion_roles": {"type": "array", "items": {"type": "string", "minLength": 1}},
-    "weights": {"type": ["object", "null"]},
-    "actor": {"type": "string"}
+    "promotion_roles": {"type": "array", "items": {"type": "string", "minLength": 1}}
   }
 }

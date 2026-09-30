@@ -16,6 +16,11 @@ from syberlabs.errors import Rejected
 from .storage import SNAPSHOT_TABLES
 
 
+# Tables introduced by migration 0004. A snapshot from before that migration
+# has no file for them. Every older table is authoritative and must be present.
+OPTIONAL_SNAPSHOT_TABLES = frozenset(name for name in SNAPSHOT_TABLES if name == "coordination_events" or name.startswith("builder_"))
+
+
 def _columns(store, table: str) -> list[str]:
     row = store.execute(f"SELECT * FROM {table} LIMIT 0")
     return [item[0] for item in row.description]
@@ -52,7 +57,9 @@ def restore_cell(work, directory: str | Path) -> dict:
         for table in SNAPSHOT_TABLES:
             path = directory / f"{table}.json"
             if not path.exists():
-                continue
+                if table in OPTIONAL_SNAPSHOT_TABLES:
+                    continue
+                raise Rejected("restore_refused", f"snapshot is missing {table}")
             rows = json.loads(path.read_text(encoding="utf-8"))
             if not rows:
                 continue

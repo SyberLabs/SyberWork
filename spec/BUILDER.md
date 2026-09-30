@@ -10,10 +10,10 @@ This protocol is not `sdk.syberlabs.space/v0alpha1`. It does not add case-event 
 | --- | --- | --- |
 | Authority | Existing contracts, case histories, admission, candidates, evaluations, effects, approvals, promotion, reconciliation | Yes. Unchanged. |
 | Coordination | Generations, approach descriptors, feedback, agent sessions, prototype references, selection records, the coordination log | No. A record may cite a case id, a candidate id, a commit, or a digest. |
-| Integrity | Attributed observations with an independence class | No. `internal` is a self-report. `runtime_verified` is false: storing a digest is not checking a signature. |
+| Integrity | Attributed observations with a claim and a verification result | No. Selection reads `verified_independence` only. A digest is not a signature check. |
 | Projection | World, Generation, Candidate, Actor, and Integrity views, plus the SSE tail | No. `authoritative` is false. A role lens filters a copy. |
 
-A later promotion still goes through SyberWork admission. `promotion_reference` returns the selection id and evidence digest for that proposal. `promotes_git` is false on every selection.
+A later promotion still goes through SyberWork admission. The selection record carries an `evidence_digest` a proposal may cite. `promotes_git` is false on every selection.
 
 ## Invariants
 
@@ -29,7 +29,7 @@ A later promotion still goes through SyberWork admission. `promotion_reference` 
 - Integrity keeps `independence_claim` apart from `verified_independence`. Selection gates read only a `verification_status` of `verified`. `internal` is verified as a self-report. `human_reviewed` is verified when the principal kind is `human`. `host_verified` is emitted only by the host mechanism, which the HTTP API does not call. `external` and `signed_external` are verified only by a registered verifier adapter, which cannot relabel the claim. A SHA-256 digest does not, by itself, verify a signature.
 - Isolation is a context manifest. `independent` is the common root plus the agent's own approach. `aware` adds sibling descriptors and not implementations. `collaborative` adds sibling implementation summaries (candidate id, approach id, changed paths) and not private hypotheses.
 - Diversity is a structural Jaccard distance plus an explicit distinguishing-claim check. A semantic distance may be stored on the evidence and cannot flip the gate. A failure reason is `approach_too_similar:<sibling-id>`.
-- Architecture snapshots are a graph of nodes, edges, and repository paths. Mermaid is refused. Nothing in this package imports a diagram vendor. `ArchitectureProvider` is the seam.
+- Architecture snapshots are a graph of nodes, edges, and repository paths. Mermaid is refused. Snapshot ids are minted by the cell. Nothing in this package imports a diagram vendor.
 - Prototype records are a registry. `PrototypeProvider` may fill a launch reference. Readers use the stored record.
 - Agent commands (`pause`, `resume`, `cancel`, `send_context`, `restrict_scope`, `redirect`) are durable. `send_context` does not change the assignment. `redirect` does. The default runtime returns `runtime_not_connected` and does not change the session. No command mutates an OS process in this package.
 - Agent sessions do not accept chain-of-thought fields.
