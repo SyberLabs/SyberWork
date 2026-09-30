@@ -9,69 +9,12 @@ from syberlabs.errors import Rejected
 from syberwork.coordination import BuilderStore
 from syberwork.core import Work
 from tests.builder_fixtures import (
-    NOTE, POLICY, AcceptingRuntime, _check, architecture, descriptor, git_candidate,
+    NOTE, POLICY, AcceptingRuntime, CellCase, _check, architecture, descriptor, git_candidate,
 )
 from tests.test_cell import _drop_postgres, _postgres_database
 
-class StoreCases(unittest.TestCase):
+class StoreCases(CellCase):
     dialect = "sqlite"
-
-    def setUp(self):
-        if self.dialect == "postgres":
-            url, admin, name = _postgres_database()
-            self.addCleanup(lambda: _drop_postgres(admin, name))
-            self.work = Work(url)
-        else:
-            folder = tempfile.TemporaryDirectory()
-            self.addCleanup(folder.cleanup)
-            self.work = Work(Path(folder.name) / "cell.sqlite")
-        self.addCleanup(self.work.close)
-        self.store = BuilderStore(self.work)
-        self.work.install_contract(NOTE)
-        self.work.install_policy({"version": 1, "actions": {"promote": {"roles": ["operator"]}}})
-        self.work.install_action("promote", {"kind": "local"})
-        self.case = self.work.create_case("repo-change", 1, {"objective": "export"}, "operator")
-        self.authority = self._authority()
-        self.work.propose = self._forbid("propose")
-        self.work.commit = self._forbid("commit")
-
-    def _record(self, n: int, paths) -> str:
-        body = git_candidate(n, paths)
-        self.work.record_candidate(self.case, body, "operator", ["operator"])
-        return body["id"]
-
-    def _forbid(self, name):
-        def wrapped(*args, **kwargs):
-            raise AssertionError(name)
-        return wrapped
-
-    def _authority(self):
-        return [(event["kind"], event["hash"]) for event in self.work.inspect(self.case)["events"]]
-
-    def _assert_authority_unchanged(self):
-        self.assertEqual(self._authority(), self.authority)
-        self.assertTrue(self.work.verify_chain(self.case))
-
-    def _generation(self, **overrides):
-        self.store.install_policy(POLICY, "operator")
-        self.store.open_work(self.case, "Ship a reviewable export", "operator")
-        document = {
-            "case_id": self.case,
-            "objective": "Compare structures before implementation",
-            "base_revision": "abc123",
-            "mode": "explore",
-            "isolation": "aware",
-            "diversity_threshold": 0.3,
-            "min_approaches": 1,
-            "selection_policy_id": "review",
-            "selection_policy_version": 1,
-        }
-        document.update(overrides)
-        return self.store.create_generation(document, "operator")
-
-    def _events(self):
-        events, _truncated = self.store.replay(self.case, 0, 200)
-        return events
 
     def test_generation_barrier_blocks_candidates_until_seal(self):
         generation = self._generation(min_approaches=2)
@@ -98,8 +41,6 @@ class StoreCases(unittest.TestCase):
         linked = self.store.link_candidate(generation["id"], first["id"], candidate_id, "operator")
         self.assertEqual(linked["candidate_id"], candidate_id)
         self.assertEqual(linked["changed_paths"], ["syberwork/server.py"])
-        self.assertEqual(linked["link_state"], "recorded")
-        self.assertEqual(linked["selection_state"], "eligible")
         self.assertEqual(linked["commit"], f"{1:040x}")
         self.assertEqual(self.store.launch(generation["id"], "operator")["state"], "launched")
         self.assertEqual([kind for kind, _digest in self._authority()], ["case_created", "candidate_registered"])
@@ -339,13 +280,13 @@ class StoreCases(unittest.TestCase):
             "open_uncertainties": ["lease expiry"],
         }, "operator")
         self.assertEqual(agent["authority"], "advisory")
-        inspect = self.store.record_activity(agent["id"], {"activity": "inspect", "artifact": "syberwork/server.py"}, "agent-a")
+        inspect = self.store.record_activity(agent["id"], {"activity": "inspect", "artifact": "syberwork/server.py"}, "agent-a", ["agent"])
         produced = self.store.record_activity(agent["id"], {
             "activity": "produce_candidate",
             "candidate_id": "cand-1",
             "caused_by": [inspect["id"]],
             "finding": "route table",
-        }, "agent-a")
+        }, "agent-a", ["agent"])
         actor = self.store.actor_view(agent["id"])
         self.assertIn({
             "from": inspect["id"],
@@ -355,7 +296,7 @@ class StoreCases(unittest.TestCase):
         }, actor["causality"])
         self.assertEqual(self.store.generation_view(generation["id"])["generation"]["state"], "evaluating")
         with self.assertRaises(Rejected):
-            self.store.record_activity(agent["id"], {"activity": "inspect", "chain_of_thought": "hidden"}, "agent-a")
+            self.store.record_activity(agent["id"], {"activity": "inspect", "chain_of_thought": "hidden"}, "agent-a", ["agent"])
 
     def test_commands_do_not_mutate_a_process_and_redirect_is_not_send_context(self):
         generation = self._generation()
@@ -404,9 +345,8 @@ class StoreCases(unittest.TestCase):
         self.store.link_candidate(generation["id"], approach["id"], "c3", "operator")
         candidate = self.store.candidate_views(generation["id"])[0]
         self.assertEqual(candidate["architecture_nodes"][0]["id"], "api")
-        self.assertTrue(candidate["case_candidate_recorded"])
-        self.assertEqual(candidate["selection_state"], "eligible")
         self.assertEqual(candidate["changed_paths"], ["syberwork/server.py"])
+        self.assertEqual(candidate["commit"], f"{3:040x}")
         self.assertIsNone(candidate["promotion_state"])
         later = dict(architecture(self.case, generation["id"], revision="def456"))
         later["baseline_id"] = snapshot["id"]
@@ -455,6 +395,11 @@ class StoreCases(unittest.TestCase):
         }, "operator")
         ready = self.store.set_prototype_state(prototype["id"], "ready", "operator")
         _check(ready, "prototype.schema.json")
+        for target in ("building", "ready", "bogus"):
+            with self.assertRaises(Rejected) as refused:
+                self.store.set_prototype_state(prototype["id"], target, "operator")
+            self.assertEqual(refused.exception.code, "invalid_prototype")
+        self.assertEqual(self.store.generation_view(generation["id"])["prototypes"][0]["state"], "ready")
         for event in self._events():
             _check(event, "coordination-event.schema.json")
         _check(self.store.generation_view(generation["id"]), "projection.schema.json")
@@ -495,12 +440,12 @@ class StoreCases(unittest.TestCase):
             }, "operator"))
         launched = self.store.launch(generation["id"], "operator")
         self.assertEqual(launched["state"], "launched")
-        first_event = self.store.record_activity(agents[0]["id"], {"activity": "inspect", "artifact": paths[0]}, "operator")
+        first_event = self.store.record_activity(agents[0]["id"], {"activity": "inspect", "artifact": paths[0]}, "operator", ["operator"])
         self.store.record_activity(agents[0]["id"], {
             "activity": "produce_candidate",
             "candidate_id": "c1",
             "caused_by": [first_event["id"]],
-        }, "operator")
+        }, "operator", ["operator"])
         for index, path in enumerate(paths):
             self._record(index + 1, [path])
         with self.assertRaises(Rejected) as ghost:
@@ -581,8 +526,7 @@ class StoreCases(unittest.TestCase):
         self.assertEqual(chosen["architecture_nodes"][0]["id"], "api")
         self.assertEqual(chosen["commit"], f"{1:040x}")
         self.assertEqual(chosen["prototype"]["state"], "ready")
-        self.assertTrue(chosen["case_candidate_recorded"])
-        self.assertEqual(chosen["selection_state"], "eligible")
+        self.assertEqual(chosen["changed_paths"], ["syberwork/server.py"])
         selection = self.store.select(generation["id"], "manager", ["manager"])
         self.assertFalse(selection["promotes_git"])
         self.assertEqual(selection["advanced"], [])
@@ -640,6 +584,11 @@ class StoreCases(unittest.TestCase):
         self.assertEqual(self.store.actor_view(agent_a["id"])["agent"]["state"], "registered")
         self.store.record_activity(agent_a["id"], {"activity": "inspect"}, "operator", ["operator"])
         self.assertEqual(self.store.actor_view(agent_a["id"])["agent"]["state"], "active")
+        self.store.command(agent_a["id"], "cancel", {}, "manager", AcceptingRuntime())
+        with self.assertRaises(Rejected) as cancelled:
+            self.store.record_activity(agent_a["id"], {"activity": "complete"}, "agent-a", ["agent"])
+        self.assertEqual(cancelled.exception.code, "agent_state")
+        self.assertEqual(self.store.actor_view(agent_a["id"])["agent"]["state"], "cancelled")
 
     def test_redirect_rereads_the_assignment_after_the_runtime_returns(self):
         generation = self._generation(min_approaches=2)
@@ -656,34 +605,40 @@ class StoreCases(unittest.TestCase):
                 return {"applied": True, "reason": "accepted"}
 
         self_store = self.store
+        calls = []
+
+        class Recording:
+            def apply(self, command):
+                calls.append(command)
+                return {"applied": True, "reason": "accepted"}
+
         with self.assertRaises(Rejected) as unknown:
-            self.store.command(agent["id"], "redirect", {"objective": "missing", "approach_id": "no-such-approach"}, "manager", AcceptingRuntime())
+            self.store.command(agent["id"], "redirect", {"objective": "missing", "approach_id": "no-such-approach"}, "manager", Recording())
         self.assertEqual(unknown.exception.code, "unknown_approach")
+        self.assertEqual(calls, [])
+        with self.assertRaises(Rejected) as shape:
+            self.store.command(agent["id"], "redirect", [1], "manager", Recording())
+        self.assertEqual(shape.exception.code, "invalid_command")
         self.store.command(agent["id"], "redirect", {"objective": "from the caller"}, "manager", DuringRuntime())
         assignment = self.store.actor_view(agent["id"])["agent"]["assignment"]
         self.assertEqual(assignment["approach_id"], second["id"])
         self.assertEqual(assignment["objective"], "from the caller")
 
-    def test_generationless_feedback_must_name_its_policy(self):
+    def test_feedback_requires_its_generation(self):
         generation = self._generation()
-        other = {
-            **POLICY,
-            "id": "other",
-            "grants": [{"role": "intended_user", "kind": "preference", "authority": "decision"}],
-        }
-        self.store.install_policy(other, "operator")
         body = {
             "case_id": self.case,
             "target_kind": "generation",
             "target_id": generation["id"],
             "kind": "preference",
             "text": "ship it",
+            "selection_policy_id": "other",
         }
         with self.assertRaises(Rejected) as caught:
             self.store.record_feedback(body, "bao", ["intended_user"])
-        self.assertEqual(caught.exception.code, "unknown_policy")
-        recorded = self.store.record_feedback({**body, "selection_policy_id": "other"}, "bao", ["intended_user"])
-        self.assertEqual(recorded["authorities"], ["decision"])
+        self.assertEqual(caught.exception.code, "invalid_feedback")
+        recorded = self.store.record_feedback({**body, "generation_id": generation["id"]}, "bao", ["intended_user"])
+        self.assertEqual(recorded["authorities"], ["advisory"])
 
     def test_integrity_and_architecture_ids_do_not_collide_across_scopes(self):
         self.store.install_policy(POLICY, "operator")
@@ -707,6 +662,11 @@ class StoreCases(unittest.TestCase):
             }, "operator", principal_kind="human")
         scoped = self.store.integrity_view("api", case_id=self.case, target_kind="architecture_node", generation_id=first["id"])
         self.assertEqual([item["result"] for item in scoped["observations"]], ["pass"])
+        other = self.store.integrity_view("api", case_id=self.case, target_kind="architecture_node", generation_id=second["id"])
+        self.assertEqual([item["result"] for item in other["observations"]], ["fail"])
+        with self.assertRaises(Rejected) as unscoped:
+            self.store.integrity_view("api", case_id=self.case, target_kind="architecture_node")
+        self.assertEqual(unscoped.exception.code, "invalid_integrity")
 
 
 class PostgresStoreCases(StoreCases):

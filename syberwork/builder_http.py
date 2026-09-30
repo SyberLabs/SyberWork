@@ -47,7 +47,7 @@ def dispatch_get(work, user, parts: list[str], query: str, last_event_id: str | 
         case ["work", case_id]:
             view = store.world(case_id)
         case ["work", case_id, "stream"]:
-            if last_event_id not in (None, "") and not str(last_event_id).isdecimal():
+            if last_event_id and not (last_event_id.isdecimal() and len(last_event_id) < 19):
                 raise Rejected("invalid_cursor", "Last-Event-ID must be a sequence number")
             after = int(last_event_id or 0)
             store.replay(case_id, after, 1)

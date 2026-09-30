@@ -23,14 +23,14 @@ A later promotion still goes through SyberWork admission. The selection record c
 - A candidate link requires a sealed generation and a frozen approach in that generation. The link does not call `record_candidate`.
 - Feedback stores every grant that matches the caller's roles and that feedback kind. A person who holds both veto and decision keeps both. The request cannot supply the class. Advisory preferences do not advance a candidate and do not count toward consensus unless `consensus_authorities` lists `advisory`.
 - Feedback is not a fitness number. Projections list kind and authority separately. A policy may store an aggregate beside those lists. The aggregate is not the decision.
-- A candidate link resolves a `candidate_registered` case event. Changed paths, commit, tree, base, operator, and provider are copied from that event. An id that is not in the case is `candidate_unrecorded` and cannot be selected. Selection marks any link that is not `eligible` as `candidate_unrecorded` and does not advance it.
+- A candidate link resolves a `candidate_registered` case event. Changed paths, commit, tree, base, operator, and provider are copied from that event. An id that is not in the case is refused and cannot be selected.
 - Feedback and integrity targets must resolve: the generation belongs to the case, the approach or prototype belongs to the generation, the candidate is linked there, and an architecture node exists in the current snapshot.
 - Selection does not promote Git state and does not append a case event.
 - Integrity keeps `independence_claim` apart from `verified_independence`. Selection gates read only a `verification_status` of `verified`. `internal` is verified as a self-report. `human_reviewed` is verified when the principal kind is `human`. `host_verified` is emitted only by the host mechanism, which the HTTP API does not call. `external` and `signed_external` are verified only by a registered verifier adapter, which cannot relabel the claim. A SHA-256 digest does not, by itself, verify a signature.
 - Isolation is a context manifest. `independent` is the common root plus the agent's own approach. `aware` adds sibling descriptors and not implementations. `collaborative` adds sibling implementation summaries (candidate id, approach id, changed paths) and not private hypotheses.
-- Diversity is a structural Jaccard distance plus an explicit distinguishing-claim check. A semantic distance may be stored on the evidence and cannot flip the gate. A failure reason is `approach_too_similar:<sibling-id>`.
+- Diversity is a structural Jaccard distance plus an explicit distinguishing-claim check. A failure reason is `approach_too_similar:<sibling-id>`.
 - Architecture snapshots are a graph of nodes, edges, and repository paths. Mermaid is refused. Snapshot ids are minted by the cell. Nothing in this package imports a diagram vendor.
-- Prototype records are a registry. `PrototypeProvider` may fill a launch reference. Readers use the stored record.
+- Prototype records are a registry. Readers use the stored record.
 - Agent commands (`pause`, `resume`, `cancel`, `send_context`, `restrict_scope`, `redirect`) are durable. `send_context` does not change the assignment. `redirect` does. The default runtime returns `runtime_not_connected` and does not change the session. No command mutates an OS process in this package.
 - Agent sessions do not accept chain-of-thought fields.
 - The coordination log is append-only and separate from `events`. Sequence numbers are per case and monotonic. SSE ids are those sequence numbers.
@@ -64,4 +64,4 @@ Mutations are HTTP POST. Coordination roles (`admin`, `operator`, `engineer`, `m
 
 ## Storage
 
-Migration `0004` adds the coordination tables to the cell database, SQLite and PostgreSQL. They are included in logical snapshots. A snapshot taken before those files existed still restores: missing table files are left empty. Case hashes are not rewritten.
+Migration `0004` adds the coordination tables to the cell database, SQLite and PostgreSQL. They are included in logical snapshots. A snapshot taken before those files existed still restores when it has none of the Builder table files. A snapshot missing any older table, or only some of the Builder files, is refused. Case hashes are not rewritten. The migration statements use `IF NOT EXISTS`, so an interrupted open can be retried. They are not one database transaction.

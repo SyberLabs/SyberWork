@@ -1,7 +1,12 @@
 """Shared Builder test fixtures."""
 
-import json
+import tempfile
+import unittest
 from pathlib import Path
+
+from syberwork.coordination import BuilderStore
+from syberwork.core import Work
+from tests.test_cell import _drop_postgres, _postgres_database
 
 from spec.validate import load_schema, validate
 
@@ -106,4 +111,66 @@ def _check(document, name: str) -> None:
     schema = load_schema(path)
     validate(document, schema, base=path)
 
+
+
+
+class CellCase(unittest.TestCase):
+    dialect = "sqlite"
+
+    def setUp(self):
+        if self.dialect == "postgres":
+            url, admin, name = _postgres_database()
+            self.addCleanup(lambda: _drop_postgres(admin, name))
+            self.work = Work(url)
+        else:
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            self.work = Work(Path(folder.name) / "cell.sqlite")
+        self.addCleanup(self.work.close)
+        self.store = BuilderStore(self.work)
+        self.work.install_contract(NOTE)
+        self.work.install_policy({"version": 1, "actions": {"promote": {"roles": ["operator"]}}})
+        self.work.install_action("promote", {"kind": "local"})
+        self.case = self.work.create_case("repo-change", 1, {"objective": "export"}, "operator")
+        self.authority = self._authority()
+        self.work.propose = self._forbid("propose")
+        self.work.commit = self._forbid("commit")
+
+    def _record(self, n: int, paths) -> str:
+        body = git_candidate(n, paths)
+        self.work.record_candidate(self.case, body, "operator", ["operator"])
+        return body["id"]
+
+    def _forbid(self, name):
+        def wrapped(*args, **kwargs):
+            raise AssertionError(name)
+        return wrapped
+
+    def _authority(self):
+        return [(event["kind"], event["hash"]) for event in self.work.inspect(self.case)["events"]]
+
+    def _assert_authority_unchanged(self):
+        self.assertEqual(self._authority(), self.authority)
+        self.assertTrue(self.work.verify_chain(self.case))
+
+    def _generation(self, **overrides):
+        self.store.install_policy(POLICY, "operator")
+        self.store.open_work(self.case, "Ship a reviewable export", "operator")
+        document = {
+            "case_id": self.case,
+            "objective": "Compare structures before implementation",
+            "base_revision": "abc123",
+            "mode": "explore",
+            "isolation": "aware",
+            "diversity_threshold": 0.3,
+            "min_approaches": 1,
+            "selection_policy_id": "review",
+            "selection_policy_version": 1,
+        }
+        document.update(overrides)
+        return self.store.create_generation(document, "operator")
+
+    def _events(self):
+        events, _truncated = self.store.replay(self.case, 0, 200)
+        return events
 

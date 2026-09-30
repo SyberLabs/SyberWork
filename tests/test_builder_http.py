@@ -8,10 +8,9 @@ import urllib.error
 import urllib.request
 
 from syberwork.server import make_server
-from tests.builder_fixtures import POLICY, architecture, descriptor
-from tests.test_builder_store import StoreCases
+from tests.builder_fixtures import POLICY, CellCase, architecture, descriptor
 
-class HttpCases(StoreCases):
+class HttpCases(CellCase):
     def setUp(self):
         super().setUp()
         users = {
@@ -68,16 +67,14 @@ class HttpCases(StoreCases):
         with self.assertRaises(urllib.error.HTTPError) as blocked:
             urllib.request.urlopen(denied, timeout=5)
         self.assertEqual(blocked.exception.code, 401)
-        self.assertEqual(self.call("observer", "/api/builder/generations", {
-            "case_id": self.case,
-            "objective": "no",
-            "base_revision": "abc123",
-            "mode": "explore",
-            "isolation": "aware",
-            "min_approaches": 1,
-            "selection_policy_id": "review",
-            "selection_policy_version": 1,
-        })[0], 409)
+        for route in (
+            "policies", "work/x", "generations", "generations/g/approaches", "generations/g/seal",
+            "generations/g/launch", "generations/g/close", "generations/g/candidates", "generations/g/selection",
+            "approaches/a/revisions", "agents", "agents/a/commands", "agents/a/activity", "architecture",
+            "prototypes", "prototypes/p/state", "nope",
+        ):
+            status, body = self.call("observer", "/api/builder/" + route, {})
+            self.assertEqual((status, body["error"]), (409, "forbidden"), route)
         self.assertEqual(self.call("operator", "/api/builder/policies", POLICY)[0], 200)
         self.assertEqual(self.call("operator", f"/api/builder/work/{self.case}", {"objective": "Ship a reviewable export"})[0], 200)
         status, generation = self.call("operator", "/api/builder/generations", {

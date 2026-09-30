@@ -48,6 +48,32 @@ class Domain(unittest.TestCase):
         self.assertFalse(copied["passed"])
         self.assertEqual(copied["evidence"]["pairs"][0]["structural_distance"], 0.0)
 
+    def test_a_verifier_cannot_relabel_a_claim(self):
+        claim = normalize_integrity({
+            "target_kind": "generation", "target_id": "g", "independence": "signed_external", "result": "pass",
+            "claim": "signed", "source": "ci", "verifier": "ci", "digest": "a" * 64,
+        })
+
+        class Relabel:
+            name = "relabel"
+
+            def verify(self, observation):
+                return {"status": "verified", "independence": "external", "method": "relabel"}
+
+        with self.assertRaises(Rejected) as refused:
+            assess_integrity(claim, verifier=Relabel())
+        self.assertEqual(refused.exception.code, "integrity_verifier")
+
+        class Seal:
+            name = "seal"
+
+            def verify(self, observation):
+                return {"status": "verified", "independence": "signed_external", "method": "seal"}
+
+        verified = assess_integrity(claim, verifier=Seal())
+        self.assertEqual(verified["verification_status"], "verified")
+        self.assertEqual(verified["verified_independence"], "signed_external")
+
     def test_isolation_manifests_are_data_not_prompt_text(self):
         generation = {"id": "g", "objective": "export", "base_revision": "abc", "mode": "explore", "isolation": "independent"}
         own = {"id": "a", "descriptor": descriptor("spa_local"), "state": "frozen"}

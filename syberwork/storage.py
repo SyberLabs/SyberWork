@@ -241,7 +241,6 @@ _MIGRATIONS: list[tuple[str, str]] = [
             generation_id TEXT NOT NULL,
             approach_id TEXT NOT NULL,
             candidate_id TEXT NOT NULL,
-            changed_paths TEXT NOT NULL,
             actor TEXT NOT NULL,
             at BIGINT NOT NULL,
             authority TEXT NOT NULL,

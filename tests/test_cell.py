@@ -219,11 +219,14 @@ class CellGuards(unittest.TestCase):
                 restore_cell(restored, snapshot)
             self.assertEqual(refused.exception.code, "restore_refused")
             self.assertEqual(restored.list_cases(), [])
-            (snapshot / "policies.json").unlink()
+            clean = Path(folder) / "clean"
+            export_cell(source, clean)
+            (clean / "policies.json").unlink()
             missing = Work(Path(folder) / "missing.sqlite")
             with self.assertRaises(Rejected) as absent:
-                restore_cell(missing, snapshot)
+                restore_cell(missing, clean)
             self.assertEqual(absent.exception.code, "restore_refused")
+            self.assertIn("policies", absent.exception.detail)
             self.assertEqual(missing.list_cases(), [])
             source.close()
             restored.close()

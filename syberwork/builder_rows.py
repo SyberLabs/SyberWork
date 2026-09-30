@@ -115,8 +115,6 @@ class BuilderRecords:
             "base": authority["base"],
             "operator": authority["operator"],
             "provider": authority["provider"],
-            "link_state": "recorded",
-            "selection_state": "eligible",
             "actor": row["actor"],
             "at": row["at"],
         }
@@ -164,7 +162,7 @@ class BuilderRecords:
                 "SELECT id FROM builder_candidate_links WHERE generation_id=? AND candidate_id=?",
                 (generation_id, target_id),
             ).fetchone()
-            if link is None or self._authority_candidate(db, case_id, target_id) is None:
+            if link is None:
                 raise Rejected("unknown_target", "candidate is not linked in this generation")
             return
         if target_kind == "prototype":
@@ -243,6 +241,9 @@ class BuilderRecords:
 
     def _selection(self, db, selection_id: str) -> dict:
         row = db.execute("SELECT * FROM builder_selections WHERE id=?", (selection_id,)).fetchone()
+        return self._selection_row(row)
+
+    def _selection_row(self, row) -> dict:
         body = _loads(row["body"])
         body.update({
             "id": row["id"],
@@ -257,10 +258,10 @@ class BuilderRecords:
 
     def _selections(self, db, generation_id: str) -> list[dict]:
         rows = db.execute(
-            "SELECT id FROM builder_selections WHERE generation_id=? ORDER BY at",
+            "SELECT * FROM builder_selections WHERE generation_id=? ORDER BY at",
             (generation_id,),
         ).fetchall()
-        return [self._selection(db, row["id"]) for row in rows]
+        return [self._selection_row(row) for row in rows]
 
     def _snapshot(self, db, snapshot_id: str) -> dict:
         row = db.execute("SELECT body FROM builder_architecture WHERE id=?", (snapshot_id,)).fetchone()
@@ -318,7 +319,7 @@ class BuilderRecords:
             "body": _loads(row["body"]),
         }
 
-    def _candidate_projection(self, db, generation, link, snapshot, feedback, integrity, prototypes) -> dict:
+    def _candidate_projection(self, generation, link, snapshot, feedback, integrity, prototypes) -> dict:
         nodes = [] if snapshot is None else nodes_for_paths(snapshot, link["changed_paths"])
         prototype = next((item for item in prototypes if item["candidate_id"] == link["candidate_id"]), None)
         notes = [item for item in feedback if item["target_kind"] == "candidate" and item["target_id"] == link["candidate_id"]]
@@ -336,12 +337,9 @@ class BuilderRecords:
             "base": link["base"],
             "operator": link["operator"],
             "provider": link["provider"],
-            "link_state": link["link_state"],
-            "selection_state": link["selection_state"],
             "architecture_nodes": nodes,
             "prototype": prototype,
             "feedback_dimensions": feedback_dimensions(notes),
             "integrity": integrity_projection(observations, link["candidate_id"]),
-            "case_candidate_recorded": link["link_state"] == "recorded",
             "promotion_state": None,
         }

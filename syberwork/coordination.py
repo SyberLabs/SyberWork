@@ -223,7 +223,7 @@ class BuilderStore(BuilderRecords):
     def close_generation(self, generation_id: str, actor: str) -> dict:
         with self.work.tx() as db:
             generation = self._generation(db, generation_id)
-            if generation["state"] not in ("sealed", "launched", "evaluating", "selecting"):
+            if generation["state"] not in LINKABLE_STATES:
                 raise Rejected("generation_state", "generation cannot close from this state")
             db.execute("UPDATE builder_generations SET state='closed' WHERE id=?", (generation_id,))
             self._append(db, generation["case_id"], generation_id, "generation_closed", actor, {
@@ -258,12 +258,14 @@ class BuilderStore(BuilderRecords):
             })
             return self._agent(db, identifier)
 
-    def record_activity(self, agent_id: str, document: dict, actor: str, roles: list[str] | None = None) -> dict:
+    def record_activity(self, agent_id: str, document: dict, actor: str, roles: list[str]) -> dict:
         activity = normalize_activity(document)
         with self.work.tx() as db:
             agent = self._agent(db, agent_id)
-            if roles is not None and not (set(roles) & COORDINATION_ROLES) and actor != agent["principal"]:
+            if not (set(roles) & COORDINATION_ROLES) and actor != agent["principal"]:
                 raise Rejected("forbidden", "an agent may record only its own activity")
+            if agent["state"] in ("cancelled", "paused"):
+                raise Rejected("agent_state", "a cancelled or paused agent records no activity")
             generation = self._generation(db, agent["generation_id"])
             if generation["state"] not in RUNNING_STATES:
                 raise Rejected("generation_state", "agent activity starts after launch")
@@ -369,9 +371,9 @@ class BuilderStore(BuilderRecords):
             identifier = _id()
             created = _now()
             db.execute(
-                "INSERT INTO builder_candidate_links (id, case_id, generation_id, approach_id, candidate_id, changed_paths, actor, at, authority) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
-                (identifier, generation["case_id"], generation_id, approach_id, candidate_id.strip(), canonical(paths), actor, created,
+                "INSERT INTO builder_candidate_links (id, case_id, generation_id, approach_id, candidate_id, actor, at, authority) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (identifier, generation["case_id"], generation_id, approach_id, candidate_id.strip(), actor, created,
                  canonical(authority)),
             )
             self._append(db, generation["case_id"], generation_id, "candidate_linked", actor, {
@@ -381,8 +383,6 @@ class BuilderStore(BuilderRecords):
                 "changed_paths": paths,
                 "commit": authority["commit"],
                 "tree": authority["tree"],
-                "link_state": "recorded",
-                "selection_state": "eligible",
             })
             return self._link(db, identifier)
 
@@ -392,13 +392,12 @@ class BuilderStore(BuilderRecords):
         with self.work.tx() as db:
             self._require_case(db, document["case_id"])
             generation_id = document.get("generation_id")
-            if generation_id is not None:
-                generation = self._generation(db, generation_id)
-                if generation["case_id"] != document["case_id"]:
-                    raise Rejected("invalid_feedback", "generation is not in this case")
-                policy = self._policy(db, generation["selection_policy"]["id"], generation["selection_policy"]["version"])
-            else:
-                policy = self._latest_policy(db, document.get("selection_policy_id"))
+            if not isinstance(generation_id, str):
+                raise Rejected("invalid_feedback", "generation_id required")
+            generation = self._generation(db, generation_id)
+            if generation["case_id"] != document["case_id"]:
+                raise Rejected("invalid_feedback", "generation is not in this case")
+            policy = self._policy(db, generation["selection_policy"]["id"], generation["selection_policy"]["version"])
             feedback = normalize_feedback(document, roles, policy)
             self._resolve_target(db, document["case_id"], generation_id, feedback["target_kind"], feedback["target_id"])
             identifier = _id()
@@ -509,8 +508,7 @@ class BuilderStore(BuilderRecords):
             raise Rejected("invalid_architecture", "case_id required")
         case_id = document["case_id"]
         generation_id = document.get("generation_id")
-        supplied = {key: value for key, value in document.items() if key != "id"}
-        snapshot = validate_snapshot(supplied)
+        snapshot = validate_snapshot(document)
         with self.work.tx() as db:
             self._require_case(db, case_id)
             if generation_id is not None:
@@ -601,9 +599,10 @@ class BuilderStore(BuilderRecords):
             raise Rejected("candidate_approach", "approach must be a sealed descriptor in this generation")
 
     def _prepare_command(self, db, agent: dict, command: str, body: dict) -> dict:
-        if command == "redirect":
-            self._require_frozen_approach(db, agent["generation_id"], body.get("approach_id"))
-        return command_effect(agent, command, body)
+        effect = command_effect(agent, command, body)
+        if command == "redirect" and isinstance(body, dict) and body.get("approach_id"):
+            self._require_frozen_approach(db, agent["generation_id"], body["approach_id"])
+        return effect
 
     def replay(self, case_id: str, after_seq: int = 0, limit: int = REPLAY_LIMIT) -> tuple[list[dict], bool]:
         limit = max(1, min(int(limit), REPLAY_LIMIT))
@@ -665,7 +664,7 @@ class BuilderStore(BuilderRecords):
             selections = self._selections(db, generation_id)
             snapshot = self._latest_snapshot(db, generation["case_id"], generation_id)
             candidates = [
-                self._candidate_projection(db, generation, link, snapshot, feedback, integrity, prototypes)
+                self._candidate_projection(generation, link, snapshot, feedback, integrity, prototypes)
                 for link in links
             ]
         return {
@@ -740,6 +739,8 @@ class BuilderStore(BuilderRecords):
     def integrity_view(self, target: str, *, case_id: str, target_kind: str, generation_id: str | None = None) -> dict:
         if not isinstance(case_id, str) or not case_id or target_kind not in ("generation", "approach", "candidate", "architecture_node", "prototype", "case"):
             raise Rejected("invalid_integrity", "case_id and target_kind are required")
+        if generation_id is None and target_kind not in ("generation", "case"):
+            raise Rejected("invalid_integrity", "generation_id is required for this target kind")
         with self.work.tx() as db:
             sql = "SELECT * FROM builder_integrity WHERE case_id=? AND target_kind=? AND target_id=?"
             params: list = [case_id, target_kind, target]
@@ -757,17 +758,6 @@ class BuilderStore(BuilderRecords):
         row = db.execute(
             "SELECT body FROM builder_policies WHERE id=? AND version=?",
             (policy_id, version),
-        ).fetchone()
-        if row is None:
-            raise Rejected("unknown_policy", policy_id)
-        return _loads(row["body"])
-
-    def _latest_policy(self, db, policy_id: str | None) -> dict:
-        if not isinstance(policy_id, str) or not policy_id:
-            raise Rejected("unknown_policy", "generation-less feedback must name its selection policy")
-        row = db.execute(
-            "SELECT body FROM builder_policies WHERE id=? ORDER BY version DESC LIMIT 1",
-            (policy_id,),
         ).fetchone()
         if row is None:
             raise Rejected("unknown_policy", policy_id)

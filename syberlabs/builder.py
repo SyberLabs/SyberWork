@@ -93,7 +93,6 @@ ACTIVITIES = (
     "complete",
 )
 COMMANDS = ("pause", "resume", "cancel", "send_context", "restrict_scope", "redirect")
-AGENT_ROLES = ("implementer", "reviewer", "operator", "search")
 AGENT_AUTHORITY = {
     "implementer": "informative",
     "reviewer": "advisory",
@@ -164,11 +163,7 @@ def _tokens(descriptor: dict) -> set[str]:
 
 
 def structural_distance(left: dict, right: dict) -> float:
-    """Jaccard distance on structural tokens. 0 is identical. 1 is disjoint.
-
-    This comparison is deterministic. A semantic provider may be stored beside
-    it and cannot change the result.
-    """
+    """Jaccard distance on structural tokens. 0 is identical. 1 is disjoint."""
     a, b = _tokens(left), _tokens(right)
     if not a and not b:
         return 0.0
@@ -176,9 +171,7 @@ def structural_distance(left: dict, right: dict) -> float:
 
 
 def diversity_evidence(descriptor: dict, siblings: list[dict], threshold: float) -> dict:
-    """Pairwise structural evidence. A later embedding provider can be added with its own storage."""
-    if type(threshold) not in (int, float) or not 0 <= float(threshold) <= 1:
-        raise Rejected("invalid_generation", "diversity threshold must be between 0 and 1")
+    """Pairwise structural evidence against approaches already accepted in the generation."""
     pairs = []
     failure = None
     inputs = {
@@ -243,8 +236,6 @@ def normalize_policy(document: dict) -> dict:
     promotion = document.get("promotion_roles", [])
     if not isinstance(promotion, list) or any(not isinstance(item, str) or not item for item in promotion):
         raise Rejected("invalid_policy", "promotion roles must be a list of strings")
-    if "weights" in document or "advisory_dimensions" in document:
-        raise Rejected("invalid_policy", "feedback is not reduced to a weight or a stored dimension list")
     return {
         "protocol": PROTOCOL,
         "id": identifier.strip(),
@@ -275,7 +266,7 @@ def normalize_generation(document: dict) -> dict:
         raise Rejected("invalid_mode", "mode must be explore, refine, or harden")
     if document.get("isolation") not in ISOLATIONS:
         raise Rejected("invalid_isolation", "isolation must be independent, aware, or collaborative")
-    if type(threshold) not in (int, float) or not 0 <= float(threshold) <= 1:
+    if type(threshold) not in (int, float) or not 0 <= threshold <= 1:
         raise Rejected("invalid_generation", "diversity threshold must be between 0 and 1")
     if type(minimum) is not int or minimum < 1:
         raise Rejected("invalid_generation", "min_approaches must be a positive integer")
@@ -479,11 +470,6 @@ def integrity_projection(observations: list[dict], target: str | None = None) ->
         "authoritative": False,
         "target": target,
         "observations": rows,
-        "by_class": {
-            name: [row for row in rows if row.get("verified_independence") == name]
-            for name in INTEGRITY_CLASSES
-        },
-        "by_claim": {name: [row for row in rows if row.get("independence_claim") == name] for name in INTEGRITY_CLASSES},
         "self_report": [row for row in rows if row.get("verified_independence") == "internal"],
         "independent_evidence": [row for row in rows if row.get("verified_independence") in INDEPENDENT_CLASSES],
         "unverified_claims": [row for row in rows if row.get("verification_status") != "verified"],
@@ -544,15 +530,14 @@ def _verdict(policy: dict, notes: list[dict], observations: list[dict]) -> tuple
     return "unresolved", ["selection_unresolved"]
 
 
-def evaluate_selection(policy: dict, candidates: list, feedback: list[dict], integrity: list[dict], actor_roles: list[str]) -> dict:
+def evaluate_selection(policy: dict, candidate_ids: list[str], feedback: list[dict], integrity: list[dict], actor_roles: list[str]) -> dict:
     """Say why each linked candidate advanced, stayed unresolved, or was rejected.
 
     ``promotes_git`` is always false. Promotion remains a SyberWork admission.
     """
     buckets = {"advanced": [], "unresolved": [], "rejected": []}
     dimensions = {}
-    for candidate in candidates:
-        identifier = candidate if isinstance(candidate, str) else candidate["id"]
+    for identifier in candidate_ids:
         notes = [item for item in feedback if item["target_kind"] == "candidate" and item["target_id"] == identifier]
         observations = [item for item in integrity if item["target_kind"] == "candidate" and item["target_id"] == identifier]
         bucket, reasons = _verdict(policy, notes, observations)
@@ -688,12 +673,6 @@ def command_effect(agent: dict, command: str, body: dict) -> dict:
             assignment["approach_id"] = body["approach_id"]
         effect.update(assignment=assignment, events=[("agent_assignment_changed", {"assignment": assignment})])
     return effect
-
-
-class AgentRuntime(Protocol):
-    """A future agent runtime. This package does not attach one to a process."""
-
-    def apply(self, command: dict) -> dict: ...
 
 
 class DisconnectedRuntime:

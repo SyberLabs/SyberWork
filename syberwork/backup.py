@@ -54,10 +54,11 @@ def restore_cell(work, directory: str | Path) -> dict:
         existing = db.execute("SELECT id FROM cases LIMIT 1").fetchone()
         if existing:
             raise Rejected("restore_refused", "restore only into an empty cell database")
+        legacy = not any((directory / f"{name}.json").exists() for name in OPTIONAL_SNAPSHOT_TABLES)
         for table in SNAPSHOT_TABLES:
             path = directory / f"{table}.json"
             if not path.exists():
-                if table in OPTIONAL_SNAPSHOT_TABLES:
+                if legacy and table in OPTIONAL_SNAPSHOT_TABLES:
                     continue
                 raise Rejected("restore_refused", f"snapshot is missing {table}")
             rows = json.loads(path.read_text(encoding="utf-8"))
