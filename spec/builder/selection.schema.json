@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/selection.schema.json",
+  "title": "Selection",
+  "description": "Governed selection. promotes_git is false. SyberWork admission remains the only promotion path.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["protocol", "id", "advanced", "unresolved", "rejected", "dimensions", "promotes_git", "evidence_digest"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "advanced": {"type": "array"},
+    "unresolved": {"type": "array"},
+    "rejected": {"type": "array"},
+    "dimensions": {"type": "object"},
+    "promotes_git": {"const": false},
+    "promotion_authorized": {"type": "boolean"},
+    "evidence_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

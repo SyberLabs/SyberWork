@@ -80,7 +80,7 @@ class CellRuntime(unittest.TestCase):
             self.assertEqual(committed["status"], "succeeded")
             self.assertTrue(work.verify_chain(case_id))
             versions = [row["version"] for row in work._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
-            self.assertEqual(versions, ["0001", "0002", "0003"])
+            self.assertEqual(versions, ["0001", "0002", "0003", "0004", "0005"])
             work.close()
             copy = Path(folder) / "main.sqlite"
             shutil.copy(FIXTURE, copy)
@@ -201,7 +201,7 @@ class CellGuards(unittest.TestCase):
             self.assertEqual(errors, [])
             check = Work(path)
             versions = [row["version"] for row in check._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
-            self.assertEqual(versions, ["0001", "0002", "0003"])
+            self.assertEqual(versions, ["0001", "0002", "0003", "0004", "0005"])
             check.close()
 
     def test_failed_restore_does_not_keep_the_rows(self):
@@ -219,8 +219,18 @@ class CellGuards(unittest.TestCase):
                 restore_cell(restored, snapshot)
             self.assertEqual(refused.exception.code, "restore_refused")
             self.assertEqual(restored.list_cases(), [])
+            clean = Path(folder) / "clean"
+            export_cell(source, clean)
+            (clean / "policies.json").unlink()
+            missing = Work(Path(folder) / "missing.sqlite")
+            with self.assertRaises(Rejected) as absent:
+                restore_cell(missing, clean)
+            self.assertEqual(absent.exception.code, "restore_refused")
+            self.assertIn("policies", absent.exception.detail)
+            self.assertEqual(missing.list_cases(), [])
             source.close()
             restored.close()
+            missing.close()
 
     def test_image_build_context_excludes_local_secrets(self):
         ignored = (Path(__file__).resolve().parents[1] / ".dockerignore").read_text(encoding="utf-8")

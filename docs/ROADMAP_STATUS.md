@@ -63,6 +63,10 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 1. **License.** There is no `LICENSE` file. Choosing one is a legal decision for SyberLabs. Until one is added, outside developers have no grant to use the code, which blocks the Gate 4 adoption test. EvoGit is AGPL-3.0. An EvoGit-style search provider in this repository must be an independent implementation of the published method and must not copy EvoGit code, or it would constrain this decision.
 2. **Package split.** The wheel is still one distribution, `syberwork`, containing both `syberwork` (application) and `syberlabs` (SDK). The roadmap recommends a separately identifiable `syberlabs` distribution. The code is ready for that (`syberlabs` imports nothing from `syberwork`, which `tests/test_package.py` checks); the remaining work is a second build configuration and a version pin from `syberwork` to `syberlabs`. It is not done here because the distribution name on a package index is a public, hard-to-reverse choice.
 
+## A paying company
+
+[PAID_PROBLEM.md](PAID_PROBLEM.md) is the plan for a payment that is for a problem the current software can already record. `examples/pilot_rehearsal.py` runs that checklist on fictional data. [ADVERSARIAL_BENCHMARK.md](ADVERSARIAL_BENCHMARK.md) is a measured simulation of a flaky bank debit against architectural stand-ins, not a run of other products. The first offer is a license to execute one effect the buyer already runs. Search benchmarks are not on that path. No customer is claimed. Gates that need a buyer, a price, or a license are not done.
+
 ## Industrial Cell v0.1
 
 The local appliance remains the default. A cell is one organization and one database, not a `tenant_id` column. Admission is unchanged. See [INDUSTRIAL_CELL.md](INDUSTRIAL_CELL.md).
@@ -70,7 +74,7 @@ The local appliance remains the default. A cell is one organization and one data
 | Item | Status | Where |
 | --- | --- | --- |
 | Storage seam: SQLite and PostgreSQL, same statements | Implemented | `syberwork/storage.py`. `tests/test_cell.py` compares one case on both when PostgreSQL is reachable |
-| Migration ledger, including a pre-migration SQLite history | Implemented | `0001`–`0003`. The `main` fixture still verifies |
+| Migration ledger, including a pre-migration SQLite history | Implemented | `0001`–`0005`. The `main` fixture still verifies. `0004` is Builder coordination. `0005` adds evaluation-world tables and does not alter `builder_generations` |
 | Effect worker and expired-lease uncertainty | Implemented | `syberwork/worker.py`. Inline commit remains the default |
 | Cell organization and principal records | Implemented | `bind_organization`, `register_principal`. Not SSO |
 | Semantic trace, backup/restore | Implemented | `syberwork/trace.py`, `syberwork/backup.py` |
@@ -82,3 +86,20 @@ The local appliance remains the default. A cell is one organization and one data
 - `Session.observe(..., verified=True)` is the host's claim. The in-memory session does not independently read a source.
 - The witness is a separate process, not a separate OS user or a public transparency service.
 - Only `syberwork.Work` has durable HTTP effects. `Session` is in memory unless given a `Journal`; its only durable local effect is the Build Thread's compare-and-swap ref update.
+
+## Builder substrate
+
+The future Builder UI has a coordination, integrity, and projection backend. It is not the visual Builder, and it is not admission. See [spec/BUILDER.md](../spec/BUILDER.md).
+
+| Item | Status | Where |
+| --- | --- | --- |
+| Generations, approach descriptors, diversity gate, isolation manifests | Implemented | `syberlabs/builder.py`, `syberwork/coordination.py`. A candidate cannot link before seal. Sealed descriptors are immutable. Embeddings are not the gate. |
+| Coordination log, separate from the case chain | Implemented | Migration `0004`. SQLite and PostgreSQL. |
+| Feedback authority, selection policy, integrity classes | Implemented | Grants are per role and feedback kind, and they are not collapsed to one rank. Advisory preferences do not select unless the policy lists them. Selection reads verified integrity only. `promotes_git` is false. |
+| Agent sessions, activity causality, command contract | Implemented | No chain-of-thought field. The default command result is `runtime_not_connected`. `send_context` and `redirect` are different operations. |
+| Architecture graph snapshots and prototype registry | Implemented | Graph AST with repository paths. No diagram vendor. The prototype record hides how it was provisioned. |
+| Projections, role lens, Builder HTTP, SSE | Implemented | `GET /api/builder/...` and `GET /api/builder/work/:id/stream`. Existing case routes are unchanged. |
+| Final Builder visual system | **Not built** | This slice is the substrate those screens can read. |
+| Evaluation world identity and host binding | Implemented | [EVALUATION_WORLDS.md](EVALUATION_WORLDS.md) phase 1. Migration `0005`. Selection, admission, and `candidate_evaluated` are unchanged. Traces, providers, and runtimes are not built. |
+
+A coordination record is not a case event. A displayed comment, diversity score, agent claim, or architecture snapshot does not admit or promote anything. The command adapter does not attach to a process. Integrity digests are stored, not verified.
