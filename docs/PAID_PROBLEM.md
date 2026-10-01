@@ -1,6 +1,6 @@
 # Plan: a company pays because SyberWork solved a problem it has
 
-Status: **plan**. Nothing in this document is a customer, a price, or a measurement that does not already exist in the repository.
+Status: **rehearsal implemented**. Gates 0, 2, 3, and 4 are not implemented. They need a real workflow, a price, a license choice, and a pilot cell. This document still names no customer.
 
 **Goal.** A company that is not SyberLabs pays money, and the reason they state is a problem whose failure mode SyberWork's recorded behavior prevented. A payment for a roadmap, a workshop, or "an AI coding platform" does not meet the goal.
 
@@ -89,6 +89,8 @@ Each gate has an exit artifact. Later gates do not start by building around a fa
 - An HTTP write to a system they run: start from `syberwork.Work` and `examples/reference_system.py`. Install their source and action. `auth_env` names the secret. `trusted_origin` and `guard_request` constrain the URL.
 - A Git acceptance: start from `docs/BUILD_THREAD.md`. Accept moves `refs/heads/syberlabs/<thread>` only. Push is a separate admitted effect.
 
+The public stand-in, with no customer identifiers, is `PYTHONPATH=. python examples/pilot_rehearsal.py`. It records `actor_role_missing`, `approval_required:manager`, `source_verification_required:roster`, `required_prior_effect_missing`, `evaluation_denied` when the registering actor evaluates a candidate, and an effect that stays `unknown` with no `effect_succeeded`. `tests/test_pilot_rehearsal.py` locks that report. Their replay replaces those nouns. It does not add an event kind.
+
 **Exit artifact:** a case history they can verify, plus `explain_admission` for at least these denials, using their identifiers:
 
 - proposer lacks the approval role
@@ -165,7 +167,7 @@ If the replay works with the files in section 3, the repository change for the p
 ## 5. The smallest slice that can reach the goal
 
 1. Hold Gate 0 with one company whose effect is an order, a revocation, a publish, or a production change they already make. Write their four sentences down. Ask whether a pilot of the current software is something they would pay for if the denials in Gate 1 hold.
-2. If yes, replay Gate 1 on their staging or on a fixture they certify. Show the denials and one reconciled effect.
+2. If yes, replay Gate 1 on their staging or on a fixture they certify. `examples/pilot_rehearsal.py` is the checklist to copy. Show the denials and one reconciled effect in their nouns.
 3. If they still recognize the problem, write Gate 2’s criteria and the price in the same document. Gate 3’s license is the only repository change that must exist before they receive a wheel.
 4. Run the pilot. Payment against the written criteria is the goal. Anything short of that is a finding, and the finding goes back to Gate 0 rather than into a new subsystem.
 

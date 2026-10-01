@@ -65,7 +65,7 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 
 ## A paying company
 
-[PAID_PROBLEM.md](PAID_PROBLEM.md) is the plan for a payment that is for a problem the current software can already record. The first offer is a license to execute one effect the buyer already runs. Search benchmarks are not on that path. No customer is claimed.
+[PAID_PROBLEM.md](PAID_PROBLEM.md) is the plan for a payment that is for a problem the current software can already record. `examples/pilot_rehearsal.py` runs that checklist on fictional data. The first offer is a license to execute one effect the buyer already runs. Search benchmarks are not on that path. No customer is claimed. Gates that need a buyer, a price, or a license are not done.
 
 ## Industrial Cell v0.1
 
