@@ -7,6 +7,7 @@ name = "syberwork"
 version = "0.1.0"
 description = "Contract-governed work execution and the SyberLabs SDK core"
 requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]

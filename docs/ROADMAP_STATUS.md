@@ -60,7 +60,7 @@ This file tracks the next-stage roadmap (27 September 2026) against what the rep
 
 ### Decisions that belong to the owner (not made here)
 
-1. **License.** There is no `LICENSE` file. Choosing one is a legal decision for SyberLabs. Until one is added, outside developers have no grant to use the code, which blocks the Gate 4 adoption test. EvoGit is AGPL-3.0. An EvoGit-style search provider in this repository must be an independent implementation of the published method and must not copy EvoGit code, or it would constrain this decision.
+1. **License.** Decided 2026-09-29 by the SyberLabs owner: Apache License 2.0, matching RISE. `LICENSE` and `NOTICE` are at the repository root and `pyproject.toml` declares `Apache-2.0`. This removes the license block on the Gate 4 adoption test. The EvoGit-style provider must remain an independent implementation of the published method with no EvoGit (AGPL-3.0) code.
 2. **Package split.** The wheel is still one distribution, `syberwork`, containing both `syberwork` (application) and `syberlabs` (SDK). The roadmap recommends a separately identifiable `syberlabs` distribution. The code is ready for that (`syberlabs` imports nothing from `syberwork`, which `tests/test_package.py` checks); the remaining work is a second build configuration and a version pin from `syberwork` to `syberlabs`. It is not done here because the distribution name on a package index is a public, hard-to-reverse choice.
 
 ## Industrial Cell v0.1
