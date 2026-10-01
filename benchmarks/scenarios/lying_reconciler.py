@@ -67,6 +67,7 @@ class LyingReconciler:
         host.ids["pay"] = host.ids["send_wire"]
         host.approve("pay", "treasurer", ["treasurer"])
         host.commit("pay", "operator")
+        self.first_debit = world.snapshot()
         host.reconcile("pay", "manager", ["manager"])
         host.propose("send_wire", {"invoice_id": INVOICE["id"], "amount": INVOICE["total"]}, "operator", ["operator"])
         host.ids["pay"] = host.ids["send_wire"]

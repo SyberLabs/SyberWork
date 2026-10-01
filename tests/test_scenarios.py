@@ -4,7 +4,8 @@ import unittest
 
 from benchmarks.scenarios.flaky_bank import SCENARIO
 from benchmarks.scenarios.host import SessionHost
-from benchmarks.scenarios.probe import Probe
+from benchmarks.scenarios.probe import Probe, evaluate
+from benchmarks.scenarios.world import Ledger
 from benchmarks.scenarios.runner import load_scenarios, run_scenario
 from benchmarks.scenarios.world import Ledger
 
@@ -64,6 +65,20 @@ class ScenarioInfrastructure(unittest.TestCase):
         self.assertFalse(report["probes"][0]["passed"])
         self.assertEqual(report["probes"][0]["expected"]["payments"], 1)
         self.assertEqual(report["probes"][0]["observed"]["payments"], 0)
+
+    def test_unknown_probe_fields_and_mismatched_metrics_fail(self):
+        with self.assertRaises(ValueError):
+            Probe("typo", not_a_field=1)
+        result = evaluate(Probe("no_duplicates", duplicate_debits=0), {"duplicate_debits": 1, "decisions": []})
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["observed"]["duplicate_debits"], 1)
+        ledger = Ledger(faults=["drop_after_debit"])
+        try:
+            ledger.pay({"id": "INV-OTHER", "total": 10}, "k")
+        except TimeoutError:
+            pass
+        self.assertEqual(ledger.payments["k"]["invoice_id"], "INV-OTHER")
+        self.assertEqual(ledger.payments["k"]["amount"], 10)
 
     def test_flaky_bank_on_the_session_passes_every_probe(self):
         report = run_scenario(SCENARIO, SessionHost())

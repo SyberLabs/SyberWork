@@ -56,6 +56,25 @@ class WorldCases(CellCase):
         again = self.store.register_world(world_body(), "operator")
         self.assertEqual(again["digest"], recorded["digest"])
 
+    def test_a_failed_binding_insert_rolls_back_the_evaluation(self):
+        from syberwork.coordination import BuilderStore
+
+        generation, _recorded = self._prepared()
+        original = BuilderStore._write_binding
+
+        def boom(store, db, generation_id, event, actor, world_digest):
+            raise RuntimeError("binding insert failed")
+
+        BuilderStore._write_binding = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                self.store.record_bound_evaluation(generation["id"], _evaluation(1), "host", ["evaluator"])
+        finally:
+            BuilderStore._write_binding = original
+        kinds = [event["kind"] for event in self.work.inspect(self.case)["events"]]
+        self.assertNotIn("candidate_evaluated", kinds)
+        self.assertTrue(self.work.verify_chain(self.case))
+
     def test_a_missing_binding_is_not_a_match_and_selection_does_not_read_it(self):
         generation, recorded = self._prepared(candidates=(1, 2))
         self.store.record_bound_evaluation(generation["id"], _evaluation(1), "host", ["evaluator"])

@@ -701,6 +701,28 @@ def _verdict(policy: dict, notes: list[dict], observations: list[dict]) -> tuple
     return "unresolved", ["selection_unresolved"]
 
 
+def predicates_satisfied(required: list[dict], observations: list[dict]) -> bool:
+    """Each required claim needs its own verified pass.
+
+    One passing observation does not cover a different claim, independence, or digest.
+    Phase 1 selection does not call this. A later policy can opt in.
+    """
+    for item in required:
+        claim = item.get("claim")
+        independence = item.get("independence")
+        artifact = item.get("digest")
+        if not any(
+            obs.get("claim") == claim
+            and obs.get("verification_status") == "verified"
+            and obs.get("verified_independence") == independence
+            and obs.get("result") in PASSING_RESULTS
+            and (artifact is None or obs.get("digest") == artifact)
+            for obs in observations
+        ):
+            return False
+    return True
+
+
 def evaluate_selection(policy: dict, candidate_ids: list[str], feedback: list[dict], integrity: list[dict], actor_roles: list[str]) -> dict:
     """Say why each linked candidate advanced, stayed unresolved, or was rejected.
 

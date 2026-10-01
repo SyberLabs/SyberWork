@@ -112,7 +112,7 @@ The public stand-in, with no customer identifiers, is `PYTHONPATH=. python examp
 - a count of real effects on their staging system
 - zero of those effects recorded `succeeded` while the destination was `unknown`
 - every denial they care about reproducible by `explain_admission` with a named rule
-- the proposing credential cannot perform the effect
+- the proposing credential does not hold the destination secret, and it cannot commit an effect admission has not allowed, including one that still needs approval. After admission and any required approval, the original proposer may commit. That commit is the supported path.
 - a date on which they either pay, extend in writing, or stop
 
 **Pass.** They sign or pay against those criteria.
@@ -140,7 +140,7 @@ The public stand-in, with no customer identifiers, is `PYTHONPATH=. python examp
 
 **Exit artifact:** the pilot’s case ids, the chain verification, and the destination’s own record of the same effects. Those two lists match on success and stay explicitly unmatched on `unknown`.
 
-**Stop the pilot** if a model credential can commit an effect, if a secret appears in a case body, or if a restore of their snapshot loses an authoritative table. Those are product failures, not pilot noise.
+**Stop the pilot** if a model credential holds the destination secret, or can commit an effect admission has not allowed. A model may propose. An independent approver may allow it. The original proposer may then commit. A secret in a case body, or a restore that loses an authoritative table, is also a product failure.
 
 ## 4. What the first pilot is allowed to change in the repository
 

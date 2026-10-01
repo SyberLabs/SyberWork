@@ -110,7 +110,7 @@ class SessionHost:
 
         class Bank:
             def apply(self, case_id, args, key):
-                world.pay(invoice, key)
+                world.pay({"id": args["invoice_id"], "total": args["amount"]}, key)
 
             def status(self, case_id, args, key):
                 receipt = world.payments[key]
@@ -337,11 +337,17 @@ class RetryWorkflowHost(_StandIn):
     kind = "stand-in: timeout retried as success"
 
     def _on_pay(self) -> dict:
+        self.attempts: list[dict] = []
         try:
             self.world.pay(self.live, "attempt-1")
+            self.attempts.append({"key": "attempt-1", "world": "succeeded", "recorded": "succeeded"})
         except TimeoutError:
-            self.unknown_as_success = 1
+            self.attempts.append({"key": "attempt-1", "world": "unknown", "recorded": "succeeded"})
         self.world.pay(self.live, "attempt-2")
+        self.attempts.append({"key": "attempt-2", "world": "succeeded", "recorded": "succeeded"})
+        self.unknown_as_success = sum(
+            1 for item in self.attempts if item["world"] == "unknown" and item["recorded"] == "succeeded"
+        )
         self.unknown_status = "succeeded"
-        self.unknown_succeeded = 1
+        self.unknown_succeeded = self.unknown_as_success
         return {"status": "succeeded"}

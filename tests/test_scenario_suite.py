@@ -29,3 +29,8 @@ class ScenarioSuite(unittest.TestCase):
             report = run_scenario(scenario, SessionHost())
             expected = set(getattr(scenario, "expected_failures", []))
             self.assertEqual(set(report["probe_failures"]), expected, identifier)
+            if identifier == "lying_reconciler":
+                self.assertEqual(scenario.first_debit["payments"], 1)
+                self.assertEqual(scenario.first_debit["spent"], 4000)
+                self.assertEqual(report["payments"], 2)
+                self.assertEqual(report["spent"], 8000)

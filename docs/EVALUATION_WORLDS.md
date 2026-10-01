@@ -184,7 +184,7 @@ required_evidence:
     independence: host_verified
 ```
 
-`_verdict` keeps matching `verification_status`, `verified_independence`, and `result`. A claim kind is a further predicate on the observation, added only when a policy of that shape exists. Phase 1 does not add it, and selection does not read world rows.
+`_verdict` keeps matching `verification_status`, `verified_independence`, and `result`. A claim kind is a further predicate on the observation, added only when a policy of that shape exists. Phase 1 does not add it, and selection does not read world rows. When a later policy opts in, `predicates_satisfied` requires each claim to have its own verified pass of the requested independence and digest. One pass does not cover a different claim, a failed predicate, or a missing one. Missing bindings stay incomparable: `world_definition_matches` is false when any linked candidate has no binding.
 
 ## 6. Proposed architecture
 

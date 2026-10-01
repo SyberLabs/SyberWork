@@ -12,6 +12,7 @@ from syberlabs.builder import (
     derive_authorities,
     diversity_evidence,
     evaluate_selection,
+    predicates_satisfied,
     instance_equivalence,
     nodes_for_paths,
     normalize_integrity,
@@ -200,5 +201,17 @@ class Domain(unittest.TestCase):
         self.assertFalse(world_definition_matches(first["digest"], ["c1"], []))
         self.assertTrue(world_definition_matches(first["digest"], ["c1"], [{"candidate_id": "c1", "world_digest": first["digest"]}]))
         self.assertFalse(world_definition_matches(first["digest"], ["c1", "c2"], [{"candidate_id": "c1", "world_digest": first["digest"]}]))
+        required = [
+            {"claim": "one_issue", "independence": "host_verified", "digest": "ab" * 32},
+            {"claim": "no_other_write", "independence": "host_verified", "digest": "cd" * 32},
+        ]
+        one_pass = [{"claim": "one_issue", "verification_status": "verified", "verified_independence": "host_verified", "result": "pass", "digest": "ab" * 32}]
+        self.assertFalse(predicates_satisfied(required, one_pass))
+        self.assertFalse(predicates_satisfied(required, one_pass + [
+            {"claim": "no_other_write", "verification_status": "verified", "verified_independence": "host_verified", "result": "fail", "digest": "cd" * 32},
+        ]))
+        self.assertTrue(predicates_satisfied(required, one_pass + [
+            {"claim": "no_other_write", "verification_status": "verified", "verified_independence": "host_verified", "result": "pass", "digest": "cd" * 32},
+        ]))
 
 

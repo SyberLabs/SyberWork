@@ -236,38 +236,33 @@ class BuilderStore(BuilderRecords):
         del generation_id, event_hash, actor
         raise Rejected("binding_retrospective", "a binding is recorded with the evaluation, not after it")
 
+    def _write_binding(self, db, generation_id: str, event: dict, actor: str, world_digest: str) -> str:
+        identifier = _id()
+        db.execute(
+            "INSERT INTO builder_evaluation_bindings (id, generation_id, candidate_id, evaluation_event_hash, evaluator, "
+            "world_digest, world_instance_digest, trace_digest, evaluation_run_id, actor, at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (identifier, generation_id, event["body"]["candidate"], event["hash"], actor, world_digest,
+             None, None, _id(), actor, _now()),
+        )
+        return identifier
+
     def record_bound_evaluation(self, generation_id: str, evaluation: dict, actor: str, roles: list[str]) -> dict:
-        """Record a case evaluation and, when this generation froze a world, bind that new event to it."""
+        """Record a case evaluation and its world binding in one commit.
+
+        A crash or a failed binding insert rolls the evaluation back with it.
+        """
         with self.work.tx() as db:
             generation = self._generation(db, generation_id)
             frozen = self._generation_world(db, generation_id)
-        event = self.work.record_evaluation(generation["case_id"], evaluation, actor, roles)
-        if frozen is None:
-            return {"event": event, "binding": None}
-        with self.work.tx() as db:
-            head = db.execute(
-                "SELECT hash FROM events WHERE case_id=? ORDER BY seq DESC LIMIT 1",
-                (generation["case_id"],),
-            ).fetchone()
-            if head is None or head["hash"] != event["hash"] or event.get("kind") != "candidate_evaluated":
-                raise Rejected("binding_retrospective", "the evaluation is no longer the case head")
-            if event["body"].get("actor") != actor:
+            event = self.work._record_evaluation(db, generation["case_id"], evaluation, actor, roles)
+            if frozen is None:
+                return {"event": event, "binding": None}
+            if event.get("kind") != "candidate_evaluated" or event["body"].get("actor") != actor:
                 raise Rejected("binding_retrospective", "the evaluator does not match the evaluation")
-            current = self._generation_world(db, generation_id)
-            if current is None or current["digest"] != frozen["digest"]:
-                raise Rejected("unknown_world", "the generation world changed before the binding")
-            identifier = _id()
-            created = _now()
-            db.execute(
-                "INSERT INTO builder_evaluation_bindings (id, generation_id, candidate_id, evaluation_event_hash, evaluator, "
-                "world_digest, world_instance_digest, trace_digest, evaluation_run_id, actor, at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (identifier, generation_id, event["body"]["candidate"], event["hash"], actor, frozen["digest"],
-                 None, None, _id(), actor, created),
-            )
-            binding = self._bindings(db, generation_id)
-        stored = next(item for item in binding if item["id"] == identifier)
-        return {"event": event, "binding": stored}
+            identifier = self._write_binding(db, generation_id, event, actor, frozen["digest"])
+            stored = next(item for item in self._bindings(db, generation_id) if item["id"] == identifier)
+            return {"event": event, "binding": stored}
 
     def launch(self, generation_id: str, actor: str) -> dict:
         with self.work.tx() as db:
