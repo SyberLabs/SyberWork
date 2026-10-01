@@ -183,6 +183,8 @@ Benchmarking is how Offer 2 (governed search) earns the right to be sold. It is 
 
 Run the one-repeat model measurement when a credential exists. Record it in `docs/MODEL_COMPARISON.md` as a measurement of those fixtures, not of arbitrary code. Do not start a corpus in order to create a buyer. Start it only after a buyer’s paid workflow is code change and their checks are local.
 
+`benchmarks/adversarial_payment.py` is a separate, already-run simulation. A flaky bank debit of a live invoice is attacked with an unverified fact, a stale invoice, a model tool call, self-approval, and a retry after a dropped response. SyberWork is `syberlabs.Session`. The other rows are stand-ins of the architectures in `docs/SDK_FEEDBACK.md`, not executions of those products. The measured table is `benchmarks/results/adversarial-payment.txt`.
+
 Arbitrary-project benchmarking is ready for repositories you trust when Gate 1 for that repository is a Build Thread contract whose checks pass on the base. It is not ready for untrusted repositories, and it is not ready for projects whose checks need network credentials or a live external service. Those need the scrubbed environment to be a deliberate policy and, for external services, evaluation-world phase 2. Neither is on the path to the first payment unless Gate 0 names them.
 
 ## 7. Failure modes
