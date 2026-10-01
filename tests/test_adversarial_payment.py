@@ -18,6 +18,10 @@ class AdversarialPayment(unittest.TestCase):
         self.assertEqual(syber["duplicate_debits"], 0)
         self.assertTrue(syber["chain_valid"])
         self.assertTrue(syber["complete"])
+        self.assertEqual(syber["probe_failures"], [])
+        self.assertTrue(rows["direct_tool"]["probe_failures"])
+        self.assertTrue(rows["role_gate"]["probe_failures"])
+        self.assertTrue(rows["retry_workflow"]["probe_failures"])
         for rule in (
             "facts.required",
             "effect.prior",

@@ -4,7 +4,7 @@ Status: **measured on this simulation**. Not a customer. Not a run of OPA, Cedar
 
 The problem is one bank balance of 10000 and two invoices. `INV-LIVE` is 4000 and fresh. `INV-STALE` is 8000 and expired. The bank debits and then drops the HTTP response. A second attempt with a new idempotency key charges the account again.
 
-`benchmarks/adversarial_payment.py` runs four rows on that ledger:
+`benchmarks/scenarios/flaky_bank.py` is the scenario module. `benchmarks/scenarios/runner.py` installs its contract, plays one host against its world, and collects probes. A failed probe is a finding. `benchmarks/adversarial_payment.py` runs that scenario on four hosts:
 
 | Row | What it actually is |
 | --- | --- |
