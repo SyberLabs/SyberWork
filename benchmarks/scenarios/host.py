@@ -6,6 +6,8 @@ They are not executions of named products.
 
 from __future__ import annotations
 
+import copy
+
 from syberlabs import Rejected, Session
 from syberlabs.planner import StaticPlanner
 
@@ -37,10 +39,21 @@ class SessionHost:
         return None
 
     def install(self, contract: dict, policy: dict) -> None:
-        self.session.install_contract(contract)
+        stored = copy.deepcopy(contract)
+        effects = {}
+        for name, spec in stored["actions"].items():
+            effect = spec.pop("executor", None)
+            if effect:
+                effects[name] = effect
+        if "pay_vendor" in stored["actions"] and "pay_vendor" not in effects:
+            effects["pay_vendor"] = "bank"
+        self.session.install_contract(stored)
         self.session.install_policy(policy)
-        self.session.install_action("record_review", {"kind": "local", "title": "Review invoice"})
-        self.session.install_action("pay_vendor", {"kind": "local", "title": "Pay vendor", "effect": "bank"})
+        for name in stored["actions"]:
+            document = {"kind": "local", "title": name}
+            if name in effects:
+                document["effect"] = effects[name]
+            self.session.install_action(name, document)
 
     def create_case(self, contract_id: str, inputs: dict, actor: str) -> str:
         self.case_id = self.session.create_case(contract_id, 1, inputs, actor)
@@ -57,9 +70,9 @@ class SessionHost:
         self._remember(action, result["proposal"]["id"])
         return result
 
-    def suggest(self, action: str, args: dict) -> dict:
+    def suggest(self, action: str, args: dict, roles: list[str] | None = None) -> dict:
         result = self.session.suggest(
-            self.case_id, "planner", ["model", "operator"], StaticPlanner(action, args),
+            self.case_id, "planner", roles or ["model", "operator"], StaticPlanner(action, args),
         )
         self._remember(action, result["proposal"]["id"])
         return result
@@ -104,6 +117,61 @@ class SessionHost:
                 return "applied", {"external_id": receipt["external_id"]}
 
         self.session.bind_effect("pay_vendor", Bank())
+
+    def note(self, **item) -> None:
+        self.decisions.append({"reason": item.get("reason"), "rule": item.get("rule"), "code": item.get("code")})
+
+    def bind_executor(self, action: str, apply, status=None) -> None:
+        world = self.world
+
+        class Exec:
+            def apply(self, case_id, args, key):
+                return apply(world, args, key)
+
+            def status(self, case_id, args, key):
+                if status is not None:
+                    return status(world, args, key)
+                receipt = world.payments.get(key)
+                if not receipt:
+                    return "not_applied", {}
+                return "applied", {"external_id": receipt["external_id"]}
+
+        self.session.bind_effect(action, Exec())
+
+    def open_work(self):
+        import tempfile
+        from pathlib import Path
+
+        from syberwork.core import Work
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.work = Work(Path(self._tmp.name) / "cell.sqlite")
+        return self.work
+
+    def tamper(self) -> bool:
+        from syberlabs.events import verify_events
+
+        events = self.session.inspect(self.case_id)["events"]
+        forged = []
+        for index, event in enumerate(events):
+            if index == 0:
+                body = dict(event["body"])
+                body["actor"] = "forged"
+                forged.append({**event, "body": body})
+            else:
+                forged.append(event)
+        detected = bool(self.session.verify_chain(self.case_id)) and not verify_events(forged)
+        if detected:
+            self.note(code="tamper_detected", rule="chain.integrity")
+        return detected
+
+    def close(self) -> None:
+        work = getattr(self, "work", None)
+        if work is not None:
+            work.close()
+        temporary = getattr(self, "_tmp", None)
+        if temporary is not None:
+            temporary.cleanup()
 
     def reconcile(self, slot: str, actor: str, roles: list[str]) -> dict:
         return self.session.reconcile(self.case_id, self.ids[slot], actor, roles)
@@ -181,8 +249,8 @@ class _StandIn:
         self.last_id = self.ids.get(action, "review")
         return {"proposal": {"id": self.last_id}, "decision": {"status": "allowed", "reason": "stand_in"}}
 
-    def suggest(self, action: str, args: dict) -> dict:
-        return self.propose(action, args, "planner", ["model", "operator"])
+    def suggest(self, action: str, args: dict, roles: list[str] | None = None) -> dict:
+        return self.propose(action, args, "planner", roles or ["model", "operator"])
 
     def explain_last(self, expected_reason: str) -> dict:
         return {"reason": None, "rule": None, "expected": expected_reason}
@@ -206,6 +274,9 @@ class _StandIn:
         return {"status": "skipped"}
 
     def signoff(self, actor: str, roles: list[str], role: str) -> None:
+        return None
+
+    def close(self) -> None:
         return None
 
     def finish(self) -> None:

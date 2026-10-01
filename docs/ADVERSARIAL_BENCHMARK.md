@@ -20,3 +20,5 @@ SyberWork refuses the unverified invoice, the stale invoice, the model’s early
 The tool stand-in and the role stand-in each spend 8000 on the stale invoice. The retry stand-in spends 8000 as two live debits and counts the timeout as success.
 
 The table written by the run is `benchmarks/results/adversarial-payment.txt`. `tests/test_adversarial_payment.py` fails if those outcomes change.
+
+Ten further modules live beside `flaky_bank`. Eight hold. Two expose current gaps: a host-asserted invoice the world does not stock, and a status call that denies a debit which then gets paid again. See [SCENARIOS.md](SCENARIOS.md).
