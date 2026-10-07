@@ -385,6 +385,30 @@ class Search(RepoCase):
         self.assertEqual(sorted(changes), sorted(GOOD))
         self.assertEqual(skipped, ["notes.txt", "src/legacy.txt"])
 
+    def test_a_crlf_working_tree_is_cleaned_the_way_git_add_would(self):
+        """A candidate stores what ``git add`` would store, not the working tree's bytes.
+
+        With ``core.autocrlf=true`` (the Git for Windows default) the working tree holds CRLF
+        and the repository holds LF. Storing the raw bytes made every line of every touched
+        file read as changed, pushed the diff past the contract's size limits, and would have
+        committed CRLF onto the thread's branch.
+        """
+        git(self.root, "config", "core.autocrlf", "true")
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src", "tests"])
+        updated = REPORT + "\ndef count():\n    return len(rows())\n"
+        (self.root / "src" / "report.py").write_bytes(updated.replace("\n", "\r\n").encode())
+        changes, skipped = thread.worktree_changes()
+        self.assertEqual((sorted(changes), skipped), (["src/report.py"], []))
+        self.assertIn("\r\n", changes["src/report.py"])
+        [candidate] = thread.propose(changes=changes, message="count helper")
+        stored = kit.repo.read(candidate.commit, "src/report.py")
+        self.assertNotIn(b"\r\n", stored)
+        self.assertEqual(stored, updated.encode())
+        self.assertEqual(list(candidate.changed_paths), ["src/report.py"])
+        # Three added lines, not a whole-file rewrite.
+        self.assertLess(candidate.diff_bytes, 400)
+
 
 class Contracts(RepoCase):
     def test_published_contract_file_is_immutable(self):

@@ -93,6 +93,8 @@ Accepting never publishes. Pushing the branch, opening a pull request, and runni
 
 Then run `syberlabs publish push_branch`, `syberlabs publish open_pull_request`, or `syberlabs publish publish_package`. Before proposing, the host reads the target branch and records it as the verified `accepted` fact. The argument binding therefore makes it impossible to publish anything but the accepted commit.
 
+A pull request body states who did what. It carries the accepted candidate's provider as `Agent-platform`, the actor whose key accepted it as `Admitted-by`, and the thread's act class as `Class` when the contract declares an `act_class` input (`"inputs": {"objective": "string", "act_class": "string"}`). `syberlabs start --class C` records that class at case creation, so it is inside the hash chain rather than written by hand at publish time. Name the provider with `syberlabs propose --name claude --revision opus-5`; the default is `patch` for `--from-worktree` and `command` for `--command`. Agents commit under human GitHub identities, so these three fields are what lets a reader tell a judgment from a generation.
+
 | Effect | Idempotency and no-write | Status lookup |
 | --- | --- | --- |
 | `git_push` | `--force-with-lease`: the branch must be absent, or at the thread base for a branch without `{thread}`. A refused ref is a guaranteed no-write (412). | `git ls-remote` |

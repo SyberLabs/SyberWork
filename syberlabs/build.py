@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +42,11 @@ HOST = "syberlabs.host"
 TEMPLATE = "repo-change"
 PROMOTE = "accept_change"
 MAX_CHANGE_BYTES = 4 * 1024 * 1024
+# Act classes, from the organization's authority rule: R reversible, C canonical,
+# P public claim, X external effect. A thread records one, and a publishing effect
+# states it, so a reader can tell a reversible change from a keyed one.
+ACT_CLASSES = ("R", "C", "P", "X")
+THREAD_INPUTS = frozenset({"objective", "act_class"})
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 HINTS = {
@@ -258,7 +263,12 @@ class GitSearchSpace:
 
 def detect_checks(root: Path) -> dict:
     """Guess the project's test command. Unknown projects get a check that fails until named."""
-    python = "python3" if shutil.which("python3") else "python"
+    # Name the interpreter that is running SyberLabs, by absolute path. ``shutil.which("python3")``
+    # is a false positive on Windows, where an App Execution Alias on PATH is not a runnable
+    # interpreter: every check exited 9009 and no candidate could ever be acceptable. Checks also
+    # run with a scrubbed environment, so a bare name is resolved against a PATH the caller did
+    # not choose. If the project's interpreter later moves, publish a new contract version.
+    python = sys.executable
     tests = root / "tests"
     if tests.is_dir() and any(tests.glob("test*.py")):
         return {"tests": {"argv": [python, "-m", "unittest", "discover", "-s", "tests", "-q"], "timeout_seconds": 600}}
@@ -412,17 +422,24 @@ class Kit:
         return cid, version if version is not None else versions[-1]
 
     def start(self, objective: str, contract: str | None = None, *, paths: Sequence[str] | None = None,
-              actor: str | None = None) -> "Thread":
+              actor: str | None = None, act_class: str = "R") -> "Thread":
         if not isinstance(objective, str) or not objective.strip():
             raise Rejected("invalid_objective", "describe the change in a sentence")
+        if act_class not in ACT_CLASSES:
+            raise Rejected("invalid_act_class", "act class must be one of " + ", ".join(ACT_CLASSES))
         cid, version = self._resolve(contract)
         doc = self.session.contracts[(cid, version)]
-        if "evolution" not in doc or doc["inputs"] != {"objective": "string"}:
-            raise Rejected("invalid_contract", f"{cid}.v{version} needs an evolution section and one objective input")
+        if ("evolution" not in doc or doc["inputs"].get("objective") != "string"
+                or set(doc["inputs"]) - THREAD_INPUTS):
+            raise Rejected("invalid_contract", f"{cid}.v{version} needs an evolution section, an objective input, "
+                           "and no input other than an optional act_class")
         base = self.repo.rev("HEAD")
         if base is None:
             raise Rejected("empty_repository", "commit something first; a thread starts from HEAD")
-        case = self.session.create_case(cid, version, {"objective": objective.strip()}, actor or self.actor)
+        inputs = {"objective": objective.strip()}
+        if doc["inputs"].get("act_class") == "string":
+            inputs["act_class"] = act_class
+        case = self.session.create_case(cid, version, inputs, actor or self.actor)
         self.session.observe(case, "base", {"commit": base, "tree": self.repo.tree(base), "branch": self.repo.current_branch()},
                              "git", base, HOST, verified=True)
         thread = Thread(self, case)
@@ -532,6 +549,7 @@ class Thread:
         self.kit, self.id = kit, case_id
         row = kit.session.cases[case_id]
         self.objective = row["inputs"]["objective"]
+        self.act_class = row["inputs"].get("act_class")
         self.contract = (row["contract_id"], row["contract_version"])
         self.config = settings(kit.session.contracts[self.contract])
         self.base = self._latest("base")["value"]["commit"]

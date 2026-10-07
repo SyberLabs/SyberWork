@@ -112,7 +112,7 @@ class Publishing(RepoCase):
                                 "status_argv": [PY, str(self.root.parent / "status.py")], "no_write_exit_codes": [75]},
         }
 
-    def open(self, actions=None):
+    def open(self, actions=None, *, act_class=None):
         doc = default_contract(self.root)
         doc["actions"].update({
             "push_branch": {"requires_effect": "accept_change", "required_facts": FACTS, "arguments": BOUND},
@@ -120,17 +120,19 @@ class Publishing(RepoCase):
             "publish_package": {"requires_effect": "accept_change", "required_facts": FACTS, "arguments": BOUND,
                                 "approval_role": "maintainer"},
         })
+        if act_class:
+            doc["inputs"] = {**doc["inputs"], "act_class": "string"}
         policy = {"version": 1, "actions": {name: {"roles": ["developer"]} for name in doc["actions"]}}
         home = self.root / ".syberlabs"
         home.mkdir(exist_ok=True)
         (home / "actions.json").write_text(json.dumps(actions or self.actions()))
         kit = self.kit(doc, policy)
-        thread = kit.start("Add a CSV export")
+        thread = kit.start("Add a CSV export", **({"act_class": act_class} if act_class else {}))
         thread.propose(changes=GOOD)
         return kit, thread
 
-    def accepted(self):
-        kit, thread = self.open()
+    def accepted(self, **kwargs):
+        kit, thread = self.open(**kwargs)
         thread.check("c1")
         self.assertEqual(thread.accept("c1").status, "succeeded")
         return kit, thread
@@ -213,6 +215,29 @@ class Publishing(RepoCase):
         self.assertIn(f"thread `{thread.id}`", self.github.pulls[0]["body"])
         self.assertIn("Host checks on that tree: tests passed", self.github.pulls[0]["body"])
         self.assertEqual(validate_events(thread.history(), "pull"), [])
+
+    def test_pull_request_body_states_the_agent_and_the_admitting_key(self):
+        kit, thread = self.accepted()
+        thread.publish("push_branch")
+        self.assertEqual(thread.publish("open_pull_request").status, "succeeded")
+        body = self.github.pulls[0]["body"]
+        self.assertIn("Agent-platform: patch@1", body)
+        self.assertIn("Admitted-by: dev@example.test", body)
+        # This contract declares no act_class input, so the body claims no class.
+        self.assertNotIn("Class:", body)
+
+    def test_pull_request_body_states_the_act_class_the_thread_recorded(self):
+        kit, thread = self.accepted(act_class="C")
+        self.assertEqual(kit.session.cases[thread.id]["inputs"]["act_class"], "C")
+        thread.publish("push_branch")
+        self.assertEqual(thread.publish("open_pull_request").status, "succeeded")
+        body = self.github.pulls[0]["body"]
+        self.assertIn("Class: C", body)
+        self.assertIn("Agent-platform: patch@1", body)
+        self.assertIn("Admitted-by: dev@example.test", body)
+        with self.assertRaises(Rejected) as caught:
+            kit.start("Another change", act_class="Z")
+        self.assertEqual(caught.exception.code, "invalid_act_class")
 
     def test_validation_failure_is_a_no_write(self):
         kit, thread = self.accepted()

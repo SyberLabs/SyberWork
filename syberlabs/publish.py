@@ -54,6 +54,23 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 HTTP = urllib.request.build_opener(_NoRedirect)
 
 
+def attribution(thread, view: dict) -> str:
+    """The fields the organization requires on a pull request, read from the recorded history.
+
+    An agent proposes and a person admits, so a reader of the pull request needs both: the
+    provider that produced the accepted candidate, and the actor whose key accepted it. The
+    act class comes from the thread's own inputs, so it is inside the case hash chain. A
+    contract that declares no ``act_class`` input states no class.
+    """
+    promotion = thread.config["promotion"]["action"]
+    admitted_by = next((event["body"]["actor"] for event in reversed(thread.history())
+                        if event["kind"] == "effect_started" and event["body"]["action"] == promotion), None)
+    lines = [] if thread.act_class is None else [f"Class: {thread.act_class}"]
+    lines.append(f"Agent-platform: {view['provider']['name']}@{view['provider']['revision']}")
+    lines.append(f"Admitted-by: {admitted_by or 'unknown'}")
+    return "\n".join(lines)
+
+
 def _bad(detail: str) -> Rejected:
     return Rejected("invalid_action", detail)
 
@@ -198,7 +215,8 @@ class GitHubPullRequest(_Publisher):
         thread = self._thread(case_id)
         view = next(v for v in thread._views() if v["authoritative"])
         checks = ", ".join(f"{c['name']} {c['state']}" for c in view["evaluation"]["checks"])
-        body = (f"{thread.objective}\n\nAccepted in SyberLabs thread `{case_id}` as candidate `{view['id']}` "
+        body = (f"{thread.objective}\n\n{attribution(thread, view)}\n\n"
+                f"Accepted in SyberLabs thread `{case_id}` as candidate `{view['id']}` "
                 f"(commit `{args['commit']}`).\nHost checks on that tree: {checks}.\n")
         try:
             created = self._request("POST", f"/repos/{self.doc['repository']}/pulls",
