@@ -3,8 +3,7 @@
 This file is for every agent working on SyberWork (Claude Code, Codex, Cursor,
 or any other agent that reads `AGENTS.md`) and for humans. It carries the
 SyberLabs rules that apply to every task, then this project's own notes.
-Precedence: the human partner's direct instructions, then this file, then
-`CLAUDE.md`, then your defaults.
+Precedence: the human's direct instructions, this file, `CLAUDE.md`, defaults.
 
 The organizational rules are copied from SyberLabs/MasterMind
 (`docs/org/AUTHORITY.md`, adopted 2026-10-02). That record wins if the two
@@ -92,7 +91,7 @@ know. One owner per part, task, and pull request.
 
 # SyberWork project: development notes
 
-The non-obvious things. Standard commands are in `README.md`.
+The non-obvious things; standard commands are in `README.md`.
 
 ## What this repository is
 
@@ -110,8 +109,7 @@ an owner decision not yet made (`docs/ROADMAP_STATUS.md`).
 
 - Python 3.11 or newer; `pyproject.toml` says `>=3.11`. **No runtime
   dependencies.** The only optional extra is `postgres` (`psycopg`).
-- Nothing to install for development. Run from the checkout with
-  `PYTHONPATH=.`.
+- Nothing to install for development; run from the checkout with `PYTHONPATH=.`.
 - `import syberlabs` stays small: the Build Thread (`Kit`, `Thread`,
   `Verdict`, `Receipt`) loads on first use through a module `__getattr__`.
   On an interpreter older than 3.11 one `unittest.mock` dotted patch in
