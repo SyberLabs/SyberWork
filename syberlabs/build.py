@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -257,8 +257,12 @@ class GitSearchSpace:
 
 
 def detect_checks(root: Path) -> dict:
-    """Guess the project's test command. Unknown projects get a check that fails until named."""
-    python = "python3" if shutil.which("python3") else "python"
+    """Guess the project's test command. Unknown projects get a check that fails until named.
+
+    Python checks run under the interpreter running SyberWork. A bare ``python3`` resolves
+    to the Microsoft Store alias on Windows and fails to start.
+    """
+    python = sys.executable
     tests = root / "tests"
     if tests.is_dir() and any(tests.glob("test*.py")):
         return {"tests": {"argv": [python, "-m", "unittest", "discover", "-s", "tests", "-q"], "timeout_seconds": 600}}
