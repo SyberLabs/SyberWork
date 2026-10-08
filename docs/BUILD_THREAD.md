@@ -19,7 +19,7 @@ syberlabs accept c1                        # moves refs/heads/syberlabs/<thread>
 syberlabs status
 ```
 
-`init` guesses the test command (`tests/test*.py`, `package.json`, `Cargo.toml`, `go.mod`). When it cannot, it writes a `configure` check that fails until you name a real one. An unchecked change never looks accepted.
+`init` guesses the test command (`tests/test*.py`, `package.json`, `Cargo.toml`, `go.mod`). A Python check names the interpreter running SyberLabs by its absolute path, never a bare `python` or `python3`. When it cannot guess, or the interpreter reports no path, it writes a `configure` check that fails until you name a real one. An unchecked change never looks accepted.
 
 The same thing in Python (`examples/build_thread.py` is the complete, runnable version):
 
@@ -93,7 +93,7 @@ Accepting never publishes. Pushing the branch, opening a pull request, and runni
 
 Then run `syberlabs publish push_branch`, `syberlabs publish open_pull_request`, or `syberlabs publish publish_package`. Before proposing, the host reads the target branch and records it as the verified `accepted` fact. The argument binding therefore makes it impossible to publish anything but the accepted commit.
 
-A pull request body states who did what. It carries the thread's act class as `Class`, the accepted candidate's provider as `Agent-platform` (`name@revision`), the actor whose proposal promoted the candidate as `Admitted-by`, and, when the contract requires an `approval_role`, every independent approver as `Approved-by`. All of them are read from the proposal that promoted the candidate, and each value is written on one line, so text in an objective or a provider revision cannot add or impersonate a field. Agents commit under human GitHub identities, so these fields are what lets a reader tell a judgment from a generation.
+A pull request body states who did what. It carries the thread's act class as `Class`, the accepted candidate's provider as `Agent-platform` (`name@revision`), the actor whose proposal promoted the candidate as `Admitted-by`, and, when the contract requires an `approval_role`, every independent approver as `Approved-by`. The actor and the approvers are read from the proposal that promoted the candidate. Every line of the body starts with a fixed label, the objective included (`Objective: ...`), and each value is written on one line, so text in an objective or a provider revision cannot add or impersonate a field. Agents commit under human GitHub identities, so these fields are what lets a reader tell a judgment from a generation. The class is recorded and stated, not enforced: the kit does not refuse a C, P or X candidate, and its roles are the caller's own claims, so the human key for those classes is whoever reviews and merges the pull request.
 
 The class is recorded at case creation, inside the hash chain, not written by hand at publish time. The default contract declares `"act_class": "string"` among its inputs and records R unless `syberlabs start --class C` (or P, X) says otherwise. A contract written before that input existed refuses `--class` with `act_class_undeclared` instead of dropping it, and its pull requests state no class; publish a new version with the input to fix that. Name the provider with `syberlabs propose --name claude --revision <model>`; the default is `patch` for `--from-worktree` and `command` for `--command` and `--evolve`.
 

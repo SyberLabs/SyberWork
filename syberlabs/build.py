@@ -47,6 +47,8 @@ MAX_CHANGE_BYTES = 4 * 1024 * 1024
 # states it, so a reader can tell a reversible change from a keyed one.
 ACT_CLASSES = ("R", "C", "P", "X")
 THREAD_INPUTS = frozenset({"objective", "act_class"})
+# A program that does not exist: the check it names fails to start, and its name says what to do.
+UNNAMED_CHECK = "name-your-checks-in-the-syberlabs-contract"
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 HINTS = {
@@ -271,10 +273,9 @@ def detect_checks(root: Path) -> dict:
     # interpreter: every check exited 9009 and no candidate could ever be acceptable. Checks also
     # run with a scrubbed environment, so a bare name is resolved against a PATH the caller did
     # not choose. If the project's interpreter later moves, publish a new contract version.
-    # An embedded interpreter can report no executable; a bare name is then the only guess left.
-    python = sys.executable or "python"
+    python = sys.executable
     tests = root / "tests"
-    if tests.is_dir() and any(tests.glob("test*.py")):
+    if python and tests.is_dir() and any(tests.glob("test*.py")):
         return {"tests": {"argv": [python, "-m", "unittest", "discover", "-s", "tests", "-q"], "timeout_seconds": 600}}
     package = root / "package.json"
     if package.exists():
@@ -287,6 +288,10 @@ def detect_checks(root: Path) -> dict:
         return {"tests": {"argv": ["cargo", "test", "--quiet"], "timeout_seconds": 900}}
     if (root / "go.mod").exists():
         return {"tests": {"argv": ["go", "test", "./..."], "timeout_seconds": 900}}
+    if not python:
+        # An embedded interpreter can report no executable path. Guessing a bare "python" would bring
+        # back the Windows alias failure, so write a check that cannot start until a person names one.
+        return {"configure": {"argv": [UNNAMED_CHECK]}}
     return {"configure": {"argv": [python, "-c", "import sys; sys.exit('name your checks in .syberlabs/contracts/repo-change.v1.json')"]}}
 
 

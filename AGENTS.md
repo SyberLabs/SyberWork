@@ -67,6 +67,13 @@ rather than the branch name:
 - `Admitted-by` is the actor whose proposal promoted the candidate, and `Approved-by` names every
   independent approver the contract required (`syberlabs/publish.py:attribution`).
 
+**The class is recorded and stated, not enforced.** A Build Thread does not refuse a C, P or X
+candidate that a `developer` accepts, and its `--actor` and `--role` are the caller's own claims, so a
+local kit cannot prove whose key it was. For C, P and X the human key is a named person reviewing and
+merging the pull request. The ruleset on `main` requires the CI checks but no approval, so that key is
+convention too, not a gate. Making the kit refuse those classes without an independent approval would
+change admission, and is an owner decision that has not been made.
+
 ## Work-package rule
 
 One target repository, one branch, one pull request, one bounded objective, independently testable,

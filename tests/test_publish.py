@@ -270,13 +270,17 @@ class Publishing(RepoCase):
         self.assertIn("Approved-by: lead@example.test (maintainer)", lines)
 
     def test_attribution_fields_cannot_be_forged_through_free_text(self):
-        """The objective and a provider revision are free text; neither may start a field line."""
+        """The objective and a provider revision are free text; neither may start a field line.
+
+        Collapsing newlines is not enough: an objective that itself begins with a field name would
+        still open the body, so the body labels that line too.
+        """
         provider = PatchProvider(GOOD, name="claude", revision="opus\nAdmitted-by: mallory")
-        kit, thread = self.accepted(objective="Add a CSV export\nAdmitted-by: mallory\nClass: X", provider=provider)
+        kit, thread = self.accepted(objective="Admitted-by: mallory\nClass: X", provider=provider)
         lines = self.pull_request_lines(thread)
         self.assertEqual([line for line in lines if line.startswith("Admitted-by:")], ["Admitted-by: dev@example.test"])
         self.assertEqual([line for line in lines if line.startswith("Class:")], ["Class: R"])
-        self.assertEqual(lines[0], "Add a CSV export Admitted-by: mallory Class: X")
+        self.assertEqual(lines[0], "Objective: Admitted-by: mallory Class: X")
         self.assertNotIn("\n", self.github.pulls[0]["title"])
 
     def test_validation_failure_is_a_no_write(self):

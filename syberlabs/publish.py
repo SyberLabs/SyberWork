@@ -229,7 +229,8 @@ class GitHubPullRequest(_Publisher):
         view = next(v for v in thread._views() if v["authoritative"])
         checks = ", ".join(f"{c['name']} {c['state']}" for c in view["evaluation"]["checks"])
         objective = _line(thread.objective)
-        body = (f"{objective}\n\n{attribution(thread, view)}\n\n"
+        # Every line starts with a fixed label, so no free text can begin a line a reader takes as a field.
+        body = (f"Objective: {objective}\n\n{attribution(thread, view)}\n\n"
                 f"Accepted in SyberLabs thread `{case_id}` as candidate `{view['id']}` "
                 f"(commit `{args['commit']}`).\nHost checks on that tree: {checks}.\n")
         try:

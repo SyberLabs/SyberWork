@@ -409,6 +409,19 @@ class Search(RepoCase):
         # Three added lines, not a whole-file rewrite.
         self.assertLess(candidate.diff_bytes, 400)
 
+    def test_an_interpreter_with_no_path_gets_a_check_that_cannot_pass(self):
+        """A bare "python" fallback would bring back the Windows alias failure; refuse to guess."""
+        with patch.object(sys, "executable", ""):
+            contract = default_contract(self.root)
+        checks = contract["evolution"]["evaluation"]["checks"]
+        self.assertEqual(list(checks), ["configure"])
+        self.assertNotIn("python", " ".join(checks["configure"]["argv"]))
+        thread = self.kit(contract).start("Add a CSV export")
+        thread.propose(changes=GOOD)
+        verdict = thread.check("c1")
+        self.assertFalse(verdict.acceptable)
+        self.assertEqual([(c.name, c.state) for c in verdict.checks], [("configure", "error")])
+
 
 class Contracts(RepoCase):
     def test_published_contract_file_is_immutable(self):
