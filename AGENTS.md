@@ -47,8 +47,8 @@ should stay fast. The defect to avoid is a Class C decision hidden inside a larg
 ## Attribution
 
 Agents commit under human GitHub identities, so the record cannot otherwise tell a judgment from a
-generation. **Every pull request body states three fields**, and every head branch carries its
-platform prefix (`claude/`, `codex/`, `cursor/`, `wp/`):
+generation. **Every pull request body states three fields.** A pull request opened by hand also
+carries its platform prefix on the head branch (`claude/`, `codex/`, `cursor/`, `wp/`):
 
 ```
 Class: R | C | P | X
@@ -56,9 +56,16 @@ Agent-platform: claude | codex | cursor | human
 Admitted-by: <human GitHub handle, or "self (Class R)">
 ```
 
-A Build Thread writes these for you. `syberlabs start --class C` records the class inside the case
-hash chain, and the `github_pull_request` effect states the class, the provider that produced the
-accepted candidate, and the actor whose key accepted it (`syberlabs/publish.py:attribution`).
+A Build Thread writes these for you, on a `syberlabs/<thread>` branch, with the platform in the body
+rather than the branch name:
+
+- `syberlabs start --class C` records the class inside the case hash chain. The default contract
+  records R when no class is given. A contract with no `act_class` input refuses `--class` rather
+  than drop it.
+- `Agent-platform` is the provider of the accepted candidate as `name@revision`. Name it with
+  `syberlabs propose --name claude --revision <model>`; a working-tree snapshot defaults to `patch`.
+- `Admitted-by` is the actor whose proposal promoted the candidate, and `Approved-by` names every
+  independent approver the contract required (`syberlabs/publish.py:attribution`).
 
 ## Work-package rule
 
@@ -104,18 +111,20 @@ deliberately in the same pull request and say so, or it is a regression.
    behavior means a new version or a new name.
 7. Secrets stay in the environment behind `auth_env` and `token_env` names. Destination failures are
    stored as codes, never as exception text that may carry a URL.
-8. Checks and publish commands run in a temporary worktree with a scrubbed environment. **This is a
-   controlled environment, not a sandbox.** Do not describe it as one, and do not widen what a
-   provider process receives.
+8. Checks run in a temporary worktree with a scrubbed environment (`syberlabs/checks.py`). Publish
+   commands also run in a temporary worktree but inherit the caller's full environment, and so do
+   provider commands (`publish.py`, `providers.run_json`). **None of this is a sandbox.** Do not
+   describe it as one, and do not widen what a provider process receives.
 
 ## Scope discipline
 
-This repository has more subsystems than consumers. Nothing in the tree calls these from outside
-their own tests today: `syberlabs/evolve.py` and `exchange.py` (evolutionary search and multi-host
-migration), the `economic_http` action path, `resolutions` in `syberwork/core.py`,
-`syberlabs/mappings.py`, and the `reference_system.py` ERP with its case study. Keep them green and
-correct. **Adding scope to them, or adding a new subsystem, is a Class C act that needs an owner
-decision and a named first consumer.**
+This repository has more subsystems than consumers. These are reachable from the CLI, the package,
+the benchmarks or the case study, but no consumer outside this repository is named for them:
+`syberlabs/evolve.py` and `exchange.py` (evolutionary search and multi-host migration), the
+`economic_http` action path, `resolutions` in `syberwork/core.py`, `syberlabs/mappings.py`, and the
+`reference_system.py` ERP with its case study. Keep them green and correct. **Adding scope to them,
+or adding a new subsystem, is a Class C act that needs an owner decision and a named first
+consumer.**
 
 The current objective for this repository is to be used by SyberLabs' own agent fleet before anyone
 else. A change that serves a hypothetical external operator and no internal consumer is not in scope.

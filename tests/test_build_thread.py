@@ -473,6 +473,32 @@ class CommandLine(RepoCase):
         self.assertEqual(code, 2)
         self.assertIn("unknown_candidate", err)
 
+    def test_class_and_provider_name_from_the_terminal(self):
+        self.assertEqual(self.run_cli("init")[0], 0)
+        code, out, _ = self.run_cli("start", "Change the agent rules", "--class", "C", "--paths", "src", "tests")
+        self.assertEqual(code, 0)
+        self.assertIn("act class C", out)
+        for path, text in GOOD.items():
+            (self.root / path).write_text(text)
+        code, out, _ = self.run_cli("propose", "--from-worktree", "--name", "claude", "--revision", "opus-5.5")
+        self.assertEqual(code, 0, out)
+        status = self.run_cli("status")[1]
+        self.assertIn("class     C", status)
+        self.assertIn("[claude@opus-5.5]", status)
+        self.assertIn("act class R", self.run_cli("start", "A reversible change")[1])
+
+    def test_a_class_the_contract_cannot_record_is_an_error_with_a_hint(self):
+        legacy = default_contract(self.root)
+        legacy["inputs"] = {"objective": "string"}
+        self.kit(legacy).close()
+        code, _, err = self.run_cli("start", "Change the agent rules", "--class", "C")
+        self.assertEqual(code, 2)
+        self.assertIn("act_class_undeclared", err)
+        self.assertIn('"act_class": "string"', err)
+        code, out, _ = self.run_cli("start", "A change with no class")
+        self.assertEqual(code, 0)
+        self.assertNotIn("act class", out)
+
 
 if __name__ == "__main__":
     unittest.main()

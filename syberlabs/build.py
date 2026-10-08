@@ -69,6 +69,9 @@ HINTS = {
     "remote_moved": "The remote branch exists or moved; nothing was written. Inspect it before publishing under this name.",
     "duplicate": "An identical candidate already exists in this thread; check that one instead.",
     "budget_exhausted": "The thread used its contract budget. Start a new thread or publish a contract with a larger budget.",
+    "invalid_act_class": "Classify the change as R (reversible), C (canonical), P (public claim) or X (external effect).",
+    "act_class_undeclared": "This contract cannot record an act class. Publish a new version whose inputs add "
+                            "\"act_class\": \"string\", then start again.",
 }
 
 
@@ -268,7 +271,8 @@ def detect_checks(root: Path) -> dict:
     # interpreter: every check exited 9009 and no candidate could ever be acceptable. Checks also
     # run with a scrubbed environment, so a bare name is resolved against a PATH the caller did
     # not choose. If the project's interpreter later moves, publish a new contract version.
-    python = sys.executable
+    # An embedded interpreter can report no executable; a bare name is then the only guess left.
+    python = sys.executable or "python"
     tests = root / "tests"
     if tests.is_dir() and any(tests.glob("test*.py")):
         return {"tests": {"argv": [python, "-m", "unittest", "discover", "-s", "tests", "-q"], "timeout_seconds": 600}}
@@ -290,7 +294,7 @@ def default_contract(root: Path) -> dict:
     found = detect_checks(root)
     return {
         "id": TEMPLATE, "version": 1, "title": "Change this repository",
-        "inputs": {"objective": "string"},
+        "inputs": {"objective": "string", "act_class": "string"},
         "actions": {PROMOTE: {}},
         "acceptance": [{"id": "accepted", "kind": "effect", "action": PROMOTE}],
         "evolution": {
@@ -422,23 +426,32 @@ class Kit:
         return cid, version if version is not None else versions[-1]
 
     def start(self, objective: str, contract: str | None = None, *, paths: Sequence[str] | None = None,
-              actor: str | None = None, act_class: str = "R") -> "Thread":
+              actor: str | None = None, act_class: str | None = None) -> "Thread":
+        """Start a thread from HEAD.
+
+        A contract that declares an ``act_class`` input records one on every thread: the class
+        given, or R. A class given to a contract that cannot record it is refused, never dropped.
+        """
         if not isinstance(objective, str) or not objective.strip():
             raise Rejected("invalid_objective", "describe the change in a sentence")
-        if act_class not in ACT_CLASSES:
+        if act_class is not None and act_class not in ACT_CLASSES:
             raise Rejected("invalid_act_class", "act class must be one of " + ", ".join(ACT_CLASSES))
         cid, version = self._resolve(contract)
         doc = self.session.contracts[(cid, version)]
         if ("evolution" not in doc or doc["inputs"].get("objective") != "string"
-                or set(doc["inputs"]) - THREAD_INPUTS):
-            raise Rejected("invalid_contract", f"{cid}.v{version} needs an evolution section, an objective input, "
-                           "and no input other than an optional act_class")
+                or set(doc["inputs"]) - THREAD_INPUTS or doc["inputs"].get("act_class", "string") != "string"):
+            raise Rejected("invalid_contract", f"{cid}.v{version} needs an evolution section, an objective string "
+                           "input, and no input other than an optional act_class string")
+        records_class = "act_class" in doc["inputs"]
+        if act_class is not None and not records_class:
+            raise Rejected("act_class_undeclared", f"{cid}.v{version} has no act_class input, so class {act_class} "
+                           "would not be recorded")
         base = self.repo.rev("HEAD")
         if base is None:
             raise Rejected("empty_repository", "commit something first; a thread starts from HEAD")
         inputs = {"objective": objective.strip()}
-        if doc["inputs"].get("act_class") == "string":
-            inputs["act_class"] = act_class
+        if records_class:
+            inputs["act_class"] = act_class or "R"
         case = self.session.create_case(cid, version, inputs, actor or self.actor)
         self.session.observe(case, "base", {"commit": base, "tree": self.repo.tree(base), "branch": self.repo.current_branch()},
                              "git", base, HOST, verified=True)
@@ -992,7 +1005,7 @@ class Thread:
         context = self._latest("context")
         return {
             "thread": self.id, "objective": self.objective, "contract": f"{self.contract[0]}.v{self.contract[1]}",
-            "status": inspected["status"], "base": self.base, "target_ref": self.target_ref,
+            "act_class": self.act_class, "status": inspected["status"], "base": self.base, "target_ref": self.target_ref,
             "target": self.kit.repo.read_ref(self.target_ref), "accepted": accepted["id"] if accepted else None,
             "sources": self.read_scope()["paths"],
             "context": ({"digest": context["value"]["digest"], "files": len({e["path"] for e in context["value"]["entries"]}),

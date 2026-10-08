@@ -40,6 +40,8 @@ def _thread(kit: Kit, args):
 def _print_status(status: dict) -> None:
     print(f"thread    {status['thread'][:8]}  {status['status']}")
     print(f"objective {status['objective']}")
+    if status.get("act_class"):
+        print(f"class     {status['act_class']}")
     print(f"contract  {status['contract']}   base {status['base'][:10]}   target {status['target_ref']}"
           + (f" -> {status['target'][:10]}" if status["target"] else " (not created)"))
     print(f"sources   {', '.join(status['sources'])}")
@@ -87,8 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("objective")
     start.add_argument("--contract")
     start.add_argument("--paths", nargs="+", help="repository paths providers may read")
-    start.add_argument("--class", dest="act_class", choices=list(ACT_CLASSES), default="R",
-                       help="act class: R reversible, C canonical, P public claim, X external effect")
+    start.add_argument("--class", dest="act_class", choices=list(ACT_CLASSES),
+                       help="act class: R reversible, C canonical, P public claim, X external effect "
+                            "(default R when the contract records a class)")
     commands.add_parser("threads", help="list threads")
     use = commands.add_parser("use", help="make a thread current")
     use.add_argument("id")
