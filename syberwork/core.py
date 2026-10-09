@@ -354,15 +354,22 @@ class Work:
             contract, history = self._open_evolution(db, case_id)
             return self._append(db, case_id, "candidate_registered", candidate_record(contract, history, candidate, actor))
 
-    def record_evaluation(self, case_id: str, evaluation: dict, actor: str, roles: list[str]) -> dict:
+    def _require_evaluator(self, roles: list[str]) -> None:
         if "evaluator" not in roles or AUTOMATION_ROLES.intersection(roles):
             raise Rejected("evaluation_denied", "an evaluator credential without model, compiled, or search roles is required")
+
+    def _record_evaluation(self, db, case_id: str, evaluation: dict, actor: str, roles: list[str]) -> dict:
+        """Append one evaluation on an open transaction. The caller commits."""
+        self._require_evaluator(roles)
+        contract, history = self._open_evolution(db, case_id)
+        body = evaluation_record(contract, history, evaluation, actor)
+        if registered(history, body["candidate"])["actor"] == actor:
+            raise Rejected("evaluation_denied", "the actor that registered a candidate cannot evaluate it")
+        return self._append(db, case_id, "candidate_evaluated", body)
+
+    def record_evaluation(self, case_id: str, evaluation: dict, actor: str, roles: list[str]) -> dict:
         with self.tx() as db:
-            contract, history = self._open_evolution(db, case_id)
-            body = evaluation_record(contract, history, evaluation, actor)
-            if registered(history, body["candidate"])["actor"] == actor:
-                raise Rejected("evaluation_denied", "the actor that registered a candidate cannot evaluate it")
-            return self._append(db, case_id, "candidate_evaluated", body)
+            return self._record_evaluation(db, case_id, evaluation, actor, roles)
 
     def record_search(self, case_id: str, phase: str, body: dict, actor: str, roles: list[str]) -> dict:
         if not {"search", "operator"}.intersection(roles):

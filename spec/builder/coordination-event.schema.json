@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/coordination-event.schema.json",
+  "title": "CoordinationEvent",
+  "description": "Append-only Builder log. This is not an sdk.syberlabs.space/v0alpha1 case event and it is not hash-chained.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "seq", "case_id", "generation_id", "kind", "actor", "at", "body"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "seq": {"type": "integer", "minimum": 1},
+    "case_id": {"type": "string", "minLength": 1},
+    "generation_id": {"type": ["string", "null"]},
+    "kind": {
+      "enum": [
+        "generation_created",
+        "generation_sealed",
+        "generation_launched",
+        "generation_closed",
+        "approach_registered",
+        "approach_rejected",
+        "approach_revised",
+        "candidate_linked",
+        "prototype_registered",
+        "prototype_state_changed",
+        "agent_registered",
+        "agent_assignment_changed",
+        "agent_state_changed",
+        "agent_activity_recorded",
+        "feedback_recorded",
+        "integrity_observation_recorded",
+        "selection_recorded",
+        "architecture_snapshot_published"
+      ]
+    },
+    "actor": {"type": "string", "minLength": 1},
+    "at": {"type": "integer", "minimum": 0},
+    "body": {"type": "object"}
+  }
+}

@@ -93,6 +93,187 @@ _MIGRATIONS: list[tuple[str, str]] = [
             cell_version TEXT NOT NULL
         );
     """),
+    ("0004", f"""
+        CREATE TABLE IF NOT EXISTS coordination_events (
+            id TEXT PRIMARY KEY,
+            seq INTEGER NOT NULL,
+            case_id TEXT NOT NULL,
+            generation_id TEXT,
+            kind TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            at BIGINT NOT NULL,
+            body TEXT NOT NULL,
+            UNIQUE (case_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS coordination_events_case_seq
+            ON coordination_events (case_id, seq);
+        CREATE TABLE IF NOT EXISTS builder_works (
+            case_id TEXT PRIMARY KEY,
+            objective TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            created_at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_policies (
+            id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            PRIMARY KEY (id, version)
+        );
+        CREATE TABLE IF NOT EXISTS builder_generations (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            objective TEXT NOT NULL,
+            base_revision TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            isolation TEXT NOT NULL,
+            diversity_threshold {_REAL} NOT NULL,
+            min_approaches INTEGER NOT NULL,
+            selection_policy_id TEXT NOT NULL,
+            selection_policy_version INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            UNIQUE (case_id, ordinal)
+        );
+        CREATE TABLE IF NOT EXISTS builder_approaches (
+            id TEXT PRIMARY KEY,
+            generation_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            descriptor TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            created_at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_agents (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            approach_id TEXT,
+            candidate_id TEXT,
+            principal TEXT NOT NULL,
+            role TEXT NOT NULL,
+            authority TEXT NOT NULL,
+            assignment TEXT NOT NULL,
+            working_set TEXT NOT NULL,
+            state TEXT NOT NULL,
+            hypothesis_summary TEXT NOT NULL,
+            evidence_refs TEXT NOT NULL,
+            open_uncertainties TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_feedback (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            generation_id TEXT,
+            target_kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            authorities TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            body TEXT NOT NULL,
+            at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_integrity (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            generation_id TEXT,
+            target_kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            claim TEXT NOT NULL,
+            source TEXT NOT NULL,
+            verifier TEXT NOT NULL,
+            independence_claim TEXT NOT NULL,
+            verification_status TEXT NOT NULL,
+            verification_method TEXT,
+            verified_independence TEXT,
+            evidence_refs TEXT NOT NULL,
+            result TEXT NOT NULL,
+            digest TEXT,
+            at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_selections (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            actor TEXT NOT NULL,
+            body TEXT NOT NULL,
+            at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_architecture (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            generation_id TEXT,
+            repository TEXT NOT NULL,
+            revision TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            body TEXT NOT NULL,
+            at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_prototypes (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            generation_id TEXT,
+            candidate_id TEXT NOT NULL,
+            artifact_ref TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            endpoint TEXT,
+            state TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            expires_at BIGINT,
+            digest TEXT
+        );
+        CREATE TABLE IF NOT EXISTS builder_commands (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            command TEXT NOT NULL,
+            body TEXT NOT NULL,
+            result TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_candidate_links (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            approach_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            at BIGINT NOT NULL,
+            authority TEXT NOT NULL,
+            UNIQUE (generation_id, candidate_id)
+        );
+    """),
+    ("0005", """
+        CREATE TABLE IF NOT EXISTS builder_worlds (
+            digest TEXT PRIMARY KEY,
+            body TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_generation_worlds (
+            generation_id TEXT PRIMARY KEY,
+            world_digest TEXT NOT NULL,
+            sealed_at BIGINT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS builder_evaluation_bindings (
+            id TEXT PRIMARY KEY,
+            generation_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL,
+            evaluation_event_hash TEXT NOT NULL,
+            evaluator TEXT NOT NULL,
+            world_digest TEXT NOT NULL,
+            world_instance_digest TEXT,
+            trace_digest TEXT,
+            evaluation_run_id TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            at BIGINT NOT NULL,
+            UNIQUE (evaluation_event_hash)
+        );
+    """),
 ]
 
 
@@ -439,4 +620,20 @@ SNAPSHOT_TABLES = (
     "effect_obligations",
     "principals",
     "cell",
+    "coordination_events",
+    "builder_works",
+    "builder_policies",
+    "builder_generations",
+    "builder_approaches",
+    "builder_agents",
+    "builder_feedback",
+    "builder_integrity",
+    "builder_selections",
+    "builder_architecture",
+    "builder_prototypes",
+    "builder_commands",
+    "builder_candidate_links",
+    "builder_worlds",
+    "builder_generation_worlds",
+    "builder_evaluation_bindings",
 )

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/selection-policy.schema.json",
+  "title": "SelectionPolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "version", "required_integrity", "grants", "consensus_authorities", "consensus_threshold", "promotion_roles"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "required_integrity": {
+      "type": "array",
+      "items": {"enum": ["internal", "host_verified", "human_reviewed", "external", "signed_external"]}
+    },
+    "grants": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "kind", "authority"],
+        "properties": {
+          "role": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["comment", "critique", "preference", "concern", "dissent", "trait_request"]},
+          "authority": {"enum": ["informative", "advisory", "veto", "consensus", "decision"]}
+        }
+      }
+    },
+    "consensus_authorities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"enum": ["informative", "advisory", "veto", "consensus", "decision"]}
+    },
+    "consensus_threshold": {"type": "integer", "minimum": 1},
+    "promotion_roles": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  }
+}

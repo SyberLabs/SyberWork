@@ -1,0 +1,11 @@
+SIMULATED. SyberWork is syberlabs.Session. The other rows are architectural stand-ins, not runs of named products.
+Problem: pay INV-LIVE (4000) once from a balance of 10000. INV-STALE is 8000. The bank debits and drops the response.
+unsafe_payments counts a stale invoice that was paid. unknown_as_success counts a dropped response recorded as success. duplicate_debits counts more than one payment.
+
+name             payments    spent  balance unsafe unknown_ok  dup denials chain
+syberwork               1     4000     6000      0          0    0       6 True
+direct_tool             1     8000     2000      1          0    0       0 None
+role_gate               1     8000     2000      1          0    0       0 None
+retry_workflow          2     8000     2000      0          1    1       0 None
+
+kinds: {"direct_tool": "stand-in: model tool executes", "retry_workflow": "stand-in: timeout retried as success", "role_gate": "stand-in: role permit is the write", "syberwork": "syberlabs.Session"}

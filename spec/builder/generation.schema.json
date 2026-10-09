@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/generation.schema.json",
+  "title": "Generation",
+  "description": "Builder coordination generation. Protocol sdk.syberlabs.space/builder/v0alpha1. Not a case event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "case_id", "ordinal", "objective", "base_revision", "mode", "isolation", "diversity_policy", "selection_policy", "state", "actor", "created_at"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "case_id": {"type": "string", "minLength": 1},
+    "ordinal": {"type": "integer", "minimum": 1},
+    "objective": {"type": "string", "minLength": 1},
+    "base_revision": {"type": "string", "minLength": 1},
+    "mode": {"enum": ["explore", "refine", "harden"]},
+    "isolation": {"enum": ["independent", "aware", "collaborative"]},
+    "diversity_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "threshold", "min_approaches"],
+      "properties": {
+        "method": {"const": "structural_jaccard"},
+        "threshold": {"type": "number", "minimum": 0, "maximum": 1},
+        "min_approaches": {"type": "integer", "minimum": 1}
+      }
+    },
+    "selection_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "state": {"enum": ["drafting", "sealed", "launched", "evaluating", "selecting", "closed"]},
+    "actor": {"type": "string", "minLength": 1},
+    "created_at": {"type": "integer", "minimum": 0}
+  }
+}

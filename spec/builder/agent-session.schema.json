@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/agent-session.schema.json",
+  "title": "AgentSession",
+  "description": "Observable agent session. Private chain-of-thought is not a field.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "case_id", "generation_id", "principal", "role", "authority", "assignment", "working_set", "state", "hypothesis_summary", "evidence_refs", "open_uncertainties"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "case_id": {"type": "string", "minLength": 1},
+    "generation_id": {"type": "string", "minLength": 1},
+    "approach_id": {"type": ["string", "null"]},
+    "candidate_id": {"type": ["string", "null"]},
+    "principal": {"type": "string", "minLength": 1},
+    "role": {"enum": ["implementer", "reviewer", "operator", "search"]},
+    "authority": {"enum": ["informative", "advisory"]},
+    "assignment": {"type": "object"},
+    "working_set": {"type": "array", "items": {"type": "string"}},
+    "state": {"enum": ["registered", "active", "paused", "cancelled", "complete"]},
+    "hypothesis_summary": {"type": "string"},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "open_uncertainties": {"type": "array", "items": {"type": "string"}}
+  }
+}

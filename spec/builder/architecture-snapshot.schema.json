@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/builder/v0alpha1/architecture-snapshot.schema.json",
+  "title": "ArchitectureSnapshot",
+  "description": "Provider-neutral architecture graph. Canonical data is nodes, edges, and repository paths. Mermaid is not stored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "repository", "revision", "provider", "groups", "nodes", "edges"],
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/builder/v0alpha1"},
+    "id": {"type": "string", "minLength": 1},
+    "repository": {"type": "string", "minLength": 1},
+    "revision": {"type": "string", "minLength": 1},
+    "provider": {"type": "string", "minLength": 1},
+    "baseline_id": {"type": ["string", "null"]},
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "label": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "paths"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "label": {"type": "string", "minLength": 1},
+          "paths": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "group": {"type": "string"}
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to"],
+        "properties": {
+          "from": {"type": "string", "minLength": 1},
+          "to": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}
