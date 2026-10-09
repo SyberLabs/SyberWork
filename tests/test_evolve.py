@@ -154,7 +154,10 @@ class Evolution(unittest.TestCase):
             code = cli(["--repo", str(self.root), "--home", str(self.home), "--actor", "dev", "propose",
                         "--evolve", f"{sys.executable} {script}", "--name", "fixture-model", "--generations", "8",
                         "--seed", "2"])
+            cli(["--repo", str(self.root), "--home", str(self.home), "--actor", "dev", "status"])
         self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("[fixture-model@1]", out.getvalue())  # an evolved candidate carries --name
+        self.assertNotIn("[evolutionary@", out.getvalue())
         self.assertIn("provider recommends", out.getvalue())
         self.assertIn("(a signal, not a verdict)", out.getvalue())
 

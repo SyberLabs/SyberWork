@@ -256,7 +256,7 @@ def _run(kit: Kit, args) -> int:
                 exchange = kit.exchange(args.exchange, host=args.host, topic=args.topic)
             provider = EvolutionaryProvider(mutator, population=args.population, generations=args.generations,
                                             crossover_every=args.crossover_every, seeds=args.seeds,
-                                            revision=args.revision, exchange=exchange,
+                                            name=args.name or "command", revision=args.revision, exchange=exchange,
                                             migrate_every=args.migrate_every if exchange else 0,
                                             migrants=args.migrants)
             found = thread.propose(provider, seed=args.seed)
