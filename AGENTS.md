@@ -49,12 +49,12 @@ Agent-platform: codex | claude | cursor | human
 Admitted-by: <human GitHub handle, or "self (Class R)">
 ```
 
-MasterMind's pull request template also carries `Propagates-to:` (Class C
-and P only: every downstream surface the change invalidates, or "none") and
-`Gates-affected:`. The house form in MasterMind pull requests adds a closing
-line, `Written by a Claude Code agent at @<owner>'s direction.`, and the
-agent's own generated-with trailer. Commits end with a `Co-Authored-By:`
-line naming the agent model.
+A Build Thread (SyberWork #21, #23, #24) writes them from the record, on a
+`syberlabs/<thread>` branch with no platform prefix: `Class` from `start
+--class` (default R), `Agent-platform` as `name@revision`, `Admitted-by` as
+the promoting actor, plus `Approved-by` and an `Objective:` label
+(`syberlabs/publish.py:attribution`). The class is recorded, not enforced:
+neither the kit nor the `main` ruleset requires an approval.
 
 ## 3. State the claim ceiling
 
