@@ -1,5 +1,3 @@
-> **Provider direction:** SyberLabs is migrating existing bounded decisions from Jev to Kev. This repository has no active Kev provider call.
-
 # SyberWork
 
 **Contracts govern work. A case history records what was proposed, admitted, observed, approved, and executed.**
