@@ -134,6 +134,14 @@ python3 -m conformance.clean_install                      # wheel in a fresh ven
   service. Keep it that way.
 - Making the CI checks required on `main` is a repository setting an agent
   cannot change.
+- CI runs CPython 3.11–3.13 with PostgreSQL, a Compose cell boot, and Windows.
+  **Windows is a primary development platform**: do not name a bare interpreter
+  or shell builtin in a check or a default, and do not assume `fcntl`,
+  `os.setsid` or POSIX file locking exists. The suite must pass on a default
+  Windows install, not only on `windows-latest`.
+- A golden trace difference is a behavior change. Either it is intended, and you
+  add or update traces deliberately in the same pull request and say so, or it
+  is a regression.
 
 ## Models and providers
 
@@ -147,3 +155,66 @@ adapter, `adapters/anthropic_adapter.py`, exists for
 `benchmarks/simulated_model.py`. A run against a real model spends money and
 is Class X: prepare it, report the exact command and expected cost, and let a
 named human execute it.
+
+## Before doing work
+
+1. Read `README.md` for what the system does today.
+2. Read `docs/ARCHITECTURE.md` for the owners, the state transitions and the invariants.
+3. Read `docs/BUILD_THREAD.md` if you touch `syberlabs/build.py`, `checks.py`, `gitspace.py`,
+   `providers.py`, `publish.py`, or `evolve.py`.
+4. Read `spec/SPEC.md` and `spec/GAPS.md` before changing anything on the wire. `GAPS.md` records
+   every place the schemas and the code deliberately differ; if your change closes or widens one,
+   update that entry in the same pull request.
+5. Classify your act **R / C / P / X** (below) before you start. Class R self-admits. Class C, P
+   and X require a named human key, and you may only draft them.
+6. Inspect the current `main`, the open pull requests and the CI state before proposing. Do not
+   infer them from a document.
+
+## Invariants you may not weaken
+
+1. Admission is one ordered list of named rules in `syberlabs/admission.py`, with one reason code per
+   rule, called identically at propose, commit and replay. The deciding rule id stays out of the
+   hashed decision body.
+2. A provider's claim is never evidence. Only the host's own evaluation of a candidate's exact tree
+   counts, and only its newest one. Lineage is provenance.
+3. `candidate.promotable` requires a human-origin proposal from a promotion role. An actor holding
+   `model`, `compiled` or `search` cannot promote, whatever origin it claims.
+4. An effect is claimed durably before any I/O, with the proposal id as its idempotency key. An
+   unknown outcome stays unknown until the destination says otherwise. A caller may not assert
+   success.
+5. Accepting moves one non-authoritative branch by compare-and-swap. It never pushes, merges, or
+   touches the working tree. Pushing, opening a pull request and running a publish command are
+   separate admitted actions.
+6. Published contracts, policies, actions and sources are immutable under their identity. Changing
+   behavior means a new version or a new name.
+7. Secrets stay in the environment behind `auth_env` and `token_env` names. Destination failures are
+   stored as codes, never as exception text that may carry a URL.
+8. Checks run in a temporary worktree with a scrubbed environment (`syberlabs/checks.py`). Publish
+   commands also run in a temporary worktree but inherit the caller's full environment, and so do
+   provider commands (`publish.py`, `providers.run_json`). **None of this is a sandbox.** Do not
+   describe it as one, and do not widen what a provider process receives.
+
+## Scope discipline
+
+This repository has more subsystems than consumers. These are reachable from the CLI, the package,
+the benchmarks or the case study, but no consumer outside this repository is named for them:
+`syberlabs/evolve.py` and `exchange.py` (evolutionary search and multi-host migration), the
+`economic_http` action path, `resolutions` in `syberwork/core.py`, `syberlabs/mappings.py`, and the
+`reference_system.py` ERP with its case study. Keep them green and correct. **Adding scope to them,
+or adding a new subsystem, is a Class C act that needs an owner decision and a named first
+consumer.**
+
+The current objective for this repository is to be used by SyberLabs' own agent fleet before anyone
+else. A change that serves a hypothetical external operator and no internal consumer is not in scope.
+
+## Work-package rule
+
+One target repository, one branch, one pull request, one bounded objective, independently testable,
+revertible without rolling back unrelated work. Do not bundle a protocol change, a new subsystem and
+a refactor in one pull request.
+
+## Handoff
+
+Every completion leaves: what changed; the exact files; the tests and measured results with the
+commands that produced them; known failures and limitations; unresolved questions; the next
+permissible work package; and the branch and pull request identifiers.

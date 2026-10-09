@@ -20,9 +20,9 @@ import json
 import sys
 from pathlib import Path
 
-from syberlabs.build import Kit, hint
+from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.errors import Rejected
-from syberlabs.providers import CommandProvider, split_command
+from syberlabs.providers import CommandProvider, PatchProvider, split_command
 
 
 def _kit(args) -> Kit:
@@ -40,6 +40,8 @@ def _thread(kit: Kit, args):
 def _print_status(status: dict) -> None:
     print(f"thread    {status['thread'][:8]}  {status['status']}")
     print(f"objective {status['objective']}")
+    if status.get("act_class"):
+        print(f"class     {status['act_class']}")
     print(f"contract  {status['contract']}   base {status['base'][:10]}   target {status['target_ref']}"
           + (f" -> {status['target'][:10]}" if status["target"] else " (not created)"))
     print(f"sources   {', '.join(status['sources'])}")
@@ -87,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("objective")
     start.add_argument("--contract")
     start.add_argument("--paths", nargs="+", help="repository paths providers may read")
+    start.add_argument("--class", dest="act_class", choices=list(ACT_CLASSES),
+                       help="act class: R reversible, C canonical, P public claim, X external effect "
+                            "(default R when the contract records a class)")
     commands.add_parser("threads", help="list threads")
     use = commands.add_parser("use", help="make a thread current")
     use.add_argument("id")
@@ -113,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--migrate-every", type=int, default=2)
     propose.add_argument("--migrants", type=int, default=1)
     propose.add_argument("--message", default="")
-    propose.add_argument("--name", default="command")
+    propose.add_argument("--name", help="provider name, recorded as the acting agent platform; "
+                                        "default patch for --from-worktree, command otherwise")
     propose.add_argument("--revision", default="1")
     check = commands.add_parser("check", help="run the contract's checks and ask admission")
     check.add_argument("candidate")
@@ -167,9 +173,11 @@ def _run(kit: Kit, args) -> int:
         print("Review the checks in the contract, then: syberlabs start \"what to change\"")
         return 0
     if args.command == "start":
-        thread = kit.start(args.objective, args.contract, paths=args.paths)
+        thread = kit.start(args.objective, args.contract, paths=args.paths, act_class=args.act_class)
         (kit.home / "current").write_text(thread.id + "\n")
         print(f"started {thread.id[:8]} on {thread.contract[0]}.v{thread.contract[1]} at {thread.base[:10]}")
+        if thread.act_class:
+            print(f"act class {thread.act_class}; a publishing effect states it with the admitting key")
         print(f"accepting will move {thread.target_ref}; it never pushes or merges")
         return 0
     if args.command == "threads":
@@ -236,10 +244,11 @@ def _run(kit: Kit, args) -> int:
                 print("left out (outside scope or binary): " + ", ".join(skipped))
             if not changes:
                 raise Rejected("no_change", "no in-scope edits in the working tree")
-            found = thread.propose(changes=changes, message=args.message or "working-tree edits")
+            found = thread.propose(PatchProvider(changes, args.message or "working-tree edits",
+                                                 name=args.name or "patch", revision=args.revision))
         elif args.evolve:
             from syberlabs.evolve import CommandMutator, EvolutionaryProvider
-            mutator = CommandMutator(split_command(args.evolve), name=args.name, cwd=kit.repo.root)
+            mutator = CommandMutator(split_command(args.evolve), name=args.name or "command", cwd=kit.repo.root)
             exchange = None
             if args.exchange:
                 if not args.host or not args.topic:
@@ -247,12 +256,12 @@ def _run(kit: Kit, args) -> int:
                 exchange = kit.exchange(args.exchange, host=args.host, topic=args.topic)
             provider = EvolutionaryProvider(mutator, population=args.population, generations=args.generations,
                                             crossover_every=args.crossover_every, seeds=args.seeds,
-                                            revision=args.revision, exchange=exchange,
+                                            name=args.name or "command", revision=args.revision, exchange=exchange,
                                             migrate_every=args.migrate_every if exchange else 0,
                                             migrants=args.migrants)
             found = thread.propose(provider, seed=args.seed)
         else:
-            provider = CommandProvider(split_command(args.provider_command), name=args.name, revision=args.revision,
+            provider = CommandProvider(split_command(args.provider_command), name=args.name or "command", revision=args.revision,
                                        cwd=kit.repo.root)
             found = thread.propose(provider)
         search = [e for e in thread.history() if e["kind"] == "search_finished"][-1]["body"]

@@ -411,6 +411,43 @@ class Search(RepoCase):
         self.assertEqual(sorted(changes), sorted(GOOD))
         self.assertEqual(skipped, ["notes.txt", "src/legacy.txt"])
 
+    def test_a_crlf_working_tree_is_cleaned_the_way_git_add_would(self):
+        """A candidate stores what ``git add`` would store, not the working tree's bytes.
+
+        With ``core.autocrlf=true`` (the Git for Windows default) the working tree holds CRLF
+        and the repository holds LF. Storing the raw bytes made every line of every touched
+        file read as changed, pushed the diff past the contract's size limits, and would have
+        committed CRLF onto the thread's branch.
+        """
+        git(self.root, "config", "core.autocrlf", "true")
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src", "tests"])
+        updated = REPORT + "\ndef count():\n    return len(rows())\n"
+        (self.root / "src" / "report.py").write_bytes(updated.replace("\n", "\r\n").encode())
+        changes, skipped = thread.worktree_changes()
+        self.assertEqual((sorted(changes), skipped), (["src/report.py"], []))
+        self.assertIn("\r\n", changes["src/report.py"])
+        [candidate] = thread.propose(changes=changes, message="count helper")
+        stored = kit.repo.read(candidate.commit, "src/report.py")
+        self.assertNotIn(b"\r\n", stored)
+        self.assertEqual(stored, updated.encode())
+        self.assertEqual(list(candidate.changed_paths), ["src/report.py"])
+        # Three added lines, not a whole-file rewrite.
+        self.assertLess(candidate.diff_bytes, 400)
+
+    def test_an_interpreter_with_no_path_gets_a_check_that_cannot_pass(self):
+        """A bare "python" fallback would bring back the Windows alias failure; refuse to guess."""
+        with patch.object(sys, "executable", ""):
+            contract = default_contract(self.root)
+        checks = contract["evolution"]["evaluation"]["checks"]
+        self.assertEqual(list(checks), ["configure"])
+        self.assertNotIn("python", " ".join(checks["configure"]["argv"]))
+        thread = self.kit(contract).start("Add a CSV export")
+        thread.propose(changes=GOOD)
+        verdict = thread.check("c1")
+        self.assertFalse(verdict.acceptable)
+        self.assertEqual([(c.name, c.state) for c in verdict.checks], [("configure", "error")])
+
 
 class Contracts(RepoCase):
     def test_published_contract_file_is_immutable(self):
@@ -474,6 +511,32 @@ class CommandLine(RepoCase):
         code, _, err = self.run_cli("accept", "c9")
         self.assertEqual(code, 2)
         self.assertIn("unknown_candidate", err)
+
+    def test_class_and_provider_name_from_the_terminal(self):
+        self.assertEqual(self.run_cli("init")[0], 0)
+        code, out, _ = self.run_cli("start", "Change the agent rules", "--class", "C", "--paths", "src", "tests")
+        self.assertEqual(code, 0)
+        self.assertIn("act class C", out)
+        for path, text in GOOD.items():
+            (self.root / path).write_text(text)
+        code, out, _ = self.run_cli("propose", "--from-worktree", "--name", "claude", "--revision", "opus-5.5")
+        self.assertEqual(code, 0, out)
+        status = self.run_cli("status")[1]
+        self.assertIn("class     C", status)
+        self.assertIn("[claude@opus-5.5]", status)
+        self.assertIn("act class R", self.run_cli("start", "A reversible change")[1])
+
+    def test_a_class_the_contract_cannot_record_is_an_error_with_a_hint(self):
+        legacy = default_contract(self.root)
+        legacy["inputs"] = {"objective": "string"}
+        self.kit(legacy).close()
+        code, _, err = self.run_cli("start", "Change the agent rules", "--class", "C")
+        self.assertEqual(code, 2)
+        self.assertIn("act_class_undeclared", err)
+        self.assertIn('"act_class": "string"', err)
+        code, out, _ = self.run_cli("start", "A change with no class")
+        self.assertEqual(code, 0)
+        self.assertNotIn("act class", out)
 
 
 if __name__ == "__main__":

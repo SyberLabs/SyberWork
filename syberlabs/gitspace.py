@@ -156,7 +156,12 @@ class Repo:
                 if data is None:
                     self.git("update-index", "--force-remove", "--", path, env=env)
                     continue
-                blob = self._text("hash-object", "-w", "--stdin", input=data)
+                # ``--path`` applies the clean filters this path would get from ``git add``
+                # (``core.autocrlf``, ``.gitattributes``). Without it, a Windows working tree's
+                # CRLF bytes are stored verbatim: every line of every touched file reads as
+                # changed, the diff exceeds the contract's size limits, and an accepted
+                # candidate would commit CRLF into a repository that stores LF.
+                blob = self._text("hash-object", "-w", "--path", path, "--stdin", input=data)
                 existing = self.entry(parents[0], path)
                 mode = existing[0] if existing and existing[0] in ("100644", "100755") else "100644"
                 self.git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}", env=env)

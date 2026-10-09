@@ -54,6 +54,36 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 HTTP = urllib.request.build_opener(_NoRedirect)
 
 
+def _line(value) -> str:
+    """One line of text, so a value can never begin a line of its own in a pull request body."""
+    return " ".join(str(value).split())
+
+
+def attribution(thread, view: dict) -> str:
+    """The fields the organization requires on a pull request, read from the recorded history.
+
+    An agent proposes and a person admits, so a reader needs the provider that produced the
+    accepted candidate, the actor whose proposal promoted it, and any independent approver
+    whose key the contract required. The actor and the approvers are read from the proposal
+    that actually promoted this candidate, not from whichever event came last. The act class
+    comes from the thread's own inputs, so it is inside the case hash chain; a contract without
+    an ``act_class`` input states no class. Every value is rendered on one line, so an
+    objective or a provider revision cannot add or impersonate a field.
+    """
+    proposal_id = view["promotion"]["proposal_id"]
+    history = thread.history()
+    admitted_by = next((event["body"]["actor"] for event in history
+                        if event["kind"] == "proposed" and event["body"]["id"] == proposal_id), None)
+    approvals = [f"{_line(event['body']['actor'])} ({_line(event['body']['role'])})" for event in history
+                 if event["kind"] == "approved" and event["body"]["proposal_id"] == proposal_id]
+    lines = [] if thread.act_class is None else [f"Class: {_line(thread.act_class)}"]
+    lines.append(f"Agent-platform: {_line(view['provider']['name'])}@{_line(view['provider']['revision'])}")
+    lines.append(f"Admitted-by: {_line(admitted_by) if admitted_by else 'unknown'}")
+    if approvals:
+        lines.append("Approved-by: " + ", ".join(approvals))
+    return "\n".join(lines)
+
+
 def _bad(detail: str) -> Rejected:
     return Rejected("invalid_action", detail)
 
@@ -198,11 +228,14 @@ class GitHubPullRequest(_Publisher):
         thread = self._thread(case_id)
         view = next(v for v in thread._views() if v["authoritative"])
         checks = ", ".join(f"{c['name']} {c['state']}" for c in view["evaluation"]["checks"])
-        body = (f"{thread.objective}\n\nAccepted in SyberLabs thread `{case_id}` as candidate `{view['id']}` "
+        objective = _line(thread.objective)
+        # Every line starts with a fixed label, so no free text can begin a line a reader takes as a field.
+        body = (f"Objective: {objective}\n\n{attribution(thread, view)}\n\n"
+                f"Accepted in SyberLabs thread `{case_id}` as candidate `{view['id']}` "
                 f"(commit `{args['commit']}`).\nHost checks on that tree: {checks}.\n")
         try:
             created = self._request("POST", f"/repos/{self.doc['repository']}/pulls",
-                                    {"title": thread.objective[:200], "head": self._branch(case_id),
+                                    {"title": objective[:200], "head": self._branch(case_id),
                                      "base": self.doc["base"], "body": body})
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403, 404, 422):

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from spec.validate import validate_events
 from syberlabs import Rejected
+from syberlabs.providers import PatchProvider
 from syberlabs.publish import GitPush
 from tests.test_build_thread import GOOD, Crash, RepoCase, default_contract, git
 
@@ -112,7 +113,8 @@ class Publishing(RepoCase):
                                 "status_argv": [PY, str(self.root.parent / "status.py")], "no_write_exit_codes": [75]},
         }
 
-    def open(self, actions=None):
+    def open(self, actions=None, *, act_class=None, inputs=None, approval_role=None, provider=None,
+             objective="Add a CSV export"):
         doc = default_contract(self.root)
         doc["actions"].update({
             "push_branch": {"requires_effect": "accept_change", "required_facts": FACTS, "arguments": BOUND},
@@ -120,17 +122,30 @@ class Publishing(RepoCase):
             "publish_package": {"requires_effect": "accept_change", "required_facts": FACTS, "arguments": BOUND,
                                 "approval_role": "maintainer"},
         })
+        if inputs is not None:
+            doc["inputs"] = inputs
+        if approval_role:
+            doc["actions"]["accept_change"] = {"approval_role": approval_role}
+            doc["evolution"]["promotion"]["approval_role"] = approval_role
         policy = {"version": 1, "actions": {name: {"roles": ["developer"]} for name in doc["actions"]}}
         home = self.root / ".syberlabs"
         home.mkdir(exist_ok=True)
         (home / "actions.json").write_text(json.dumps(actions or self.actions()))
         kit = self.kit(doc, policy)
-        thread = kit.start("Add a CSV export")
-        thread.propose(changes=GOOD)
+        thread = kit.start(objective, act_class=act_class)
+        if provider is None:
+            thread.propose(changes=GOOD)
+        else:
+            thread.propose(provider)
         return kit, thread
 
-    def accepted(self):
-        kit, thread = self.open()
+    def pull_request_lines(self, thread):
+        thread.publish("push_branch")
+        self.assertEqual(thread.publish("open_pull_request").status, "succeeded")
+        return self.github.pulls[0]["body"].splitlines()
+
+    def accepted(self, **kwargs):
+        kit, thread = self.open(**kwargs)
         thread.check("c1")
         self.assertEqual(thread.accept("c1").status, "succeeded")
         return kit, thread
@@ -213,6 +228,60 @@ class Publishing(RepoCase):
         self.assertIn(f"thread `{thread.id}`", self.github.pulls[0]["body"])
         self.assertIn("Host checks on that tree: tests passed", self.github.pulls[0]["body"])
         self.assertEqual(validate_events(thread.history(), "pull"), [])
+
+    def test_pull_request_body_states_class_agent_and_admitting_key(self):
+        kit, thread = self.accepted()
+        # The default contract records a class on every thread; R unless one is given.
+        self.assertEqual(thread.act_class, "R")
+        lines = self.pull_request_lines(thread)
+        self.assertIn("Class: R", lines)
+        self.assertIn("Agent-platform: patch@1", lines)
+        self.assertIn("Admitted-by: dev@example.test", lines)
+        self.assertFalse([line for line in lines if line.startswith("Approved-by:")])
+
+    def test_pull_request_body_states_the_act_class_the_thread_recorded(self):
+        kit, thread = self.accepted(act_class="C")
+        self.assertEqual(kit.session.cases[thread.id]["inputs"]["act_class"], "C")
+        lines = self.pull_request_lines(thread)
+        self.assertIn("Class: C", lines)
+        self.assertIn("Admitted-by: dev@example.test", lines)
+        with self.assertRaises(Rejected) as caught:
+            kit.start("Another change", act_class="Z")
+        self.assertEqual(caught.exception.code, "invalid_act_class")
+
+    def test_a_class_the_contract_cannot_record_is_refused_not_dropped(self):
+        """A dropped class would publish a pull request missing a required field, with no warning."""
+        kit, thread = self.accepted(inputs={"objective": "string"})
+        self.assertIsNone(thread.act_class)
+        with self.assertRaises(Rejected) as caught:
+            kit.start("Another change", act_class="C")
+        self.assertEqual(caught.exception.code, "act_class_undeclared")
+        self.assertFalse([line for line in self.pull_request_lines(thread) if line.startswith("Class:")])
+
+    def test_pull_request_body_names_the_independent_approver(self):
+        """Under an approval_role the second key admits too, and the body must say whose it was."""
+        kit, thread = self.open(approval_role="maintainer")
+        thread.check("c1")
+        self.assertEqual(thread.accept("c1").status, "needs_approval")
+        thread.approve("c1", actor="lead@example.test", roles=["maintainer"])
+        self.assertEqual(thread.accept("c1").status, "succeeded")
+        lines = self.pull_request_lines(thread)
+        self.assertIn("Admitted-by: dev@example.test", lines)
+        self.assertIn("Approved-by: lead@example.test (maintainer)", lines)
+
+    def test_attribution_fields_cannot_be_forged_through_free_text(self):
+        """The objective and a provider revision are free text; neither may start a field line.
+
+        Collapsing newlines is not enough: an objective that itself begins with a field name would
+        still open the body, so the body labels that line too.
+        """
+        provider = PatchProvider(GOOD, name="claude", revision="opus\nAdmitted-by: mallory")
+        kit, thread = self.accepted(objective="Admitted-by: mallory\nClass: X", provider=provider)
+        lines = self.pull_request_lines(thread)
+        self.assertEqual([line for line in lines if line.startswith("Admitted-by:")], ["Admitted-by: dev@example.test"])
+        self.assertEqual([line for line in lines if line.startswith("Class:")], ["Class: R"])
+        self.assertEqual(lines[0], "Objective: Admitted-by: mallory Class: X")
+        self.assertNotIn("\n", self.github.pulls[0]["title"])
 
     def test_validation_failure_is_a_no_write(self):
         kit, thread = self.accepted()
