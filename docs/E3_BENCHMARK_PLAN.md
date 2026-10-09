@@ -44,7 +44,7 @@ One model, through the existing `adapters/anthropic_adapter.py` (official SDK, s
 - List price, Claude API first-party, from the local `claude-api` skill reference (cached 2026-10-06): **$2.00 per 1M input tokens, $10.00 per 1M output tokens**, cache reads $0.20. Verify against the pricing page on the run date.
 - Not run: `claude-haiku-5-5` ($0.10 / $0.50 per 1M, same source). It is the fallback choice if the pilot shows Sonnet per-call tokens above the ceiling below.
 
-Prerequisite (a one-line code change, not made here): `PRICES` in `benchmarks/model_vs_patch.py` has no `claude-sonnet-5-5` or `claude-haiku-5-5` row, so `dollars()` would report `n/a`. Add `"claude-sonnet-5-5": (2.0, 10.0)` and `"claude-haiku-5-5": (0.10, 0.50)` first. Because `fallbacks: "default"` may serve a refused call on another model, `usage.model` is recorded per call; a served model missing from `PRICES` makes the row's dollars `None` and is itself a finding.
+Prerequisite, done in this PR: `PRICES` in `benchmarks/model_vs_patch.py` gains `"claude-sonnet-5-5": (2.0, 10.0)` and `"claude-haiku-5-5": (0.10, 0.50)`, so `dollars()` prices both models instead of reporting `n/a`. Checked: one call at the ceiling (4,000 in, 16,000 out) prices at $0.168 on Sonnet 5.5 and $0.0084 on Haiku 5.5, matching the budget below. Because `fallbacks: "default"` may serve a refused call on another model, `usage.model` is recorded per call; a served model missing from `PRICES` makes the row's dollars `None` and is itself a finding.
 
 ## Request count and token budget
 
