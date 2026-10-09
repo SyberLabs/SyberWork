@@ -282,7 +282,7 @@ Every decision writes one receipt, including the refusals. Jev probabilities are
 
 `reason` on a suggestion is `cleared`. On a refusal it is the check that stopped the turn.
 
-Loading the body rechecks `status` and `digest` against the catalog version on the receipt. A revoked skill or a digest mismatch loads nothing and appends a second receipt with reason `digest_mismatch` or `revoked`. The selector does not accept a URL, a path, or a skill name from the agent or from Jev outside the option keys it sent.
+Loading the body rechecks the `digest` against the catalog version on the receipt, and checks `status` against the publisher's current catalog version, not the receipt's. Catalog versions are immutable, so a skill revoked after selection is still `active` in the version the receipt pins; only the current version can refuse it. The receipt keeps its own version and digest for reproducibility. A skill revoked in the current version, or a digest mismatch, loads nothing and appends a second receipt with reason `revoked` or `digest_mismatch`. The selector does not accept a URL, a path, or a skill name from the agent or from Jev outside the option keys it sent.
 
 On a Build Thread, the receipt is the natural observation to attach before `propose`: the provider context includes the suggestion block, and the journal stores the receipt. The provider still cannot accept a change, and a skill's instructions are not an admission rule.
 
@@ -326,7 +326,7 @@ Run `strict` and `cookbook` on the same answers. Report the model id, the catalo
 1. Manifest schema and certification checks, including the deterministic family proposal and the requirement that an unset role is unpublished.
 2. Eligibility, chunk packing, and both compositions as pure functions over recorded `systemone` JSON.
 3. The suggestion block, byte-stable for a given decision and name.
-4. Fixture tests that replay a gate refusal, a lookalike flip, a `choice`/`fits` disagreement, a gap hit, and a digest mismatch on load. No network.
+4. Fixture tests that replay a gate refusal, a lookalike flip, a `choice`/`fits` disagreement, a gap hit, a digest mismatch on load, and a skill selected under one catalog version and revoked in the next before its body loads (the load is refused). No network.
 
 The HTTP command, a pinned ECC manifest for the screenshot tree, the labeled evaluation, and the Build Thread observation come after that slice. Each one consumes the receipt. None of them changes the composition.
 
@@ -334,7 +334,7 @@ The HTTP command, a pinned ECC manifest for the screenshot tree, the labeled eva
 
 - A suggestion names one skill, or it names none.
 - Every option key was an eligible, active manifest entry on the catalog version in the receipt.
-- The winner's body is loaded only when its digest still matches that entry.
+- The winner's body is loaded only when its digest still matches that entry and the publisher's current catalog version has not revoked it.
 - Jev's probabilities do not admit an action, pass a check, or raise a risk ceiling.
 - The agent, the planner, and Jev cannot supply a skill path or a destination URL.
 - A published catalog version is immutable. Revocation publishes a new version.
