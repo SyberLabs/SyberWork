@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 from spec.validate import validate_events
 from syberlabs import Rejected
-from syberlabs.build import GitRefEffect, Kit, default_contract
+from syberlabs import checks as runner
+from syberlabs.build import GitRefEffect, Kit, default_contract, detect_checks
 from syberlabs.cli import main as cli
 from syberlabs.providers import CommandProvider, FunctionProvider
 
@@ -373,6 +374,31 @@ class Search(RepoCase):
         self.assertEqual(states, {"slow": "timed_out", "loud": "error"})
         self.assertLessEqual(len(verdict.checks[1].output_tail), 4096)
         self.assertEqual(verdict.reason, "candidate_check_failed:slow")
+
+    def test_detected_python_checks_launch_the_running_interpreter(self):
+        """A bare ``python3`` is the Microsoft Store alias on Windows; the check uses sys.executable."""
+        found = detect_checks(self.root)
+        self.assertEqual(found["tests"]["argv"][0], PY)
+        self.assertEqual(detect_checks(self.root.parent)["configure"]["argv"][0], PY)
+        launched = []
+
+        class Done:
+            pid = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        def popen(argv, **kwargs):
+            launched.append(list(argv))
+            return Done()
+
+        log = self.root / "check.log"
+        with patch.object(runner.subprocess, "Popen", popen):
+            result = runner.run_check(found["tests"]["argv"], self.root, {}, 5, 4096, log)
+        self.assertEqual(result["state"], "passed")
+        self.assertEqual(launched, [found["tests"]["argv"]])
+        self.assertEqual(launched[0][0], PY)
+        self.assertEqual(launched[0][1:], ["-m", "unittest", "discover", "-s", "tests", "-q"])
 
     def test_worktree_snapshot_takes_only_attached_sources(self):
         kit = self.kit()
