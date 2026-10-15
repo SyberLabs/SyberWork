@@ -86,3 +86,17 @@ Claim ceiling at start: proposed; no model comparison measured.
     it. Running the same wheel/origin/example checks with only `SYSTEMROOT`
     preserved passed. Keep the unrelated conformance source unchanged and
     report the standard-command failure alongside this workaround.
+18. Final run 002 repeated the same three tasks at source `9e81b6b` with an
+    empty source diff. All three baselines solved on the first call; all
+    three GitHits reads returned 401; zero matched pairs completed. Archive
+    the result and its successful model-free recheck before writing the
+    report. Do not aggregate the repeated early run into a larger sample.
+19. Final validation: 274 tests, 22 skipped, OK; 12 focused offline tests,
+    OK; all 23 golden traces matched. CI passed for measured source `9e81b6b`.
+    The one-screen HTML was rendered at 390 by 844 pixels without overflow.
+    The report-only commit is a separate evidence boundary from that source.
+20. Final claim ceiling: implementation and offline boundary checks tested;
+    baseline fixes measured and reproduced on this host; authenticated
+    GitHits retrieval and the causal comparison remain unmeasured. Stop at
+    this concrete credential boundary rather than fabricating a treatment
+    or spending the remaining window on an unregistered replacement task.
