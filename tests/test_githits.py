@@ -1,6 +1,7 @@
 """Offline tests of the benchmark's information and evidence boundaries."""
 
 import io
+import copy
 import json
 import os
 import sys
@@ -34,6 +35,37 @@ class Context(unittest.TestCase):
         for invalid in ({"kind": "documentation"}, {"is_binary": True}, {"content": {}}, {"path": "wrong.py"}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 client.validate_read({**self.body, **invalid}, self.fixture, self.read)
+
+    def repository_body(self):
+        body = copy.deepcopy(self.body)
+        package = {"registry": "pypi", "name": "httpx", "version": "0.28.1"}
+        artifact = {"repo_url": "https://github.com/encode/httpx", "commit_sha": "a" * 40,
+                    "version": "0.28.1"}
+        body["target_resolution"] = {"requested": package,
+            "resolved_requested": {**package, **artifact},
+            "served": {**artifact, "registry": None, "name": None}, "freshness": "current"}
+        return body
+
+    def test_repository_backed_response_binds_exact_package_and_commit(self):
+        self.assertIn("ASGITransport", client.validate_read(self.repository_body(), self.fixture, self.read))
+
+    def test_repository_response_rejects_missing_or_conflicting_identity(self):
+        for section, field, value in (
+                ("served", "commit_sha", "b" * 40), ("served", "commit_sha", None),
+                ("served", "repo_url", "https://github.com/wrong/repo"),
+                ("served", "version", "0.28.0"), ("served", "name", "wrong"),
+                ("resolved_requested", "version", "0.28.0"),
+                ("resolved_requested", "registry", "npm"), ("resolved_requested", "name", "wrong"),
+                ("requested", "version", "0.28.0"), ("requested", "name", "wrong")):
+            with self.subTest(section=section, field=field):
+                body = self.repository_body()
+                body["target_resolution"][section][field] = value
+                with self.assertRaises(ValueError):
+                    client.validate_read(body, self.fixture, self.read)
+        body = self.repository_body()
+        body["target_resolution"]["freshness"] = "fallback_recent"
+        with self.assertRaises(ValueError):
+            client.validate_read(body, self.fixture, self.read)
 
     def test_unauthorized_arm_is_unavailable_and_stops_retrieval(self):
         with patch.object(client, "request", return_value={"status": 401, "body": {"code": "AUTHENTICATION_REQUIRED"}}) as fetch:

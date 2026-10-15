@@ -107,11 +107,29 @@ def normalize_name(name: str) -> str:
 
 def validate_read(body: dict, fixture: dict, read: dict) -> str:
     """Fail closed on fallback versions, missing identity, binary or empty data."""
-    served = body.get("target_resolution", {}).get("served", {})
+    resolution = body.get("target_resolution", {})
+    served = resolution.get("served") or {}
+    identity = served
+    # Repository-backed reads may omit package fields on the served artifact.
+    # Bind it to the exact resolved package through both repository and commit.
+    if served.get("registry") is None and served.get("name") is None:
+        resolved = resolution.get("resolved_requested") or {}
+        requested = resolution.get("requested") or {}
+        if (resolution.get("freshness") != "current"
+                or requested.get("registry") != "pypi"
+                or normalize_name(str(requested.get("name"))) != normalize_name(fixture["package"])
+                or requested.get("version") != fixture["version"]
+                or not served.get("repo_url")
+                or served.get("repo_url") != resolved.get("repo_url")
+                or not re.fullmatch(r"[0-9a-f]{40}", str(served.get("commit_sha")))
+                or served.get("commit_sha") != resolved.get("commit_sha")
+                or resolved.get("version") != fixture["version"]):
+            raise ValueError("unverified_pinned_context")
+        identity = resolved
     content = body.get("content", {})
     if (body.get("kind") != "code" or body.get("is_binary") is not False
-            or served.get("registry") != "pypi"
-            or normalize_name(str(served.get("name"))) != normalize_name(fixture["package"])
+            or identity.get("registry") != "pypi"
+            or normalize_name(str(identity.get("name"))) != normalize_name(fixture["package"])
             or served.get("version") != fixture["version"]
             or body.get("path") != read["path"]
             or not isinstance(content.get("body"), str) or not content["body"].strip()
