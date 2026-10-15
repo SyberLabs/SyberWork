@@ -1,0 +1,34 @@
+{
+  "protocol": "syberlabs.search/v0alpha1",
+  "objective": "Migrate src/integration.py to Pydantic 2.10.6. serialize_user must accept both attribute objects and mappings, accept display_name or its displayName alias, coerce valid string IDs to integers, reject missing fields, invalid IDs and extra mapping fields, and output exactly id and displayName. Use the supported v2 validation/serialization APIs; keep the function signature and dependency pins.",
+  "base": "101b51c592d69d78af52c1b78a43691b6a2d5045",
+  "scope": [
+    "requirements.txt",
+    "src"
+  ],
+  "context": [
+    {
+      "path": "src/integration.py",
+      "lines": [
+        1,
+        15
+      ],
+      "reason": "match",
+      "text": "from pydantic import BaseModel, Field\n\n\nclass UserView(BaseModel):\n    id: int\n    display_name: str = Field(alias=\"displayName\")\n\n    class Config:\n        orm_mode = True\n        allow_population_by_field_name = True\n        extra = \"forbid\"\n\n\ndef serialize_user(value):\n    return UserView.from_orm(value).dict(by_alias=True)"
+    },
+    {
+      "path": "requirements.txt",
+      "lines": [
+        1,
+        13
+      ],
+      "reason": "match",
+      "text": "annotated-types==0.7.0\nanyio==4.9.0\ncertifi==2025.1.31\ngreenlet==3.1.1\nh11==0.16.0\nhttpcore==1.0.9\nhttpx==0.28.1\nidna==3.10\npydantic==2.10.6\npydantic_core==2.27.2\nsniffio==1.3.1\nSQLAlchemy==2.0.36\ntyping_extensions==4.12.2"
+    }
+  ],
+  "files": [
+    "requirements.txt",
+    "src/integration.py"
+  ],
+  "seed": 1000
+}

@@ -82,6 +82,10 @@ The runner sends only public package/version/path locators to
 missing content, binary data, path mismatches, and different **served** package
 versions, including a fallback to another release. It never substitutes
 ordinary documentation or an authored reference patch for GitHits data.
+Repository-backed responses may omit served package name/registry. In that
+case the validator requires the requested/resolved package identity and an
+exact match of served version, repository and full commit, with current
+freshness. It does not infer identity from the requested version alone.
 
 ```powershell
 # Fixture/reference checks and access preflight: no model calls.
@@ -136,14 +140,20 @@ completed pairs. Zero pairs means no answer about uplift, parity or regression.
 All standalone baseline rows remain visible. Results are written after every
 arm so interrupted work retains completed observations.
 
-An authenticated retrieval path is implemented against the fetched OpenAPI
-schema. Offline tests exercise its validation; an HTTP 401 preflight exercises
-the real unauthenticated path. Without a successful authenticated run, do not
-describe the positive integration as live-verified.
+See the dated `REPORT.md` for authenticated retrieval, paired measurements
+and the exact source revision/diff used. Offline tests exercise fail-closed
+identity validation; saved authenticated receipts retain both resolved and
+served artifact identities.
+For the measured run 004 implementation, checkout `4188cac`. The original
+run recorded `166d51f` plus the saved source diff, which reconstructs the same
+two changed files. That raw diff matches the runner's stripped-text digest;
+append a newline before using it as input to `git apply`.
 
 Historical runs 001 and 002 used the direct REST transport before the upstream
 accounting change. They remain unchanged. The later
 `results/accounted-access-2026-10-15.json` records all three dependency reads
 through the approved wrapper; each still returned 401. Installing accounting
 did not supply an API token or an existing OAuth profile. No new model run was
-needed to establish that this credential boundary persisted.
+needed for that early access check. The later user-authorized token entry
+enabled run 004's complete paired comparison; the earlier attempts remain
+visible and are not pooled into its matched results.

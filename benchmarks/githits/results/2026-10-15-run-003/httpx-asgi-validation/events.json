@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "1e807873-d2e1-424d-b675-b21438ca6358",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Migrate src/integration.py to HTTPX 0.28.1. fetch_json must call the supplied ASGI app in process, never use a network server, pass headers and query strings, raise HTTPStatusError for error responses, return decoded JSON, and close its client. Keep its async signature and do not change dependency pins or checks."
+      },
+      "contract": [
+        "githits-httpx-asgi",
+        1
+      ]
+    },
+    "at": 1792095681041890,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "680cba652a64c26968d2fbd053831dc982d1d47af31f234eaf0030c1cee61f0c"
+  },
+  {
+    "case_id": "1e807873-d2e1-424d-b675-b21438ca6358",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "629639ab088fd307c4dff88118823631e165decd",
+        "tree": "a60274877b2ef4c26530f27f4bab7960b523c9b2",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "629639ab088fd307c4dff88118823631e165decd",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095681149888,
+    "previous": "680cba652a64c26968d2fbd053831dc982d1d47af31f234eaf0030c1cee61f0c",
+    "hash": "13ee79461328f7825ab29487deda08cd1715b520886820a2f8a78ec3d21c34ec"
+  },
+  {
+    "case_id": "1e807873-d2e1-424d-b675-b21438ca6358",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "629639ab088fd307c4dff88118823631e165decd",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095681150888,
+    "previous": "13ee79461328f7825ab29487deda08cd1715b520886820a2f8a78ec3d21c34ec",
+    "hash": "967aaabb68b8758b9e7e539b7f26e783ef76298d61ee4989b124c9ad1c1315e8"
+  },
+  {
+    "case_id": "1e807873-d2e1-424d-b675-b21438ca6358",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Migrate src/integration.py to HTTPX 0.28.1. fetch_json must call the supplied ASGI app in process, never use a network server, pass headers and query strings, raise HTTPStatusError for error responses, return decoded JSON, and close its client. Keep its async signature and do not change dependency pins or checks.",
+        "digest": "74a06c33bd67d4b5c47f3c1eac4814988e2b7b201e209ccbdaf3586a316550e4",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "7a6c9bd289ce09fc43f877c1dc0c57ba0f86deea",
+            "lines": [
+              1,
+              8
+            ],
+            "bytes": 264,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "629639ab088fd307c4dff88118823631e165decd",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095682299460,
+    "previous": "967aaabb68b8758b9e7e539b7f26e783ef76298d61ee4989b124c9ad1c1315e8",
+    "hash": "599963c10acde6691ef455855dc89d51067f7ade6c7a567ad959c206def6ff07"
+  },
+  {
+    "case_id": "1e807873-d2e1-424d-b675-b21438ca6358",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "629639ab088fd307c4dff88118823631e165decd",
+      "context_digest": "74a06c33bd67d4b5c47f3c1eac4814988e2b7b201e209ccbdaf3586a316550e4",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095682301461,
+    "previous": "599963c10acde6691ef455855dc89d51067f7ade6c7a567ad959c206def6ff07",
+    "hash": "2bfa4949aa24b127f8a3777a88a93b27fb7fe3124be025b5780c2a49c5f77e9e"
+  },
+  {
+    "case_id": "1e807873-d2e1-424d-b675-b21438ca6358",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "6b5900df16c3a0ac02363c629ac04d8d85486f9c",
+      "tree": "18c301779de86684e4245fbe40d5931907466c5d",
+      "base": "629639ab088fd307c4dff88118823631e165decd",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "613651d6f1329e240ade0f11c173d70602b7ae059dcf9ed4bdc44716bd291903",
+        "bytes": 761,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095682947962,
+    "previous": "2bfa4949aa24b127f8a3777a88a93b27fb7fe3124be025b5780c2a49c5f77e9e",
+    "hash": "dc52e562fc01f739e72e2d78fffbab07ecb1eaa8af8df477605738ee3fc3a639"
+  },
+  {
+    "case_id": "1e807873-d2e1-424d-b675-b21438ca6358",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 639,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095682949962,
+    "previous": "dc52e562fc01f739e72e2d78fffbab07ecb1eaa8af8df477605738ee3fc3a639",
+    "hash": "678c4c04ae36e05a2507998a3611e136e6f25e5ca3c05436a39030be35d46bd4"
+  },
+  {
+    "case_id": "1e807873-d2e1-424d-b675-b21438ca6358",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "6b5900df16c3a0ac02363c629ac04d8d85486f9c",
+      "tree": "18c301779de86684e4245fbe40d5931907466c5d",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 218,
+          "output_digest": "ccdeed50397d60467aa49189c1602a123cebda7c5779e234842581ae9a8410b7",
+          "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.008s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 108,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095683525430,
+    "previous": "678c4c04ae36e05a2507998a3611e136e6f25e5ca3c05436a39030be35d46bd4",
+    "hash": "37fdb92c3308c76cd3f0fda4eb84ec13068168830f41188b43ffd3a2d79ee9c9"
+  }
+]

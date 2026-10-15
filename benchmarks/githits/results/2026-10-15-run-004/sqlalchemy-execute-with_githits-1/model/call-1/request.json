@@ -1,0 +1,34 @@
+{
+  "protocol": "syberlabs.search/v0alpha1",
+  "objective": "Migrate src/integration.py to SQLAlchemy 2.0.36. upsert_and_list must create its SQLite table, insert/update rows using bound parameters in one transaction, return plain dicts ordered by id, preserve prior rows across calls, accept an empty batch, and roll back the entire batch if a row violates NOT NULL. Keep the engine argument and function signature; use supported SQLAlchemy execution/result APIs and keep dependency pins.",
+  "base": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+  "scope": [
+    "requirements.txt",
+    "src"
+  ],
+  "context": [
+    {
+      "path": "src/integration.py",
+      "lines": [
+        1,
+        8
+      ],
+      "reason": "match",
+      "text": "def upsert_and_list(engine, records):\n    with engine.begin() as connection:\n        connection.execute(\"CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)\")\n        for record in records:\n            connection.execute(\"INSERT INTO items(id, name) VALUES (:id, :name) \"\n                               \"ON CONFLICT(id) DO UPDATE SET name=excluded.name\", record)\n        rows = connection.execute(\"SELECT id, name FROM items ORDER BY id\").fetchall()\n        return [dict(row) for row in rows]"
+    },
+    {
+      "path": "requirements.txt",
+      "lines": [
+        1,
+        13
+      ],
+      "reason": "match",
+      "text": "annotated-types==0.7.0\nanyio==4.9.0\ncertifi==2025.1.31\ngreenlet==3.1.1\nh11==0.16.0\nhttpcore==1.0.9\nhttpx==0.28.1\nidna==3.10\npydantic==2.10.6\npydantic_core==2.27.2\nsniffio==1.3.1\nSQLAlchemy==2.0.36\ntyping_extensions==4.12.2"
+    }
+  ],
+  "files": [
+    "requirements.txt",
+    "src/integration.py"
+  ],
+  "seed": 1000
+}

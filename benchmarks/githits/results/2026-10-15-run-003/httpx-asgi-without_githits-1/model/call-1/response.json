@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "changes": {
+        "src/integration.py": "import httpx\n\n\nasync def fetch_json(app, path, headers=None):\n    async with httpx.AsyncClient(\n        transport=httpx.ASGITransport(app=app), base_url=\"http://test\", headers=headers\n    ) as client:\n        response = await client.get(path)\n        response.raise_for_status()\n        return response.json()\n"
+      },
+      "message": "Use HTTPX 0.28.1\u2019s explicit ASGI transport.",
+      "signal": {
+        "rationale": "ASGITransport calls the supplied app in process while preserving headers, query strings, status validation, and JSON decoding. The async context manager closes the client; dependency pins remain unchanged."
+      }
+    }
+  ],
+  "recommended": [
+    0
+  ],
+  "usage": {
+    "model": "gpt-6.1-sol",
+    "input_tokens": 12308,
+    "output_tokens": 373,
+    "cache_read_input_tokens": 0,
+    "stop_reason": "end_turn"
+  }
+}

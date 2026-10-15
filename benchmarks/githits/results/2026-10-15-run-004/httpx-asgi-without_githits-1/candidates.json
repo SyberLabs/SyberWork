@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "ddf8468d293e7a5efd8d2be330087ff70dfa06a7",
+    "tree": "18c301779de86684e4245fbe40d5931907466c5d",
+    "base": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 761,
+    "signal": {
+      "rationale": "ASGITransport calls the supplied app in process and replaces the removed AsyncClient app argument. The existing async context manager closes the client while preserving headers, query strings, status checking, and JSON decoding; dependency pins remain unchanged.",
+      "model_usage": {
+        "input_tokens": 12304,
+        "output_tokens": 316,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Migrate fetch_json to HTTPX 0.28.1 using an explicit ASGI transport.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 218,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.005s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 110,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

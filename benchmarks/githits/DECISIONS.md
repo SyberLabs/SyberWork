@@ -124,3 +124,42 @@ Claim ceiling at start: proposed; no model comparison measured.
     also passed. The primary model run, its fixtures, host checks, candidate
     objects and manifest remain unchanged. No private runtime or ledger
     files are included in the source branch or downloadable handoff.
+25. The user explicitly supplied a token through a masked, temporary local
+    environment and requested the paired report and branch push. Run 003
+    obtained HTTP 200 for all three first-source reads, but our validator
+    rejected their repository-backed identity shape. Preserve that complete
+    attempt and its replay; do not count it as a GitHits model failure or pool
+    its standalone baselines into the comparison.
+26. In the real response, `resolved_requested` identifies the exact package;
+    `served` identifies its repository, version and commit, with null package
+    name/registry. Accept this shape only when the requested and resolved
+    package match the fixture, freshness is current, and served repository,
+    version and full commit match the resolved artifact. Continue rejecting
+    fallback versions, missing commits, conflicting names and wrong paths.
+    Two regression tests cover success and conflicting/missing identity.
+27. Run 004 repeats both arms on the same three authored tasks, pins, source
+    ranges, model, effort and two-call budget. A fresh token entry permits all
+    six planned live reads through accounting. No source range or task was
+    changed after viewing results. Run 004 began on `166d51f` with the two-file
+    validator/test diff; preserve its exact stripped UTF-8 `git diff HEAD`
+    bytes in `2026-10-15-run-004-source.patch`, SHA-256
+    `348a4cd69bb41eea0d381ce2509672fa342bdc52c2c5e7be19287ef905322f2a`.
+    Source commit `4188cac` contains that same implementation and patch. Do
+    not describe the measured checkout as clean or silently replace its
+    recorded source identity. The token is cleared when the launcher exits.
+28. Run 004 completed three matched pairs: both arms solved all three tasks
+    on their first calls. Report the observed tie and zero discordant pairs,
+    not general equivalence or a GitHits advantage. Both the launcher's replay
+    and the subsequent review replay verified all 140 artifact hashes and
+    reproduced 12 saved tree evaluations. All six model configurations match;
+    no tool-execution event was observed. The updated brief fits a 390 by 844
+    CSS-pixel phone viewport without overflow.
+29. The runner hashes stripped diff text, so preserve the source-diff bytes
+    without a terminal newline to match `environment.json`. Document that
+    one framing newline must be added before `git apply`. Applying that form
+    to `166d51f` reconstructed both measured files exactly as committed in
+    `4188cac`; the latter is the clean checkout for reproducing the code.
+30. Follow-up validation passed: 278 local tests with 22 skips in 392.591
+    seconds; 16 focused tests; 23 conformance golden traces; successful CI
+    on source `4188cac`. Report/evidence publication is a later commit and
+    remains a distinct revision boundary. Only the benchmark branch is pushed.

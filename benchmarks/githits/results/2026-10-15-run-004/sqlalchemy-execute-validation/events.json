@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "d24d868f-2cd6-4709-b083-ed9c37e524f2",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Migrate src/integration.py to SQLAlchemy 2.0.36. upsert_and_list must create its SQLite table, insert/update rows using bound parameters in one transaction, return plain dicts ordered by id, preserve prior rows across calls, accept an empty batch, and roll back the entire batch if a row violates NOT NULL. Keep the engine argument and function signature; use supported SQLAlchemy execution/result APIs and keep dependency pins."
+      },
+      "contract": [
+        "githits-sqlalchemy-execute",
+        1
+      ]
+    },
+    "at": 1792095800472054,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "fd988ae788891b494fdaee76e6b51ef2dd9d949b8280239a896db20db2b6cd76"
+  },
+  {
+    "case_id": "d24d868f-2cd6-4709-b083-ed9c37e524f2",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+        "tree": "6e864a4c83830207983066f74dbffa1383d13645",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095800569445,
+    "previous": "fd988ae788891b494fdaee76e6b51ef2dd9d949b8280239a896db20db2b6cd76",
+    "hash": "64e055ad3ff7bd3f743b4877af642bd115c13f226dbf3d9b680e68c0f9733161"
+  },
+  {
+    "case_id": "d24d868f-2cd6-4709-b083-ed9c37e524f2",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095800571446,
+    "previous": "64e055ad3ff7bd3f743b4877af642bd115c13f226dbf3d9b680e68c0f9733161",
+    "hash": "78d5c3dc5b55ee318873c26f2d6231bc0034a671b931e32aa2c4aeb64bbb3ffd"
+  },
+  {
+    "case_id": "d24d868f-2cd6-4709-b083-ed9c37e524f2",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Migrate src/integration.py to SQLAlchemy 2.0.36. upsert_and_list must create its SQLite table, insert/update rows using bound parameters in one transaction, return plain dicts ordered by id, preserve prior rows across calls, accept an empty batch, and roll back the entire batch if a row violates NOT NULL. Keep the engine argument and function signature; use supported SQLAlchemy execution/result APIs and keep dependency pins.",
+        "digest": "42aa27423d3759af107645727cdc108b55a67e60f5881f8251e2f8f843a58e88",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "2fcd728525f582436364bf432415bf1cf88b5ccc",
+            "lines": [
+              1,
+              8
+            ],
+            "bytes": 518,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095801783444,
+    "previous": "78d5c3dc5b55ee318873c26f2d6231bc0034a671b931e32aa2c4aeb64bbb3ffd",
+    "hash": "e8462769d556bedbce8301653a2b8e3ef804fa1d22b7c70bcb84f4fc4f0c2a8e"
+  },
+  {
+    "case_id": "d24d868f-2cd6-4709-b083-ed9c37e524f2",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "context_digest": "42aa27423d3759af107645727cdc108b55a67e60f5881f8251e2f8f843a58e88",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095801785444,
+    "previous": "e8462769d556bedbce8301653a2b8e3ef804fa1d22b7c70bcb84f4fc4f0c2a8e",
+    "hash": "2ae4c808d96df84c6c342723e9cdfc561267fdfed02bf6a7ff42626400fb7b56"
+  },
+  {
+    "case_id": "d24d868f-2cd6-4709-b083-ed9c37e524f2",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "a103ea5e0147301426d9ca3954fe94422bd8968b",
+      "tree": "6e642e7fd7bf1ea84b65072d1640b0ec65809884",
+      "base": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "a619eb32df55ff19d92e2a0811269aca2fc6e5c8ae5a8414fb8f1a719798c5ab",
+        "bytes": 1274,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095802394554,
+    "previous": "2ae4c808d96df84c6c342723e9cdfc561267fdfed02bf6a7ff42626400fb7b56",
+    "hash": "1a94a1bb09f7bfe15338ace661c3c22e9b99a036073477fb5b34db5307176f0c"
+  },
+  {
+    "case_id": "d24d868f-2cd6-4709-b083-ed9c37e524f2",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 610,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095802396554,
+    "previous": "1a94a1bb09f7bfe15338ace661c3c22e9b99a036073477fb5b34db5307176f0c",
+    "hash": "aaae7b51832274f0663d78b1b6e4d1976c7a250a80c2bfec2271c900b1d1ef1e"
+  },
+  {
+    "case_id": "d24d868f-2cd6-4709-b083-ed9c37e524f2",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "a103ea5e0147301426d9ca3954fe94422bd8968b",
+      "tree": "6e642e7fd7bf1ea84b65072d1640b0ec65809884",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 342,
+          "output_digest": "3759cee2e417c50fca65da9d571a97787f0a6a330557a226d9780e64bfa4d80d",
+          "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.011s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 94,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095803073642,
+    "previous": "aaae7b51832274f0663d78b1b6e4d1976c7a250a80c2bfec2271c900b1d1ef1e",
+    "hash": "78669e2549a2c7ae3f6bad5714cdd8163f468fbc03c142fd7c4d30c69724724b"
+  }
+]

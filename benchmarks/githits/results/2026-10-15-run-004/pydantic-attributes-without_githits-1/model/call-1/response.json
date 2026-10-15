@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "changes": {
+        "src/integration.py": "from pydantic import BaseModel, ConfigDict, Field\n\n\nclass UserView(BaseModel):\n    model_config = ConfigDict(\n        from_attributes=True,\n        populate_by_name=True,\n        extra=\"forbid\",\n    )\n\n    id: int\n    display_name: str = Field(alias=\"displayName\")\n\n\ndef serialize_user(value):\n    return UserView.model_validate(value).model_dump(by_alias=True)\n"
+      },
+      "message": "Migrated user validation and serialization to Pydantic v2 while preserving dependency pins.",
+      "signal": {
+        "rationale": "ConfigDict enables attribute and mapping validation, accepts field names and aliases, and forbids extra mapping fields. model_validate coerces valid string IDs and rejects missing or invalid fields; model_dump(by_alias=True) outputs id and displayName."
+      }
+    }
+  ],
+  "recommended": [
+    0
+  ],
+  "usage": {
+    "model": "gpt-6.1-sol",
+    "input_tokens": 12338,
+    "output_tokens": 316,
+    "cache_read_input_tokens": 0,
+    "stop_reason": "end_turn"
+  }
+}

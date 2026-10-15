@@ -1,0 +1,78 @@
+[
+  {
+    "target": "pypi:sqlalchemy@2.0.36",
+    "path": "lib/sqlalchemy/engine/base.py",
+    "content": "    ) -> CursorResult[Any]:\n        r\"\"\"Executes a SQL statement construct and returns a\n        :class:`_engine.CursorResult`.\n\n        :param statement: The statement to be executed.  This is always\n         an object that is in both the :class:`_expression.ClauseElement` and\n         :class:`_expression.Executable` hierarchies, including:\n\n         * :class:`_expression.Select`\n         * :class:`_expression.Insert`, :class:`_expression.Update`,\n           :class:`_expression.Delete`\n         * :class:`_expression.TextClause` and\n           :class:`_expression.TextualSelect`\n         * :class:`_schema.DDL` and objects which inherit from\n           :class:`_schema.ExecutableDDLElement`\n\n        :param parameters: parameters which will be bound into the statement.\n         This may be either a dictionary of parameter names to values,\n         or a mutable sequence (e.g. a list) of dictionaries.  When a\n         list of dictionaries is passed, the underlying statement execution\n         will make use of the DBAPI ``cursor.executemany()`` method.\n         When a single dictionary is passed, the DBAPI ``cursor.execute()``\n         method will be used.\n\n        :param execution_options: optional dictionary of execution options,\n         which will be associated with the statement execution.  This\n         dictionary can provide a subset of the options that are accepted\n         by :meth:`_engine.Connection.execution_options`.\n\n        :return: a :class:`_engine.Result` object.\n\n        \"\"\"\n        distilled_parameters = _distill_params_20(parameters)\n        try:\n            meth = statement._execute_on_connection\n        except AttributeError as err:\n            raise exc.ObjectNotExecutableError(statement) from err\n        else:\n            return meth(\n                self,\n                distilled_parameters,\n                execution_options or NO_OPTIONS,\n            )\n\n    def _execute_function(\n        self,\n        func: FunctionElement[Any],\n        distilled_parameters: _CoreMultiExecuteParams,\n        execution_options: CoreExecuteOptionsParameter,\n    ) -> CursorResult[Any]:\n        \"\"\"Execute a sql.FunctionElement object.\"\"\"\n\n        return self._execute_clauseelement(\n            func.select(), distilled_parameters, execution_options\n        )\n\n    def _execute_default(\n        self,\n        default: DefaultGenerator,\n        distilled_parameters: _CoreMultiExecuteParams,\n        execution_options: CoreExecuteOptionsParameter,",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "sqlalchemy",
+        "version": "2.0.36",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "sqlalchemy",
+        "version": "2.0.36",
+        "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+        "git_ref": "rel_2_0_36",
+        "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "2.0.36",
+        "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+        "git_ref": "rel_2_0_36",
+        "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 1380,
+    "end_line": 1440
+  },
+  {
+    "target": "pypi:sqlalchemy@2.0.36",
+    "path": "lib/sqlalchemy/engine/result.py",
+    "content": "            raise NotImplementedError(\n                \"can't use this function in 'only scalars' mode\"\n            )\n        return self._metadata._getter(key, raiseerr)\n\n    def _tuple_getter(self, keys: Sequence[_KeyIndexType]) -> _TupleGetterType:\n        \"\"\"return a callable that will retrieve the given keys from a\n        :class:`_engine.Row`.\n\n        \"\"\"\n        if self._source_supports_scalars:\n            raise NotImplementedError(\n                \"can't use this function in 'only scalars' mode\"\n            )\n        return self._metadata._row_as_tuple_getter(keys)\n\n    def mappings(self) -> MappingResult:\n        \"\"\"Apply a mappings filter to returned rows, returning an instance of\n        :class:`_engine.MappingResult`.\n\n        When this filter is applied, fetching rows will return\n        :class:`_engine.RowMapping` objects instead of :class:`_engine.Row`\n        objects.\n\n        .. versionadded:: 1.4\n\n        :return: a new :class:`_engine.MappingResult` filtering object\n         referring to this :class:`_engine.Result` object.\n\n        \"\"\"\n\n        return MappingResult(self)\n\n    @property\n    def t(self) -> TupleResult[_TP]:\n        \"\"\"Apply a \"typed tuple\" typing filter to returned rows.\n\n        The :attr:`_engine.Result.t` attribute is a synonym for\n        calling the :meth:`_engine.Result.tuples` method.\n\n        .. versionadded:: 2.0",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "sqlalchemy",
+        "version": "2.0.36",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "sqlalchemy",
+        "version": "2.0.36",
+        "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+        "git_ref": "rel_2_0_36",
+        "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "2.0.36",
+        "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+        "git_ref": "rel_2_0_36",
+        "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 1170,
+    "end_line": 1210
+  }
+]

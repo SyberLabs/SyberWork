@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "119023b11a7e4876881fe109fe355b30cfa56cf4",
+    "tree": "6e642e7fd7bf1ea84b65072d1640b0ec65809884",
+    "base": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1274,
+    "signal": {
+      "rationale": "Wrap SQL statements with text() and read results through mappings() to return plain dictionaries ordered by id. Preserve the existing engine.begin() transaction so empty batches work, prior rows persist, and any NOT NULL violation rolls back the entire batch; dependency pins remain unchanged.",
+      "model_usage": {
+        "input_tokens": 12379,
+        "output_tokens": 372,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Migrate execution and row conversion to supported SQLAlchemy 2.0 APIs.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 390,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.014s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 93,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

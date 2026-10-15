@@ -1,0 +1,11 @@
+{
+  "message": "Migrated user validation and serialization to Pydantic v2 while preserving dependency pins.",
+  "rationale": "ConfigDict enables attribute and mapping validation, accepts field names and aliases, and forbids extra mapping fields. model_validate coerces valid string IDs and rejects missing or invalid fields; model_dump(by_alias=True) outputs id and displayName.",
+  "files": [
+    {
+      "path": "src/integration.py",
+      "content": "from pydantic import BaseModel, ConfigDict, Field\n\n\nclass UserView(BaseModel):\n    model_config = ConfigDict(\n        from_attributes=True,\n        populate_by_name=True,\n        extra=\"forbid\",\n    )\n\n    id: int\n    display_name: str = Field(alias=\"displayName\")\n\n\ndef serialize_user(value):\n    return UserView.model_validate(value).model_dump(by_alias=True)\n",
+      "delete": false
+    }
+  ]
+}

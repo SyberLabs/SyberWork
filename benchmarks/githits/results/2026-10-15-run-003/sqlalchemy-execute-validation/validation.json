@@ -1,0 +1,70 @@
+{
+  "fixture": "sqlalchemy-execute",
+  "base_commit": "501ee959d0e58c9f79352ebc6603b3d18b4e6de6",
+  "base_tree": "6e864a4c83830207983066f74dbffa1383d13645",
+  "broken": {
+    "candidate": "base",
+    "commit": "501ee959d0e58c9f79352ebc6603b3d18b4e6de6",
+    "tree": "6e864a4c83830207983066f74dbffa1383d13645",
+    "evaluator": "syberlabs.checks/1",
+    "checks": [
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 109,
+        "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_tail": ""
+      },
+      {
+        "name": "behavior",
+        "state": "failed",
+        "exit_code": 1,
+        "duration_ms": 390,
+        "output_digest": "8645686695a71ae8a4e6be62ee2e34aa5f9ad2ff9b2db1a07825aa035aa71a27",
+        "output_tail": "ibute '_execute_on_connection'\r\n\r\nThe above exception was the direct cause of the following exception:\r\n\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 26, in test_batch_rolls_back\r\n    upsert_and_list(self.engine, [{\"id\": 1, \"name\": \"original\"}])\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-szljns8c\\tree\\src\\integration.py\", line 3, in upsert_and_list\r\n    connection.execute(\"CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)\")\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1416, in execute\r\n    raise exc.ObjectNotExecutableError(statement) from err\r\nsqlalchemy.exc.ObjectNotExecutableError: Not an executable object: 'CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'\r\n\r\n======================================================================\r\nERROR: test_empty_and_bound_parameters (__main__.Behavior.test_empty_and_bound_parameters)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1414, in execute\r\n    meth = statement._execute_on_connection\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\nAttributeError: 'str' object has no attribute '_execute_on_connection'\r\n\r\nThe above exception was the direct cause of the following exception:\r\n\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 20, in test_empty_and_bound_parameters\r\n    self.assertEqual(upsert_and_list(self.engine, []), [])\r\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-szljns8c\\tree\\src\\integration.py\", line 3, in upsert_and_list\r\n    connection.execute(\"CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)\")\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1416, in execute\r\n    raise exc.ObjectNotExecutableError(statement) from err\r\nsqlalchemy.exc.ObjectNotExecutableError: Not an executable object: 'CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'\r\n\r\n======================================================================\r\nERROR: test_insert_update_and_order (__main__.Behavior.test_insert_update_and_order)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1414, in execute\r\n    meth = statement._execute_on_connection\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\nAttributeError: 'str' object has no attribute '_execute_on_connection'\r\n\r\nThe above exception was the direct cause of the following exception:\r\n\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 13, in test_insert_update_and_order\r\n    rows = upsert_and_list(self.engine, [{\"id\": 2, \"name\": \"B\"}, {\"id\": 1, \"name\": \"A\"}])\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-szljns8c\\tree\\src\\integration.py\", line 3, in upsert_and_list\r\n    connection.execute(\"CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)\")\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1416, in execute\r\n    raise exc.ObjectNotExecutableError(statement) from err\r\nsqlalchemy.exc.ObjectNotExecutableError: Not an executable object: 'CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'\r\n\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.017s\r\n\r\nFAILED (errors=3)\r\n"
+      }
+    ]
+  },
+  "reference": {
+    "id": "c1",
+    "commit": "bf51216eb346296ab436133c90e4bb14aea46e9e",
+    "tree": "6e642e7fd7bf1ea84b65072d1640b0ec65809884",
+    "base": "501ee959d0e58c9f79352ebc6603b3d18b4e6de6",
+    "parents": [],
+    "operator": "patch",
+    "provider": "reference",
+    "provider_revision": "authored-v1",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1274,
+    "signal": null,
+    "note": "",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 358,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.014s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 93,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  },
+  "reference_acceptable": true,
+  "source_url": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html"
+}

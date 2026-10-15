@@ -1,0 +1,227 @@
+[
+  {
+    "case_id": "f5ebfb36-b7a3-4976-ae08-72f0928e61be",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Migrate src/integration.py to HTTPX 0.28.1. fetch_json must call the supplied ASGI app in process, never use a network server, pass headers and query strings, raise HTTPStatusError for error responses, return decoded JSON, and close its client. Keep its async signature and do not change dependency pins or checks."
+      },
+      "contract": [
+        "githits-httpx-asgi",
+        1
+      ]
+    },
+    "at": 1792095816328453,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "bdb1109dab942ea4e34596f57b47224c46e445edf50d23b07dffe04842e44438"
+  },
+  {
+    "case_id": "f5ebfb36-b7a3-4976-ae08-72f0928e61be",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+        "tree": "a60274877b2ef4c26530f27f4bab7960b523c9b2",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095816440921,
+    "previous": "bdb1109dab942ea4e34596f57b47224c46e445edf50d23b07dffe04842e44438",
+    "hash": "df39e522047c38d4dc7799cf7fc54b9caf6a223ed9b7125294a912786b5e7dda"
+  },
+  {
+    "case_id": "f5ebfb36-b7a3-4976-ae08-72f0928e61be",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095816442924,
+    "previous": "df39e522047c38d4dc7799cf7fc54b9caf6a223ed9b7125294a912786b5e7dda",
+    "hash": "3fc05d85e9865532a00177b6f2f71963f2c29f57bb8dde680f259e5452da6899"
+  },
+  {
+    "case_id": "f5ebfb36-b7a3-4976-ae08-72f0928e61be",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Migrate src/integration.py to HTTPX 0.28.1. fetch_json must call the supplied ASGI app in process, never use a network server, pass headers and query strings, raise HTTPStatusError for error responses, return decoded JSON, and close its client. Keep its async signature and do not change dependency pins or checks.",
+        "digest": "74a06c33bd67d4b5c47f3c1eac4814988e2b7b201e209ccbdaf3586a316550e4",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "7a6c9bd289ce09fc43f877c1dc0c57ba0f86deea",
+            "lines": [
+              1,
+              8
+            ],
+            "bytes": 264,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095816910848,
+    "previous": "3fc05d85e9865532a00177b6f2f71963f2c29f57bb8dde680f259e5452da6899",
+    "hash": "03031071fea05020d881a19ceed32e402397ef74eac7cd57113c2c178500bd01"
+  },
+  {
+    "case_id": "f5ebfb36-b7a3-4976-ae08-72f0928e61be",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+      "context_digest": "74a06c33bd67d4b5c47f3c1eac4814988e2b7b201e209ccbdaf3586a316550e4",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095816911848,
+    "previous": "03031071fea05020d881a19ceed32e402397ef74eac7cd57113c2c178500bd01",
+    "hash": "1603a3dca59cf2f9100fc489e960eaf1ba1ad6b2205f6e12a614ebae5f15529b"
+  },
+  {
+    "case_id": "f5ebfb36-b7a3-4976-ae08-72f0928e61be",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "ddf8468d293e7a5efd8d2be330087ff70dfa06a7",
+      "tree": "18c301779de86684e4245fbe40d5931907466c5d",
+      "base": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "613651d6f1329e240ade0f11c173d70602b7ae059dcf9ed4bdc44716bd291903",
+        "bytes": 761,
+        "files": 1
+      },
+      "signal": {
+        "rationale": "ASGITransport calls the supplied app in process and replaces the removed AsyncClient app argument. The existing async context manager closes the client while preserving headers, query strings, status checking, and JSON decoding; dependency pins remain unchanged.",
+        "model_usage": {
+          "input_tokens": 12304,
+          "output_tokens": 316,
+          "cache_read_input_tokens": 0,
+          "model": "gpt-6.1-sol",
+          "stop_reason": "end_turn"
+        }
+      },
+      "note": "Migrate fetch_json to HTTPX 0.28.1 using an explicit ASGI transport.",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095828200266,
+    "previous": "1603a3dca59cf2f9100fc489e960eaf1ba1ad6b2205f6e12a614ebae5f15529b",
+    "hash": "f4fa3f800a5327053c7f2e8e2484d40f67692b60ebdb55690f3910b159ffca9a"
+  },
+  {
+    "case_id": "f5ebfb36-b7a3-4976-ae08-72f0928e61be",
+    "seq": 7,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "ddf8468d293e7a5efd8d2be330087ff70dfa06a7",
+      "tree": "18c301779de86684e4245fbe40d5931907466c5d",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 218,
+          "output_digest": "330eb602cbacc8889d927c9671c7b4d1a4cdfb8a7640706ee324fa1ba751bcfb",
+          "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.005s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 110,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095828799952,
+    "previous": "f4fa3f800a5327053c7f2e8e2484d40f67692b60ebdb55690f3910b159ffca9a",
+    "hash": "75c421ccd191d89830d2c6a7b1fe28ae7ce0b4ba9f22149ee40f35f8f217f690"
+  },
+  {
+    "case_id": "f5ebfb36-b7a3-4976-ae08-72f0928e61be",
+    "seq": 8,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 1,
+      "elapsed_ms": 11891,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095828801952,
+    "previous": "75c421ccd191d89830d2c6a7b1fe28ae7ce0b4ba9f22149ee40f35f8f217f690",
+    "hash": "4fa399ed482476b57197c75ead7aa0f61e790b44a106064273036a84e46f1c4f"
+  }
+]

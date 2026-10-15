@@ -1,0 +1,66 @@
+{
+  "status": "unavailable",
+  "reason": "unverified_pinned_context",
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Ahttpx%400.28.1&path=httpx%2F_transports%2Fasgi.py&start_line=63&end_line=180&wait_timeout_ms=20000",
+      "at": "2026-10-15T20:21:24.078441+00:00",
+      "authenticated": true,
+      "status": 200,
+      "request_id": "e1aaa18579586b0862025ff2e0a0d4de",
+      "retry_after": null,
+      "body_sha256": "44cd7510c1887be57c9870b77feb0c46339402a0634daf99aba7a8f9e625e05e",
+      "seconds": 1.172,
+      "body": {
+        "kind": "code",
+        "path": "httpx/_transports/asgi.py",
+        "repository_file_path": "httpx/_transports/asgi.py",
+        "is_binary": false,
+        "target_resolution": {
+          "requested": {
+            "kind": "package_exact_version",
+            "registry": "pypi",
+            "name": "httpx",
+            "version": "0.28.1",
+            "repo_url": null,
+            "git_ref": null,
+            "commit_sha": null
+          },
+          "resolved_requested": {
+            "kind": null,
+            "registry": "pypi",
+            "name": "httpx",
+            "version": "0.28.1",
+            "repo_url": "https://github.com/encode/httpx",
+            "git_ref": "0.28.1",
+            "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+          },
+          "served": {
+            "kind": null,
+            "registry": null,
+            "name": null,
+            "version": "0.28.1",
+            "repo_url": "https://github.com/encode/httpx",
+            "git_ref": "0.28.1",
+            "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+          },
+          "freshness": "current",
+          "freshness_reason": "exact_current"
+        },
+        "code_index_state": "current",
+        "indexing_ref": null,
+        "metadata": {
+          "language": "python",
+          "total_lines": 187
+        },
+        "content": {
+          "body": "class ASGITransport(AsyncBaseTransport):\n    \"\"\"\n    A custom AsyncTransport that handles sending requests directly to an ASGI app.\n\n    ```python\n    transport = httpx.ASGITransport(\n        app=app,\n        root_path=\"/submount\",\n        client=(\"1.2.3.4\", 123)\n    )\n    client = httpx.AsyncClient(transport=transport)\n    ```\n\n    Arguments:\n\n    * `app` - The ASGI application.\n    * `raise_app_exceptions` - Boolean indicating if exceptions in the application\n       should be raised. Default to `True`. Can be set to `False` for use cases\n       such as testing the content of a client 500 response.\n    * `root_path` - The root path on which the ASGI application should be mounted.\n    * `client` - A two-tuple indicating the client IP and port of incoming requests.\n    ```\n    \"\"\"\n\n    def __init__(\n        self,\n        app: _ASGIApp,\n        raise_app_exceptions: bool = True,\n        root_path: str = \"\",\n        client: tuple[str, int] = (\"127.0.0.1\", 123),\n    ) -> None:\n        self.app = app\n        self.raise_app_exceptions = raise_app_exceptions\n        self.root_path = root_path\n        self.client = client\n\n    async def handle_async_request(\n        self,\n        request: Request,\n    ) -> Response:\n        assert isinstance(request.stream, AsyncByteStream)\n\n        # ASGI scope.\n        scope = {\n            \"type\": \"http\",\n            \"asgi\": {\"version\": \"3.0\"},\n            \"http_version\": \"1.1\",\n            \"method\": request.method,\n            \"headers\": [(k.lower(), v) for (k, v) in request.headers.raw],\n            \"scheme\": request.url.scheme,\n            \"path\": request.url.path,\n            \"raw_path\": request.url.raw_path.split(b\"?\")[0],\n            \"query_string\": request.url.query,\n            \"server\": (request.url.host, request.url.port),\n            \"client\": self.client,\n            \"root_path\": self.root_path,\n        }\n\n        # Request.\n        request_body_chunks = request.stream.__aiter__()\n        request_complete = False\n\n        # Response.\n        status_code = None\n        response_headers = None\n        body_parts = []\n        response_started = False\n        response_complete = create_event()\n\n        # ASGI callables.\n\n        async def receive() -> dict[str, typing.Any]:\n            nonlocal request_complete\n\n            if request_complete:\n                await response_complete.wait()\n                return {\"type\": \"http.disconnect\"}\n\n            try:\n                body = await request_body_chunks.__anext__()\n            except StopAsyncIteration:\n                request_complete = True\n                return {\"type\": \"http.request\", \"body\": b\"\", \"more_body\": False}\n            return {\"type\": \"http.request\", \"body\": body, \"more_body\": True}\n\n        async def send(message: typing.MutableMapping[str, typing.Any]) -> None:\n            nonlocal status_code, response_headers, response_started\n\n            if message[\"type\"] == \"http.response.start\":\n                assert not response_started\n\n                status_code = message[\"status\"]\n                response_headers = message.get(\"headers\", [])\n                response_started = True\n\n            elif message[\"type\"] == \"http.response.body\":\n                assert not response_complete.is_set()\n                body = message.get(\"body\", b\"\")\n                more_body = message.get(\"more_body\", False)\n\n                if body and request.method != \"HEAD\":\n                    body_parts.append(body)\n\n                if not more_body:\n                    response_complete.set()\n\n        try:\n            await self.app(scope, receive, send)\n        except Exception:  # noqa: PIE-786\n            if self.raise_app_exceptions:\n                raise\n\n            response_complete.set()\n            if status_code is None:\n                status_code = 500\n            if response_headers is None:\n                response_headers = {}\n",
+          "start_line": 63,
+          "end_line": 180
+        }
+      },
+      "transport": "private-accounted-cli"
+    }
+  ],
+  "context": null
+}

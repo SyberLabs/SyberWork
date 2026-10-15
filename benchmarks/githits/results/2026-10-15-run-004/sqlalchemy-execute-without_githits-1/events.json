@@ -1,0 +1,227 @@
+[
+  {
+    "case_id": "cb3ffb3f-8c70-4113-8071-609905d3cb80",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Migrate src/integration.py to SQLAlchemy 2.0.36. upsert_and_list must create its SQLite table, insert/update rows using bound parameters in one transaction, return plain dicts ordered by id, preserve prior rows across calls, accept an empty batch, and roll back the entire batch if a row violates NOT NULL. Keep the engine argument and function signature; use supported SQLAlchemy execution/result APIs and keep dependency pins."
+      },
+      "contract": [
+        "githits-sqlalchemy-execute",
+        1
+      ]
+    },
+    "at": 1792095852935596,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "7ff5a62d5ae22696c64ee55206ba01314ab851d3ca1d9307eff49e4a4d24bb6b"
+  },
+  {
+    "case_id": "cb3ffb3f-8c70-4113-8071-609905d3cb80",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+        "tree": "6e864a4c83830207983066f74dbffa1383d13645",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095853051592,
+    "previous": "7ff5a62d5ae22696c64ee55206ba01314ab851d3ca1d9307eff49e4a4d24bb6b",
+    "hash": "c70a67a8be5426050a745fe88828d45f770cdb6cbc8fae1b200157615a346577"
+  },
+  {
+    "case_id": "cb3ffb3f-8c70-4113-8071-609905d3cb80",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095853055589,
+    "previous": "c70a67a8be5426050a745fe88828d45f770cdb6cbc8fae1b200157615a346577",
+    "hash": "fe961ba1a3d232159b30a3b91cec14d82c48adff55dfcaf3907b389c7f5466e9"
+  },
+  {
+    "case_id": "cb3ffb3f-8c70-4113-8071-609905d3cb80",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Migrate src/integration.py to SQLAlchemy 2.0.36. upsert_and_list must create its SQLite table, insert/update rows using bound parameters in one transaction, return plain dicts ordered by id, preserve prior rows across calls, accept an empty batch, and roll back the entire batch if a row violates NOT NULL. Keep the engine argument and function signature; use supported SQLAlchemy execution/result APIs and keep dependency pins.",
+        "digest": "42aa27423d3759af107645727cdc108b55a67e60f5881f8251e2f8f843a58e88",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "2fcd728525f582436364bf432415bf1cf88b5ccc",
+            "lines": [
+              1,
+              8
+            ],
+            "bytes": 518,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095853507480,
+    "previous": "fe961ba1a3d232159b30a3b91cec14d82c48adff55dfcaf3907b389c7f5466e9",
+    "hash": "9929ac3fdf310fa8ba2af3ff6791684ae7de585acdca495648e41b2990cf237f"
+  },
+  {
+    "case_id": "cb3ffb3f-8c70-4113-8071-609905d3cb80",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "context_digest": "42aa27423d3759af107645727cdc108b55a67e60f5881f8251e2f8f843a58e88",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095853509545,
+    "previous": "9929ac3fdf310fa8ba2af3ff6791684ae7de585acdca495648e41b2990cf237f",
+    "hash": "5ca82051fdbbd71a5d56029889eba3ce49fbcd2c578d659220e73ac9c0848538"
+  },
+  {
+    "case_id": "cb3ffb3f-8c70-4113-8071-609905d3cb80",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "119023b11a7e4876881fe109fe355b30cfa56cf4",
+      "tree": "6e642e7fd7bf1ea84b65072d1640b0ec65809884",
+      "base": "2f52d7fc5efae312769ff5a11b877c959aa9d375",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "a619eb32df55ff19d92e2a0811269aca2fc6e5c8ae5a8414fb8f1a719798c5ab",
+        "bytes": 1274,
+        "files": 1
+      },
+      "signal": {
+        "rationale": "Wrap SQL statements with text() and read results through mappings() to return plain dictionaries ordered by id. Preserve the existing engine.begin() transaction so empty batches work, prior rows persist, and any NOT NULL violation rolls back the entire batch; dependency pins remain unchanged.",
+        "model_usage": {
+          "input_tokens": 12379,
+          "output_tokens": 372,
+          "cache_read_input_tokens": 0,
+          "model": "gpt-6.1-sol",
+          "stop_reason": "end_turn"
+        }
+      },
+      "note": "Migrate execution and row conversion to supported SQLAlchemy 2.0 APIs.",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095866195394,
+    "previous": "5ca82051fdbbd71a5d56029889eba3ce49fbcd2c578d659220e73ac9c0848538",
+    "hash": "2401f6129b8345935aafc75e10b80142bbda4c5ffb25df7ac0e0b824c975c88b"
+  },
+  {
+    "case_id": "cb3ffb3f-8c70-4113-8071-609905d3cb80",
+    "seq": 7,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "119023b11a7e4876881fe109fe355b30cfa56cf4",
+      "tree": "6e642e7fd7bf1ea84b65072d1640b0ec65809884",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 390,
+          "output_digest": "41303b4e6f8e453bec28da768393fcfe604adcd2555163220110b7e3c02a9df6",
+          "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.014s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 93,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095866921700,
+    "previous": "2401f6129b8345935aafc75e10b80142bbda4c5ffb25df7ac0e0b824c975c88b",
+    "hash": "97f0e535d9b29b1661f17a1d06cf36ccd537041c1fa86a20fa1f0caabde063f3"
+  },
+  {
+    "case_id": "cb3ffb3f-8c70-4113-8071-609905d3cb80",
+    "seq": 8,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 1,
+      "elapsed_ms": 13422,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095866923703,
+    "previous": "97f0e535d9b29b1661f17a1d06cf36ccd537041c1fa86a20fa1f0caabde063f3",
+    "hash": "a2707692158c66367d44947a0cf88232da23f6eca6916aeae17b922e4bdac1fc"
+  }
+]

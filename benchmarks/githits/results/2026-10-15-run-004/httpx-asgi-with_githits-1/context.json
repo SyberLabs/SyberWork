@@ -1,0 +1,78 @@
+[
+  {
+    "target": "pypi:httpx@0.28.1",
+    "path": "httpx/_transports/asgi.py",
+    "content": "class ASGITransport(AsyncBaseTransport):\n    \"\"\"\n    A custom AsyncTransport that handles sending requests directly to an ASGI app.\n\n    ```python\n    transport = httpx.ASGITransport(\n        app=app,\n        root_path=\"/submount\",\n        client=(\"1.2.3.4\", 123)\n    )\n    client = httpx.AsyncClient(transport=transport)\n    ```\n\n    Arguments:\n\n    * `app` - The ASGI application.\n    * `raise_app_exceptions` - Boolean indicating if exceptions in the application\n       should be raised. Default to `True`. Can be set to `False` for use cases\n       such as testing the content of a client 500 response.\n    * `root_path` - The root path on which the ASGI application should be mounted.\n    * `client` - A two-tuple indicating the client IP and port of incoming requests.\n    ```\n    \"\"\"\n\n    def __init__(\n        self,\n        app: _ASGIApp,\n        raise_app_exceptions: bool = True,\n        root_path: str = \"\",\n        client: tuple[str, int] = (\"127.0.0.1\", 123),\n    ) -> None:\n        self.app = app\n        self.raise_app_exceptions = raise_app_exceptions\n        self.root_path = root_path\n        self.client = client\n\n    async def handle_async_request(\n        self,\n        request: Request,\n    ) -> Response:\n        assert isinstance(request.stream, AsyncByteStream)\n\n        # ASGI scope.\n        scope = {\n            \"type\": \"http\",\n            \"asgi\": {\"version\": \"3.0\"},\n            \"http_version\": \"1.1\",\n            \"method\": request.method,\n            \"headers\": [(k.lower(), v) for (k, v) in request.headers.raw],\n            \"scheme\": request.url.scheme,\n            \"path\": request.url.path,\n            \"raw_path\": request.url.raw_path.split(b\"?\")[0],\n            \"query_string\": request.url.query,\n            \"server\": (request.url.host, request.url.port),\n            \"client\": self.client,\n            \"root_path\": self.root_path,\n        }\n\n        # Request.\n        request_body_chunks = request.stream.__aiter__()\n        request_complete = False\n\n        # Response.\n        status_code = None\n        response_headers = None\n        body_parts = []\n        response_started = False\n        response_complete = create_event()\n\n        # ASGI callables.\n\n        async def receive() -> dict[str, typing.Any]:\n            nonlocal request_complete\n\n            if request_complete:\n                await response_complete.wait()\n                return {\"type\": \"http.disconnect\"}\n\n            try:\n                body = await request_body_chunks.__anext__()\n            except StopAsyncIteration:\n                request_complete = True\n                return {\"type\": \"http.request\", \"body\": b\"\", \"more_body\": False}\n            return {\"type\": \"http.request\", \"body\": body, \"more_body\": True}\n\n        async def send(message: typing.MutableMapping[str, typing.Any]) -> None:\n            nonlocal status_code, response_headers, response_started\n\n            if message[\"type\"] == \"http.response.start\":\n                assert not response_started\n\n                status_code = message[\"status\"]\n                response_headers = message.get(\"headers\", [])\n                response_started = True\n\n            elif message[\"type\"] == \"http.response.body\":\n                assert not response_complete.is_set()\n                body = message.get(\"body\", b\"\")\n                more_body = message.get(\"more_body\", False)\n\n                if body and request.method != \"HEAD\":\n                    body_parts.append(body)\n\n                if not more_body:\n                    response_complete.set()\n\n        try:\n            await self.app(scope, receive, send)\n        except Exception:  # noqa: PIE-786\n            if self.raise_app_exceptions:\n                raise\n\n            response_complete.set()\n            if status_code is None:\n                status_code = 500\n            if response_headers is None:\n                response_headers = {}\n",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 63,
+    "end_line": 180
+  },
+  {
+    "target": "pypi:httpx@0.28.1",
+    "path": "httpx/_client.py",
+    "content": "class AsyncClient(BaseClient):\n    \"\"\"\n    An asynchronous HTTP client, with connection pooling, HTTP/2, redirects,\n    cookie persistence, etc.\n\n    It can be shared between tasks.\n\n    Usage:\n\n    ```python\n    >>> async with httpx.AsyncClient() as client:\n    >>>     response = await client.get('https://example.org')\n    ```\n\n    **Parameters:**\n\n    * **auth** - *(optional)* An authentication class to use when sending\n    requests.\n    * **params** - *(optional)* Query parameters to include in request URLs, as\n    a string, dictionary, or sequence of two-tuples.\n    * **headers** - *(optional)* Dictionary of HTTP headers to include when\n    sending requests.\n    * **cookies** - *(optional)* Dictionary of Cookie items to include when\n    sending requests.\n    * **verify** - *(optional)* Either `True` to use an SSL context with the\n    default CA bundle, `False` to disable verification, or an instance of\n    `ssl.SSLContext` to use a custom context.\n    * **http2** - *(optional)* A boolean indicating if HTTP/2 support should be\n    enabled. Defaults to `False`.\n    * **proxy** - *(optional)* A proxy URL where all the traffic should be routed.\n    * **timeout** - *(optional)* The timeout configuration to use when sending\n    requests.\n    * **limits** - *(optional)* The limits configuration to use.\n    * **max_redirects** - *(optional)* The maximum number of redirect responses\n    that should be followed.\n    * **base_url** - *(optional)* A URL to use as the base when building\n    request URLs.\n    * **transport** - *(optional)* A transport class to use for sending requests\n    over the network.\n    * **trust_env** - *(optional)* Enables or disables usage of environment\n    variables for configuration.\n    * **default_encoding** - *(optional)* The default encoding to use for decoding\n    response text, if no charset information is included in a response Content-Type\n    header. Set to a callable for automatic character set detection. Default: \"utf-8\".\n    \"\"\"\n\n    def __init__(\n        self,\n        *,\n        auth: AuthTypes | None = None,\n        params: QueryParamTypes | None = None,\n        headers: HeaderTypes | None = None,\n        cookies: CookieTypes | None = None,\n        verify: ssl.SSLContext | str | bool = True,\n        cert: CertTypes | None = None,\n        http1: bool = True,\n        http2: bool = False,\n        proxy: ProxyTypes | None = None,\n        mounts: None | (typing.Mapping[str, AsyncBaseTransport | None]) = None,\n        timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,\n        follow_redirects: bool = False,\n        limits: Limits = DEFAULT_LIMITS,\n        max_redirects: int = DEFAULT_MAX_REDIRECTS,\n        event_hooks: None | (typing.Mapping[str, list[EventHook]]) = None,\n        base_url: URL | str = \"\",\n        transport: AsyncBaseTransport | None = None,\n        trust_env: bool = True,\n        default_encoding: str | typing.Callable[[bytes], str] = \"utf-8\",\n    ) -> None:\n        super().__init__(\n            auth=auth,\n            params=params,\n            headers=headers,\n            cookies=cookies,\n            timeout=timeout,\n            follow_redirects=follow_redirects,\n            max_redirects=max_redirects,\n            event_hooks=event_hooks,\n            base_url=base_url,\n            trust_env=trust_env,\n            default_encoding=default_encoding,\n        )\n\n        if http2:\n            try:\n                import h2  # noqa\n            except ImportError:  # pragma: no cover\n                raise ImportError(\n                    \"Using http2=True, but the 'h2' package is not installed. \"\n                    \"Make sure to install httpx using `pip install httpx[http2]`.\"\n                ) from None\n\n        allow_env_proxies = trust_env and transport is None\n        proxy_map = self._get_proxy_map(proxy, allow_env_proxies)\n\n        self._transport = self._init_transport(\n            verify=verify,\n            cert=cert,\n            trust_env=trust_env,\n            http1=http1,\n            http2=http2,\n            limits=limits,\n            transport=transport,\n        )\n\n        self._mounts: dict[URLPattern, AsyncBaseTransport | None] = {\n            URLPattern(key): None\n            if proxy is None\n            else self._init_proxy_transport(\n                proxy,\n                verify=verify,\n                cert=cert,\n                trust_env=trust_env,\n                http1=http1,\n                http2=http2,\n                limits=limits,\n            )\n            for key, proxy in proxy_map.items()\n        }\n        if mounts is not None:\n            self._mounts.update(\n                {URLPattern(key): transport for key, transport in mounts.items()}\n            )\n        self._mounts = dict(sorted(self._mounts.items()))\n\n    def _init_transport(\n        self,\n        verify: ssl.SSLContext | str | bool = True,\n        cert: CertTypes | None = None,\n        trust_env: bool = True,\n        http1: bool = True,\n        http2: bool = False,\n        limits: Limits = DEFAULT_LIMITS,\n        transport: AsyncBaseTransport | None = None,\n    ) -> AsyncBaseTransport:\n        if transport is not None:\n            return transport\n\n        return AsyncHTTPTransport(\n            verify=verify,\n            cert=cert,\n            trust_env=trust_env,\n            http1=http1,\n            http2=http2,\n            limits=limits,\n        )\n\n    def _init_proxy_transport(\n        self,\n        proxy: Proxy,\n        verify: ssl.SSLContext | str | bool = True,\n        cert: CertTypes | None = None,\n        trust_env: bool = True,\n        http1: bool = True,\n        http2: bool = False,\n        limits: Limits = DEFAULT_LIMITS,\n    ) -> AsyncBaseTransport:\n        return AsyncHTTPTransport(\n            verify=verify,\n            cert=cert,\n            trust_env=trust_env,\n            http1=http1,\n            http2=http2,\n            limits=limits,\n            proxy=proxy,\n        )\n\n    def _transport_for_url(self, url: URL) -> AsyncBaseTransport:\n        \"\"\"",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 1307,
+    "end_line": 1475
+  }
+]

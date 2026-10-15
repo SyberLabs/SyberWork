@@ -1,0 +1,66 @@
+{
+  "status": "unavailable",
+  "reason": "unverified_pinned_context",
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Asqlalchemy%402.0.36&path=lib%2Fsqlalchemy%2Fengine%2Fbase.py&start_line=1380&end_line=1440&wait_timeout_ms=20000",
+      "at": "2026-10-15T20:21:33.393513+00:00",
+      "authenticated": true,
+      "status": 200,
+      "request_id": "5ff9882e6b1285964c0f57244db4069a",
+      "retry_after": null,
+      "body_sha256": "4343d62eea0783babab342eda2f6f759c37e849c70e1482d1b0d7b624987ce5f",
+      "seconds": 0.875,
+      "body": {
+        "kind": "code",
+        "path": "lib/sqlalchemy/engine/base.py",
+        "repository_file_path": "lib/sqlalchemy/engine/base.py",
+        "is_binary": false,
+        "target_resolution": {
+          "requested": {
+            "kind": "package_exact_version",
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": null,
+            "git_ref": null,
+            "commit_sha": null
+          },
+          "resolved_requested": {
+            "kind": null,
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "served": {
+            "kind": null,
+            "registry": null,
+            "name": null,
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "freshness": "current",
+          "freshness_reason": "exact_current"
+        },
+        "code_index_state": "current",
+        "indexing_ref": null,
+        "metadata": {
+          "language": "python",
+          "total_lines": 3375
+        },
+        "content": {
+          "body": "    ) -> CursorResult[Any]:\n        r\"\"\"Executes a SQL statement construct and returns a\n        :class:`_engine.CursorResult`.\n\n        :param statement: The statement to be executed.  This is always\n         an object that is in both the :class:`_expression.ClauseElement` and\n         :class:`_expression.Executable` hierarchies, including:\n\n         * :class:`_expression.Select`\n         * :class:`_expression.Insert`, :class:`_expression.Update`,\n           :class:`_expression.Delete`\n         * :class:`_expression.TextClause` and\n           :class:`_expression.TextualSelect`\n         * :class:`_schema.DDL` and objects which inherit from\n           :class:`_schema.ExecutableDDLElement`\n\n        :param parameters: parameters which will be bound into the statement.\n         This may be either a dictionary of parameter names to values,\n         or a mutable sequence (e.g. a list) of dictionaries.  When a\n         list of dictionaries is passed, the underlying statement execution\n         will make use of the DBAPI ``cursor.executemany()`` method.\n         When a single dictionary is passed, the DBAPI ``cursor.execute()``\n         method will be used.\n\n        :param execution_options: optional dictionary of execution options,\n         which will be associated with the statement execution.  This\n         dictionary can provide a subset of the options that are accepted\n         by :meth:`_engine.Connection.execution_options`.\n\n        :return: a :class:`_engine.Result` object.\n\n        \"\"\"\n        distilled_parameters = _distill_params_20(parameters)\n        try:\n            meth = statement._execute_on_connection\n        except AttributeError as err:\n            raise exc.ObjectNotExecutableError(statement) from err\n        else:\n            return meth(\n                self,\n                distilled_parameters,\n                execution_options or NO_OPTIONS,\n            )\n\n    def _execute_function(\n        self,\n        func: FunctionElement[Any],\n        distilled_parameters: _CoreMultiExecuteParams,\n        execution_options: CoreExecuteOptionsParameter,\n    ) -> CursorResult[Any]:\n        \"\"\"Execute a sql.FunctionElement object.\"\"\"\n\n        return self._execute_clauseelement(\n            func.select(), distilled_parameters, execution_options\n        )\n\n    def _execute_default(\n        self,\n        default: DefaultGenerator,\n        distilled_parameters: _CoreMultiExecuteParams,\n        execution_options: CoreExecuteOptionsParameter,",
+          "start_line": 1380,
+          "end_line": 1440
+        }
+      },
+      "transport": "private-accounted-cli"
+    }
+  ],
+  "context": null
+}

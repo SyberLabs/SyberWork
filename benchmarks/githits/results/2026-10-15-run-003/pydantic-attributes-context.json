@@ -1,0 +1,66 @@
+{
+  "status": "unavailable",
+  "reason": "unverified_pinned_context",
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Apydantic%402.10.6&path=pydantic%2Fconfig.py&start_line=320&end_line=400&wait_timeout_ms=20000",
+      "at": "2026-10-15T20:21:28.805193+00:00",
+      "authenticated": true,
+      "status": 200,
+      "request_id": "c2d08486783c8eb7a6a2e774f3110627",
+      "retry_after": null,
+      "body_sha256": "c3888eaa90d9a050a04c730024bc677ec32c7aba6abe88d9297a3565950fdcfd",
+      "seconds": 0.734,
+      "body": {
+        "kind": "code",
+        "path": "pydantic/config.py",
+        "repository_file_path": "pydantic/config.py",
+        "is_binary": false,
+        "target_resolution": {
+          "requested": {
+            "kind": "package_exact_version",
+            "registry": "pypi",
+            "name": "pydantic",
+            "version": "2.10.6",
+            "repo_url": null,
+            "git_ref": null,
+            "commit_sha": null
+          },
+          "resolved_requested": {
+            "kind": null,
+            "registry": "pypi",
+            "name": "pydantic",
+            "version": "2.10.6",
+            "repo_url": "https://github.com/pydantic/pydantic",
+            "git_ref": "v2.10.6",
+            "commit_sha": "df05e69a8a3fb37628a0e3a33518ca0425334bc9"
+          },
+          "served": {
+            "kind": null,
+            "registry": null,
+            "name": null,
+            "version": "2.10.6",
+            "repo_url": "https://github.com/pydantic/pydantic",
+            "git_ref": "v2.10.6",
+            "commit_sha": "df05e69a8a3fb37628a0e3a33518ca0425334bc9"
+          },
+          "freshness": "current",
+          "freshness_reason": "exact_current"
+        },
+        "code_index_state": "current",
+        "indexing_ref": null,
+        "metadata": {
+          "language": "python",
+          "total_lines": 1049
+        },
+        "content": {
+          "body": "\n    alias_generator: Callable[[str], str] | AliasGenerator | None\n    \"\"\"\n    A callable that takes a field name and returns an alias for it\n    or an instance of [`AliasGenerator`][pydantic.aliases.AliasGenerator]. Defaults to `None`.\n\n    When using a callable, the alias generator is used for both validation and serialization.\n    If you want to use different alias generators for validation and serialization, you can use\n    [`AliasGenerator`][pydantic.aliases.AliasGenerator] instead.\n\n    If data source field names do not match your code style (e. g. CamelCase fields),\n    you can automatically generate aliases using `alias_generator`. Here's an example with\n    a basic callable:\n\n    ```python\n    from pydantic import BaseModel, ConfigDict\n    from pydantic.alias_generators import to_pascal\n\n    class Voice(BaseModel):\n        model_config = ConfigDict(alias_generator=to_pascal)\n\n        name: str\n        language_code: str\n\n    voice = Voice(Name='Filiz', LanguageCode='tr-TR')\n    print(voice.language_code)\n    #> tr-TR\n    print(voice.model_dump(by_alias=True))\n    #> {'Name': 'Filiz', 'LanguageCode': 'tr-TR'}\n    ```\n\n    If you want to use different alias generators for validation and serialization, you can use\n    [`AliasGenerator`][pydantic.aliases.AliasGenerator].\n\n    ```python\n    from pydantic import AliasGenerator, BaseModel, ConfigDict\n    from pydantic.alias_generators import to_camel, to_pascal\n\n    class Athlete(BaseModel):\n        first_name: str\n        last_name: str\n        sport: str\n\n        model_config = ConfigDict(\n            alias_generator=AliasGenerator(\n                validation_alias=to_camel,\n                serialization_alias=to_pascal,\n            )\n        )\n\n    athlete = Athlete(firstName='John', lastName='Doe', sport='track')\n    print(athlete.model_dump(by_alias=True))\n    #> {'FirstName': 'John', 'LastName': 'Doe', 'Sport': 'track'}\n    ```\n\n    Note:\n        Pydantic offers three built-in alias generators: [`to_pascal`][pydantic.alias_generators.to_pascal],\n        [`to_camel`][pydantic.alias_generators.to_camel], and [`to_snake`][pydantic.alias_generators.to_snake].\n    \"\"\"\n\n    ignored_types: tuple[type, ...]\n    \"\"\"A tuple of types that may occur as values of class attributes without annotations. This is\n    typically used for custom descriptors (classes that behave like `property`). If an attribute is set on a\n    class without an annotation and has a type that is not in this tuple (or otherwise recognized by\n    _pydantic_), an error will be raised. Defaults to `()`.\n    \"\"\"\n\n    allow_inf_nan: bool\n    \"\"\"Whether to allow infinity (`+inf` an `-inf`) and NaN values to float and decimal fields. Defaults to `True`.\"\"\"\n\n    json_schema_extra: JsonDict | JsonSchemaExtraCallable | None\n    \"\"\"A dict or callable to provide extra JSON schema properties. Defaults to `None`.\"\"\"\n\n    json_encoders: dict[type[object], JsonEncoder] | None\n    \"\"\"\n    A `dict` of custom JSON encoders for specific types. Defaults to `None`.\n\n    !!! warning \"Deprecated\"\n        This config option is a carryover from v1.\n        We originally planned to remove it in v2 but didn't have a 1:1 replacement so we are keeping it for now.\n        It is still deprecated and will likely be removed in the future.",
+          "start_line": 320,
+          "end_line": 400
+        }
+      },
+      "transport": "private-accounted-cli"
+    }
+  ],
+  "context": null
+}

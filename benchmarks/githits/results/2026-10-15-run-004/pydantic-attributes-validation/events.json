@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "e1cef4fd-7253-4213-b4cf-75ce816f67f9",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Migrate src/integration.py to Pydantic 2.10.6. serialize_user must accept both attribute objects and mappings, accept display_name or its displayName alias, coerce valid string IDs to integers, reject missing fields, invalid IDs and extra mapping fields, and output exactly id and displayName. Use the supported v2 validation/serialization APIs; keep the function signature and dependency pins."
+      },
+      "contract": [
+        "githits-pydantic-attributes",
+        1
+      ]
+    },
+    "at": 1792095795733871,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "23f168be8785c5e248b6f0fd6e092fc51731f087e3937d37187bf3ed5c050e4d"
+  },
+  {
+    "case_id": "e1cef4fd-7253-4213-b4cf-75ce816f67f9",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "101b51c592d69d78af52c1b78a43691b6a2d5045",
+        "tree": "dc0cd8b74e02a521b34176fd2ead3d1643f0fd75",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "101b51c592d69d78af52c1b78a43691b6a2d5045",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095795857381,
+    "previous": "23f168be8785c5e248b6f0fd6e092fc51731f087e3937d37187bf3ed5c050e4d",
+    "hash": "32b329ce9a6edb74f561e5684ad02611da67a5add58aebe1a9d5acdbf6250d96"
+  },
+  {
+    "case_id": "e1cef4fd-7253-4213-b4cf-75ce816f67f9",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "101b51c592d69d78af52c1b78a43691b6a2d5045",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095795859380,
+    "previous": "32b329ce9a6edb74f561e5684ad02611da67a5add58aebe1a9d5acdbf6250d96",
+    "hash": "57f8ae4f49d22ef033ebc75ee7a5ff7afb91401fe84d510444a01a654dd7a441"
+  },
+  {
+    "case_id": "e1cef4fd-7253-4213-b4cf-75ce816f67f9",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Migrate src/integration.py to Pydantic 2.10.6. serialize_user must accept both attribute objects and mappings, accept display_name or its displayName alias, coerce valid string IDs to integers, reject missing fields, invalid IDs and extra mapping fields, and output exactly id and displayName. Use the supported v2 validation/serialization APIs; keep the function signature and dependency pins.",
+        "digest": "0925d5907cf9b22a819ab6de886447e6c459050ec631dd1e0ee69c87d0128ef0",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "a5e751333a6ab852901112fb2fb0dfd681e21b59",
+            "lines": [
+              1,
+              15
+            ],
+            "bytes": 328,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "101b51c592d69d78af52c1b78a43691b6a2d5045",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792095797009648,
+    "previous": "57f8ae4f49d22ef033ebc75ee7a5ff7afb91401fe84d510444a01a654dd7a441",
+    "hash": "d2e990da876ba19787f221fad5522b1f4c24ca74092f184bd492be31a936e09f"
+  },
+  {
+    "case_id": "e1cef4fd-7253-4213-b4cf-75ce816f67f9",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "101b51c592d69d78af52c1b78a43691b6a2d5045",
+      "context_digest": "0925d5907cf9b22a819ab6de886447e6c459050ec631dd1e0ee69c87d0128ef0",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095797011648,
+    "previous": "d2e990da876ba19787f221fad5522b1f4c24ca74092f184bd492be31a936e09f",
+    "hash": "60bb81d4039905e59c95751e64c7d3dfe8e8077e2513c919ba8f6f9664b0bf4b"
+  },
+  {
+    "case_id": "e1cef4fd-7253-4213-b4cf-75ce816f67f9",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "2a5337e44c5d826dbbe560c05e2bbe493ba1e488",
+      "tree": "ff79e0dae36a6ea43e25ca7c8bb34ef65ca597fa",
+      "base": "101b51c592d69d78af52c1b78a43691b6a2d5045",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "30ed92e258fa9b5996278e42b4b4fbe743f9548602b59d766850e6f327d81bf8",
+        "bytes": 851,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095797579956,
+    "previous": "60bb81d4039905e59c95751e64c7d3dfe8e8077e2513c919ba8f6f9664b0bf4b",
+    "hash": "9f25078d0bf010ed0ee157acf1ca3c2eb5f1fc80790d7d3cfc9cea692084aa3a"
+  },
+  {
+    "case_id": "e1cef4fd-7253-4213-b4cf-75ce816f67f9",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 562,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095797581958,
+    "previous": "9f25078d0bf010ed0ee157acf1ca3c2eb5f1fc80790d7d3cfc9cea692084aa3a",
+    "hash": "d644322dde87f347e93adf648e157ff9e563cc5a9fec9fa978f7fe1e71f04a63"
+  },
+  {
+    "case_id": "e1cef4fd-7253-4213-b4cf-75ce816f67f9",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "2a5337e44c5d826dbbe560c05e2bbe493ba1e488",
+      "tree": "ff79e0dae36a6ea43e25ca7c8bb34ef65ca597fa",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 202,
+          "output_digest": "8ee4669655aaed29bbc70e28a8ef25f73d1ebe2b002448e637699b5a2cbcaa41",
+          "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.000s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 93,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792095798110822,
+    "previous": "d644322dde87f347e93adf648e157ff9e563cc5a9fec9fa978f7fe1e71f04a63",
+    "hash": "b43fc751b4f7dd1894fc3ce71f3ce2938b844138bc27ab444c444794ee09fe0e"
+  }
+]

@@ -1,0 +1,34 @@
+{
+  "protocol": "syberlabs.search/v0alpha1",
+  "objective": "Migrate src/integration.py to HTTPX 0.28.1. fetch_json must call the supplied ASGI app in process, never use a network server, pass headers and query strings, raise HTTPStatusError for error responses, return decoded JSON, and close its client. Keep its async signature and do not change dependency pins or checks.",
+  "base": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+  "scope": [
+    "requirements.txt",
+    "src"
+  ],
+  "context": [
+    {
+      "path": "src/integration.py",
+      "lines": [
+        1,
+        8
+      ],
+      "reason": "match",
+      "text": "import httpx\n\n\nasync def fetch_json(app, path, headers=None):\n    async with httpx.AsyncClient(app=app, base_url=\"http://test\", headers=headers) as client:\n        response = await client.get(path)\n        response.raise_for_status()\n        return response.json()"
+    },
+    {
+      "path": "requirements.txt",
+      "lines": [
+        1,
+        13
+      ],
+      "reason": "match",
+      "text": "annotated-types==0.7.0\nanyio==4.9.0\ncertifi==2025.1.31\ngreenlet==3.1.1\nh11==0.16.0\nhttpcore==1.0.9\nhttpx==0.28.1\nidna==3.10\npydantic==2.10.6\npydantic_core==2.27.2\nsniffio==1.3.1\nSQLAlchemy==2.0.36\ntyping_extensions==4.12.2"
+    }
+  ],
+  "files": [
+    "requirements.txt",
+    "src/integration.py"
+  ],
+  "seed": 1000
+}

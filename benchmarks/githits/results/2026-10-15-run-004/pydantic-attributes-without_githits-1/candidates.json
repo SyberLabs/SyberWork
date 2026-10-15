@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "d6a93a501ae184b8b0389e078c49caf8dfda8cc2",
+    "tree": "58f98cabd95d96516f14b7f2735500d5363c6919",
+    "base": "101b51c592d69d78af52c1b78a43691b6a2d5045",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 888,
+    "signal": {
+      "rationale": "ConfigDict enables attribute and mapping validation, accepts field names and aliases, and forbids extra mapping fields. model_validate coerces valid string IDs and rejects missing or invalid fields; model_dump(by_alias=True) outputs id and displayName.",
+      "model_usage": {
+        "input_tokens": 12338,
+        "output_tokens": 316,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Migrated user validation and serialization to Pydantic v2 while preserving dependency pins.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 233,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.000s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 125,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

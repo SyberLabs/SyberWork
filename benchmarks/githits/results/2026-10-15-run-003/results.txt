@@ -1,0 +1,10 @@
+Budget K = 2 model calls per arm; stop at first host-verified acceptable candidate.
+Authored integration regressions against pinned packages; exploratory, not representative.
+Completed matched pairs: 0/3.
+No comparative result. GitHits improvement, regression and parity are unmeasured.
+httpx-asgi with_githits seed=1: unavailable; solved=n/a; calls=0; reason=unverified_pinned_context
+httpx-asgi without_githits seed=1: completed; solved=True; calls=1; reason=none
+pydantic-attributes with_githits seed=1: unavailable; solved=n/a; calls=0; reason=unverified_pinned_context
+pydantic-attributes without_githits seed=1: completed; solved=True; calls=1; reason=none
+sqlalchemy-execute without_githits seed=1: completed; solved=True; calls=1; reason=none
+sqlalchemy-execute with_githits seed=1: unavailable; solved=n/a; calls=0; reason=unverified_pinned_context

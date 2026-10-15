@@ -1,0 +1,12 @@
+Budget K = 2 model calls per arm; stop at first host-verified acceptable candidate.
+Authored integration regressions against pinned packages; exploratory, not representative.
+Completed matched pairs: 3/3.
+Without GitHits: 3/3; with GitHits: 3/3.
+Discordant pairs: GitHits-only solves 0, baseline-only solves 0.
+This small convenience sample does not establish a general improvement.
+httpx-asgi with_githits seed=1: completed; solved=True; calls=1; reason=none
+httpx-asgi without_githits seed=1: completed; solved=True; calls=1; reason=none
+pydantic-attributes with_githits seed=1: completed; solved=True; calls=1; reason=none
+pydantic-attributes without_githits seed=1: completed; solved=True; calls=1; reason=none
+sqlalchemy-execute without_githits seed=1: completed; solved=True; calls=1; reason=none
+sqlalchemy-execute with_githits seed=1: completed; solved=True; calls=1; reason=none

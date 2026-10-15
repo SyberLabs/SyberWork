@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "changes": {
+        "src/integration.py": "from sqlalchemy import text\n\n\ndef upsert_and_list(engine, records):\n    with engine.begin() as connection:\n        connection.execute(text(\"CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)\"))\n        for record in records:\n            connection.execute(text(\"INSERT INTO items(id, name) VALUES (:id, :name) \"\n                                    \"ON CONFLICT(id) DO UPDATE SET name=excluded.name\"), record)\n        rows = connection.execute(text(\"SELECT id, name FROM items ORDER BY id\")).mappings()\n        return [dict(row) for row in rows]\n"
+      },
+      "message": "Migrate SQL execution and row conversion to SQLAlchemy 2.0 APIs.",
+      "signal": {
+        "rationale": "Use text() for executable SQL with bound parameters and mappings() to return plain dictionaries ordered by id. The existing transaction preserves prior rows, accepts empty batches, and rolls back all batch writes on constraint failure; the SQLAlchemy==2.0.36 dependency pin remains unchanged."
+      }
+    }
+  ],
+  "recommended": [
+    0
+  ],
+  "usage": {
+    "model": "gpt-6.1-sol",
+    "input_tokens": 12381,
+    "output_tokens": 397,
+    "cache_read_input_tokens": 11008,
+    "stop_reason": "end_turn"
+  }
+}

@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "8396c03e858b5e2201201347b22ced4fbe7dc74d",
+    "tree": "c0de29e3593a48b5b06f075d34263eac5733d8b8",
+    "base": "629639ab088fd307c4dff88118823631e165decd",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 751,
+    "signal": {
+      "rationale": "ASGITransport calls the supplied app in process while preserving headers, query strings, status validation, and JSON decoding. The async context manager closes the client; dependency pins remain unchanged.",
+      "model_usage": {
+        "input_tokens": 12308,
+        "output_tokens": 373,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Use HTTPX 0.28.1’s explicit ASGI transport.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 217,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.026s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 110,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "2b3be10635e1a71abda4218d3e95859695885b04",
+    "tree": "aee7faad5e4777d5516dc6b3933d03f32d299f41",
+    "base": "cb234d9411fcd8ebc387b1c758b8498c2d607442",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 770,
+    "signal": {
+      "rationale": "ASGITransport sends requests directly to the supplied app in process, preserving headers and URL query strings. The existing async context manager, status check, and JSON decoding retain client cleanup and HTTPStatusError behavior without changing dependency pins or checks.",
+      "model_usage": {
+        "input_tokens": 15374,
+        "output_tokens": 252,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Migrate fetch_json to HTTPX 0.28.1 using an explicit ASGI transport.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 218,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.007s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

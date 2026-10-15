@@ -1,11 +1,45 @@
 # Validation record — October 15, 2026
 
-Claim ceiling: tested harness and measured baseline; zero completed GitHits
-pairs. This is not an authenticated GitHits integration acceptance record.
+Claim ceiling: same-host paired measurement and replay; three authored tasks,
+one repeat. The observed 3/3 versus 3/3 result does not establish general parity
+or improvement.
+
+## Authenticated paired follow-up
+
+Run [004](results/2026-10-15-run-004/results.json), at 13:23 PDT, completed all
+three pairs. Both arms solved all tasks on the first call. All six planned
+authenticated reads returned HTTP 200 through private accounting, with exact
+version/repository/commit identity checked. Treatment prompts contain their
+saved context, and each pair shares one base commit. No GitHits token pattern
+or private usage runtime path was found in the public evidence scan.
+
+The [replay](results/2026-10-15-recheck-004.json) verified 140 evidence-file
+hashes and nine fixture/arm records, reproducing 12 tree evaluations: three
+broken baselines, three references and six model fixes. Source is `166d51f`
+plus the [saved patch](results/2026-10-15-run-004-source.patch); its exact digest
+is recorded in `environment.json` and `REPORT.md`. Commit `4188cac` contains
+that same validator/test implementation. This run did not start from a clean
+checkout. Tasks, source ranges, model configuration and host checks stayed fixed.
+
+Run [003](results/2026-10-15-run-003/results.json) obtained HTTP 200 for all
+three initial reads but rejected valid metadata in our validator. Its unchanged
+86-file archive and [replay](results/2026-10-15-recheck-003.json) retain three
+baseline fixes and zero completed pairs. It is not pooled with 004. Two added
+regression tests cover the real response shape and rejection of missing or
+conflicting package, repository, commit and version evidence. All 16 focused
+offline tests passed after the fix.
+
+The local full suite passed: **278 tests, 22 skipped**, in 392.591 seconds,
+using the pinned benchmark virtual environment. This is separate from the
+earlier overnight suite results below.
+
+The 23 conformance golden traces matched after the fix. GitHub CI passed for
+the validator/source commit [`4188cac`](https://github.com/SyberLabs/SyberWork/actions/runs/38801619308).
+The brief was inspected at a 390 by 844 CSS-pixel viewport without overflow.
 
 ## Benchmark evidence
 
-Final run: [2026-10-15-run-002](results/2026-10-15-run-002/results.json).
+Earlier run: [2026-10-15-run-002](results/2026-10-15-run-002/results.json).
 Source: `9e81b6bf5070983f0bad34929df69975984e88f0`, empty source diff.
 Requested model: `gpt-6.1-sol`, high effort; Codex CLI
 `0.162.0-alpha.17.2`; one repeat, two-call cap. All three baseline fixes passed
@@ -116,7 +150,6 @@ under `benchmarks/githits/`; regression tests are in `tests/test_githits.py`.
 No core package, protocol, policy, admission rule or runtime dependency changed.
 Branch: `bench/githits-verified`. No pull request or merge.
 
-Next permissible package: provide an existing approved GitHits credential,
-run into a fresh evidence directory, inspect exact served versions and
-complete the matched pairs. A harder task set requires a new preregistration
-before observing either arm. Do not reuse this result as a claim of uplift.
+The authenticated paired follow-up is complete. A harder task set requires
+a new preregistration before observing either arm. Do not reuse this observed
+tie as a claim of general parity or uplift.

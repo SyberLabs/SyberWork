@@ -1,91 +1,95 @@
-# GitHits x SyberWork: no comparative result yet
+# GitHits x SyberWork: 3/3 fixes in both arms
 
 **Draft meeting brief — October 15, 2026, Pacific time.**
-Owner: Seth Carlson. Acting agent: Codex. Claim ceiling: implemented and
-tested harness; measured baseline; GitHits comparison unavailable.
+Owner: Seth Carlson. Acting agent: Codex. Evidence grade: same-host measured
+and replayed candidate checks; exploratory authored task set.
 
-**The baseline produced 3/3 host-verified fixes, each on its first model call.
-GitHits returned HTTP 401 for all three pinned-source requests. Completed
-matched pairs: 0/3. We cannot claim improvement, regression, or parity.**
+**Three matched pairs completed. Without GitHits: 3/3 host-verified fixes.
+With GitHits: 3/3. All six fixes passed on their first model call. GitHits-only
+solves: 0; baseline-only solves: 0. No uplift was observed on this task set.**
 
-[One-screen brief](phone.html) · [Raw final results](results/2026-10-15-run-002/results.json)
-· [Model-free recheck](results/2026-10-15-recheck-002.json)
+[One-screen brief](phone.html) · [Raw paired results](results/2026-10-15-run-004/results.json)
+· [Host replay](results/2026-10-15-recheck-004.json)
 
-## What was actually measured
+## What the result supports
 
-Run 002 began at 00:10 PDT, using source
-`9e81b6bf5070983f0bad34929df69975984e88f0` with no source diff.
-The requested model was `gpt-6.1-sol`, effort `high`, with at most two calls
-per task and a stop at the first host-verified fix. No repair call was needed.
+The authenticated GitHits integration supplied the six planned source
+excerpts at the pinned package versions. The same patch provider solved
+every task with and without that context. This is an observed tie on three
+authored integration regressions, not evidence of general equivalence or
+improvement. The baseline reached the ceiling on this set.
 
-- **HTTPX 0.28.1:** migrate the removed ASGI client shortcut. Host checks passed.
+- **HTTPX 0.28.1:** migrate the removed ASGI client shortcut. Both arms passed.
 - **Pydantic 2.10.6:** migrate attribute/mapping validation and serialization.
-  Host checks passed.
+  Both arms passed.
 - **SQLAlchemy 2.0.36:** migrate statement execution and row mappings while
-  retaining transaction rollback. Host checks passed.
+  retaining transaction rollback. Both arms passed.
 
-These are authored integration regressions using real installed packages,
-not sampled upstream issues or customer bugs. Every starting version failed
-behavior checks with the correct dependency version; every held-out reference
-fix passed before the model run. Each model fix then passed its own pinned
-version check, behavior suite and admission preview. SyberWork ran these
-checks on the candidate Git tree; model assertions were not evidence.
+These use real installed packages, but are not sampled upstream issues or
+customer bugs. Before either model arm, every starting implementation failed
+behavior checks with the correct dependency version, and every held-out
+reference fix passed. Each model fix passed the pinned-version check, behavior
+suite and admission preview. SyberWork ran the checks on exact candidate Git
+trees; model assertions never counted.
 
-The final evidence is committed at
-[`6a7abf6`](https://github.com/SyberLabs/SyberWork/commit/6a7abf663265faa4fd5b0d2231b5c04098327bcc).
-It includes exact model stdin/output, host events, candidate commit/tree
-identities, package pins, Git bundles and raw-byte hashes. The model-free
-recheck reproduced all three broken baselines, reference fixes and model
-fixes. This is a recheck on the same host, not external validation.
+## How it was measured
 
-## Why there is no GitHits number
-
-All three `/v1/read` responses were `401 AUTHENTICATION_REQUIRED`, with
-request IDs and bodies saved in the per-task context records. No existing
-GitHits token was available in the environment. Hosted MCP initialization
-also returned 401. No account was created or new access granted.
-
-While this task was running, upstream `main` adopted private usage accounting
-in `a1ccbdb`. The rerun path now honors that requirement and refuses a direct
-fallback. A [later accounted access check](results/accounted-access-2026-10-15.json)
-still returned 401 for all three dependencies. Accounting was available;
-credentials were not. Historical model results and their original transport
-records were retained without alteration.
-
-Those arms are **unavailable**, with `solved: null`; they are not failed fixes
-and do not enter a success-rate denominator. Public OpenAPI access does not
-prove authenticated package retrieval. The positive retrieval integration
-is implemented against that schema and tested offline, but remains
-unverified against an authenticated live response.
-
-## Limits and next step
+Run 004 began at **13:23 PDT**. Both arms used the same per-task base commit,
+pins, objective, mutable `src/` scope, checks, requested `gpt-6.1-sol` model,
+high effort and two-call maximum, stopping at the first passing candidate.
+There was one repeat and a fixed shuffled arm order. No repair call was needed.
 
 The model was a bounded JSON patch proposer with tools disabled. The host
-would add preselected GitHits source excerpts in the treatment. This does
-not measure unrestricted coding agents, agent-driven MCP retrieval, or a
-GitHits-specific advantage over equal-size ordinary documentation.
-The CLI reports the requested model alias, not an immutable served snapshot.
-Calls are matched; input tokens and dollars are not. No dollar estimate or
-latency comparison is asserted. Host: Windows 11, CPython 3.12.14, Ryzen 7
-9800X3D, about 32 GB memory; full conditions are in the evidence.
+added preselected GitHits source in the treatment. This does not measure
+unrestricted coding agents, agent-driven MCP discovery, or a GitHits-specific
+advantage over equal-size ordinary documentation. The CLI reports a requested
+model alias, not an immutable served snapshot. Calls are matched; input tokens
+and dollars are not. No cost or latency comparison is asserted.
 
-The baseline saturated this task set, so it has no remaining room to show
-more fixes. Supply an approved `GITHITS_API_TOKEN` and complete the existing
-paired run to verify the integration. To test uplift, preregister a harder,
-blinded task set before running either arm. Retain this result.
+All six planned `/v1/read` requests returned HTTP 200 through approved private
+usage accounting. The validator matched each requested/resolved package to
+the served repository, exact version and full commit, and checked path and
+line bounds. Saved receipts and exact model stdin show the supplied context.
+The token stayed in a temporary environment; neither it nor the private
+accounting ledger is included. Accounting units are CLI invocations, not an
+API-volume measurement.
 
-Run 001 is also retained, with its
-[Windows prompt-capture limitation](results/2026-10-15-run-001-NOTES.md).
-Run 002 repeated the unchanged tasks after fixing capture; the runs are not
-pooled. All ambiguous choices are in [DECISIONS.md](DECISIONS.md).
+The measured checkout was `166d51fa15bbddb9741400e55da31e9e0f30cc01` plus the
+[exact saved source patch](results/2026-10-15-run-004-source.patch), SHA-256
+`348a4cd69bb41eea0d381ce2509672fa342bdc52c2c5e7be19287ef905322f2a`.
+It fixes authenticated response validation and adds regression coverage;
+it does not change tasks, source ranges, prompts, budgets or host checks.
+Commit [`4188cac`](https://github.com/SyberLabs/SyberWork/commit/4188cac7ab36adcead0f2b12351d44e791646993)
+contains the same implementation. The recorded source diff is intentional
+provenance, not a clean-checkout claim.
+The runner hashes stripped diff text, so the saved patch omits its terminal
+newline. Add one newline before passing it to `git apply`; this reconstruction
+was checked against both committed files in `4188cac`.
 
-## Reproduce and validation
+The 140 manifest-covered evidence files retain exact model input/output,
+host events, candidate identities, pins and self-contained Git bundles. The
+model-free replay reproduced all **12 tree evaluations**: three broken
+baselines, three reference fixes and six model fixes. This is a replay on the
+same host, not independent external validation. Host: Windows 11, CPython
+3.12.14, Ryzen 7 9800X3D, about 32 GB memory.
 
-[README.md](README.md) gives the environment, commands and evidence format.
-The recheck needs the pinned dependencies and Git, with no model, token or
-network. [VALIDATION.md](VALIDATION.md) records the repository checks and the
-stock Windows clean-install failure, including the passing environment
-workaround. Host checks are controlled subprocess execution, not a sandbox.
+## Earlier attempts and limits
 
-This task pushed only `bench/githits-verified`. No pull request, merge,
-deployment or write to `main` is part of this work.
+Runs 001 and 002 lacked a token and completed zero pairs; their standalone
+baselines are retained and are not pooled into this result. Run 001 also has
+a [Windows prompt-capture limitation](results/2026-10-15-run-001-NOTES.md).
+Run 003 authenticated successfully, but our validator rejected a valid
+repository-backed response: package identity appeared in `resolved_requested`
+while `served` carried repository/version/commit with null package fields.
+It completed zero pairs. Its [raw evidence](results/2026-10-15-run-003/results.json)
+and [replay](results/2026-10-15-recheck-003.json) are preserved. Run 004 repeats
+both arms after that fix; no tasks or excerpts were selected based on outcomes.
+
+To test whether GitHits produces more fixes, preregister a harder, blinded
+task set before running either arm. Keep this saturated result visible.
+
+[README.md](README.md) provides reproduction commands and evidence format.
+[VALIDATION.md](VALIDATION.md) records repository checks and the existing
+Windows clean-install limitation. Host checks are controlled subprocess
+execution, not a security sandbox. Decisions are in [DECISIONS.md](DECISIONS.md).
+Only `bench/githits-verified` is pushed; no PR, merge or deployment is included.
