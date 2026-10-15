@@ -18,6 +18,12 @@ All nine saved Git-tree evaluations reproduced their pass/fail states and
 exit codes. Each evaluation has a dependency-version check and a behavior
 check. The candidate trees change only `src/integration.py`.
 
+A fresh clone from the saved branch bundle at `7cb9928`, with Windows
+`core.autocrlf=true`, also passed the same 86-file verification and nine-tree
+host recheck. The first deep-path checkout hit Git's Windows filename limit;
+cloning with `--config core.longpaths=true` succeeded. The README and handoff
+include that per-checkout setting. No system setting was changed.
+
 The exact archived bytes also matched after staging in Git. Run-local and
 parent `.gitattributes` preserve raw bytes; whitespace lint remains active on
 source and documentation. Early run 001 is retained with a separate capture

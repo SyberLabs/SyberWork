@@ -100,3 +100,9 @@ Claim ceiling at start: proposed; no model comparison measured.
     GitHits retrieval and the causal comparison remain unmeasured. Stop at
     this concrete credential boundary rather than fabricating a treatment
     or spending the remaining window on an unregistered replacement task.
+21. A portable branch bundle must include both the branch ref and `HEAD`,
+    and Windows clones of deeply nested evidence need
+    `--config core.longpaths=true` before checkout. A fresh clone using that
+    setting and `core.autocrlf=true` passed the 86-file manifest verification
+    and all nine host re-evaluations. Add the setting to the handoff; keep
+    runtime code, fixtures and measurements unchanged.

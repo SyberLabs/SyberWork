@@ -42,8 +42,18 @@ sandbox**. No change is made to the core protocol, admission, or evaluator.
 ## Reproduce
 
 Python 3.11+, Git, the Codex CLI, and an existing model login are required.
-The main packages remain free of runtime dependencies. Make an isolated
-virtual environment and install this benchmark's fully version-pinned extras:
+The main packages remain free of runtime dependencies.
+
+On Windows, enable long paths for the clone before checkout: the archived
+host journals can exceed Git's default path limit in a deep workspace.
+This setting applies to the new checkout only.
+
+```powershell
+git clone --config core.longpaths=true --branch bench/githits-verified https://github.com/SyberLabs/SyberWork.git
+```
+
+In the checkout, make an isolated virtual environment and install this
+benchmark's fully version-pinned extras:
 
 ```powershell
 # Replace the first path with a working Python interpreter on this machine.
