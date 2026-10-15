@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "67158099-3d57-4d69-b1bb-39ed06ee7a01",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Fix import_rows(session, records) for SQLAlchemy 2.0.36. Keep Base and Item (id primary key; name unique and non-null). The caller owns the Session and its outer transaction: never commit, close or roll it back. Attempt each input row in its own savepoint, flush it there, and continue after IntegrityError. Return {'accepted': successful IDs in input order, 'rejected': zero-based positions of rows failing integrity}. Do not alter existing rows. Keep earlier successful rows and the caller's preexisting pending changes when a later row fails. The Session must remain usable afterward. A later caller rollback must undo every successful insert in this call. Accept empty input and repeated calls. Do not swallow non-integrity exceptions or add dependencies."
+      },
+      "contract": [
+        "task-T05",
+        1
+      ]
+    },
+    "at": 1792099445895564,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "e8ca3705d964f0efc3d998251cf7fe1143337f2e9b8ab5e3fc859c9e1ad5b472"
+  },
+  {
+    "case_id": "67158099-3d57-4d69-b1bb-39ed06ee7a01",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "0dcae159a3714d65ebc5cbd971a933aa626db455",
+        "tree": "51e5653ab2dc73a6038032d4e128e90d2055c65d",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "0dcae159a3714d65ebc5cbd971a933aa626db455",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099446013354,
+    "previous": "e8ca3705d964f0efc3d998251cf7fe1143337f2e9b8ab5e3fc859c9e1ad5b472",
+    "hash": "2955805717914b299e828cb10d56191e9f47733efd554fc94f50ad44659dddbc"
+  },
+  {
+    "case_id": "67158099-3d57-4d69-b1bb-39ed06ee7a01",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "0dcae159a3714d65ebc5cbd971a933aa626db455",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099446015356,
+    "previous": "2955805717914b299e828cb10d56191e9f47733efd554fc94f50ad44659dddbc",
+    "hash": "339369b92d200b389d75e4197873f18aba71b5ffd2a6c2f944c88a7533114c92"
+  },
+  {
+    "case_id": "67158099-3d57-4d69-b1bb-39ed06ee7a01",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Fix import_rows(session, records) for SQLAlchemy 2.0.36. Keep Base and Item (id primary key; name unique and non-null). The caller owns the Session and its outer transaction: never commit, close or roll it back. Attempt each input row in its own savepoint, flush it there, and continue after IntegrityError. Return {'accepted': successful IDs in input order, 'rejected': zero-based positions of rows failing integrity}. Do not alter existing rows. Keep earlier successful rows and the caller's preexisting pending changes when a later row fails. The Session must remain usable afterward. A later caller rollback must undo every successful insert in this call. Accept empty input and repeated calls. Do not swallow non-integrity exceptions or add dependencies.",
+        "digest": "a09fb409ce0d3e49038b03d57bc641c84febe4587ee8abd6fd21e9fd33d5597c",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "bd75631e1c1d54ac194da31f7a0312afcfe7de87",
+            "lines": [
+              1,
+              11
+            ],
+            "bytes": 447,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "0dcae159a3714d65ebc5cbd971a933aa626db455",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099447487651,
+    "previous": "339369b92d200b389d75e4197873f18aba71b5ffd2a6c2f944c88a7533114c92",
+    "hash": "668c47e99dfb336ce59be1719bbaf15241e8ece76e58a74821e7ebd52dadbafe"
+  },
+  {
+    "case_id": "67158099-3d57-4d69-b1bb-39ed06ee7a01",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "0dcae159a3714d65ebc5cbd971a933aa626db455",
+      "context_digest": "a09fb409ce0d3e49038b03d57bc641c84febe4587ee8abd6fd21e9fd33d5597c",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099447489650,
+    "previous": "668c47e99dfb336ce59be1719bbaf15241e8ece76e58a74821e7ebd52dadbafe",
+    "hash": "3ac15a298c4c061f8859439ac5409db9bfabd94e00037a2f1e416e9372f79824"
+  },
+  {
+    "case_id": "67158099-3d57-4d69-b1bb-39ed06ee7a01",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "17952fdfe26b723d7b9d05f2fe420f4c139959c1",
+      "tree": "3b9bb2fec8526fb8301144fdd396eb185707f7ac",
+      "base": "0dcae159a3714d65ebc5cbd971a933aa626db455",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "2262e34ee237ebd914ecf98920744c8745f0d1d6ea4669958a0162b1f5862bf8",
+        "bytes": 1366,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099448142569,
+    "previous": "3ac15a298c4c061f8859439ac5409db9bfabd94e00037a2f1e416e9372f79824",
+    "hash": "6d67f59cc754c1f46a608496df236c897550ddf8fad86f1c16f431ef9300dc7d"
+  },
+  {
+    "case_id": "67158099-3d57-4d69-b1bb-39ed06ee7a01",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 657,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099448145568,
+    "previous": "6d67f59cc754c1f46a608496df236c897550ddf8fad86f1c16f431ef9300dc7d",
+    "hash": "6207fa6033be63f0ac64e8dc99d7257d45b4e8710db3f05be77fa6e261d5b91b"
+  },
+  {
+    "case_id": "67158099-3d57-4d69-b1bb-39ed06ee7a01",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "17952fdfe26b723d7b9d05f2fe420f4c139959c1",
+      "tree": "3b9bb2fec8526fb8301144fdd396eb185707f7ac",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 437,
+          "output_digest": "dd74a93ffde369c932266349f924f83d85a76d8ebe74d133d969bc1b458cb471",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.023s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 125,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099448940384,
+    "previous": "6207fa6033be63f0ac64e8dc99d7257d45b4e8710db3f05be77fa6e261d5b91b",
+    "hash": "908beafc55c00305cddb440eb95c4fd358e02f08fb4567a9cdd92a0c48c00585"
+  }
+]

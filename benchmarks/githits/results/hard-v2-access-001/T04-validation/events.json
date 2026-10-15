@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "cf20419b-5594-4c82-99de-49939c318b93",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Migrate the custom Money type to Pydantic 2.10.6/pydantic-core 2.27.2. Keep Money(amount, currency), its amount/currency attributes and make_adapter(). The adapter must accept an existing Money instance unchanged in Python mode, or a mapping with exactly amount and currency, in both Python and JSON mode. amount must be a strict string in canonical signed decimal form with exactly two fractional digits, no leading zeros except zero itself, no exponent or whitespace; negatives are allowed. currency must be USD/EUR. Invalid mappings, numbers, booleans, nonfinite values, extra/missing keys and arbitrary strings must raise Pydantic ValidationError. Store amount as Decimal without float conversion. Serialize to {'amount': fixed-two-place string, 'currency': currency} in both dump_python and dump_json. TypeAdapter(list[Money]) must work. Generated JSON schema must describe the mapping, require both fields, forbid extras, expose a string amount pattern and enumerate currencies. Use supported core-schema hooks, not a v1 validator workaround."
+      },
+      "contract": [
+        "task-T04",
+        1
+      ]
+    },
+    "at": 1792099440021359,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "d86c790af8816ea3bb6ae14dc321528db8ace06c5150b8145a408aad63916f75"
+  },
+  {
+    "case_id": "cf20419b-5594-4c82-99de-49939c318b93",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "43a19033f312023f2c5b4342a122ebb7199edbf7",
+        "tree": "0493b815a997c66956208fadedf5a301007f205a",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "43a19033f312023f2c5b4342a122ebb7199edbf7",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099440153932,
+    "previous": "d86c790af8816ea3bb6ae14dc321528db8ace06c5150b8145a408aad63916f75",
+    "hash": "bfbe0eae02098d21c9f65f1e7c74c736fdb5f34ca94ed068f473aabf8266437c"
+  },
+  {
+    "case_id": "cf20419b-5594-4c82-99de-49939c318b93",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "43a19033f312023f2c5b4342a122ebb7199edbf7",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099440155932,
+    "previous": "bfbe0eae02098d21c9f65f1e7c74c736fdb5f34ca94ed068f473aabf8266437c",
+    "hash": "86c61497efd470e673c8d5681bb6138fe6f88320c8ab6c641e302319b682e5cf"
+  },
+  {
+    "case_id": "cf20419b-5594-4c82-99de-49939c318b93",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Migrate the custom Money type to Pydantic 2.10.6/pydantic-core 2.27.2. Keep Money(amount, currency), its amount/currency attributes and make_adapter(). The adapter must accept an existing Money instance unchanged in Python mode, or a mapping with exactly amount and currency, in both Python and JSON mode. amount must be a strict string in canonical signed decimal form with exactly two fractional digits, no leading zeros except zero itself, no exponent or whitespace; negatives are allowed. currency must be USD/EUR. Invalid mappings, numbers, booleans, nonfinite values, extra/missing keys and arbitrary strings must raise Pydantic ValidationError. Store amount as Decimal without float conversion. Serialize to {'amount': fixed-two-place string, 'currency': currency} in both dump_python and dump_json. TypeAdapter(list[Money]) must work. Generated JSON schema must describe the mapping, require both fields, forbid extras, expose a string amount pattern and enumerate currencies. Use supported core-schema hooks, not a v1 validator workaround.",
+        "digest": "459f35ca0b25571c04db2f7b2c9dbfcbcbfb14d1a29c421b144d9624f12ef76e",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "b8999f5718eac97be88c6ba4951ad2671f500d8f",
+            "lines": [
+              1,
+              9
+            ],
+            "bytes": 384,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "43a19033f312023f2c5b4342a122ebb7199edbf7",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099441427631,
+    "previous": "86c61497efd470e673c8d5681bb6138fe6f88320c8ab6c641e302319b682e5cf",
+    "hash": "02082ab741daf1c03b3d99146a80af639cac4663c4f85d237dc3a9c0dd7c2571"
+  },
+  {
+    "case_id": "cf20419b-5594-4c82-99de-49939c318b93",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "43a19033f312023f2c5b4342a122ebb7199edbf7",
+      "context_digest": "459f35ca0b25571c04db2f7b2c9dbfcbcbfb14d1a29c421b144d9624f12ef76e",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099441429135,
+    "previous": "02082ab741daf1c03b3d99146a80af639cac4663c4f85d237dc3a9c0dd7c2571",
+    "hash": "523edea24ae6f3d4d95b50b0a730166f88b779acb986d35e8162374bd673d9a8"
+  },
+  {
+    "case_id": "cf20419b-5594-4c82-99de-49939c318b93",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "2f27ba1b2a02ee46ea33144e9ef075d0f26a307f",
+      "tree": "8b73d4c8ce7c83f38c04e3a9b0c8afecda3f37a9",
+      "base": "43a19033f312023f2c5b4342a122ebb7199edbf7",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "77461e5bf08c9715de928bd664a9fe672b9b7cd7fedac05b23ab22c3ca1bc16e",
+        "bytes": 1932,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099442116882,
+    "previous": "523edea24ae6f3d4d95b50b0a730166f88b779acb986d35e8162374bd673d9a8",
+    "hash": "ce86305ceb2f8899d370d5260e84a048025da2174925875a81fb7772a317b54e"
+  },
+  {
+    "case_id": "cf20419b-5594-4c82-99de-49939c318b93",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 686,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099442119388,
+    "previous": "ce86305ceb2f8899d370d5260e84a048025da2174925875a81fb7772a317b54e",
+    "hash": "9487530d3ec03ce38ad4cc543f782c9afc061442cd52db22944ce8a730bd9f01"
+  },
+  {
+    "case_id": "cf20419b-5594-4c82-99de-49939c318b93",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "2f27ba1b2a02ee46ea33144e9ef075d0f26a307f",
+      "tree": "8b73d4c8ce7c83f38c04e3a9b0c8afecda3f37a9",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 235,
+          "output_digest": "2b58b05162a3c4b3943b3edc5068acb4a77b2d6178820371dc67e39fb045c2fc",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.058s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 109,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099442725424,
+    "previous": "9487530d3ec03ce38ad4cc543f782c9afc061442cd52db22944ce8a730bd9f01",
+    "hash": "7541060331e83afdcb0851c1c9a292c22346413ccd465e807c078189605fda5e"
+  }
+]

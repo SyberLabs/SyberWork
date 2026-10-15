@@ -19,7 +19,12 @@ hashes are in [PREREGISTRATION-v2.json](PREREGISTRATION-v2.json). The same
 requested model and host checks will be used for both arms. Checks/reference
 fixes are hidden from the model; the provider receives unbranded source
 context and automatic scoring is arm-unaware. The operator is not blinded,
-and the extra context remains visible to the model. Results are pending.
+and the extra context remains visible to the model.
+The authenticated preflight found T04's pinned core version unavailable and
+stopped before models. A [pre-model coverage amendment](PREREGISTRATION-v2.1.md)
+retains all six tasks, five available matched pairs and T04's unavailable
+treatment, reusing the frozen authenticated receipts. No task, check, range,
+model or budget changed. Model results are pending.
 The original **3/3 versus 3/3 tie above stays separate** and will not be pooled.
 
 ## What the result supports

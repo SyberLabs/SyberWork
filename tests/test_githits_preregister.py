@@ -23,7 +23,7 @@ class Registration(unittest.TestCase):
     def test_frozen_configuration_and_fixtures_cannot_change(self):
         original = preregister.build_registration()
         preregister.check_registration(original)
-        for field in ("configuration", "tasks", "fixture_sha256", "source_sha256_lf"):
+        for field in ("configuration", "tasks", "fixture_sha256", "source_sha256_lf", "context_source", "allowed_unavailable"):
             changed = copy.deepcopy(original)
             if field == "tasks":
                 changed[field] = changed[field][:-1]
@@ -38,6 +38,23 @@ class Registration(unittest.TestCase):
         registration["source_sha256_lf"][path] = "0" * 64
         with self.assertRaisesRegex(ValueError, "preregistered_source_changed"):
             preregister.check_registration(registration)
+
+    def test_saved_context_has_five_ready_tasks_and_one_registered_gap(self):
+        contexts = preregister.registered_contexts(preregister.build_registration())
+        self.assertEqual([name for name, c in contexts.items() if c["status"] == "ready"], ["T01", "T02", "T03", "T05", "T06"])
+        self.assertEqual(contexts["T04"]["reason"], "VERSION_NOT_FOUND")
+
+    def test_saved_context_rejects_tampered_request_or_excerpt(self):
+        folder = preregister.ROOT / preregister.CONTEXT_SOURCE
+        original = json.loads((folder / "T01-context.json").read_text(encoding="utf-8"))
+        for mutation in ("excerpt", "request", "version", "authentication"):
+            changed = copy.deepcopy(original)
+            if mutation == "excerpt": changed["context"][0]["content"] = "tampered"
+            elif mutation == "request": changed["requests"][0]["url"] += "&other=1"
+            elif mutation == "version": changed["requests"][0]["body"]["target_resolution"]["served"]["version"] = "0.28.0"
+            else: changed["requests"][0]["authenticated"] = False
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                preregister.validate_context_receipt("T01", HARD_FIXTURES["T01"], changed)
 
     def test_hard_tasks_cannot_use_unregistered_original_route(self):
         with patch.object(sys, "argv", ["run", "--python", sys.executable, "--write", "unused", "--fixtures", "T01"]), \

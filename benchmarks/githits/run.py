@@ -232,6 +232,10 @@ def main() -> None:
     (output / ".gitattributes").write_bytes(b"* -text -whitespace\n")
     if preregistration:
         write_json(output / "preregistration.json", preregistration)
+    saved_contexts = None
+    if preregistration:
+        from benchmarks.githits.preregister import registered_contexts
+        saved_contexts = registered_contexts(preregistration)
     rows, validations, contexts = [], [], {}
     write_json(output / "environment.json", {
         "at": datetime.now(timezone.utc).isoformat(), "platform": platform.platform(), "machine": platform.machine(),
@@ -250,11 +254,13 @@ def main() -> None:
                 base = work / (name + "-base")
                 create_base(name, base)
                 validations.append(validate_fixture(name, base, output / (name + "-validation"), args.python))
-                contexts[name] = collect(FIXTURES[name])
+                contexts[name] = saved_contexts[name] if saved_contexts is not None else collect(FIXTURES[name])
                 write_json(output / (name + "-context.json"), contexts[name])
             write_json(output / "validation.json", validations)
-            if args.suite == "hard-v2" and any(c["status"] != "ready" for c in contexts.values()):
-                raise RuntimeError("frozen_context_preflight_failed_no_models_invoked")
+            if preregistration:
+                unavailable = {name: c["reason"] for name, c in contexts.items() if c["status"] != "ready"}
+                if unavailable != preregistration["allowed_unavailable"]:
+                    raise RuntimeError("unregistered_context_availability_no_models_invoked")
             if not args.validate_only:
                 order = [(name, seed, list(ARMS)) for seed in range(1, args.repeats + 1) for name in args.fixtures]
                 rng = random.Random(20261015)

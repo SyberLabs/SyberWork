@@ -1,0 +1,70 @@
+{
+  "fixture": "T01",
+  "base_commit": "3e5492dc9654365023038cd8663e60755d5a0898",
+  "base_tree": "0a01fb75e86ecfdca7ff413cda71b405fda52233",
+  "broken": {
+    "candidate": "base",
+    "commit": "3e5492dc9654365023038cd8663e60755d5a0898",
+    "tree": "0a01fb75e86ecfdca7ff413cda71b405fda52233",
+    "evaluator": "syberlabs.checks/1",
+    "checks": [
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_tail": ""
+      },
+      {
+        "name": "behavior",
+        "state": "failed",
+        "exit_code": 1,
+        "duration_ms": 235,
+        "output_digest": "52c38364cf414515e48f6998ad67b9d89957682833a5b4bcdf136c01c0ac4463",
+        "output_tail": "p.run_until_complete(task)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\Lib\\asyncio\\base_events.py\", line 691, in run_until_complete\r\n    return future.result()\r\n           ^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-x7byji1z\\tree\\src\\integration.py\", line 8, in read_events\r\n    return [json.loads(line) for line in response.text.splitlines() if line.strip()][:limit]\r\n            ^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\Lib\\json\\__init__.py\", line 346, in loads\r\n    return _default_decoder.decode(s)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\Lib\\json\\decoder.py\", line 338, in decode\r\n    obj, end = self.raw_decode(s, idx=_w(s, 0).end())\r\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\Lib\\json\\decoder.py\", line 356, in raw_decode\r\n    raise JSONDecodeError(\"Expecting value\", s, err.value) from None\r\njson.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)\r\n\r\n======================================================================\r\nFAIL: test_chunked_gzip_unicode_and_blank_lines (__main__.Behavior.test_chunked_gzip_unicode_and_blank_lines)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 32, in test_chunked_gzip_unicode_and_blank_lines\r\n    self.assertEqual((t.stream.closed, t.closed), (1, 0))\r\nAssertionError: Tuples differ: (1, 1) != (1, 0)\r\n\r\nFirst differing element 1:\r\n1\r\n0\r\n\r\n- (1, 1)\r\n?     ^\r\n\r\n+ (1, 0)\r\n?     ^\r\n\r\n\r\n======================================================================\r\nFAIL: test_http_error_closes_only_response (__main__.Behavior.test_http_error_closes_only_response)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 45, in test_http_error_closes_only_response\r\n    self.assertEqual((t.stream.closed, t.closed), (1, 0))\r\nAssertionError: Tuples differ: (1, 1) != (1, 0)\r\n\r\nFirst differing element 1:\r\n1\r\n0\r\n\r\n- (1, 1)\r\n?     ^\r\n\r\n+ (1, 0)\r\n?     ^\r\n\r\n\r\n======================================================================\r\nFAIL: test_json_error_closes_only_response (__main__.Behavior.test_json_error_closes_only_response)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 41, in test_json_error_closes_only_response\r\n    self.assertEqual((t.stream.closed, t.closed), (1, 0))\r\nAssertionError: Tuples differ: (1, 1) != (1, 0)\r\n\r\nFirst differing element 1:\r\n1\r\n0\r\n\r\n- (1, 1)\r\n?     ^\r\n\r\n+ (1, 0)\r\n?     ^\r\n\r\n\r\n======================================================================\r\nFAIL: test_uncompressed_final_line_without_newline (__main__.Behavior.test_uncompressed_final_line_without_newline)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 55, in test_uncompressed_final_line_without_newline\r\n    self.assertEqual((t.stream.closed, t.closed), (1, 0))\r\nAssertionError: Tuples differ: (1, 1) != (1, 0)\r\n\r\nFirst differing element 1:\r\n1\r\n0\r\n\r\n- (1, 1)\r\n?     ^\r\n\r\n+ (1, 0)\r\n?     ^\r\n\r\n\r\n======================================================================\r\nFAIL: test_zero_and_invalid_limits_make_no_request (__main__.Behavior.test_zero_and_invalid_limits_make_no_request)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 50, in test_zero_and_invalid_limits_make_no_request\r\n    with self.assertRaises(ValueError): self.call(t, limit)\r\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\nAssertionError: ValueError not raised\r\n\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.011s\r\n\r\nFAILED (failures=5, errors=1)\r\n"
+      }
+    ]
+  },
+  "reference": {
+    "id": "c1",
+    "commit": "4721c6267b09d3ae12d1121a4ef4df85992c60a9",
+    "tree": "ddd5ddab05a9db7be18662a7e2f0eae5593e9de0",
+    "base": "3e5492dc9654365023038cd8663e60755d5a0898",
+    "parents": [],
+    "operator": "patch",
+    "provider": "reference",
+    "provider_revision": "authored-v1",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1388,
+    "signal": null,
+    "note": "",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 202,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.007s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  },
+  "reference_acceptable": true,
+  "source_url": "https://www.python-httpx.org/async/#streaming-responses"
+}

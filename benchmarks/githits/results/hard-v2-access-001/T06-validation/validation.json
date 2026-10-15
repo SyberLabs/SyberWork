@@ -1,0 +1,70 @@
+{
+  "fixture": "T06",
+  "base_commit": "e447ceda60cdb4ee266f9380b10e4b03761cadc9",
+  "base_tree": "38b21dd231e68b4a2c79f375c3142426349cbf0a",
+  "broken": {
+    "candidate": "base",
+    "commit": "e447ceda60cdb4ee266f9380b10e4b03761cadc9",
+    "tree": "38b21dd231e68b4a2c79f375c3142426349cbf0a",
+    "evaluator": "syberlabs.checks/1",
+    "checks": [
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_tail": ""
+      },
+      {
+        "name": "behavior",
+        "state": "failed",
+        "exit_code": 1,
+        "duration_ms": 516,
+        "output_digest": "d9a92876630d6a74e08ed5f2a4cc1d8c30778338aba5eb38477ef86447650268",
+        "output_tail": "FFFFFF\r\n======================================================================\r\nFAIL: test_all_children_and_plain_dicts (__main__.Behavior.test_all_children_and_plain_dicts)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 30, in test_all_children_and_plain_dicts\r\n    rows=self.call('match',2)\r\n         ^^^^^^^^^^^^^^^^^^^^\r\n  File \"checks.py\", line 25, in call\r\n    self.assertEqual(len(self.selects),1 if limit else 0)\r\nAssertionError: 2 != 1\r\n\r\n======================================================================\r\nFAIL: test_distinct_parent_pagination (__main__.Behavior.test_distinct_parent_pagination)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 28, in test_distinct_parent_pagination\r\n    self.assertEqual([r['id'] for r in self.call('match',1,1)],[2])\r\n                                       ^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"checks.py\", line 25, in call\r\n    self.assertEqual(len(self.selects),1 if limit else 0)\r\nAssertionError: 2 != 1\r\n\r\n======================================================================\r\nFAIL: test_empty_term_includes_childless_parent (__main__.Behavior.test_empty_term_includes_childless_parent)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 39, in test_empty_term_includes_childless_parent\r\n    rows=self.call('',9)\r\n         ^^^^^^^^^^^^^^^\r\n  File \"checks.py\", line 25, in call\r\n    self.assertEqual(len(self.selects),1 if limit else 0)\r\nAssertionError: 4 != 1\r\n\r\n======================================================================\r\nFAIL: test_invalid_and_zero_bounds (__main__.Behavior.test_invalid_and_zero_bounds)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 42, in test_invalid_and_zero_bounds\r\n    self.assertEqual(self.call('',0),[])\r\n                     ^^^^^^^^^^^^^^^\r\n  File \"checks.py\", line 25, in call\r\n    self.assertEqual(len(self.selects),1 if limit else 0)\r\nAssertionError: 1 != 0\r\n\r\n======================================================================\r\nFAIL: test_literal_wildcards_escape_and_case (__main__.Behavior.test_literal_wildcards_escape_and_case)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 36, in test_literal_wildcards_escape_and_case\r\n    self.assertEqual([r['id'] for r in self.call(term,9)],[3])\r\n                                       ^^^^^^^^^^^^^^^^^\r\n  File \"checks.py\", line 25, in call\r\n    self.assertEqual(len(self.selects),1 if limit else 0)\r\nAssertionError: 4 != 1\r\n\r\n======================================================================\r\nFAIL: test_no_matches_or_offset_and_session_ownership (__main__.Behavior.test_no_matches_or_offset_and_session_ownership)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 52, in test_no_matches_or_offset_and_session_ownership\r\n    try: self.assertEqual([r['id'] for r in self.call('match',1)],[1])\r\n                                            ^^^^^^^^^^^^^^^^^^^^\r\n  File \"checks.py\", line 25, in call\r\n    self.assertEqual(len(self.selects),1 if limit else 0)\r\nAssertionError: 2 != 1\r\n\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.036s\r\n\r\nFAILED (failures=6)\r\n"
+      }
+    ]
+  },
+  "reference": {
+    "id": "c1",
+    "commit": "53bbc856df218c45b35f2e4da4b713012bd8125b",
+    "tree": "01bac03e7fa806b2673347876cce0b83a063b58d",
+    "base": "e447ceda60cdb4ee266f9380b10e4b03761cadc9",
+    "parents": [],
+    "operator": "patch",
+    "provider": "reference",
+    "provider_revision": "authored-v1",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 2243,
+    "signal": null,
+    "note": "",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 468,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.035s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  },
+  "reference_acceptable": true,
+  "source_url": "https://docs.sqlalchemy.org/en/20/orm/queryguide/relationships.html#joined-eager-loading"
+}

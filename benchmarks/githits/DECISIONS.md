@@ -188,3 +188,18 @@ Claim ceiling at start: proposed; no model comparison measured.
     acceptance checks. All six final references pass their 36 behavior methods
     and all six starting implementations fail behavior with correct versions.
     No new-suite model or GitHits calls preceded these authoring decisions.
+35. The v2 authenticated preflight at source `291a7a1` produced ten successful
+    reads for five tasks; T04's first pinned `pydantic-core 2.27.2` read returned
+    HTTP 404 `VERSION_NOT_FOUND`. The all-context gate stopped with zero model
+    cells. Preserve all 65 manifest-covered files under `hard-v2-access-001`.
+    Do not replace the task, relax its checks, fetch a different version, or
+    count the missing treatment as a failed model fix.
+36. Publish v2.1 before any model trials: keep the same six task digests and
+    configuration; allow exactly the observed T04 unavailable treatment and
+    run all six baselines plus five available treatments. Report five possible
+    matched pairs out of six planned and the standalone T04 baseline. Reuse
+    the exact authenticated preflight contexts after manifest, identity and
+    excerpt verification, avoiding duplicate traffic or another token entry.
+    Freeze the receipt manifest digest in the amendment. Original v2 files
+    remain unchanged. This availability-conditioned sample is an explicit
+    limitation, not an estimate of the missing treatment or general coverage.

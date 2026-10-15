@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "d73aaa10-038e-41a2-8add-1eb9a47bc631",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Fix async read_events(transport, url, limit) for HTTPX 0.28.1. The caller owns the supplied AsyncBaseTransport: never close it. Accept only nonnegative integer limits (bool is invalid), raising ValueError otherwise. Zero returns [] without making a request. Stream GET through the supplied transport, raise HTTPStatusError for non-2xx responses, transparently decode gzip and UTF-8 across arbitrary byte chunks, skip blank NDJSON lines, and return at most limit JSON values in order. Stop parsing at the limit even if later lines are malformed. Propagate JSON errors before the limit. Close each response stream exactly once on success or any error. Do not replace the supplied transport, buffer the whole body, or add dependencies."
+      },
+      "contract": [
+        "task-T01",
+        1
+      ]
+    },
+    "at": 1792099419672386,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "6388ff66badde493f82dfa9f9b13f8df118c58d1c10a2942f44b31742855caa2"
+  },
+  {
+    "case_id": "d73aaa10-038e-41a2-8add-1eb9a47bc631",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "3e5492dc9654365023038cd8663e60755d5a0898",
+        "tree": "0a01fb75e86ecfdca7ff413cda71b405fda52233",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "3e5492dc9654365023038cd8663e60755d5a0898",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099419760510,
+    "previous": "6388ff66badde493f82dfa9f9b13f8df118c58d1c10a2942f44b31742855caa2",
+    "hash": "a30decb57f1ea1ddef10b6890a532ae7ac3b559c95dae816f62ac52b5ad46d8b"
+  },
+  {
+    "case_id": "d73aaa10-038e-41a2-8add-1eb9a47bc631",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "3e5492dc9654365023038cd8663e60755d5a0898",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099419762510,
+    "previous": "a30decb57f1ea1ddef10b6890a532ae7ac3b559c95dae816f62ac52b5ad46d8b",
+    "hash": "ac666c55692af381750e89f76329894c4e712320f1bca4ff5b9e7df0753ac3af"
+  },
+  {
+    "case_id": "d73aaa10-038e-41a2-8add-1eb9a47bc631",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Fix async read_events(transport, url, limit) for HTTPX 0.28.1. The caller owns the supplied AsyncBaseTransport: never close it. Accept only nonnegative integer limits (bool is invalid), raising ValueError otherwise. Zero returns [] without making a request. Stream GET through the supplied transport, raise HTTPStatusError for non-2xx responses, transparently decode gzip and UTF-8 across arbitrary byte chunks, skip blank NDJSON lines, and return at most limit JSON values in order. Stop parsing at the limit even if later lines are malformed. Propagate JSON errors before the limit. Close each response stream exactly once on success or any error. Do not replace the supplied transport, buffer the whole body, or add dependencies.",
+        "digest": "f656802c6e4687f40db72f41c5864419b195831fe880353cb11798238794692f",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "bc685c72076dee6dd974b05db00f4dd247e84692",
+            "lines": [
+              1,
+              8
+            ],
+            "bytes": 310,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "3e5492dc9654365023038cd8663e60755d5a0898",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099420874979,
+    "previous": "ac666c55692af381750e89f76329894c4e712320f1bca4ff5b9e7df0753ac3af",
+    "hash": "8f0a190598da1492c1ed37c0e5bc2682a35fc361a7bba9b36f281759ba8d6a1f"
+  },
+  {
+    "case_id": "d73aaa10-038e-41a2-8add-1eb9a47bc631",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "3e5492dc9654365023038cd8663e60755d5a0898",
+      "context_digest": "f656802c6e4687f40db72f41c5864419b195831fe880353cb11798238794692f",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099420875980,
+    "previous": "8f0a190598da1492c1ed37c0e5bc2682a35fc361a7bba9b36f281759ba8d6a1f",
+    "hash": "a5c179eade34c02455104d95b388a0be794eff9f931aec429bb193d546f9dcde"
+  },
+  {
+    "case_id": "d73aaa10-038e-41a2-8add-1eb9a47bc631",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "4721c6267b09d3ae12d1121a4ef4df85992c60a9",
+      "tree": "ddd5ddab05a9db7be18662a7e2f0eae5593e9de0",
+      "base": "3e5492dc9654365023038cd8663e60755d5a0898",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "2392b04e53632f1251421268cc3336f9b81445bc3ad770e3484f23ea7e2b0439",
+        "bytes": 1388,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099421531048,
+    "previous": "a5c179eade34c02455104d95b388a0be794eff9f931aec429bb193d546f9dcde",
+    "hash": "4c71a9fea9f70d5c5b65b37c71a4f49251a84b61482ee3c4aa0a450a77a1fead"
+  },
+  {
+    "case_id": "d73aaa10-038e-41a2-8add-1eb9a47bc631",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 656,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099421533047,
+    "previous": "4c71a9fea9f70d5c5b65b37c71a4f49251a84b61482ee3c4aa0a450a77a1fead",
+    "hash": "cbc41d8ae925165ab1ba09886aa8af0bd665c9fcbbb604410d56c3ad685d79b9"
+  },
+  {
+    "case_id": "d73aaa10-038e-41a2-8add-1eb9a47bc631",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "4721c6267b09d3ae12d1121a4ef4df85992c60a9",
+      "tree": "ddd5ddab05a9db7be18662a7e2f0eae5593e9de0",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 202,
+          "output_digest": "9fffdea0efcd3158e0ccb98821834c20fd1bae324487987a4e66293ade84ab8b",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.007s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 108,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099422099672,
+    "previous": "cbc41d8ae925165ab1ba09886aa8af0bd665c9fcbbb604410d56c3ad685d79b9",
+    "hash": "96c785a13728b2ddd9c6b6739dd891e4dd8a146aa44611d78772209e3ca6db43"
+  }
+]

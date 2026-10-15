@@ -1,0 +1,26 @@
+{
+  "status": "unavailable",
+  "reason": "VERSION_NOT_FOUND",
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Apydantic-core%402.27.2&path=python%2Fpydantic_core%2Fcore_schema.py&start_line=2789&end_line=2961&wait_timeout_ms=20000",
+      "at": "2026-10-15T21:24:03.328089+00:00",
+      "authenticated": true,
+      "status": 404,
+      "request_id": "38050d4000790ba168eae45a0c624dd0",
+      "retry_after": null,
+      "body_sha256": "0a089cc446e3f8641f602210b39ac84df12db72fcc816a80b7b84702908fcd73",
+      "seconds": 1.938,
+      "body": {
+        "type": "about:blank",
+        "title": "Version not found",
+        "status": 404,
+        "detail": "No package version matches the requested version or constraint.",
+        "instance": "38050d4000790ba168eae45a0c624dd0",
+        "code": "VERSION_NOT_FOUND"
+      },
+      "transport": "private-accounted-cli"
+    }
+  ],
+  "context": null
+}
