@@ -2,9 +2,10 @@
 
 ## Public dependency lookup (GitHits)
 
-`.mcp.json` registers the hosted GitHits MCP server (`https://mcp.githits.com`,
-OAuth on first use via `/mcp`). Headless agents set `GITHITS_API_TOKEN` in the
-environment; never write a token to a file.
+`.mcp.json` invokes the private MasterMind usage runtime. Install and load both
+absolute runtime paths as described below before starting the agent. Headless
+agents also set `GITHITS_API_TOKEN`; interactive OAuth uses the private bridge.
+Never write a token to a file.
 
 - Use it for the exact source and docs of the dependency version pinned in
   `pyproject.toml`, and for vulnerability, changelog, and upgrade checks before
