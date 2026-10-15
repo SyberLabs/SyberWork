@@ -203,3 +203,16 @@ Claim ceiling at start: proposed; no model comparison measured.
     Freeze the receipt manifest digest in the amendment. Original v2 files
     remain unchanged. This availability-conditioned sample is an explicit
     limitation, not an estimate of the missing treatment or general coverage.
+37. The complete harder matrix produced five matched pairs with 5/5 solves
+    per arm, all on call one. T04's baseline solved on call two; its treatment
+    stays unavailable with zero calls. Report 5/6 planned pairs, zero discordant
+    pairs and all six baselines solved within cap. Keep the original 3/3 tie
+    visible and separate. Do not add tasks, repeats or a reduced-call analysis
+    after seeing outcomes, or interpret missing context as a failed model fix.
+38. Review all twelve candidate patches and replay the exact saved trees.
+    The replay verifies 265 hashes, 17 fixture/arm records and 24 evaluations,
+    including the failed first T04 candidate. Source remains the clean frozen
+    `2895110` implementation; publication adds documentation and evidence only.
+    Describe higher authored complexity without claiming measured difficulty,
+    full blinding, independent validation, general parity or product advantage.
+    Publish both ties and the coverage gap in the report and phone brief.

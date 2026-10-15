@@ -1,0 +1,70 @@
+{
+  "fixture": "T02",
+  "base_commit": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+  "base_tree": "c4f390d8add33fbe93d009a7859015f8bc07705d",
+  "broken": {
+    "candidate": "base",
+    "commit": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+    "tree": "c4f390d8add33fbe93d009a7859015f8bc07705d",
+    "evaluator": "syberlabs.checks/1",
+    "checks": [
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 93,
+        "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_tail": ""
+      },
+      {
+        "name": "behavior",
+        "state": "failed",
+        "exit_code": 1,
+        "duration_ms": 156,
+        "output_digest": "cc53e9ed0d1714883bf9c8ceb3d78e16a16d9df5edfc29e3176d46abeec6d7e0",
+        "output_tail": "EFF.EF\r\n======================================================================\r\nERROR: test_connection_exhaustion_and_single_attempt (__main__.Behavior.test_connection_exhaustion_and_single_attempt)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 51, in test_connection_exhaustion_and_single_attempt\r\n    RetryTransport(inner, 2).handle_request(httpx.Request('GET','https://x.invalid'))\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-7razgjqw\\tree\\src\\integration.py\", line 7, in handle_request\r\n    response = self.inner.handle_request(request)\r\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"checks.py\", line 15, in handle_request\r\n    if isinstance(action, Exception): raise action\r\n                                      ^^^^^^^^^^^^\r\nhttpx.ConnectError: first\r\n\r\n======================================================================\r\nERROR: test_retry_and_discard_lifecycle (__main__.Behavior.test_retry_and_discard_lifecycle)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 24, in test_retry_and_discard_lifecycle\r\n    self.assertIs(wrapper.handle_request(req), b)\r\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-7razgjqw\\tree\\src\\integration.py\", line 7, in handle_request\r\n    response = self.inner.handle_request(request)\r\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"checks.py\", line 15, in handle_request\r\n    if isinstance(action, Exception): raise action\r\n                                      ^^^^^^^^^^^^\r\nhttpx.ConnectError: x\r\n\r\n======================================================================\r\nFAIL: test_final_503_remains_owned_by_caller (__main__.Behavior.test_final_503_remains_owned_by_caller)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 31, in test_final_503_remains_owned_by_caller\r\n    self.assertEqual((a.stream.closed, b.stream.closed), (1, 0))\r\nAssertionError: Tuples differ: (0, 0) != (1, 0)\r\n\r\nFirst differing element 0:\r\n0\r\n1\r\n\r\n- (0, 0)\r\n?  ^\r\n\r\n+ (1, 0)\r\n?  ^\r\n\r\n\r\n======================================================================\r\nFAIL: test_invalid_attempt_cap (__main__.Behavior.test_invalid_attempt_cap)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 58, in test_invalid_attempt_cap\r\n    with self.assertRaises(ValueError): RetryTransport(Script([]), value)\r\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\nAssertionError: ValueError not raised\r\n\r\n======================================================================\r\nFAIL: test_unsafe_or_nonempty_or_unread_requests_not_retried (__main__.Behavior.test_unsafe_or_nonempty_or_unread_requests_not_retried)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 38, in test_unsafe_or_nonempty_or_unread_requests_not_retried\r\n    self.assertIs(RetryTransport(inner).handle_request(req), a)\r\nAssertionError: <Response [200 OK]> is not <Response [503 Service Unavailable]>\r\n\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.002s\r\n\r\nFAILED (failures=3, errors=2)\r\n"
+      }
+    ]
+  },
+  "reference": {
+    "id": "c1",
+    "commit": "82bc95a731bc5254ad48557a21955e18f89127f9",
+    "tree": "ecda96a1d36fa9980dcbcf83140c0f8128beb317",
+    "base": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+    "parents": [],
+    "operator": "patch",
+    "provider": "reference",
+    "provider_revision": "authored-v1",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1738,
+    "signal": null,
+    "note": "",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 156,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.001s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  },
+  "reference_acceptable": true,
+  "source_url": "https://www.python-httpx.org/advanced/transports/"
+}

@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "changes": {
+        "src/integration.py": "import json\nimport httpx\n\n\nasync def read_events(transport, url, limit):\n    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:\n        raise ValueError(\"limit must be a nonnegative integer\")\n    if limit == 0:\n        return []\n\n    request = httpx.Request(\"GET\", url)\n    response = await transport.handle_async_request(request)\n    try:\n        response.request = request\n        response.raise_for_status()\n        response.encoding = \"utf-8\"\n        events = []\n        async for line in response.aiter_lines():\n            if line.strip():\n                events.append(json.loads(line))\n                if len(events) == limit:\n                    return events\n        return events\n    finally:\n        await response.aclose()\n"
+      },
+      "message": "Stream NDJSON through the caller-owned transport without closing it.",
+      "signal": {
+        "rationale": "Calling the supplied transport directly preserves its ownership, while HTTPX incrementally decodes gzip, UTF-8, and lines. Validation precedes requests, parsing stops at the limit, and the finally block closes the response stream on success or error; HTTPX guards against closing an already closed stream twice."
+      }
+    }
+  ],
+  "recommended": [
+    0
+  ],
+  "usage": {
+    "model": "gpt-6.1-sol",
+    "input_tokens": 14317,
+    "output_tokens": 698,
+    "cache_read_input_tokens": 11008,
+    "stop_reason": "end_turn"
+  }
+}

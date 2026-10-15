@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "59ee2aafd47fd0f1d4f8a229c947e05c03256c3c",
+    "tree": "9baff602d26701fbb6a0775d4a078427eb2c5300",
+    "base": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1903,
+    "signal": {
+      "rationale": "Retries preserve the original request and apply only to safe methods with buffered empty content, for connection failures or HTTP 503. Discarded 503 responses are closed, final responses remain untouched, and closing the wrapper closes its inner transport at most once.",
+      "model_usage": {
+        "input_tokens": 12440,
+        "output_tokens": 740,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Implement bounded retries with request eligibility checks and correct resource cleanup.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 187,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.001s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 93,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

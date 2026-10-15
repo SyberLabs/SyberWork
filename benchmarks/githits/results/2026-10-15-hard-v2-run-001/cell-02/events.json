@@ -1,0 +1,227 @@
+[
+  {
+    "case_id": "5a2ba1b9-1ae8-49de-b835-1fac5ae06a6e",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Fix async read_events(transport, url, limit) for HTTPX 0.28.1. The caller owns the supplied AsyncBaseTransport: never close it. Accept only nonnegative integer limits (bool is invalid), raising ValueError otherwise. Zero returns [] without making a request. Stream GET through the supplied transport, raise HTTPStatusError for non-2xx responses, transparently decode gzip and UTF-8 across arbitrary byte chunks, skip blank NDJSON lines, and return at most limit JSON values in order. Stop parsing at the limit even if later lines are malformed. Propagate JSON errors before the limit. Close each response stream exactly once on success or any error. Do not replace the supplied transport, buffer the whole body, or add dependencies."
+      },
+      "contract": [
+        "task-T01",
+        1
+      ]
+    },
+    "at": 1792099833834208,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "77467a0fdd9bae776f2606acc1af6140307c39ac30df2f88a943353460e5078a"
+  },
+  {
+    "case_id": "5a2ba1b9-1ae8-49de-b835-1fac5ae06a6e",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "3b9bf5d09828aac1cb8eb450e1d6621b31f5dbfc",
+        "tree": "0a01fb75e86ecfdca7ff413cda71b405fda52233",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "3b9bf5d09828aac1cb8eb450e1d6621b31f5dbfc",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099833942240,
+    "previous": "77467a0fdd9bae776f2606acc1af6140307c39ac30df2f88a943353460e5078a",
+    "hash": "90c487c0add0ea18f50c0bdc76d9230a39e242efec9645268443f3b9534f0eae"
+  },
+  {
+    "case_id": "5a2ba1b9-1ae8-49de-b835-1fac5ae06a6e",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "3b9bf5d09828aac1cb8eb450e1d6621b31f5dbfc",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099833944238,
+    "previous": "90c487c0add0ea18f50c0bdc76d9230a39e242efec9645268443f3b9534f0eae",
+    "hash": "1c8843af645553711fd7a5eed7d322a12425ae975fce6370b57521adfe8883ff"
+  },
+  {
+    "case_id": "5a2ba1b9-1ae8-49de-b835-1fac5ae06a6e",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Fix async read_events(transport, url, limit) for HTTPX 0.28.1. The caller owns the supplied AsyncBaseTransport: never close it. Accept only nonnegative integer limits (bool is invalid), raising ValueError otherwise. Zero returns [] without making a request. Stream GET through the supplied transport, raise HTTPStatusError for non-2xx responses, transparently decode gzip and UTF-8 across arbitrary byte chunks, skip blank NDJSON lines, and return at most limit JSON values in order. Stop parsing at the limit even if later lines are malformed. Propagate JSON errors before the limit. Close each response stream exactly once on success or any error. Do not replace the supplied transport, buffer the whole body, or add dependencies.",
+        "digest": "f656802c6e4687f40db72f41c5864419b195831fe880353cb11798238794692f",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "bc685c72076dee6dd974b05db00f4dd247e84692",
+            "lines": [
+              1,
+              8
+            ],
+            "bytes": 310,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "3b9bf5d09828aac1cb8eb450e1d6621b31f5dbfc",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099834380778,
+    "previous": "1c8843af645553711fd7a5eed7d322a12425ae975fce6370b57521adfe8883ff",
+    "hash": "43a2809611a002f7d8b6d738d47af5cfbb5b9aae36030df4eed8a8b803eff28d"
+  },
+  {
+    "case_id": "5a2ba1b9-1ae8-49de-b835-1fac5ae06a6e",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "3b9bf5d09828aac1cb8eb450e1d6621b31f5dbfc",
+      "context_digest": "f656802c6e4687f40db72f41c5864419b195831fe880353cb11798238794692f",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099834382781,
+    "previous": "43a2809611a002f7d8b6d738d47af5cfbb5b9aae36030df4eed8a8b803eff28d",
+    "hash": "5b0b7b15e4ffc4656457c4461e4d3b91dd7b882aa1a6d49f6c1335021d3c640e"
+  },
+  {
+    "case_id": "5a2ba1b9-1ae8-49de-b835-1fac5ae06a6e",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "25f3af5737dc02dc7c1fb8765c19cb3788a9b3be",
+      "tree": "8859b0011a04cf2d7ebfae873fed561bf0eaea27",
+      "base": "3b9bf5d09828aac1cb8eb450e1d6621b31f5dbfc",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "0099a2e84aeb871e8f9d54d577890a5fa8bc9dca64746538c0d130398457b207",
+        "bytes": 1538,
+        "files": 1
+      },
+      "signal": {
+        "rationale": "A non-owning transport adapter prevents AsyncClient from closing the supplied transport, while the response context ensures stream cleanup on success and errors. Limits are validated before requesting, and HTTPX incrementally decompresses and decodes NDJSON before parsing stops at the requested count.",
+        "model_usage": {
+          "input_tokens": 12398,
+          "output_tokens": 1113,
+          "cache_read_input_tokens": 0,
+          "model": "gpt-6.1-sol",
+          "stop_reason": "end_turn"
+        }
+      },
+      "note": "Fix streaming event reads while preserving caller ownership of the transport.",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099864181120,
+    "previous": "5b0b7b15e4ffc4656457c4461e4d3b91dd7b882aa1a6d49f6c1335021d3c640e",
+    "hash": "ec1b053486282af89efb4c61f853fdd0a0df07c7e0f7456b922651bb48ef47a0"
+  },
+  {
+    "case_id": "5a2ba1b9-1ae8-49de-b835-1fac5ae06a6e",
+    "seq": 7,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "25f3af5737dc02dc7c1fb8765c19cb3788a9b3be",
+      "tree": "8859b0011a04cf2d7ebfae873fed561bf0eaea27",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 235,
+          "output_digest": "69b98f322f46743f3bc0db9ea8e06896431cdf41fe3a0227d167160684a833d5",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.024s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 108,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099864775400,
+    "previous": "ec1b053486282af89efb4c61f853fdd0a0df07c7e0f7456b922651bb48ef47a0",
+    "hash": "d18e5365e006703e26ab9cf5f2520017a8cc2decae82ffb0e3e5df720f4bdce8"
+  },
+  {
+    "case_id": "5a2ba1b9-1ae8-49de-b835-1fac5ae06a6e",
+    "seq": 8,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 1,
+      "elapsed_ms": 30406,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099864786251,
+    "previous": "d18e5365e006703e26ab9cf5f2520017a8cc2decae82ffb0e3e5df720f4bdce8",
+    "hash": "95046c28cb33a4e033c5a719f6d865f1ebc6066437fce064affda7e6251bded9"
+  }
+]

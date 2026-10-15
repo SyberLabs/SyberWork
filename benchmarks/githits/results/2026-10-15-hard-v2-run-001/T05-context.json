@@ -1,0 +1,202 @@
+{
+  "status": "ready",
+  "reason": null,
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Asqlalchemy%402.0.36&path=lib%2Fsqlalchemy%2Form%2Fsession.py&start_line=1945&end_line=1969&wait_timeout_ms=20000",
+      "at": "2026-10-15T21:24:09.501760+00:00",
+      "authenticated": true,
+      "status": 200,
+      "request_id": "52d3f52a9a97f5b7263d8d47256ba185",
+      "retry_after": null,
+      "body_sha256": "2befd32ef79bcb8ca44b01ace55adb777f2d300d63a74aa850323e6394700a06",
+      "seconds": 0.844,
+      "body": {
+        "kind": "code",
+        "path": "lib/sqlalchemy/orm/session.py",
+        "repository_file_path": "lib/sqlalchemy/orm/session.py",
+        "is_binary": false,
+        "target_resolution": {
+          "requested": {
+            "kind": "package_exact_version",
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": null,
+            "git_ref": null,
+            "commit_sha": null
+          },
+          "resolved_requested": {
+            "kind": null,
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "served": {
+            "kind": null,
+            "registry": null,
+            "name": null,
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "freshness": "current",
+          "freshness_reason": "exact_current"
+        },
+        "code_index_state": "current",
+        "indexing_ref": null,
+        "metadata": {
+          "language": "python",
+          "total_lines": 5301
+        },
+        "content": {
+          "body": "    def begin_nested(self) -> SessionTransaction:\n        \"\"\"Begin a \"nested\" transaction on this Session, e.g. SAVEPOINT.\n\n        The target database(s) and associated drivers must support SQL\n        SAVEPOINT for this method to function correctly.\n\n        For documentation on SAVEPOINT\n        transactions, please see :ref:`session_begin_nested`.\n\n        :return: the :class:`.SessionTransaction` object.  Note that\n         :class:`.SessionTransaction` acts as a context manager, allowing\n         :meth:`.Session.begin_nested` to be used in a \"with\" block.\n         See :ref:`session_begin_nested` for a usage example.\n\n        .. seealso::\n\n            :ref:`session_begin_nested`\n\n            :ref:`pysqlite_serializable` - special workarounds required\n            with the SQLite driver in order for SAVEPOINT to work\n            correctly. For asyncio use cases, see the section\n            :ref:`aiosqlite_serializable`.\n\n        \"\"\"\n        return self.begin(nested=True)",
+          "start_line": 1945,
+          "end_line": 1969
+        }
+      },
+      "transport": "private-accounted-cli"
+    },
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Asqlalchemy%402.0.36&path=lib%2Fsqlalchemy%2Form%2Fsession.py&start_line=4322&end_line=4354&wait_timeout_ms=20000",
+      "at": "2026-10-15T21:24:10.723768+00:00",
+      "authenticated": true,
+      "status": 200,
+      "request_id": "c7f69474c6e39c19b8c6409da8fc70ed",
+      "retry_after": null,
+      "body_sha256": "609716827c2ab43c0c13bb9e4bfeb9d7b6eb6cdc97dfaba3dfd02392fd3f6f1c",
+      "seconds": 0.375,
+      "body": {
+        "kind": "code",
+        "path": "lib/sqlalchemy/orm/session.py",
+        "repository_file_path": "lib/sqlalchemy/orm/session.py",
+        "is_binary": false,
+        "target_resolution": {
+          "requested": {
+            "kind": "package_exact_version",
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": null,
+            "git_ref": null,
+            "commit_sha": null
+          },
+          "resolved_requested": {
+            "kind": null,
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "served": {
+            "kind": null,
+            "registry": null,
+            "name": null,
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "freshness": "current",
+          "freshness_reason": "exact_current"
+        },
+        "code_index_state": "current",
+        "indexing_ref": null,
+        "metadata": {
+          "language": "python",
+          "total_lines": 5301
+        },
+        "content": {
+          "body": "    def flush(self, objects: Optional[Sequence[Any]] = None) -> None:\n        \"\"\"Flush all the object changes to the database.\n\n        Writes out all pending object creations, deletions and modifications\n        to the database as INSERTs, DELETEs, UPDATEs, etc.  Operations are\n        automatically ordered by the Session's unit of work dependency\n        solver.\n\n        Database operations will be issued in the current transactional\n        context and do not affect the state of the transaction, unless an\n        error occurs, in which case the entire transaction is rolled back.\n        You may flush() as often as you like within a transaction to move\n        changes from Python to the database's transaction buffer.\n\n        :param objects: Optional; restricts the flush operation to operate\n          only on elements that are in the given collection.\n\n          This feature is for an extremely narrow set of use cases where\n          particular objects may need to be operated upon before the\n          full flush() occurs.  It is not intended for general use.\n\n        \"\"\"\n\n        if self._flushing:\n            raise sa_exc.InvalidRequestError(\"Session is already flushing\")\n\n        if self._is_clean():\n            return\n        try:\n            self._flushing = True\n            self._flush(objects)\n        finally:\n            self._flushing = False",
+          "start_line": 4322,
+          "end_line": 4354
+        }
+      },
+      "transport": "private-accounted-cli"
+    }
+  ],
+  "context": [
+    {
+      "target": "pypi:sqlalchemy@2.0.36",
+      "path": "lib/sqlalchemy/orm/session.py",
+      "content": "    def begin_nested(self) -> SessionTransaction:\n        \"\"\"Begin a \"nested\" transaction on this Session, e.g. SAVEPOINT.\n\n        The target database(s) and associated drivers must support SQL\n        SAVEPOINT for this method to function correctly.\n\n        For documentation on SAVEPOINT\n        transactions, please see :ref:`session_begin_nested`.\n\n        :return: the :class:`.SessionTransaction` object.  Note that\n         :class:`.SessionTransaction` acts as a context manager, allowing\n         :meth:`.Session.begin_nested` to be used in a \"with\" block.\n         See :ref:`session_begin_nested` for a usage example.\n\n        .. seealso::\n\n            :ref:`session_begin_nested`\n\n            :ref:`pysqlite_serializable` - special workarounds required\n            with the SQLite driver in order for SAVEPOINT to work\n            correctly. For asyncio use cases, see the section\n            :ref:`aiosqlite_serializable`.\n\n        \"\"\"\n        return self.begin(nested=True)",
+      "target_resolution": {
+        "requested": {
+          "kind": "package_exact_version",
+          "registry": "pypi",
+          "name": "sqlalchemy",
+          "version": "2.0.36",
+          "repo_url": null,
+          "git_ref": null,
+          "commit_sha": null
+        },
+        "resolved_requested": {
+          "kind": null,
+          "registry": "pypi",
+          "name": "sqlalchemy",
+          "version": "2.0.36",
+          "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+          "git_ref": "rel_2_0_36",
+          "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+        },
+        "served": {
+          "kind": null,
+          "registry": null,
+          "name": null,
+          "version": "2.0.36",
+          "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+          "git_ref": "rel_2_0_36",
+          "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+        },
+        "freshness": "current",
+        "freshness_reason": "exact_current"
+      },
+      "start_line": 1945,
+      "end_line": 1969
+    },
+    {
+      "target": "pypi:sqlalchemy@2.0.36",
+      "path": "lib/sqlalchemy/orm/session.py",
+      "content": "    def flush(self, objects: Optional[Sequence[Any]] = None) -> None:\n        \"\"\"Flush all the object changes to the database.\n\n        Writes out all pending object creations, deletions and modifications\n        to the database as INSERTs, DELETEs, UPDATEs, etc.  Operations are\n        automatically ordered by the Session's unit of work dependency\n        solver.\n\n        Database operations will be issued in the current transactional\n        context and do not affect the state of the transaction, unless an\n        error occurs, in which case the entire transaction is rolled back.\n        You may flush() as often as you like within a transaction to move\n        changes from Python to the database's transaction buffer.\n\n        :param objects: Optional; restricts the flush operation to operate\n          only on elements that are in the given collection.\n\n          This feature is for an extremely narrow set of use cases where\n          particular objects may need to be operated upon before the\n          full flush() occurs.  It is not intended for general use.\n\n        \"\"\"\n\n        if self._flushing:\n            raise sa_exc.InvalidRequestError(\"Session is already flushing\")\n\n        if self._is_clean():\n            return\n        try:\n            self._flushing = True\n            self._flush(objects)\n        finally:\n            self._flushing = False",
+      "target_resolution": {
+        "requested": {
+          "kind": "package_exact_version",
+          "registry": "pypi",
+          "name": "sqlalchemy",
+          "version": "2.0.36",
+          "repo_url": null,
+          "git_ref": null,
+          "commit_sha": null
+        },
+        "resolved_requested": {
+          "kind": null,
+          "registry": "pypi",
+          "name": "sqlalchemy",
+          "version": "2.0.36",
+          "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+          "git_ref": "rel_2_0_36",
+          "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+        },
+        "served": {
+          "kind": null,
+          "registry": null,
+          "name": null,
+          "version": "2.0.36",
+          "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+          "git_ref": "rel_2_0_36",
+          "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+        },
+        "freshness": "current",
+        "freshness_reason": "exact_current"
+      },
+      "start_line": 4322,
+      "end_line": 4354
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "protocol": "syberlabs.search/v0alpha1",
+  "objective": "Migrate the custom Money type to Pydantic 2.10.6/pydantic-core 2.27.2. Keep Money(amount, currency), its amount/currency attributes and make_adapter(). The adapter must accept an existing Money instance unchanged in Python mode, or a mapping with exactly amount and currency, in both Python and JSON mode. amount must be a strict string in canonical signed decimal form with exactly two fractional digits, no leading zeros except zero itself, no exponent or whitespace; negatives are allowed. currency must be USD/EUR. Invalid mappings, numbers, booleans, nonfinite values, extra/missing keys and arbitrary strings must raise Pydantic ValidationError. Store amount as Decimal without float conversion. Serialize to {'amount': fixed-two-place string, 'currency': currency} in both dump_python and dump_json. TypeAdapter(list[Money]) must work. Generated JSON schema must describe the mapping, require both fields, forbid extras, expose a string amount pattern and enumerate currencies. Use supported core-schema hooks, not a v1 validator workaround.",
+  "base": "cbd11481ef27f397c61a7403c2a90ecf5d122436",
+  "scope": [
+    "requirements.txt",
+    "src"
+  ],
+  "context": [
+    {
+      "path": "src/integration.py",
+      "lines": [
+        1,
+        9
+      ],
+      "reason": "match",
+      "text": "from decimal import Decimal\nfrom pydantic import TypeAdapter\nclass Money:\n    def __init__(self, amount, currency): self.amount, self.currency = amount, currency\n    @classmethod\n    def __get_validators__(cls): yield cls.validate\n    @classmethod\n    def validate(cls, value): return cls(Decimal(str(value['amount'])), value['currency'])\ndef make_adapter(): return TypeAdapter(Money)"
+    },
+    {
+      "path": "requirements.txt",
+      "lines": [
+        1,
+        13
+      ],
+      "reason": "match",
+      "text": "annotated-types==0.7.0\nanyio==4.9.0\ncertifi==2025.1.31\ngreenlet==3.1.1\nh11==0.16.0\nhttpcore==1.0.9\nhttpx==0.28.1\nidna==3.10\npydantic==2.10.6\npydantic_core==2.27.2\nsniffio==1.3.1\nSQLAlchemy==2.0.36\ntyping_extensions==4.12.2"
+    }
+  ],
+  "files": [
+    "requirements.txt",
+    "src/integration.py"
+  ],
+  "seed": 1001,
+  "feedback": {
+    "candidate": "c1",
+    "files": {
+      "src/integration.py": "from decimal import Decimal\n\nfrom pydantic import TypeAdapter\nfrom pydantic_core import core_schema\n\n\nclass Money:\n    def __init__(self, amount, currency):\n        self.amount, self.currency = amount, currency\n\n    @classmethod\n    def __get_pydantic_core_schema__(cls, source_type, handler):\n        mapping_schema = core_schema.typed_dict_schema(\n            {\n                \"amount\": core_schema.typed_dict_field(\n                    core_schema.str_schema(\n                        strict=True,\n                        pattern=r\"^-?(?:0|[1-9][0-9]*)\\.[0-9]{2}$\",\n                    ),\n                    required=True,\n                ),\n                \"currency\": core_schema.typed_dict_field(\n                    core_schema.literal_schema([\"USD\", \"EUR\"]),\n                    required=True,\n                ),\n            },\n            extra_behavior=\"forbid\",\n        )\n\n        def from_mapping(value):\n            return cls(Decimal(value[\"amount\"]), value[\"currency\"])\n\n        def serialize(value):\n            return {\n                \"amount\": format(value.amount, \".2f\"),\n                \"currency\": value.currency,\n            }\n\n        validated_mapping = core_schema.no_info_after_validator_function(\n            from_mapping, mapping_schema\n        )\n        return core_schema.json_or_python_schema(\n            json_schema=validated_mapping,\n            python_schema=core_schema.union_schema(\n                [core_schema.is_instance_schema(cls), validated_mapping]\n            ),\n            serialization=core_schema.plain_serializer_function_ser_schema(\n                serialize, return_schema=mapping_schema\n            ),\n        )\n\n\ndef make_adapter():\n    return TypeAdapter(Money)\n"
+    },
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "failed",
+        "exit_code": 1,
+        "duration_ms": 217,
+        "output_tail": ".E....\r\n======================================================================\r\nERROR: test_json_schema (__main__.Behavior.test_json_schema)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 37, in test_json_schema\r\n    self.assertIs(schema['additionalProperties'], False)\r\n                  ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^\r\nKeyError: 'additionalProperties'\r\n\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.048s\r\n\r\nFAILED (errors=1)\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 110,
+        "output_tail": ""
+      }
+    ]
+  }
+}

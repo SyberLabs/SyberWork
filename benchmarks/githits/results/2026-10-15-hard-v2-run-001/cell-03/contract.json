@@ -1,0 +1,68 @@
+{
+  "id": "task-T02",
+  "version": 1,
+  "title": "Implement RetryTransport(inner, max_attempts=3) as an HTTPX 0.28.1 BaseTransport wrapper. max_attempts is the total attempt cap and must be a positive int, excluding bool; invalid values raise ValueError. Retry only GET/HEAD/OPTIONS requests whose already-buffered content is empty. Do not consume an unread request stream to decide eligibility. Retry only ConnectError, ConnectTimeout, and HTTP 503. Never retry ReadTimeout, other status codes, nonempty bodies, unsafe methods, or unread streams. Pass the same unmodified request object on every attempt. Close each discarded 503 before another attempt. Return the final response unclosed and unread, including a final 503; propagate the final connection exception. No sleeps or real network. close() must close inner exactly once even if called repeatedly.",
+  "inputs": {
+    "objective": "string"
+  },
+  "actions": {
+    "accept_change": {}
+  },
+  "acceptance": [
+    {
+      "id": "accepted",
+      "kind": "effect",
+      "action": "accept_change"
+    }
+  ],
+  "evolution": {
+    "scope": {
+      "paths": [
+        "src/"
+      ],
+      "max_files": 1,
+      "max_diff_bytes": 40000
+    },
+    "operators": [
+      "patch"
+    ],
+    "budget": {
+      "max_candidates": 2,
+      "max_evaluations": 2,
+      "max_seconds": 1200
+    },
+    "evaluation": {
+      "checks": {
+        "dependency_pin": {
+          "argv": [
+            "C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Scripts\\python.exe",
+            "-I",
+            "-c",
+            "import importlib.metadata as m; assert m.version('httpx') == '0.28.1'"
+          ],
+          "timeout_seconds": 30
+        },
+        "behavior": {
+          "argv": [
+            "C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Scripts\\python.exe",
+            "-I",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,'src'); runpy.run_path('checks.py',run_name='__main__')"
+          ],
+          "timeout_seconds": 30
+        }
+      },
+      "required": [
+        "dependency_pin",
+        "behavior"
+      ],
+      "max_output_bytes": 64000
+    },
+    "promotion": {
+      "action": "accept_change",
+      "roles": [
+        "developer"
+      ]
+    }
+  }
+}

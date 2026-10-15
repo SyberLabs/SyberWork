@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "e1def22035ee33bf43af36e7f1f5f0e4ade3e40d",
+    "tree": "35fe1298e96d6d3b6aabec2f3029cc823cf78f9d",
+    "base": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1903,
+    "signal": {
+      "rationale": "Retries are limited to eligible requests with buffered empty content, connection failures, and HTTP 503, preserving the original request and closing only discarded responses. Validation enforces a positive integer attempt cap excluding bool, and repeated close calls invoke inner.close() once.",
+      "model_usage": {
+        "input_tokens": 13923,
+        "output_tokens": 707,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Implemented bounded retries and idempotent cleanup.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 171,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.001s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 110,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

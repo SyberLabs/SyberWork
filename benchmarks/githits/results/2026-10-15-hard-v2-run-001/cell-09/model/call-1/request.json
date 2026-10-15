@@ -1,0 +1,34 @@
+{
+  "protocol": "syberlabs.search/v0alpha1",
+  "objective": "Fix import_rows(session, records) for SQLAlchemy 2.0.36. Keep Base and Item (id primary key; name unique and non-null). The caller owns the Session and its outer transaction: never commit, close or roll it back. Attempt each input row in its own savepoint, flush it there, and continue after IntegrityError. Return {'accepted': successful IDs in input order, 'rejected': zero-based positions of rows failing integrity}. Do not alter existing rows. Keep earlier successful rows and the caller's preexisting pending changes when a later row fails. The Session must remain usable afterward. A later caller rollback must undo every successful insert in this call. Accept empty input and repeated calls. Do not swallow non-integrity exceptions or add dependencies.",
+  "base": "cb17b417bf79d017deab4e2003a19d188aa6c5aa",
+  "scope": [
+    "requirements.txt",
+    "src"
+  ],
+  "context": [
+    {
+      "path": "src/integration.py",
+      "lines": [
+        1,
+        11
+      ],
+      "reason": "match",
+      "text": "from sqlalchemy import Column, Integer, String\nfrom sqlalchemy.orm import DeclarativeBase\nclass Base(DeclarativeBase): pass\nclass Item(Base):\n    __tablename__ = 'items'\n    id = Column(Integer, primary_key=True)\n    name = Column(String, unique=True, nullable=False)\ndef import_rows(session, records):\n    session.add_all([Item(**row) for row in records])\n    session.commit()\n    return {'accepted':[row['id'] for row in records], 'rejected':[]}"
+    },
+    {
+      "path": "requirements.txt",
+      "lines": [
+        1,
+        13
+      ],
+      "reason": "match",
+      "text": "annotated-types==0.7.0\nanyio==4.9.0\ncertifi==2025.1.31\ngreenlet==3.1.1\nh11==0.16.0\nhttpcore==1.0.9\nhttpx==0.28.1\nidna==3.10\npydantic==2.10.6\npydantic_core==2.27.2\nsniffio==1.3.1\nSQLAlchemy==2.0.36\ntyping_extensions==4.12.2"
+    }
+  ],
+  "files": [
+    "requirements.txt",
+    "src/integration.py"
+  ],
+  "seed": 1000
+}

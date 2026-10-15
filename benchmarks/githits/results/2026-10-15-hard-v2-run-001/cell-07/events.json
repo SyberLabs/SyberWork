@@ -1,0 +1,305 @@
+[
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Migrate the custom Money type to Pydantic 2.10.6/pydantic-core 2.27.2. Keep Money(amount, currency), its amount/currency attributes and make_adapter(). The adapter must accept an existing Money instance unchanged in Python mode, or a mapping with exactly amount and currency, in both Python and JSON mode. amount must be a strict string in canonical signed decimal form with exactly two fractional digits, no leading zeros except zero itself, no exponent or whitespace; negatives are allowed. currency must be USD/EUR. Invalid mappings, numbers, booleans, nonfinite values, extra/missing keys and arbitrary strings must raise Pydantic ValidationError. Store amount as Decimal without float conversion. Serialize to {'amount': fixed-two-place string, 'currency': currency} in both dump_python and dump_json. TypeAdapter(list[Money]) must work. Generated JSON schema must describe the mapping, require both fields, forbid extras, expose a string amount pattern and enumerate currencies. Use supported core-schema hooks, not a v1 validator workaround."
+      },
+      "contract": [
+        "task-T04",
+        1
+      ]
+    },
+    "at": 1792099993232589,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "4d005be6b061225224acdb46f018dd7d0af5cefafd9b8aea13ad2435accfde75"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "cbd11481ef27f397c61a7403c2a90ecf5d122436",
+        "tree": "0493b815a997c66956208fadedf5a301007f205a",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "cbd11481ef27f397c61a7403c2a90ecf5d122436",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099993338931,
+    "previous": "4d005be6b061225224acdb46f018dd7d0af5cefafd9b8aea13ad2435accfde75",
+    "hash": "6f91746527025801f177a08e68cc424b99c31eb0763d12e00e42492f65319e23"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "cbd11481ef27f397c61a7403c2a90ecf5d122436",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099993340436,
+    "previous": "6f91746527025801f177a08e68cc424b99c31eb0763d12e00e42492f65319e23",
+    "hash": "3b8cde9645c4f055f715de2ca11b73391f54fbb27db81234cf276ad8a2a008d7"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Migrate the custom Money type to Pydantic 2.10.6/pydantic-core 2.27.2. Keep Money(amount, currency), its amount/currency attributes and make_adapter(). The adapter must accept an existing Money instance unchanged in Python mode, or a mapping with exactly amount and currency, in both Python and JSON mode. amount must be a strict string in canonical signed decimal form with exactly two fractional digits, no leading zeros except zero itself, no exponent or whitespace; negatives are allowed. currency must be USD/EUR. Invalid mappings, numbers, booleans, nonfinite values, extra/missing keys and arbitrary strings must raise Pydantic ValidationError. Store amount as Decimal without float conversion. Serialize to {'amount': fixed-two-place string, 'currency': currency} in both dump_python and dump_json. TypeAdapter(list[Money]) must work. Generated JSON schema must describe the mapping, require both fields, forbid extras, expose a string amount pattern and enumerate currencies. Use supported core-schema hooks, not a v1 validator workaround.",
+        "digest": "459f35ca0b25571c04db2f7b2c9dbfcbcbfb14d1a29c421b144d9624f12ef76e",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "b8999f5718eac97be88c6ba4951ad2671f500d8f",
+            "lines": [
+              1,
+              9
+            ],
+            "bytes": 384,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "cbd11481ef27f397c61a7403c2a90ecf5d122436",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099993782295,
+    "previous": "3b8cde9645c4f055f715de2ca11b73391f54fbb27db81234cf276ad8a2a008d7",
+    "hash": "09d09543748b8ecc66ea88ee455240a809b32687951948aaa395068294fbc612"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "cbd11481ef27f397c61a7403c2a90ecf5d122436",
+      "context_digest": "459f35ca0b25571c04db2f7b2c9dbfcbcbfb14d1a29c421b144d9624f12ef76e",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099993784804,
+    "previous": "09d09543748b8ecc66ea88ee455240a809b32687951948aaa395068294fbc612",
+    "hash": "ad40305abad1b7d400721b8b3692d8f87a85ba1016cbf590200938dffad78ff9"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "f8f310baaf21727d5305a9c27c472d7ef13800e1",
+      "tree": "7039477b6dca2de75286555b6547fedfc5113bce",
+      "base": "cbd11481ef27f397c61a7403c2a90ecf5d122436",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "51f1031dd44ebacd967879f56aa9e5d3f8f971021ffcf5e64cc53d86852067cb",
+        "bytes": 2326,
+        "files": 1
+      },
+      "signal": {
+        "rationale": "The schema preserves existing Money instances in Python mode and validates mappings with strict decimal strings, supported currencies, and forbidden extras before constructing Decimal amounts. The shared mapping schema also supplies JSON schema and serialization for standalone and list adapters.",
+        "model_usage": {
+          "input_tokens": 12479,
+          "output_tokens": 1459,
+          "cache_read_input_tokens": 0,
+          "model": "gpt-6.1-sol",
+          "stop_reason": "end_turn"
+        }
+      },
+      "note": "Migrate Money to supported Pydantic v2 core-schema hooks. Dependency pins already match the requested versions.",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792100028136098,
+    "previous": "ad40305abad1b7d400721b8b3692d8f87a85ba1016cbf590200938dffad78ff9",
+    "hash": "1753a211f4fb3849308b205804f87784dbc546ed4284c125b428c94156eaa5e0"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 7,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "f8f310baaf21727d5305a9c27c472d7ef13800e1",
+      "tree": "7039477b6dca2de75286555b6547fedfc5113bce",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "failed",
+          "exit_code": 1,
+          "duration_ms": 217,
+          "output_digest": "cab250ddbfa45bba159344d2a9c2bba5c7f5666a5d5fb75fe01990656ae01fad",
+          "output_tail": ".E....\r\n======================================================================\r\nERROR: test_json_schema (__main__.Behavior.test_json_schema)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 37, in test_json_schema\r\n    self.assertIs(schema['additionalProperties'], False)\r\n                  ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^\r\nKeyError: 'additionalProperties'\r\n\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.048s\r\n\r\nFAILED (errors=1)\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 110,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792100028712946,
+    "previous": "1753a211f4fb3849308b205804f87784dbc546ed4284c125b428c94156eaa5e0",
+    "hash": "c22301fac14d9f7a90e8706a401889601f3283f61c6fefa693de1ed98a20dc2e"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 8,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c2",
+      "commit": "82493770286a8e0c8911e1777b140026d5dc8d84",
+      "tree": "5bbd4158bec712300bf7f5b2e6a1dcdcbe7362d2",
+      "base": "cbd11481ef27f397c61a7403c2a90ecf5d122436",
+      "parents": [
+        "c1"
+      ],
+      "operator": "patch",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "aa5bb2200ff15f79a76f56bab83a07fa70a2c255fa2bfb45de581ff0a8826a9d",
+        "bytes": 2527,
+        "files": 1
+      },
+      "signal": {
+        "rationale": "The existing core schema rejects extra keys during validation, but its generated JSON schema omits additionalProperties. The JSON schema hook adds additionalProperties: false while preserving validation and serialization behavior.",
+        "model_usage": {
+          "input_tokens": 12686,
+          "output_tokens": 1202,
+          "cache_read_input_tokens": 0,
+          "model": "gpt-6.1-sol",
+          "stop_reason": "end_turn"
+        }
+      },
+      "note": "Added a supported JSON schema hook that explicitly forbids extra properties.",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792100056097051,
+    "previous": "c22301fac14d9f7a90e8706a401889601f3283f61c6fefa693de1ed98a20dc2e",
+    "hash": "a0488c1b0d6b81f34f237b67e22678bff7d8db685f4c6fdcefba5f62ccb941b1"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 9,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c2",
+      "commit": "82493770286a8e0c8911e1777b140026d5dc8d84",
+      "tree": "5bbd4158bec712300bf7f5b2e6a1dcdcbe7362d2",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 218,
+          "output_digest": "56e5ba983a84a60ed9555840a84bbe47a6ea9b9d28c62ee95500866701d6841c",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.050s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 93,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792100056651318,
+    "previous": "a0488c1b0d6b81f34f237b67e22678bff7d8db685f4c6fdcefba5f62ccb941b1",
+    "hash": "1ee5b2e6097be3d80ab1d6fb7ae95759ec16139af16e729e100e4052f034b157"
+  },
+  {
+    "case_id": "c270c01d-89bb-4314-9c9b-317ce9f1c340",
+    "seq": 10,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1",
+        "c2"
+      ],
+      "recommended": [
+        "c2"
+      ],
+      "evaluations": 2,
+      "elapsed_ms": 62860,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792100056652822,
+    "previous": "1ee5b2e6097be3d80ab1d6fb7ae95759ec16139af16e729e100e4052f034b157",
+    "hash": "8e19c0985bf3da2c8fbd4144b70c2a121f476bb0413c66c7028cfc233a8c5976"
+  }
+]

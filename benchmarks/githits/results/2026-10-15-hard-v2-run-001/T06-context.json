@@ -1,0 +1,202 @@
+{
+  "status": "ready",
+  "reason": null,
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Asqlalchemy%402.0.36&path=lib%2Fsqlalchemy%2Form%2Fstrategy_options.py&start_line=241&end_line=328&wait_timeout_ms=20000",
+      "at": "2026-10-15T21:24:15.364893+00:00",
+      "authenticated": true,
+      "status": 200,
+      "request_id": "18a6468a25cb8452a92e456bddbfe976",
+      "retry_after": null,
+      "body_sha256": "adbc0b0c2bdb861d31d4a91b60dd09551bd9b6844b681d6bcd77e02919ee239e",
+      "seconds": 0.594,
+      "body": {
+        "kind": "code",
+        "path": "lib/sqlalchemy/orm/strategy_options.py",
+        "repository_file_path": "lib/sqlalchemy/orm/strategy_options.py",
+        "is_binary": false,
+        "target_resolution": {
+          "requested": {
+            "kind": "package_exact_version",
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": null,
+            "git_ref": null,
+            "commit_sha": null
+          },
+          "resolved_requested": {
+            "kind": null,
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "served": {
+            "kind": null,
+            "registry": null,
+            "name": null,
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "freshness": "current",
+          "freshness_reason": "exact_current"
+        },
+        "code_index_state": "current",
+        "indexing_ref": null,
+        "metadata": {
+          "language": "python",
+          "total_lines": 2569
+        },
+        "content": {
+          "body": "        return cloned\n\n    def joinedload(\n        self,\n        attr: _AttrType,\n        innerjoin: Optional[bool] = None,\n    ) -> Self:\n        \"\"\"Indicate that the given attribute should be loaded using joined\n        eager loading.\n\n        This function is part of the :class:`_orm.Load` interface and supports\n        both method-chained and standalone operation.\n\n        examples::\n\n            # joined-load the \"orders\" collection on \"User\"\n            select(User).options(joinedload(User.orders))\n\n            # joined-load Order.items and then Item.keywords\n            select(Order).options(\n                joinedload(Order.items).joinedload(Item.keywords)\n            )\n\n            # lazily load Order.items, but when Items are loaded,\n            # joined-load the keywords collection\n            select(Order).options(\n                lazyload(Order.items).joinedload(Item.keywords)\n            )\n\n        :param innerjoin: if ``True``, indicates that the joined eager load\n         should use an inner join instead of the default of left outer join::\n\n            select(Order).options(joinedload(Order.user, innerjoin=True))\n\n        In order to chain multiple eager joins together where some may be\n        OUTER and others INNER, right-nested joins are used to link them::\n\n            select(A).options(\n                joinedload(A.bs, innerjoin=False).joinedload(\n                    B.cs, innerjoin=True\n                )\n            )\n\n        The above query, linking A.bs via \"outer\" join and B.cs via \"inner\"\n        join would render the joins as \"a LEFT OUTER JOIN (b JOIN c)\". When\n        using older versions of SQLite (< 3.7.16), this form of JOIN is\n        translated to use full subqueries as this syntax is otherwise not\n        directly supported.\n\n        The ``innerjoin`` flag can also be stated with the term ``\"unnested\"``.\n        This indicates that an INNER JOIN should be used, *unless* the join\n        is linked to a LEFT OUTER JOIN to the left, in which case it\n        will render as LEFT OUTER JOIN.  For example, supposing ``A.bs``\n        is an outerjoin::\n\n            select(A).options(\n                joinedload(A.bs).joinedload(B.cs, innerjoin=\"unnested\")\n            )\n\n\n        The above join will render as \"a LEFT OUTER JOIN b LEFT OUTER JOIN c\",\n        rather than as \"a LEFT OUTER JOIN (b JOIN c)\".\n\n        .. note:: The \"unnested\" flag does **not** affect the JOIN rendered\n            from a many-to-many association table, e.g. a table configured as\n            :paramref:`_orm.relationship.secondary`, to the target table; for\n            correctness of results, these joins are always INNER and are\n            therefore right-nested if linked to an OUTER join.\n\n        .. note::\n\n            The joins produced by :func:`_orm.joinedload` are **anonymously\n            aliased**. The criteria by which the join proceeds cannot be\n            modified, nor can the ORM-enabled :class:`_sql.Select` or legacy\n            :class:`_query.Query` refer to these joins in any way, including\n            ordering. See :ref:`zen_of_eager_loading` for further detail.\n\n            To produce a specific SQL JOIN which is explicitly available, use\n            :meth:`_sql.Select.join` and :meth:`_query.Query.join`. To combine\n            explicit JOINs with eager loading of collections, use\n            :func:`_orm.contains_eager`; see :ref:`contains_eager`.\n\n        .. seealso::\n\n            :ref:`loading_toplevel`\n\n            :ref:`joined_eager_loading`\n",
+          "start_line": 241,
+          "end_line": 328
+        }
+      },
+      "transport": "private-accounted-cli"
+    },
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Asqlalchemy%402.0.36&path=lib%2Fsqlalchemy%2Fengine%2Fresult.py&start_line=1036&end_line=1086&wait_timeout_ms=20000",
+      "at": "2026-10-15T21:24:16.319630+00:00",
+      "authenticated": true,
+      "status": 200,
+      "request_id": "4eab452d84c545007ea552972308e5fd",
+      "retry_after": null,
+      "body_sha256": "dd1ec059588da5b4d03e24fb2e242d0e61eae1d3e76e2fb444444ad46395a613",
+      "seconds": 3.547,
+      "body": {
+        "kind": "code",
+        "path": "lib/sqlalchemy/engine/result.py",
+        "repository_file_path": "lib/sqlalchemy/engine/result.py",
+        "is_binary": false,
+        "target_resolution": {
+          "requested": {
+            "kind": "package_exact_version",
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": null,
+            "git_ref": null,
+            "commit_sha": null
+          },
+          "resolved_requested": {
+            "kind": null,
+            "registry": "pypi",
+            "name": "sqlalchemy",
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "served": {
+            "kind": null,
+            "registry": null,
+            "name": null,
+            "version": "2.0.36",
+            "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+            "git_ref": "rel_2_0_36",
+            "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+          },
+          "freshness": "current",
+          "freshness_reason": "exact_current"
+        },
+        "code_index_state": "current",
+        "indexing_ref": null,
+        "metadata": {
+          "language": "python",
+          "total_lines": 2382
+        },
+        "content": {
+          "body": "    @_generative\n    def unique(self, strategy: Optional[_UniqueFilterType] = None) -> Self:\n        \"\"\"Apply unique filtering to the objects returned by this\n        :class:`_engine.Result`.\n\n        When this filter is applied with no arguments, the rows or objects\n        returned will filtered such that each row is returned uniquely. The\n        algorithm used to determine this uniqueness is by default the Python\n        hashing identity of the whole tuple.   In some cases a specialized\n        per-entity hashing scheme may be used, such as when using the ORM, a\n        scheme is applied which  works against the primary key identity of\n        returned objects.\n\n        The unique filter is applied **after all other filters**, which means\n        if the columns returned have been refined using a method such as the\n        :meth:`_engine.Result.columns` or :meth:`_engine.Result.scalars`\n        method, the uniquing is applied to **only the column or columns\n        returned**.   This occurs regardless of the order in which these\n        methods have been called upon the :class:`_engine.Result` object.\n\n        The unique filter also changes the calculus used for methods like\n        :meth:`_engine.Result.fetchmany` and :meth:`_engine.Result.partitions`.\n        When using :meth:`_engine.Result.unique`, these methods will continue\n        to yield the number of rows or objects requested, after uniquing\n        has been applied.  However, this necessarily impacts the buffering\n        behavior of the underlying cursor or datasource, such that multiple\n        underlying calls to ``cursor.fetchmany()`` may be necessary in order\n        to accumulate enough objects in order to provide a unique collection\n        of the requested size.\n\n        :param strategy: a callable that will be applied to rows or objects\n         being iterated, which should return an object that represents the\n         unique value of the row.   A Python ``set()`` is used to store\n         these identities.   If not passed, a default uniqueness strategy\n         is used which may have been assembled by the source of this\n         :class:`_engine.Result` object.\n\n        \"\"\"\n        self._unique_filter_state = (set(), strategy)\n        return self\n\n    def columns(self, *col_expressions: _KeyIndexType) -> Self:\n        r\"\"\"Establish the columns that should be returned in each row.\n\n        This method may be used to limit the columns returned as well\n        as to reorder them.   The given list of expressions are normally\n        a series of integers or string key names.   They may also be\n        appropriate :class:`.ColumnElement` objects which correspond to\n        a given statement construct.\n\n        .. versionchanged:: 2.0  Due to a bug in 1.4, the",
+          "start_line": 1036,
+          "end_line": 1086
+        }
+      },
+      "transport": "private-accounted-cli"
+    }
+  ],
+  "context": [
+    {
+      "target": "pypi:sqlalchemy@2.0.36",
+      "path": "lib/sqlalchemy/orm/strategy_options.py",
+      "content": "        return cloned\n\n    def joinedload(\n        self,\n        attr: _AttrType,\n        innerjoin: Optional[bool] = None,\n    ) -> Self:\n        \"\"\"Indicate that the given attribute should be loaded using joined\n        eager loading.\n\n        This function is part of the :class:`_orm.Load` interface and supports\n        both method-chained and standalone operation.\n\n        examples::\n\n            # joined-load the \"orders\" collection on \"User\"\n            select(User).options(joinedload(User.orders))\n\n            # joined-load Order.items and then Item.keywords\n            select(Order).options(\n                joinedload(Order.items).joinedload(Item.keywords)\n            )\n\n            # lazily load Order.items, but when Items are loaded,\n            # joined-load the keywords collection\n            select(Order).options(\n                lazyload(Order.items).joinedload(Item.keywords)\n            )\n\n        :param innerjoin: if ``True``, indicates that the joined eager load\n         should use an inner join instead of the default of left outer join::\n\n            select(Order).options(joinedload(Order.user, innerjoin=True))\n\n        In order to chain multiple eager joins together where some may be\n        OUTER and others INNER, right-nested joins are used to link them::\n\n            select(A).options(\n                joinedload(A.bs, innerjoin=False).joinedload(\n                    B.cs, innerjoin=True\n                )\n            )\n\n        The above query, linking A.bs via \"outer\" join and B.cs via \"inner\"\n        join would render the joins as \"a LEFT OUTER JOIN (b JOIN c)\". When\n        using older versions of SQLite (< 3.7.16), this form of JOIN is\n        translated to use full subqueries as this syntax is otherwise not\n        directly supported.\n\n        The ``innerjoin`` flag can also be stated with the term ``\"unnested\"``.\n        This indicates that an INNER JOIN should be used, *unless* the join\n        is linked to a LEFT OUTER JOIN to the left, in which case it\n        will render as LEFT OUTER JOIN.  For example, supposing ``A.bs``\n        is an outerjoin::\n\n            select(A).options(\n                joinedload(A.bs).joinedload(B.cs, innerjoin=\"unnested\")\n            )\n\n\n        The above join will render as \"a LEFT OUTER JOIN b LEFT OUTER JOIN c\",\n        rather than as \"a LEFT OUTER JOIN (b JOIN c)\".\n\n        .. note:: The \"unnested\" flag does **not** affect the JOIN rendered\n            from a many-to-many association table, e.g. a table configured as\n            :paramref:`_orm.relationship.secondary`, to the target table; for\n            correctness of results, these joins are always INNER and are\n            therefore right-nested if linked to an OUTER join.\n\n        .. note::\n\n            The joins produced by :func:`_orm.joinedload` are **anonymously\n            aliased**. The criteria by which the join proceeds cannot be\n            modified, nor can the ORM-enabled :class:`_sql.Select` or legacy\n            :class:`_query.Query` refer to these joins in any way, including\n            ordering. See :ref:`zen_of_eager_loading` for further detail.\n\n            To produce a specific SQL JOIN which is explicitly available, use\n            :meth:`_sql.Select.join` and :meth:`_query.Query.join`. To combine\n            explicit JOINs with eager loading of collections, use\n            :func:`_orm.contains_eager`; see :ref:`contains_eager`.\n\n        .. seealso::\n\n            :ref:`loading_toplevel`\n\n            :ref:`joined_eager_loading`\n",
+      "target_resolution": {
+        "requested": {
+          "kind": "package_exact_version",
+          "registry": "pypi",
+          "name": "sqlalchemy",
+          "version": "2.0.36",
+          "repo_url": null,
+          "git_ref": null,
+          "commit_sha": null
+        },
+        "resolved_requested": {
+          "kind": null,
+          "registry": "pypi",
+          "name": "sqlalchemy",
+          "version": "2.0.36",
+          "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+          "git_ref": "rel_2_0_36",
+          "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+        },
+        "served": {
+          "kind": null,
+          "registry": null,
+          "name": null,
+          "version": "2.0.36",
+          "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+          "git_ref": "rel_2_0_36",
+          "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+        },
+        "freshness": "current",
+        "freshness_reason": "exact_current"
+      },
+      "start_line": 241,
+      "end_line": 328
+    },
+    {
+      "target": "pypi:sqlalchemy@2.0.36",
+      "path": "lib/sqlalchemy/engine/result.py",
+      "content": "    @_generative\n    def unique(self, strategy: Optional[_UniqueFilterType] = None) -> Self:\n        \"\"\"Apply unique filtering to the objects returned by this\n        :class:`_engine.Result`.\n\n        When this filter is applied with no arguments, the rows or objects\n        returned will filtered such that each row is returned uniquely. The\n        algorithm used to determine this uniqueness is by default the Python\n        hashing identity of the whole tuple.   In some cases a specialized\n        per-entity hashing scheme may be used, such as when using the ORM, a\n        scheme is applied which  works against the primary key identity of\n        returned objects.\n\n        The unique filter is applied **after all other filters**, which means\n        if the columns returned have been refined using a method such as the\n        :meth:`_engine.Result.columns` or :meth:`_engine.Result.scalars`\n        method, the uniquing is applied to **only the column or columns\n        returned**.   This occurs regardless of the order in which these\n        methods have been called upon the :class:`_engine.Result` object.\n\n        The unique filter also changes the calculus used for methods like\n        :meth:`_engine.Result.fetchmany` and :meth:`_engine.Result.partitions`.\n        When using :meth:`_engine.Result.unique`, these methods will continue\n        to yield the number of rows or objects requested, after uniquing\n        has been applied.  However, this necessarily impacts the buffering\n        behavior of the underlying cursor or datasource, such that multiple\n        underlying calls to ``cursor.fetchmany()`` may be necessary in order\n        to accumulate enough objects in order to provide a unique collection\n        of the requested size.\n\n        :param strategy: a callable that will be applied to rows or objects\n         being iterated, which should return an object that represents the\n         unique value of the row.   A Python ``set()`` is used to store\n         these identities.   If not passed, a default uniqueness strategy\n         is used which may have been assembled by the source of this\n         :class:`_engine.Result` object.\n\n        \"\"\"\n        self._unique_filter_state = (set(), strategy)\n        return self\n\n    def columns(self, *col_expressions: _KeyIndexType) -> Self:\n        r\"\"\"Establish the columns that should be returned in each row.\n\n        This method may be used to limit the columns returned as well\n        as to reorder them.   The given list of expressions are normally\n        a series of integers or string key names.   They may also be\n        appropriate :class:`.ColumnElement` objects which correspond to\n        a given statement construct.\n\n        .. versionchanged:: 2.0  Due to a bug in 1.4, the",
+      "target_resolution": {
+        "requested": {
+          "kind": "package_exact_version",
+          "registry": "pypi",
+          "name": "sqlalchemy",
+          "version": "2.0.36",
+          "repo_url": null,
+          "git_ref": null,
+          "commit_sha": null
+        },
+        "resolved_requested": {
+          "kind": null,
+          "registry": "pypi",
+          "name": "sqlalchemy",
+          "version": "2.0.36",
+          "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+          "git_ref": "rel_2_0_36",
+          "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+        },
+        "served": {
+          "kind": null,
+          "registry": null,
+          "name": null,
+          "version": "2.0.36",
+          "repo_url": "https://github.com/sqlalchemy/sqlalchemy",
+          "git_ref": "rel_2_0_36",
+          "commit_sha": "66e31814644bad95c8cda853f03088f59be0053d"
+        },
+        "freshness": "current",
+        "freshness_reason": "exact_current"
+      },
+      "start_line": 1036,
+      "end_line": 1086
+    }
+  ]
+}

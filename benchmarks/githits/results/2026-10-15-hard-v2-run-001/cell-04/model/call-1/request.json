@@ -1,0 +1,34 @@
+{
+  "protocol": "syberlabs.search/v0alpha1",
+  "objective": "Implement RetryTransport(inner, max_attempts=3) as an HTTPX 0.28.1 BaseTransport wrapper. max_attempts is the total attempt cap and must be a positive int, excluding bool; invalid values raise ValueError. Retry only GET/HEAD/OPTIONS requests whose already-buffered content is empty. Do not consume an unread request stream to decide eligibility. Retry only ConnectError, ConnectTimeout, and HTTP 503. Never retry ReadTimeout, other status codes, nonempty bodies, unsafe methods, or unread streams. Pass the same unmodified request object on every attempt. Close each discarded 503 before another attempt. Return the final response unclosed and unread, including a final 503; propagate the final connection exception. No sleeps or real network. close() must close inner exactly once even if called repeatedly.",
+  "base": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+  "scope": [
+    "requirements.txt",
+    "src"
+  ],
+  "context": [
+    {
+      "path": "src/integration.py",
+      "lines": [
+        1,
+        12
+      ],
+      "reason": "match",
+      "text": "import httpx\nclass RetryTransport(httpx.BaseTransport):\n    def __init__(self, inner, max_attempts=3):\n        self.inner, self.max_attempts = inner, max_attempts\n    def handle_request(self, request):\n        for _ in range(self.max_attempts):\n            response = self.inner.handle_request(request)\n            if response.status_code != 503:\n                return response\n        return response\n    def close(self):\n        self.inner.close()"
+    },
+    {
+      "path": "requirements.txt",
+      "lines": [
+        1,
+        13
+      ],
+      "reason": "match",
+      "text": "annotated-types==0.7.0\nanyio==4.9.0\ncertifi==2025.1.31\ngreenlet==3.1.1\nh11==0.16.0\nhttpcore==1.0.9\nhttpx==0.28.1\nidna==3.10\npydantic==2.10.6\npydantic_core==2.27.2\nsniffio==1.3.1\nSQLAlchemy==2.0.36\ntyping_extensions==4.12.2"
+    }
+  ],
+  "files": [
+    "requirements.txt",
+    "src/integration.py"
+  ],
+  "seed": 1000
+}

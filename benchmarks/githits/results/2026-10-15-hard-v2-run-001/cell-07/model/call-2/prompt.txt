@@ -1,0 +1,82 @@
+You change a software repository to meet an objective. You propose; a separate host runs the project's checks and a person decides whether to accept. Return complete new contents for each file you change, only for files in the stated scope. Keep the change as small as the objective allows. Do not weaken tests or checks to make them pass. Set delete true (with empty content) only to remove a file. The rationale is one or two sentences a reviewer can check against the diff.
+Use first principles. Return the requested JSON patch without calling tools.
+
+Objective: Migrate the custom Money type to Pydantic 2.10.6/pydantic-core 2.27.2. Keep Money(amount, currency), its amount/currency attributes and make_adapter(). The adapter must accept an existing Money instance unchanged in Python mode, or a mapping with exactly amount and currency, in both Python and JSON mode. amount must be a strict string in canonical signed decimal form with exactly two fractional digits, no leading zeros except zero itself, no exponent or whitespace; negatives are allowed. currency must be USD/EUR. Invalid mappings, numbers, booleans, nonfinite values, extra/missing keys and arbitrary strings must raise Pydantic ValidationError. Store amount as Decimal without float conversion. Serialize to {'amount': fixed-two-place string, 'currency': currency} in both dump_python and dump_json. TypeAdapter(list[Money]) must work. Generated JSON schema must describe the mapping, require both fields, forbid extras, expose a string amount pattern and enumerate currencies. Use supported core-schema hooks, not a v1 validator workaround.
+
+Mutable scope: requirements.txt, src
+
+The previous attempt below did not pass the host's checks. Fix it. Failing checks:
+--- behavior (failed)
+.E....
+======================================================================
+ERROR: test_json_schema (__main__.Behavior.test_json_schema)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "checks.py", line 37, in test_json_schema
+    self.assertIs(schema['additionalProperties'], False)
+                  ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'additionalProperties'
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.048s
+
+FAILED (errors=1)
+
+
+<file path="src/integration.py">
+from decimal import Decimal
+
+from pydantic import TypeAdapter
+from pydantic_core import core_schema
+
+
+class Money:
+    def __init__(self, amount, currency):
+        self.amount, self.currency = amount, currency
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type, handler):
+        mapping_schema = core_schema.typed_dict_schema(
+            {
+                "amount": core_schema.typed_dict_field(
+                    core_schema.str_schema(
+                        strict=True,
+                        pattern=r"^-?(?:0|[1-9][0-9]*)\.[0-9]{2}$",
+                    ),
+                    required=True,
+                ),
+                "currency": core_schema.typed_dict_field(
+                    core_schema.literal_schema(["USD", "EUR"]),
+                    required=True,
+                ),
+            },
+            extra_behavior="forbid",
+        )
+
+        def from_mapping(value):
+            return cls(Decimal(value["amount"]), value["currency"])
+
+        def serialize(value):
+            return {
+                "amount": format(value.amount, ".2f"),
+                "currency": value.currency,
+            }
+
+        validated_mapping = core_schema.no_info_after_validator_function(
+            from_mapping, mapping_schema
+        )
+        return core_schema.json_or_python_schema(
+            json_schema=validated_mapping,
+            python_schema=core_schema.union_schema(
+                [core_schema.is_instance_schema(cls), validated_mapping]
+            ),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                serialize, return_schema=mapping_schema
+            ),
+        )
+
+
+def make_adapter():
+    return TypeAdapter(Money)
+
+</file>

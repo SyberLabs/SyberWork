@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "629396f93593f3cb1aa5fd093a654e059a460ce0",
+    "tree": "88be276cd30123e7895a9afade051a86502027e7",
+    "base": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 2351,
+    "signal": {
+      "rationale": "A discriminated union enforces event-specific fields and preserves indexed validation errors, while validation context keeps each cap local to its call. JSON-mode serialization emits aliases and precise Decimal strings, includes computed signed amounts, and omits None.",
+      "model_usage": {
+        "input_tokens": 14190,
+        "output_tokens": 1370,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Implement batch validation and JSON-compatible serialization using Pydantic v2.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 233,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.001s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

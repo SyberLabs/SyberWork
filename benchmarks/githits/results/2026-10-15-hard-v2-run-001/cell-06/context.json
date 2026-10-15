@@ -1,0 +1,78 @@
+[
+  {
+    "target": "pypi:pydantic@2.10.6",
+    "path": "pydantic/type_adapter.py",
+    "content": "    def validate_python(\n        self,\n        object: Any,\n        /,\n        *,\n        strict: bool | None = None,\n        from_attributes: bool | None = None,\n        context: dict[str, Any] | None = None,\n        experimental_allow_partial: bool | Literal['off', 'on', 'trailing-strings'] = False,\n    ) -> T:\n        \"\"\"Validate a Python object against the model.\n\n        Args:\n            object: The Python object to validate against the model.\n            strict: Whether to strictly check types.\n            from_attributes: Whether to extract data from object attributes.\n            context: Additional context to pass to the validator.\n            experimental_allow_partial: **Experimental** whether to enable\n                [partial validation](../concepts/experimental.md#partial-validation), e.g. to process streams.\n                * False / 'off': Default behavior, no partial validation.\n                * True / 'on': Enable partial validation.\n                * 'trailing-strings': Enable partial validation and allow trailing strings in the input.\n\n        !!! note\n            When using `TypeAdapter` with a Pydantic `dataclass`, the use of the `from_attributes`\n            argument is not supported.\n\n        Returns:\n            The validated object.\n        \"\"\"\n        return self.validator.validate_python(\n            object,\n            strict=strict,\n            from_attributes=from_attributes,\n            context=context,\n            allow_partial=experimental_allow_partial,\n        )\n\n    def validate_json(\n        self,\n        data: str | bytes | bytearray,\n        /,\n        *,\n        strict: bool | None = None,\n        context: dict[str, Any] | None = None,\n        experimental_allow_partial: bool | Literal['off', 'on', 'trailing-strings'] = False,\n    ) -> T:\n        \"\"\"Usage docs: https://docs.pydantic.dev/2.10/concepts/json/#json-parsing\n\n        Validate a JSON string or bytes against the model.\n\n        Args:\n            data: The JSON data to validate against the model.\n            strict: Whether to strictly check types.\n            context: Additional context to use during validation.\n            experimental_allow_partial: **Experimental** whether to enable\n                [partial validation](../concepts/experimental.md#partial-validation), e.g. to process streams.\n                * False / 'off': Default behavior, no partial validation.\n                * True / 'on': Enable partial validation.\n                * 'trailing-strings': Enable partial validation and allow trailing strings in the input.\n\n        Returns:\n            The validated object.\n        \"\"\"\n        return self.validator.validate_json(\n            data, strict=strict, context=context, allow_partial=experimental_allow_partial\n        )",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "pydantic",
+        "version": "2.10.6",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "pydantic",
+        "version": "2.10.6",
+        "repo_url": "https://github.com/pydantic/pydantic",
+        "git_ref": "v2.10.6",
+        "commit_sha": "df05e69a8a3fb37628a0e3a33518ca0425334bc9"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "2.10.6",
+        "repo_url": "https://github.com/pydantic/pydantic",
+        "git_ref": "v2.10.6",
+        "commit_sha": "df05e69a8a3fb37628a0e3a33518ca0425334bc9"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 382,
+    "end_line": 448
+  },
+  {
+    "target": "pypi:pydantic@2.10.6",
+    "path": "pydantic/type_adapter.py",
+    "content": "    def dump_python(\n        self,\n        instance: T,\n        /,\n        *,\n        mode: Literal['json', 'python'] = 'python',\n        include: IncEx | None = None,\n        exclude: IncEx | None = None,\n        by_alias: bool = False,\n        exclude_unset: bool = False,\n        exclude_defaults: bool = False,\n        exclude_none: bool = False,\n        round_trip: bool = False,\n        warnings: bool | Literal['none', 'warn', 'error'] = True,\n        serialize_as_any: bool = False,\n        context: dict[str, Any] | None = None,\n    ) -> Any:\n        \"\"\"Dump an instance of the adapted type to a Python object.\n\n        Args:\n            instance: The Python object to serialize.\n            mode: The output format.\n            include: Fields to include in the output.\n            exclude: Fields to exclude from the output.\n            by_alias: Whether to use alias names for field names.\n            exclude_unset: Whether to exclude unset fields.\n            exclude_defaults: Whether to exclude fields with default values.\n            exclude_none: Whether to exclude fields with None values.\n            round_trip: Whether to output the serialized data in a way that is compatible with deserialization.\n            warnings: How to handle serialization errors. False/\"none\" ignores them, True/\"warn\" logs errors,\n                \"error\" raises a [`PydanticSerializationError`][pydantic_core.PydanticSerializationError].\n            serialize_as_any: Whether to serialize fields with duck-typing serialization behavior.\n            context: Additional context to pass to the serializer.\n\n        Returns:\n            The serialized object.\n        \"\"\"\n        return self.serializer.to_python(\n            instance,\n            mode=mode,\n            by_alias=by_alias,\n            include=include,\n            exclude=exclude,\n            exclude_unset=exclude_unset,\n            exclude_defaults=exclude_defaults,\n            exclude_none=exclude_none,\n            round_trip=round_trip,\n            warnings=warnings,\n            serialize_as_any=serialize_as_any,\n            context=context,\n        )",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "pydantic",
+        "version": "2.10.6",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "pydantic",
+        "version": "2.10.6",
+        "repo_url": "https://github.com/pydantic/pydantic",
+        "git_ref": "v2.10.6",
+        "commit_sha": "df05e69a8a3fb37628a0e3a33518ca0425334bc9"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "2.10.6",
+        "repo_url": "https://github.com/pydantic/pydantic",
+        "git_ref": "v2.10.6",
+        "commit_sha": "df05e69a8a3fb37628a0e3a33518ca0425334bc9"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 490,
+    "end_line": 540
+  }
+]

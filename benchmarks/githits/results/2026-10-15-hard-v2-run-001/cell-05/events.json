@@ -1,0 +1,227 @@
+[
+  {
+    "case_id": "e18042ce-9fab-4a45-b839-785341cd07c8",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Implement parse_batch(payload, cap='100.00') and dump_batch(events) with Pydantic 2.10.6. parse_batch accepts either a Python list or UTF-8 JSON str/bytes and returns Pydantic models for a kind-discriminated debit/credit union. Each event requires kind, accountId (or account_id), amount, currency. account ID is a strict positive int. amount is a finite positive Decimal with at most two decimal places and cannot exceed this call's cap; cap must not leak between calls. currency is USD/EUR. Debit requires reason of at least 3 characters; credit permits an optional reference string. Forbid all other fields and unknown kinds. Invalid data must raise Pydantic ValidationError with per-item locations. dump_batch emits JSON-compatible dicts with accountId aliases, Decimal amount/signed values as strings preserving decimal precision, and omits None. signed is computed as negative amount for debit and positive amount for credit. Accept empty batches. Use supported v2 APIs and preserve public function names."
+      },
+      "contract": [
+        "task-T03",
+        1
+      ]
+    },
+    "at": 1792099904160200,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "14daca549fe12bee98cc608af2f86b90b292cccf62bb652d44de896a49d3d91f"
+  },
+  {
+    "case_id": "e18042ce-9fab-4a45-b839-785341cd07c8",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+        "tree": "f466bb78bcd8e051d689b996bc11b3bc4439dea8",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099904264376,
+    "previous": "14daca549fe12bee98cc608af2f86b90b292cccf62bb652d44de896a49d3d91f",
+    "hash": "fd27d67c089f5bbfb79ee1014824176860761a8c6c11c55fe16903356ce983bb"
+  },
+  {
+    "case_id": "e18042ce-9fab-4a45-b839-785341cd07c8",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099904266881,
+    "previous": "fd27d67c089f5bbfb79ee1014824176860761a8c6c11c55fe16903356ce983bb",
+    "hash": "eb9d46c8e99b21e1d790e5e80c5d314139644a001f7ebbba498a555176357929"
+  },
+  {
+    "case_id": "e18042ce-9fab-4a45-b839-785341cd07c8",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Implement parse_batch(payload, cap='100.00') and dump_batch(events) with Pydantic 2.10.6. parse_batch accepts either a Python list or UTF-8 JSON str/bytes and returns Pydantic models for a kind-discriminated debit/credit union. Each event requires kind, accountId (or account_id), amount, currency. account ID is a strict positive int. amount is a finite positive Decimal with at most two decimal places and cannot exceed this call's cap; cap must not leak between calls. currency is USD/EUR. Debit requires reason of at least 3 characters; credit permits an optional reference string. Forbid all other fields and unknown kinds. Invalid data must raise Pydantic ValidationError with per-item locations. dump_batch emits JSON-compatible dicts with accountId aliases, Decimal amount/signed values as strings preserving decimal precision, and omits None. signed is computed as negative amount for debit and positive amount for credit. Accept empty batches. Use supported v2 APIs and preserve public function names.",
+        "digest": "11369ea488860500f1c94fbcf631394322d7391157ba6b7296034b1ced41c5b4",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "fd408ffea8d9f5aa52c78f9e272ecdc8d4ee9903",
+            "lines": [
+              1,
+              11
+            ],
+            "bytes": 328,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099904677722,
+    "previous": "eb9d46c8e99b21e1d790e5e80c5d314139644a001f7ebbba498a555176357929",
+    "hash": "661aebf31b8d704e121e94fe6daf9652b6abd345547b6e5119e783d1a8e9bf79"
+  },
+  {
+    "case_id": "e18042ce-9fab-4a45-b839-785341cd07c8",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "context_digest": "11369ea488860500f1c94fbcf631394322d7391157ba6b7296034b1ced41c5b4",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099904678721,
+    "previous": "661aebf31b8d704e121e94fe6daf9652b6abd345547b6e5119e783d1a8e9bf79",
+    "hash": "68771dd2d35e1d5de3b614b38175da3a34a6fc8bdbb8955c5d82efefc61c8649"
+  },
+  {
+    "case_id": "e18042ce-9fab-4a45-b839-785341cd07c8",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "2a8a8aac35b510735df885d1509546c7a1d86cf6",
+      "tree": "5b4208312e350512115517acb27357e4c0a4e752",
+      "base": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "d4010245f3a56b4565dc8b9be3d6805df21be8888489e908281696ffe4e77578",
+        "bytes": 2889,
+        "files": 1
+      },
+      "signal": {
+        "rationale": "The discriminated union enforces event-specific fields, strict account IDs, Decimal constraints, and per-call caps with indexed validation errors. JSON decoding preserves numeric decimal precision, and serialization includes aliases and computed signed amounts while omitting None.",
+        "model_usage": {
+          "input_tokens": 12467,
+          "output_tokens": 2476,
+          "cache_read_input_tokens": 0,
+          "model": "gpt-6.1-sol",
+          "stop_reason": "end_turn"
+        }
+      },
+      "note": "Implemented validated debit/credit batches and precision-preserving JSON output.",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099962470728,
+    "previous": "68771dd2d35e1d5de3b614b38175da3a34a6fc8bdbb8955c5d82efefc61c8649",
+    "hash": "b1d10842323f1eff6498ea81cd2fe720104df34891f77b5492afbf3050e9b260"
+  },
+  {
+    "case_id": "e18042ce-9fab-4a45-b839-785341cd07c8",
+    "seq": 7,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "2a8a8aac35b510735df885d1509546c7a1d86cf6",
+      "tree": "5b4208312e350512115517acb27357e4c0a4e752",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 218,
+          "output_digest": "59753171660350c6735ee4b12925f50e7f8606c102caf33752e5551608bad819",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.001s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 93,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099963025711,
+    "previous": "b1d10842323f1eff6498ea81cd2fe720104df34891f77b5492afbf3050e9b260",
+    "hash": "3079557eaaced232d6e2865974b17bbbbe8440f722b133bc5253c6682e3a6040"
+  },
+  {
+    "case_id": "e18042ce-9fab-4a45-b839-785341cd07c8",
+    "seq": 8,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 1,
+      "elapsed_ms": 58358,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099963030220,
+    "previous": "3079557eaaced232d6e2865974b17bbbbe8440f722b133bc5253c6682e3a6040",
+    "hash": "5981bfc38f45dea9bf0c0bab39838183796e32997aabbcbce4ccd4f588d9404c"
+  }
+]

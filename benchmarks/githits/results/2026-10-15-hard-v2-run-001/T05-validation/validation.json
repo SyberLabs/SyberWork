@@ -1,0 +1,70 @@
+{
+  "fixture": "T05",
+  "base_commit": "cb17b417bf79d017deab4e2003a19d188aa6c5aa",
+  "base_tree": "51e5653ab2dc73a6038032d4e128e90d2055c65d",
+  "broken": {
+    "candidate": "base",
+    "commit": "cb17b417bf79d017deab4e2003a19d188aa6c5aa",
+    "tree": "51e5653ab2dc73a6038032d4e128e90d2055c65d",
+    "evaluator": "syberlabs.checks/1",
+    "checks": [
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 110,
+        "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_tail": ""
+      },
+      {
+        "name": "behavior",
+        "state": "failed",
+        "exit_code": 1,
+        "duration_ms": 437,
+        "output_digest": "f1fd79d0a7e3c65ed20f17c2269650f450048af19328e567e884a5b5eb76936d",
+        "output_tail": "Lib\\site-packages\\sqlalchemy\\orm\\persistence.py\", line 1048, in _emit_insert_statements\r\n    result = connection.execute(\r\n             ^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1418, in execute\r\n    return meth(\r\n           ^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\sql\\elements.py\", line 515, in _execute_on_connection\r\n    return connection._execute_clauseelement(\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1640, in _execute_clauseelement\r\n    ret = self._execute_context(\r\n          ^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1846, in _execute_context\r\n    return self._exec_single_context(\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1986, in _exec_single_context\r\n    self._handle_dbapi_exception(\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 2355, in _handle_dbapi_exception\r\n    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\base.py\", line 1936, in _exec_single_context\r\n    self.dialect.do_executemany(\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\sqlalchemy\\engine\\default.py\", line 938, in do_executemany\r\n    cursor.executemany(statement, parameters)\r\nsqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) UNIQUE constraint failed: items.name\r\n[SQL: INSERT INTO items (id, name) VALUES (?, ?)]\r\n[parameters: [(7, 'pending'), (2, 'existing'), (3, 'three')]]\r\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\r\n\r\n======================================================================\r\nFAIL: test_caller_rollback_reverts_successes (__main__.Behavior.test_caller_rollback_reverts_successes)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 24, in test_caller_rollback_reverts_successes\r\n    self.assertEqual(self.names(),[(1,'existing')])\r\nAssertionError: Lists differ: [(1, 'existing'), (2, 'two')] != [(1, 'existing')]\r\n\r\nFirst list contains 1 additional elements.\r\nFirst extra element 1:\r\n(2, 'two')\r\n\r\n- [(1, 'existing'), (2, 'two')]\r\n+ [(1, 'existing')]\r\n\r\n======================================================================\r\nFAIL: test_no_owned_session_operations (__main__.Behavior.test_no_owned_session_operations)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 35, in test_no_owned_session_operations\r\n    try: self.assertEqual(import_rows(self.session,[{'id':2,'name':'two'}]),{'accepted':[2],'rejected':[]})\r\n                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-q_eyznvn\\tree\\src\\integration.py\", line 10, in import_rows\r\n    session.commit()\r\n  File \"checks.py\", line 32, in forbidden\r\n    def forbidden(*args,**kw): raise AssertionError('caller owns the session')\r\n                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\nAssertionError: caller owns the session\r\n\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.031s\r\n\r\nFAILED (failures=2, errors=3)\r\n"
+      }
+    ]
+  },
+  "reference": {
+    "id": "c1",
+    "commit": "b0ccbc15d48d5e216f00d8bcb03740c8a4dcd41c",
+    "tree": "3b9bb2fec8526fb8301144fdd396eb185707f7ac",
+    "base": "cb17b417bf79d017deab4e2003a19d188aa6c5aa",
+    "parents": [],
+    "operator": "patch",
+    "provider": "reference",
+    "provider_revision": "authored-v1",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1366,
+    "signal": null,
+    "note": "",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 468,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.027s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 110,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  },
+  "reference_acceptable": true,
+  "source_url": "https://docs.sqlalchemy.org/en/20/orm/session_transaction.html#using-savepoint"
+}

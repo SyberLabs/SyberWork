@@ -1,0 +1,78 @@
+[
+  {
+    "target": "pypi:httpx@0.28.1",
+    "path": "httpx/_models.py",
+    "content": "    async def aread(self) -> bytes:\n        \"\"\"\n        Read and return the response content.\n        \"\"\"\n        if not hasattr(self, \"_content\"):\n            self._content = b\"\".join([part async for part in self.aiter_bytes()])\n        return self._content\n\n    async def aiter_bytes(\n        self, chunk_size: int | None = None\n    ) -> typing.AsyncIterator[bytes]:\n        \"\"\"\n        A byte-iterator over the decoded response content.\n        This allows us to handle gzip, deflate, brotli, and zstd encoded responses.\n        \"\"\"\n        if hasattr(self, \"_content\"):\n            chunk_size = len(self._content) if chunk_size is None else chunk_size\n            for i in range(0, len(self._content), max(chunk_size, 1)):\n                yield self._content[i : i + chunk_size]\n        else:\n            decoder = self._get_content_decoder()\n            chunker = ByteChunker(chunk_size=chunk_size)\n            with request_context(request=self._request):\n                async for raw_bytes in self.aiter_raw():\n                    decoded = decoder.decode(raw_bytes)\n                    for chunk in chunker.decode(decoded):\n                        yield chunk\n                decoded = decoder.flush()\n                for chunk in chunker.decode(decoded):\n                    yield chunk  # pragma: no cover\n                for chunk in chunker.flush():\n                    yield chunk\n\n    async def aiter_text(\n        self, chunk_size: int | None = None\n    ) -> typing.AsyncIterator[str]:\n        \"\"\"\n        A str-iterator over the decoded response content\n        that handles both gzip, deflate, etc but also detects the content's\n        string encoding.\n        \"\"\"\n        decoder = TextDecoder(encoding=self.encoding or \"utf-8\")\n        chunker = TextChunker(chunk_size=chunk_size)\n        with request_context(request=self._request):\n            async for byte_content in self.aiter_bytes():\n                text_content = decoder.decode(byte_content)\n                for chunk in chunker.decode(text_content):\n                    yield chunk\n            text_content = decoder.flush()\n            for chunk in chunker.decode(text_content):\n                yield chunk  # pragma: no cover\n            for chunk in chunker.flush():\n                yield chunk\n\n    async def aiter_lines(self) -> typing.AsyncIterator[str]:\n        decoder = LineDecoder()\n        with request_context(request=self._request):\n            async for text in self.aiter_text():\n                for line in decoder.decode(text):\n                    yield line\n            for line in decoder.flush():\n                yield line\n\n    async def aiter_raw(\n        self, chunk_size: int | None = None\n    ) -> typing.AsyncIterator[bytes]:\n        \"\"\"\n        A byte-iterator over the raw response content.\n        \"\"\"\n        if self.is_stream_consumed:\n            raise StreamConsumed()\n        if self.is_closed:\n            raise StreamClosed()\n        if not isinstance(self.stream, AsyncByteStream):\n            raise RuntimeError(\"Attempted to call an async iterator on an sync stream.\")\n\n        self.is_stream_consumed = True\n        self._num_bytes_downloaded = 0\n        chunker = ByteChunker(chunk_size=chunk_size)\n\n        with request_context(request=self._request):\n            async for raw_stream_bytes in self.stream:\n                self._num_bytes_downloaded += len(raw_stream_bytes)\n                for chunk in chunker.decode(raw_stream_bytes):\n                    yield chunk\n\n        for chunk in chunker.flush():\n            yield chunk\n\n        await self.aclose()\n\n    async def aclose(self) -> None:\n        \"\"\"\n        Close the response and release the connection.\n        Automatically called if the response body is read to completion.\n        \"\"\"\n        if not isinstance(self.stream, AsyncByteStream):\n            raise RuntimeError(\"Attempted to call an async close on an sync stream.\")\n\n        if not self.is_closed:\n            self.is_closed = True\n            with request_context(request=self._request):\n                await self.stream.aclose()",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 974,
+    "end_line": 1076
+  },
+  {
+    "target": "pypi:httpx@0.28.1",
+    "path": "httpx/_client.py",
+    "content": "    @asynccontextmanager\n    async def stream(\n        self,\n        method: str,\n        url: URL | str,\n        *,\n        content: RequestContent | None = None,\n        data: RequestData | None = None,\n        files: RequestFiles | None = None,\n        json: typing.Any | None = None,\n        params: QueryParamTypes | None = None,\n        headers: HeaderTypes | None = None,\n        cookies: CookieTypes | None = None,\n        auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT,\n        follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT,\n        timeout: TimeoutTypes | UseClientDefault = USE_CLIENT_DEFAULT,\n        extensions: RequestExtensions | None = None,\n    ) -> typing.AsyncIterator[Response]:\n        \"\"\"\n        Alternative to `httpx.request()` that streams the response body\n        instead of loading it into memory at once.\n\n        **Parameters**: See `httpx.request`.\n\n        See also: [Streaming Responses][0]\n\n        [0]: /quickstart#streaming-responses\n        \"\"\"\n        request = self.build_request(\n            method=method,\n            url=url,\n            content=content,\n            data=data,\n            files=files,\n            json=json,\n            params=params,\n            headers=headers,\n            cookies=cookies,\n            timeout=timeout,\n            extensions=extensions,\n        )\n        response = await self.send(\n            request=request,\n            auth=auth,\n            follow_redirects=follow_redirects,\n            stream=True,\n        )\n        try:\n            yield response\n        finally:\n            await response.aclose()",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 1542,
+    "end_line": 1592
+  }
+]

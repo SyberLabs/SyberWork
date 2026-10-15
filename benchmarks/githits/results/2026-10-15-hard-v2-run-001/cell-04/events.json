@@ -1,0 +1,227 @@
+[
+  {
+    "case_id": "bd963013-8c35-499f-b1a4-a844efb6ee49",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Implement RetryTransport(inner, max_attempts=3) as an HTTPX 0.28.1 BaseTransport wrapper. max_attempts is the total attempt cap and must be a positive int, excluding bool; invalid values raise ValueError. Retry only GET/HEAD/OPTIONS requests whose already-buffered content is empty. Do not consume an unread request stream to decide eligibility. Retry only ConnectError, ConnectTimeout, and HTTP 503. Never retry ReadTimeout, other status codes, nonempty bodies, unsafe methods, or unread streams. Pass the same unmodified request object on every attempt. Close each discarded 503 before another attempt. Return the final response unclosed and unread, including a final 503; propagate the final connection exception. No sleeps or real network. close() must close inner exactly once even if called repeatedly."
+      },
+      "contract": [
+        "task-T02",
+        1
+      ]
+    },
+    "at": 1792099884062676,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "2199bb7dbdccfa87c35d35e92f0480c1f618c07fa3a98f9332c6bc3f3326a26a"
+  },
+  {
+    "case_id": "bd963013-8c35-499f-b1a4-a844efb6ee49",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+        "tree": "c4f390d8add33fbe93d009a7859015f8bc07705d",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099884167363,
+    "previous": "2199bb7dbdccfa87c35d35e92f0480c1f618c07fa3a98f9332c6bc3f3326a26a",
+    "hash": "73e64a38e5f2bac1a664ac12ceee318205935eae4ec7d6d0c2fd9fc02f5838b8"
+  },
+  {
+    "case_id": "bd963013-8c35-499f-b1a4-a844efb6ee49",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099884169362,
+    "previous": "73e64a38e5f2bac1a664ac12ceee318205935eae4ec7d6d0c2fd9fc02f5838b8",
+    "hash": "a390dda22bdcf93c0658dacf8a116df694203f1682499712878d660f85ce291b"
+  },
+  {
+    "case_id": "bd963013-8c35-499f-b1a4-a844efb6ee49",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Implement RetryTransport(inner, max_attempts=3) as an HTTPX 0.28.1 BaseTransport wrapper. max_attempts is the total attempt cap and must be a positive int, excluding bool; invalid values raise ValueError. Retry only GET/HEAD/OPTIONS requests whose already-buffered content is empty. Do not consume an unread request stream to decide eligibility. Retry only ConnectError, ConnectTimeout, and HTTP 503. Never retry ReadTimeout, other status codes, nonempty bodies, unsafe methods, or unread streams. Pass the same unmodified request object on every attempt. Close each discarded 503 before another attempt. Return the final response unclosed and unread, including a final 503; propagate the final connection exception. No sleeps or real network. close() must close inner exactly once even if called repeatedly.",
+        "digest": "f3952af10d4e4cbd8f2d842130e71192e66ceab040199dad3b629f4f9c3060a1",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "0b70280b5bff1367dbdadb898d616847d684adfe",
+            "lines": [
+              1,
+              12
+            ],
+            "bytes": 450,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099884579203,
+    "previous": "a390dda22bdcf93c0658dacf8a116df694203f1682499712878d660f85ce291b",
+    "hash": "6de6ff0c96b0636d65906f0ce96660ce6a4030343e09aeaa9633b29ebc48e8b8"
+  },
+  {
+    "case_id": "bd963013-8c35-499f-b1a4-a844efb6ee49",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "context_digest": "f3952af10d4e4cbd8f2d842130e71192e66ceab040199dad3b629f4f9c3060a1",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099884586220,
+    "previous": "6de6ff0c96b0636d65906f0ce96660ce6a4030343e09aeaa9633b29ebc48e8b8",
+    "hash": "579f40a85e5a94695aae2ec2411ef4a58794b05699b73fae2f342bb4137dc443"
+  },
+  {
+    "case_id": "bd963013-8c35-499f-b1a4-a844efb6ee49",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "59ee2aafd47fd0f1d4f8a229c947e05c03256c3c",
+      "tree": "9baff602d26701fbb6a0775d4a078427eb2c5300",
+      "base": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "codex-repair",
+        "revision": "gpt-6.1-sol"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "7de8483f227ecaa70a028c6059713e4631e8d0b0cf216e40997a0ee74624bac1",
+        "bytes": 1903,
+        "files": 1
+      },
+      "signal": {
+        "rationale": "Retries preserve the original request and apply only to safe methods with buffered empty content, for connection failures or HTTP 503. Discarded 503 responses are closed, final responses remain untouched, and closing the wrapper closes its inner transport at most once.",
+        "model_usage": {
+          "input_tokens": 12440,
+          "output_tokens": 740,
+          "cache_read_input_tokens": 0,
+          "model": "gpt-6.1-sol",
+          "stop_reason": "end_turn"
+        }
+      },
+      "note": "Implement bounded retries with request eligibility checks and correct resource cleanup.",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099902997935,
+    "previous": "579f40a85e5a94695aae2ec2411ef4a58794b05699b73fae2f342bb4137dc443",
+    "hash": "65bba26cd89f2245a98dbca69d995ecae25b2d5be2b7ab3ff58dbcd54cddbcf8"
+  },
+  {
+    "case_id": "bd963013-8c35-499f-b1a4-a844efb6ee49",
+    "seq": 7,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "59ee2aafd47fd0f1d4f8a229c947e05c03256c3c",
+      "tree": "9baff602d26701fbb6a0775d4a078427eb2c5300",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 187,
+          "output_digest": "59753171660350c6735ee4b12925f50e7f8606c102caf33752e5551608bad819",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.001s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 93,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099903525504,
+    "previous": "65bba26cd89f2245a98dbca69d995ecae25b2d5be2b7ab3ff58dbcd54cddbcf8",
+    "hash": "c010b24037e01418f9a6bd8cd2b8642f8ecd3c73c36c86cbe2096b6c2df9fd14"
+  },
+  {
+    "case_id": "bd963013-8c35-499f-b1a4-a844efb6ee49",
+    "seq": 8,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 1,
+      "elapsed_ms": 18937,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099903527006,
+    "previous": "c010b24037e01418f9a6bd8cd2b8642f8ecd3c73c36c86cbe2096b6c2df9fd14",
+    "hash": "dafe3de168b7dd06cea56c096932dd49a433b97bdfc5bcf0e72583ea9f0bfb7f"
+  }
+]

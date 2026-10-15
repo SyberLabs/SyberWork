@@ -1,0 +1,34 @@
+{
+  "protocol": "syberlabs.search/v0alpha1",
+  "objective": "Fix async read_events(transport, url, limit) for HTTPX 0.28.1. The caller owns the supplied AsyncBaseTransport: never close it. Accept only nonnegative integer limits (bool is invalid), raising ValueError otherwise. Zero returns [] without making a request. Stream GET through the supplied transport, raise HTTPStatusError for non-2xx responses, transparently decode gzip and UTF-8 across arbitrary byte chunks, skip blank NDJSON lines, and return at most limit JSON values in order. Stop parsing at the limit even if later lines are malformed. Propagate JSON errors before the limit. Close each response stream exactly once on success or any error. Do not replace the supplied transport, buffer the whole body, or add dependencies.",
+  "base": "3b9bf5d09828aac1cb8eb450e1d6621b31f5dbfc",
+  "scope": [
+    "requirements.txt",
+    "src"
+  ],
+  "context": [
+    {
+      "path": "src/integration.py",
+      "lines": [
+        1,
+        8
+      ],
+      "reason": "match",
+      "text": "import json\nimport httpx\n\nasync def read_events(transport, url, limit):\n    async with httpx.AsyncClient(transport=transport) as client:\n        response = await client.get(url)\n        response.raise_for_status()\n        return [json.loads(line) for line in response.text.splitlines() if line.strip()][:limit]"
+    },
+    {
+      "path": "requirements.txt",
+      "lines": [
+        1,
+        13
+      ],
+      "reason": "match",
+      "text": "annotated-types==0.7.0\nanyio==4.9.0\ncertifi==2025.1.31\ngreenlet==3.1.1\nh11==0.16.0\nhttpcore==1.0.9\nhttpx==0.28.1\nidna==3.10\npydantic==2.10.6\npydantic_core==2.27.2\nsniffio==1.3.1\nSQLAlchemy==2.0.36\ntyping_extensions==4.12.2"
+    }
+  ],
+  "files": [
+    "requirements.txt",
+    "src/integration.py"
+  ],
+  "seed": 1000
+}

@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "1fefae8e-9342-47d6-a96a-7b8b890ee399",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Implement RetryTransport(inner, max_attempts=3) as an HTTPX 0.28.1 BaseTransport wrapper. max_attempts is the total attempt cap and must be a positive int, excluding bool; invalid values raise ValueError. Retry only GET/HEAD/OPTIONS requests whose already-buffered content is empty. Do not consume an unread request stream to decide eligibility. Retry only ConnectError, ConnectTimeout, and HTTP 503. Never retry ReadTimeout, other status codes, nonempty bodies, unsafe methods, or unread streams. Pass the same unmodified request object on every attempt. Close each discarded 503 before another attempt. Return the final response unclosed and unread, including a final 503; propagate the final connection exception. No sleeps or real network. close() must close inner exactly once even if called repeatedly."
+      },
+      "contract": [
+        "task-T02",
+        1
+      ]
+    },
+    "at": 1792099797461599,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "5ed746c20f9bfc6c94d75aeb4377204a23298d71b0adf5222db4608080e44957"
+  },
+  {
+    "case_id": "1fefae8e-9342-47d6-a96a-7b8b890ee399",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+        "tree": "c4f390d8add33fbe93d009a7859015f8bc07705d",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099797568656,
+    "previous": "5ed746c20f9bfc6c94d75aeb4377204a23298d71b0adf5222db4608080e44957",
+    "hash": "c763c3965565459eaf4898008b4e0a7c53842eea3d01bfe322fe5eb3cc430088"
+  },
+  {
+    "case_id": "1fefae8e-9342-47d6-a96a-7b8b890ee399",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099797570660,
+    "previous": "c763c3965565459eaf4898008b4e0a7c53842eea3d01bfe322fe5eb3cc430088",
+    "hash": "0df9e5930aa077c08ae774b70ac1a10d2a81eecb736c2b92f3ad5ea386b1981b"
+  },
+  {
+    "case_id": "1fefae8e-9342-47d6-a96a-7b8b890ee399",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Implement RetryTransport(inner, max_attempts=3) as an HTTPX 0.28.1 BaseTransport wrapper. max_attempts is the total attempt cap and must be a positive int, excluding bool; invalid values raise ValueError. Retry only GET/HEAD/OPTIONS requests whose already-buffered content is empty. Do not consume an unread request stream to decide eligibility. Retry only ConnectError, ConnectTimeout, and HTTP 503. Never retry ReadTimeout, other status codes, nonempty bodies, unsafe methods, or unread streams. Pass the same unmodified request object on every attempt. Close each discarded 503 before another attempt. Return the final response unclosed and unread, including a final 503; propagate the final connection exception. No sleeps or real network. close() must close inner exactly once even if called repeatedly.",
+        "digest": "f3952af10d4e4cbd8f2d842130e71192e66ceab040199dad3b629f4f9c3060a1",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "0b70280b5bff1367dbdadb898d616847d684adfe",
+            "lines": [
+              1,
+              12
+            ],
+            "bytes": 450,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099798584966,
+    "previous": "0df9e5930aa077c08ae774b70ac1a10d2a81eecb736c2b92f3ad5ea386b1981b",
+    "hash": "2ee23a6df1b00af639ccad9a4ff2eadb00a8081c4f839ddfa3378b0576228805"
+  },
+  {
+    "case_id": "1fefae8e-9342-47d6-a96a-7b8b890ee399",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "context_digest": "f3952af10d4e4cbd8f2d842130e71192e66ceab040199dad3b629f4f9c3060a1",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099798586966,
+    "previous": "2ee23a6df1b00af639ccad9a4ff2eadb00a8081c4f839ddfa3378b0576228805",
+    "hash": "d8f2af3564c6750a8584944fe83f177e189b4e27a044e17ef5a91a3088b11c3a"
+  },
+  {
+    "case_id": "1fefae8e-9342-47d6-a96a-7b8b890ee399",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "82bc95a731bc5254ad48557a21955e18f89127f9",
+      "tree": "ecda96a1d36fa9980dcbcf83140c0f8128beb317",
+      "base": "a1925249a1e7d71d13050fcbeeb68089f30dabc2",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "f768b0541e2aaf30b260763b1edad2e6a3839bd62710ff65d6ad6d24794120ba",
+        "bytes": 1738,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099799181333,
+    "previous": "d8f2af3564c6750a8584944fe83f177e189b4e27a044e17ef5a91a3088b11c3a",
+    "hash": "8fe54f6b36a2a6f930ceb0a97659200314f4b3c6d99b1c9c56aa9bdef7b14100"
+  },
+  {
+    "case_id": "1fefae8e-9342-47d6-a96a-7b8b890ee399",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 593,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099799182835,
+    "previous": "8fe54f6b36a2a6f930ceb0a97659200314f4b3c6d99b1c9c56aa9bdef7b14100",
+    "hash": "961dfd239bc9e5125e61eee145dc84e36034dfe8673a232751cf479850c237e7"
+  },
+  {
+    "case_id": "1fefae8e-9342-47d6-a96a-7b8b890ee399",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "82bc95a731bc5254ad48557a21955e18f89127f9",
+      "tree": "ecda96a1d36fa9980dcbcf83140c0f8128beb317",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 156,
+          "output_digest": "59753171660350c6735ee4b12925f50e7f8606c102caf33752e5551608bad819",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.001s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 108,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099799673874,
+    "previous": "961dfd239bc9e5125e61eee145dc84e36034dfe8673a232751cf479850c237e7",
+    "hash": "62cbb9bda9e98cbc1bfd374839d7eed2594a92e107ee07d8862bb0c34dd04e6e"
+  }
+]

@@ -1,0 +1,18 @@
+Budget K = 2 model calls per arm; stop at first host-verified acceptable candidate.
+Authored integration regressions against pinned packages; exploratory, not representative.
+Completed matched pairs: 5/6.
+Without GitHits: 5/5; with GitHits: 5/5.
+Discordant pairs: GitHits-only solves 0, baseline-only solves 0.
+This small convenience sample does not establish a general improvement.
+T01 with_githits seed=1: completed; solved=True; calls=1; reason=none
+T01 without_githits seed=1: completed; solved=True; calls=1; reason=none
+T02 with_githits seed=1: completed; solved=True; calls=1; reason=none
+T02 without_githits seed=1: completed; solved=True; calls=1; reason=none
+T03 without_githits seed=1: completed; solved=True; calls=1; reason=none
+T03 with_githits seed=1: completed; solved=True; calls=1; reason=none
+T04 without_githits seed=1: completed; solved=True; calls=2; reason=none
+T04 with_githits seed=1: unavailable; solved=n/a; calls=0; reason=VERSION_NOT_FOUND
+T05 with_githits seed=1: completed; solved=True; calls=1; reason=none
+T05 without_githits seed=1: completed; solved=True; calls=1; reason=none
+T06 with_githits seed=1: completed; solved=True; calls=1; reason=none
+T06 without_githits seed=1: completed; solved=True; calls=1; reason=none

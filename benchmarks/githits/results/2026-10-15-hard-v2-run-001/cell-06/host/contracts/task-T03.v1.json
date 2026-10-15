@@ -1,0 +1,68 @@
+{
+  "id": "task-T03",
+  "version": 1,
+  "title": "Implement parse_batch(payload, cap='100.00') and dump_batch(events) with Pydantic 2.10.6. parse_batch accepts either a Python list or UTF-8 JSON str/bytes and returns Pydantic models for a kind-discriminated debit/credit union. Each event requires kind, accountId (or account_id), amount, currency. account ID is a strict positive int. amount is a finite positive Decimal with at most two decimal places and cannot exceed this call's cap; cap must not leak between calls. currency is USD/EUR. Debit requires reason of at least 3 characters; credit permits an optional reference string. Forbid all other fields and unknown kinds. Invalid data must raise Pydantic ValidationError with per-item locations. dump_batch emits JSON-compatible dicts with accountId aliases, Decimal amount/signed values as strings preserving decimal precision, and omits None. signed is computed as negative amount for debit and positive amount for credit. Accept empty batches. Use supported v2 APIs and preserve public function names.",
+  "inputs": {
+    "objective": "string"
+  },
+  "actions": {
+    "accept_change": {}
+  },
+  "acceptance": [
+    {
+      "id": "accepted",
+      "kind": "effect",
+      "action": "accept_change"
+    }
+  ],
+  "evolution": {
+    "scope": {
+      "paths": [
+        "src/"
+      ],
+      "max_files": 1,
+      "max_diff_bytes": 40000
+    },
+    "operators": [
+      "patch"
+    ],
+    "budget": {
+      "max_candidates": 2,
+      "max_evaluations": 2,
+      "max_seconds": 1200
+    },
+    "evaluation": {
+      "checks": {
+        "dependency_pin": {
+          "argv": [
+            "C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Scripts\\python.exe",
+            "-I",
+            "-c",
+            "import importlib.metadata as m; assert m.version('pydantic') == '2.10.6'"
+          ],
+          "timeout_seconds": 30
+        },
+        "behavior": {
+          "argv": [
+            "C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Scripts\\python.exe",
+            "-I",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,'src'); runpy.run_path('checks.py',run_name='__main__')"
+          ],
+          "timeout_seconds": 30
+        }
+      },
+      "required": [
+        "dependency_pin",
+        "behavior"
+      ],
+      "max_output_bytes": 64000
+    },
+    "promotion": {
+      "action": "accept_change",
+      "roles": [
+        "developer"
+      ]
+    }
+  }
+}

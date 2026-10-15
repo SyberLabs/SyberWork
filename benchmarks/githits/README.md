@@ -61,9 +61,9 @@ benchmark's fully version-pinned extras:
 
 ```powershell
 # Replace the first path with a working Python interpreter on this machine.
-& 'C:\path\to\python.exe' -m venv .venv-githits
-& '.\.venv-githits\Scripts\python.exe' -m pip install -r benchmarks/githits/requirements.txt
-$benchPython = (Resolve-Path '.\.venv-githits\Scripts\python.exe').Path
+& 'C:\path\to\python.exe' -m venv .venv
+& '.\.venv\Scripts\python.exe' -m pip install -r benchmarks/githits/requirements.txt
+$benchPython = (Resolve-Path '.\.venv\Scripts\python.exe').Path
 ```
 
 For live lookups, use the approved private MasterMind usage runtime introduced
@@ -117,6 +117,32 @@ The requested model is recorded; the CLI does not report an immutable served
 model snapshot in these events. There is no claim of bitwise model replay.
 
 ## Evidence and missing data
+
+For the preregistered harder follow-up, use the same pinned environment and
+the `hard-v2` profile. Keep environments outside the checkout or in ignored
+`.venv/`: the registration rejects additional unignored Python source files.
+The source guard verifies all frozen code and both registration documents;
+do not regenerate the registration to bypass a mismatch.
+
+```powershell
+# Frozen-context rerun: six baselines, five available treatments; up to 22 calls.
+# Existing model login required. No GitHits token or new retrieval is needed.
+& $benchPython -m benchmarks.githits.run --suite hard-v2 --python $benchPython --calls 2 --repeats 1 --write work/hard-v2-rerun
+
+# Replay the published evidence without model calls, token or network.
+& $benchPython -m benchmarks.githits.verify benchmarks/githits/results/2026-10-15-hard-v2-run-001 --python $benchPython --write work/hard-v2-recheck.json
+```
+
+The [v2 registration](PREREGISTRATION-v2.md) was pushed at `291a7a1` before
+any model calls. Its authenticated preflight found T04's exact pinned context
+unavailable and stopped with zero trials. The [v2.1 amendment](PREREGISTRATION-v2.1.md),
+pushed at `2895110` before trials, retains all six tasks and freezes that
+65-file retrieval snapshot. Five pairs can complete; T04's baseline stays
+standalone. The runner verifies these receipts before every run. This is
+partial blinding with an unblinded operator, not an independent blind study.
+See [the harder report](REPORT-hard-v2.md) and the original [3/3 tie](REPORT-run-004.md).
+
+### Saved evidence format
 
 `results.json` retains the existing benchmark row fields (`fixture`, `arm`,
 `seed`, `solved`, `calls`, token counts, `dollars`, `simulated`, candidate and

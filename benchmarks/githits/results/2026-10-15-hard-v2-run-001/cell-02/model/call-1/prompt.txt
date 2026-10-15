@@ -1,0 +1,37 @@
+You change a software repository to meet an objective. You propose; a separate host runs the project's checks and a person decides whether to accept. Return complete new contents for each file you change, only for files in the stated scope. Keep the change as small as the objective allows. Do not weaken tests or checks to make them pass. Set delete true (with empty content) only to remove a file. The rationale is one or two sentences a reviewer can check against the diff.
+Use first principles. Return the requested JSON patch without calling tools.
+
+Objective: Fix async read_events(transport, url, limit) for HTTPX 0.28.1. The caller owns the supplied AsyncBaseTransport: never close it. Accept only nonnegative integer limits (bool is invalid), raising ValueError otherwise. Zero returns [] without making a request. Stream GET through the supplied transport, raise HTTPStatusError for non-2xx responses, transparently decode gzip and UTF-8 across arbitrary byte chunks, skip blank NDJSON lines, and return at most limit JSON values in order. Stop parsing at the limit even if later lines are malformed. Propagate JSON errors before the limit. Close each response stream exactly once on success or any error. Do not replace the supplied transport, buffer the whole body, or add dependencies.
+
+Mutable scope: requirements.txt, src
+
+Propose one patch that meets the objective.
+
+<file path="src/integration.py">
+import json
+import httpx
+
+async def read_events(transport, url, limit):
+    async with httpx.AsyncClient(transport=transport) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return [json.loads(line) for line in response.text.splitlines() if line.strip()][:limit]
+
+</file>
+
+<file path="requirements.txt">
+annotated-types==0.7.0
+anyio==4.9.0
+certifi==2025.1.31
+greenlet==3.1.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.10
+pydantic==2.10.6
+pydantic_core==2.27.2
+sniffio==1.3.1
+SQLAlchemy==2.0.36
+typing_extensions==4.12.2
+
+</file>

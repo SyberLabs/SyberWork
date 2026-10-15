@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "changes": {
+        "src/integration.py": "import httpx\n\n\nclass RetryTransport(httpx.BaseTransport):\n    def __init__(self, inner, max_attempts=3):\n        if (\n            isinstance(max_attempts, bool)\n            or not isinstance(max_attempts, int)\n            or max_attempts <= 0\n        ):\n            raise ValueError(\"max_attempts must be a positive integer\")\n        self.inner = inner\n        self.max_attempts = max_attempts\n        self._closed = False\n\n    def handle_request(self, request):\n        attempts = 1\n        if request.method in (\"GET\", \"HEAD\", \"OPTIONS\"):\n            try:\n                if request.content == b\"\":\n                    attempts = self.max_attempts\n            except httpx.RequestNotRead:\n                pass\n\n        for attempt in range(attempts):\n            try:\n                response = self.inner.handle_request(request)\n            except (httpx.ConnectError, httpx.ConnectTimeout):\n                if attempt + 1 == attempts:\n                    raise\n                continue\n\n            if response.status_code != 503 or attempt + 1 == attempts:\n                return response\n            response.close()\n\n    def close(self):\n        if not self._closed:\n            self._closed = True\n            self.inner.close()\n"
+      },
+      "message": "Implement bounded retries with request eligibility checks and correct resource cleanup.",
+      "signal": {
+        "rationale": "Retries preserve the original request and apply only to safe methods with buffered empty content, for connection failures or HTTP 503. Discarded 503 responses are closed, final responses remain untouched, and closing the wrapper closes its inner transport at most once."
+      }
+    }
+  ],
+  "recommended": [
+    0
+  ],
+  "usage": {
+    "model": "gpt-6.1-sol",
+    "input_tokens": 12440,
+    "output_tokens": 740,
+    "cache_read_input_tokens": 0,
+    "stop_reason": "end_turn"
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "id": "task-T05",
+  "version": 1,
+  "title": "Fix import_rows(session, records) for SQLAlchemy 2.0.36. Keep Base and Item (id primary key; name unique and non-null). The caller owns the Session and its outer transaction: never commit, close or roll it back. Attempt each input row in its own savepoint, flush it there, and continue after IntegrityError. Return {'accepted': successful IDs in input order, 'rejected': zero-based positions of rows failing integrity}. Do not alter existing rows. Keep earlier successful rows and the caller's preexisting pending changes when a later row fails. The Session must remain usable afterward. A later caller rollback must undo every successful insert in this call. Accept empty input and repeated calls. Do not swallow non-integrity exceptions or add dependencies.",
+  "inputs": {
+    "objective": "string"
+  },
+  "actions": {
+    "accept_change": {}
+  },
+  "acceptance": [
+    {
+      "id": "accepted",
+      "kind": "effect",
+      "action": "accept_change"
+    }
+  ],
+  "evolution": {
+    "scope": {
+      "paths": [
+        "src/"
+      ],
+      "max_files": 1,
+      "max_diff_bytes": 40000
+    },
+    "operators": [
+      "patch"
+    ],
+    "budget": {
+      "max_candidates": 2,
+      "max_evaluations": 2,
+      "max_seconds": 1200
+    },
+    "evaluation": {
+      "checks": {
+        "dependency_pin": {
+          "argv": [
+            "C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Scripts\\python.exe",
+            "-I",
+            "-c",
+            "import importlib.metadata as m; assert m.version('SQLAlchemy') == '2.0.36'"
+          ],
+          "timeout_seconds": 30
+        },
+        "behavior": {
+          "argv": [
+            "C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Scripts\\python.exe",
+            "-I",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,'src'); runpy.run_path('checks.py',run_name='__main__')"
+          ],
+          "timeout_seconds": 30
+        }
+      },
+      "required": [
+        "dependency_pin",
+        "behavior"
+      ],
+      "max_output_bytes": 64000
+    },
+    "promotion": {
+      "action": "accept_change",
+      "roles": [
+        "developer"
+      ]
+    }
+  }
+}

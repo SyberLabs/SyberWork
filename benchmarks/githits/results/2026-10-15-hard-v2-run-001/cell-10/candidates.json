@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "d1533a5127606337d9303e98a4546b997703e846",
+    "tree": "1397b3941fbf1b97db3ad0caca5c968d6ea73fea",
+    "base": "cb17b417bf79d017deab4e2003a19d188aa6c5aa",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1813,
+    "signal": {
+      "rationale": "Flushes preexisting pending changes before isolating each insert, catching only IntegrityError and reporting actual successful IDs. Explicitly begins SQLite’s underlying transaction when needed so releasing savepoints cannot prevent a later caller rollback from undoing the inserts.",
+      "model_usage": {
+        "input_tokens": 12435,
+        "output_tokens": 1800,
+        "cache_read_input_tokens": 11008,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Import each row in a savepoint while preserving the caller’s transaction.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 406,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.023s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 109,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

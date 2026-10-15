@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "a6fdda76-9243-4210-bb54-13e166c154ce",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Implement list_accounts(session, term, limit, offset=0) for SQLAlchemy 2.0.36; keep Base, Account and Entry models and schema. For nonempty term, select accounts having at least one Entry.title containing that literal case-sensitive text, escaping SQL LIKE wildcard/escape characters. Empty term selects all accounts including those without entries. Order accounts by ID, apply offset/limit to distinct accounts, and include ALL entries for each returned account ordered by entry ID. Return plain dicts {'id': id, 'name': name, 'entries':[{'id':id,'title':title}, ...]}. For a positive limit use exactly one SELECT, with no lazy or per-account queries. limit/offset must be nonnegative ints excluding bool; invalid values raise ValueError before querying. A zero limit returns [] without a query. The caller owns the Session; do not commit or close it. Keep dependencies pinned."
+      },
+      "contract": [
+        "task-T06",
+        1
+      ]
+    },
+    "at": 1792099810427530,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "2cae0c8a686c0ed45588c9c834a9290affd022f428bb0a2a82e7286b4f427f20"
+  },
+  {
+    "case_id": "a6fdda76-9243-4210-bb54-13e166c154ce",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "cbfe8729c6187cea10e17ab4d46d0874b8e3ef7b",
+        "tree": "38b21dd231e68b4a2c79f375c3142426349cbf0a",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "cbfe8729c6187cea10e17ab4d46d0874b8e3ef7b",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099810532191,
+    "previous": "2cae0c8a686c0ed45588c9c834a9290affd022f428bb0a2a82e7286b4f427f20",
+    "hash": "500d77ed31a4834ae5fa1451048fe33bc3fe6af20d60738d07d5bd18859b9d45"
+  },
+  {
+    "case_id": "a6fdda76-9243-4210-bb54-13e166c154ce",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "cbfe8729c6187cea10e17ab4d46d0874b8e3ef7b",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099810534701,
+    "previous": "500d77ed31a4834ae5fa1451048fe33bc3fe6af20d60738d07d5bd18859b9d45",
+    "hash": "ea6dcf8110bb1c71032170330f0b68ef21237d34665bf9130f0c0951e5976dbc"
+  },
+  {
+    "case_id": "a6fdda76-9243-4210-bb54-13e166c154ce",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Implement list_accounts(session, term, limit, offset=0) for SQLAlchemy 2.0.36; keep Base, Account and Entry models and schema. For nonempty term, select accounts having at least one Entry.title containing that literal case-sensitive text, escaping SQL LIKE wildcard/escape characters. Empty term selects all accounts including those without entries. Order accounts by ID, apply offset/limit to distinct accounts, and include ALL entries for each returned account ordered by entry ID. Return plain dicts {'id': id, 'name': name, 'entries':[{'id':id,'title':title}, ...]}. For a positive limit use exactly one SELECT, with no lazy or per-account queries. limit/offset must be nonnegative ints excluding bool; invalid values raise ValueError before querying. A zero limit returns [] without a query. The caller owns the Session; do not commit or close it. Keep dependencies pinned.",
+        "digest": "b297590a1617cb5831f11036767faed70ddd62c508d86cd10e7183835f305be9",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "cb96503ec53053772c6b541ff9976c0f6fb85c31",
+            "lines": [
+              1,
+              16
+            ],
+            "bytes": 852,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "cbfe8729c6187cea10e17ab4d46d0874b8e3ef7b",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099811817516,
+    "previous": "ea6dcf8110bb1c71032170330f0b68ef21237d34665bf9130f0c0951e5976dbc",
+    "hash": "ded9d6f77dcae59704fbd8c8133b1d29d5b4357904ebd55835e8b770dd9025d2"
+  },
+  {
+    "case_id": "a6fdda76-9243-4210-bb54-13e166c154ce",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "cbfe8729c6187cea10e17ab4d46d0874b8e3ef7b",
+      "context_digest": "b297590a1617cb5831f11036767faed70ddd62c508d86cd10e7183835f305be9",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099811819020,
+    "previous": "ded9d6f77dcae59704fbd8c8133b1d29d5b4357904ebd55835e8b770dd9025d2",
+    "hash": "dd3406638d341c138f296f2fa84f7bcaee577e4670f842f7c5729bcac6f4b253"
+  },
+  {
+    "case_id": "a6fdda76-9243-4210-bb54-13e166c154ce",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "7d8dfb79ee34fac9c8132a0af7e3281b54ad0fd5",
+      "tree": "01bac03e7fa806b2673347876cce0b83a063b58d",
+      "base": "cbfe8729c6187cea10e17ab4d46d0874b8e3ef7b",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "2895350effd0ac830726b8a81bbc395ba1518c5f533aa1f917bd7b55e73e582d",
+        "bytes": 2243,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099812413454,
+    "previous": "dd3406638d341c138f296f2fa84f7bcaee577e4670f842f7c5729bcac6f4b253",
+    "hash": "4a06cf8340833b705c4dda2e5c9969c7396b03e3435dad5296a3c78cb5e7eaa6"
+  },
+  {
+    "case_id": "a6fdda76-9243-4210-bb54-13e166c154ce",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 593,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099812415450,
+    "previous": "4a06cf8340833b705c4dda2e5c9969c7396b03e3435dad5296a3c78cb5e7eaa6",
+    "hash": "308b36bfb904e680d821e0c5a550b826c9b70b9706de37c604dacaf4f64eb63b"
+  },
+  {
+    "case_id": "a6fdda76-9243-4210-bb54-13e166c154ce",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "7d8dfb79ee34fac9c8132a0af7e3281b54ad0fd5",
+      "tree": "01bac03e7fa806b2673347876cce0b83a063b58d",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 422,
+          "output_digest": "8c5de6aa72100cd208a698ddbea2bdc08917bfe6bbfa0effa98b74093929071c",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.036s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 108,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099813167123,
+    "previous": "308b36bfb904e680d821e0c5a550b826c9b70b9706de37c604dacaf4f64eb63b",
+    "hash": "d683299bd449ba6b829878d6562137b35f7cb5f9d2d4f546d44824739a08fa72"
+  }
+]

@@ -1,0 +1,78 @@
+[
+  {
+    "target": "pypi:httpx@0.28.1",
+    "path": "httpx/_transports/base.py",
+    "content": "from __future__ import annotations\n\nimport typing\nfrom types import TracebackType\n\nfrom .._models import Request, Response\n\nT = typing.TypeVar(\"T\", bound=\"BaseTransport\")\nA = typing.TypeVar(\"A\", bound=\"AsyncBaseTransport\")\n\n__all__ = [\"AsyncBaseTransport\", \"BaseTransport\"]\n\n\nclass BaseTransport:\n    def __enter__(self: T) -> T:\n        return self\n\n    def __exit__(\n        self,\n        exc_type: type[BaseException] | None = None,\n        exc_value: BaseException | None = None,\n        traceback: TracebackType | None = None,\n    ) -> None:\n        self.close()\n\n    def handle_request(self, request: Request) -> Response:\n        \"\"\"\n        Send a single HTTP request and return a response.\n\n        Developers shouldn't typically ever need to call into this API directly,\n        since the Client class provides all the higher level user-facing API\n        niceties.\n\n        In order to properly release any network resources, the response\n        stream should *either* be consumed immediately, with a call to\n        `response.stream.read()`, or else the `handle_request` call should\n        be followed with a try/finally block to ensuring the stream is\n        always closed.\n\n        Example usage:\n\n            with httpx.HTTPTransport() as transport:\n                req = httpx.Request(\n                    method=b\"GET\",\n                    url=(b\"https\", b\"www.example.com\", 443, b\"/\"),\n                    headers=[(b\"Host\", b\"www.example.com\")],\n                )\n                resp = transport.handle_request(req)\n                body = resp.stream.read()\n                print(resp.status_code, resp.headers, body)\n\n\n        Takes a `Request` instance as the only argument.\n\n        Returns a `Response` instance.\n        \"\"\"\n        raise NotImplementedError(\n            \"The 'handle_request' method must be implemented.\"\n        )  # pragma: no cover\n\n    def close(self) -> None:\n        pass\n\n\nclass AsyncBaseTransport:\n    async def __aenter__(self: A) -> A:\n        return self\n\n    async def __aexit__(\n        self,\n        exc_type: type[BaseException] | None = None,\n        exc_value: BaseException | None = None,\n        traceback: TracebackType | None = None,\n    ) -> None:\n        await self.aclose()\n\n    async def handle_async_request(\n        self,\n        request: Request,\n    ) -> Response:\n        raise NotImplementedError(\n            \"The 'handle_async_request' method must be implemented.\"\n        )  # pragma: no cover\n\n    async def aclose(self) -> None:\n        pass\n",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 1,
+    "end_line": 86
+  },
+  {
+    "target": "pypi:httpx@0.28.1",
+    "path": "httpx/_models.py",
+    "content": "            raise StreamClosed()\n        if not isinstance(self.stream, SyncByteStream):\n            raise RuntimeError(\"Attempted to call a sync iterator on an async stream.\")\n\n        self.is_stream_consumed = True\n        self._num_bytes_downloaded = 0\n        chunker = ByteChunker(chunk_size=chunk_size)\n\n        with request_context(request=self._request):\n            for raw_stream_bytes in self.stream:\n                self._num_bytes_downloaded += len(raw_stream_bytes)\n                for chunk in chunker.decode(raw_stream_bytes):\n                    yield chunk\n\n        for chunk in chunker.flush():\n            yield chunk\n\n        self.close()\n\n    def close(self) -> None:\n        \"\"\"\n        Close the response and release the connection.\n        Automatically called if the response body is read to completion.\n        \"\"\"\n        if not isinstance(self.stream, SyncByteStream):\n            raise RuntimeError(\"Attempted to call an sync close on an async stream.\")\n\n        if not self.is_closed:\n            self.is_closed = True\n            with request_context(request=self._request):\n                self.stream.close()",
+    "target_resolution": {
+      "requested": {
+        "kind": "package_exact_version",
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": null,
+        "git_ref": null,
+        "commit_sha": null
+      },
+      "resolved_requested": {
+        "kind": null,
+        "registry": "pypi",
+        "name": "httpx",
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "served": {
+        "kind": null,
+        "registry": null,
+        "name": null,
+        "version": "0.28.1",
+        "repo_url": "https://github.com/encode/httpx",
+        "git_ref": "0.28.1",
+        "commit_sha": "26d48e0634e6ee9cdc0533996db289ce4b430177"
+      },
+      "freshness": "current",
+      "freshness_reason": "exact_current"
+    },
+    "start_line": 942,
+    "end_line": 972
+  }
+]

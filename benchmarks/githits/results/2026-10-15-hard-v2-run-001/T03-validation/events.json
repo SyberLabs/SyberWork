@@ -1,0 +1,218 @@
+[
+  {
+    "case_id": "5b6d8a52-b002-4d92-bf2c-ebe83edbfe24",
+    "seq": 1,
+    "kind": "case_created",
+    "body": {
+      "actor": "benchmark-host",
+      "inputs": {
+        "objective": "Implement parse_batch(payload, cap='100.00') and dump_batch(events) with Pydantic 2.10.6. parse_batch accepts either a Python list or UTF-8 JSON str/bytes and returns Pydantic models for a kind-discriminated debit/credit union. Each event requires kind, accountId (or account_id), amount, currency. account ID is a strict positive int. amount is a finite positive Decimal with at most two decimal places and cannot exceed this call's cap; cap must not leak between calls. currency is USD/EUR. Debit requires reason of at least 3 characters; credit permits an optional reference string. Forbid all other fields and unknown kinds. Invalid data must raise Pydantic ValidationError with per-item locations. dump_batch emits JSON-compatible dicts with accountId aliases, Decimal amount/signed values as strings preserving decimal precision, and omits None. signed is computed as negative amount for debit and positive amount for credit. Accept empty batches. Use supported v2 APIs and preserve public function names."
+      },
+      "contract": [
+        "task-T03",
+        1
+      ]
+    },
+    "at": 1792099800469524,
+    "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "c89e2a307f8066dc02e9b26978246c38dbdb6f71a4d56b60bacff9771d1b4a70"
+  },
+  {
+    "case_id": "5b6d8a52-b002-4d92-bf2c-ebe83edbfe24",
+    "seq": 2,
+    "kind": "observed",
+    "body": {
+      "key": "base",
+      "value": {
+        "commit": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+        "tree": "f466bb78bcd8e051d689b996bc11b3bc4439dea8",
+        "branch": "refs/heads/main"
+      },
+      "source": "git",
+      "version": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099800573197,
+    "previous": "c89e2a307f8066dc02e9b26978246c38dbdb6f71a4d56b60bacff9771d1b4a70",
+    "hash": "9d30c5d0ed378922097c84ae309ce8481d455beddb8b11a247e23c0689784566"
+  },
+  {
+    "case_id": "5b6d8a52-b002-4d92-bf2c-ebe83edbfe24",
+    "seq": 3,
+    "kind": "observed",
+    "body": {
+      "key": "sources",
+      "value": {
+        "repository": {
+          "paths": [
+            "requirements.txt",
+            "src"
+          ]
+        }
+      },
+      "source": "syberlabs.host",
+      "version": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099800575200,
+    "previous": "9d30c5d0ed378922097c84ae309ce8481d455beddb8b11a247e23c0689784566",
+    "hash": "eb6c37c8542e77e3c38a6578a3b8e818e1fbf01f6a33530ce3c8551ad59c45fd"
+  },
+  {
+    "case_id": "5b6d8a52-b002-4d92-bf2c-ebe83edbfe24",
+    "seq": 4,
+    "kind": "observed",
+    "body": {
+      "key": "context",
+      "value": {
+        "query": "Implement parse_batch(payload, cap='100.00') and dump_batch(events) with Pydantic 2.10.6. parse_batch accepts either a Python list or UTF-8 JSON str/bytes and returns Pydantic models for a kind-discriminated debit/credit union. Each event requires kind, accountId (or account_id), amount, currency. account ID is a strict positive int. amount is a finite positive Decimal with at most two decimal places and cannot exceed this call's cap; cap must not leak between calls. currency is USD/EUR. Debit requires reason of at least 3 characters; credit permits an optional reference string. Forbid all other fields and unknown kinds. Invalid data must raise Pydantic ValidationError with per-item locations. dump_batch emits JSON-compatible dicts with accountId aliases, Decimal amount/signed values as strings preserving decimal precision, and omits None. signed is computed as negative amount for debit and positive amount for credit. Accept empty batches. Use supported v2 APIs and preserve public function names.",
+        "digest": "11369ea488860500f1c94fbcf631394322d7391157ba6b7296034b1ced41c5b4",
+        "entries": [
+          {
+            "path": "src/integration.py",
+            "blob": "fd408ffea8d9f5aa52c78f9e272ecdc8d4ee9903",
+            "lines": [
+              1,
+              11
+            ],
+            "bytes": 328,
+            "reason": "match"
+          },
+          {
+            "path": "requirements.txt",
+            "blob": "206695d5e22fc75fb69b185f83ce4d371c051ea1",
+            "lines": [
+              1,
+              13
+            ],
+            "bytes": 222,
+            "reason": "match"
+          }
+        ]
+      },
+      "source": "syberlabs.host",
+      "version": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "actor": "syberlabs.host",
+      "verified": true
+    },
+    "at": 1792099801665330,
+    "previous": "eb6c37c8542e77e3c38a6578a3b8e818e1fbf01f6a33530ce3c8551ad59c45fd",
+    "hash": "2cc32a839d7c8f0508c60e1c5bba3a2e5ff9a520e070ace15ada157bb62d5640"
+  },
+  {
+    "case_id": "5b6d8a52-b002-4d92-bf2c-ebe83edbfe24",
+    "seq": 5,
+    "kind": "search_started",
+    "body": {
+      "id": "s1",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "operators": [
+        "patch"
+      ],
+      "budget": {
+        "max_candidates": 2,
+        "max_evaluations": 2,
+        "max_seconds": 1200
+      },
+      "base": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "context_digest": "11369ea488860500f1c94fbcf631394322d7391157ba6b7296034b1ced41c5b4",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099801667330,
+    "previous": "2cc32a839d7c8f0508c60e1c5bba3a2e5ff9a520e070ace15ada157bb62d5640",
+    "hash": "aad6a9eae3a7a4bfec109fc2380092d7f7ea495b2687b52739fbf677ef226ed6"
+  },
+  {
+    "case_id": "5b6d8a52-b002-4d92-bf2c-ebe83edbfe24",
+    "seq": 6,
+    "kind": "candidate_registered",
+    "body": {
+      "id": "c1",
+      "commit": "1882ae7b8e4027e471bad445c873cfbba1366b47",
+      "tree": "0c36f227c7f3d1cb4f2e8ee024cb4e081339470d",
+      "base": "e68278158a3c439f38d724c001fcd19b3481cc6c",
+      "parents": [],
+      "operator": "patch",
+      "provider": {
+        "name": "reference",
+        "revision": "authored-v1"
+      },
+      "changed_paths": [
+        "src/integration.py"
+      ],
+      "scope_violations": [],
+      "limit_violations": [],
+      "diff": {
+        "digest": "5c6ac9a88ef52d658a9f3a01a9f77a0f544ee4c1115323815a7467f8d541aee1",
+        "bytes": 1880,
+        "files": 1
+      },
+      "signal": null,
+      "note": "",
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099802255244,
+    "previous": "aad6a9eae3a7a4bfec109fc2380092d7f7ea495b2687b52739fbf677ef226ed6",
+    "hash": "64cd7b9a28dc060743d74cb3555b8c939838b1d91e9266566a5de14cf33608d6"
+  },
+  {
+    "case_id": "5b6d8a52-b002-4d92-bf2c-ebe83edbfe24",
+    "seq": 7,
+    "kind": "search_finished",
+    "body": {
+      "id": "s1",
+      "stopped": "completed",
+      "candidates": [
+        "c1"
+      ],
+      "recommended": [
+        "c1"
+      ],
+      "evaluations": 0,
+      "elapsed_ms": 593,
+      "error": null,
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099802258749,
+    "previous": "64cd7b9a28dc060743d74cb3555b8c939838b1d91e9266566a5de14cf33608d6",
+    "hash": "a378b8c77e300c9f5a138922f3c1657b1c498af306ef779c0698c57c75421f85"
+  },
+  {
+    "case_id": "5b6d8a52-b002-4d92-bf2c-ebe83edbfe24",
+    "seq": 8,
+    "kind": "candidate_evaluated",
+    "body": {
+      "candidate": "c1",
+      "commit": "1882ae7b8e4027e471bad445c873cfbba1366b47",
+      "tree": "0c36f227c7f3d1cb4f2e8ee024cb4e081339470d",
+      "evaluator": "syberlabs.checks/1",
+      "checks": [
+        {
+          "name": "behavior",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 233,
+          "output_digest": "59753171660350c6735ee4b12925f50e7f8606c102caf33752e5551608bad819",
+          "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.001s\r\n\r\nOK\r\n"
+        },
+        {
+          "name": "dependency_pin",
+          "state": "passed",
+          "exit_code": 0,
+          "duration_ms": 110,
+          "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "output_tail": ""
+        }
+      ],
+      "actor": "syberlabs.host"
+    },
+    "at": 1792099802834096,
+    "previous": "a378b8c77e300c9f5a138922f3c1657b1c498af306ef779c0698c57c75421f85",
+    "hash": "b004e6ab9902bd4de94279c31130638dd316bd0e7798005e32613d214e3063e7"
+  }
+]

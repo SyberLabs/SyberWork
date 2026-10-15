@@ -1,0 +1,11 @@
+{
+  "message": "Import each row in a savepoint while preserving the caller\u2019s transaction.",
+  "rationale": "Flushes preexisting pending changes before isolating each insert, catching only IntegrityError and reporting actual successful IDs. Explicitly begins SQLite\u2019s underlying transaction when needed so releasing savepoints cannot prevent a later caller rollback from undoing the inserts.",
+  "files": [
+    {
+      "path": "src/integration.py",
+      "content": "from sqlalchemy import Column, Integer, String\nfrom sqlalchemy.exc import IntegrityError\nfrom sqlalchemy.orm import DeclarativeBase\nclass Base(DeclarativeBase): pass\nclass Item(Base):\n    __tablename__ = 'items'\n    id = Column(Integer, primary_key=True)\n    name = Column(String, unique=True, nullable=False)\ndef import_rows(session, records):\n    accepted = []\n    rejected = []\n\n    # begin_nested() flushes pending changes before opening its savepoint.\n    session.flush()\n    connection = session.connection(bind_arguments={'mapper': Item})\n    if connection.dialect.name == 'sqlite':\n        # SQLite legacy transaction control does not begin on SAVEPOINT.\n        if not connection.connection.driver_connection.in_transaction:\n            connection.exec_driver_sql('BEGIN')\n\n    for position, row in enumerate(records):\n        try:\n            with session.begin_nested():\n                item = Item(**row)\n                session.add(item)\n                session.flush()\n        except IntegrityError:\n            rejected.append(position)\n        else:\n            accepted.append(item.id)\n\n    return {'accepted': accepted, 'rejected': rejected}\n",
+      "delete": false
+    }
+  ]
+}

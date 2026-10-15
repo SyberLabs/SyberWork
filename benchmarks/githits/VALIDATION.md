@@ -1,8 +1,46 @@
 # Validation record — October 15, 2026
 
-Claim ceiling: same-host paired measurement and replay; three authored tasks,
-one repeat. The observed 3/3 versus 3/3 result does not establish general parity
-or improvement.
+Claim ceiling: two separate authored task sets, one repeat each, measured and
+replayed on this host. Original: 3/3 versus 3/3. Harder: 5/5 versus 5/5 across
+five of six planned pairs. Neither observed tie establishes general parity
+or improvement. Results are not pooled.
+
+## Preregistered harder follow-up
+
+Initial registration `291a7a1` passed 283 local tests with 22 skips in 364.755
+seconds, 21 focused tests and all 23 conformance golden traces. All six broken
+starts failed behavior with correct dependency versions; all six references
+passed their 36 behavior methods. The authenticated preflight then saved 65
+manifest-covered files: ten HTTP 200 reads and T04's HTTP 404 `VERSION_NOT_FOUND`.
+It stopped with zero model cells. No fixture or acceptance check was changed.
+
+Coverage amendment `2895110` passed 23 focused tests and
+[all five CI jobs](https://github.com/SyberLabs/SyberWork/actions/runs/38810257111).
+The [CI receipt](results/hard-v2-source-ci.json) identifies that measured source.
+A fresh remote checkout verified its 140 frozen source hashes and the entire
+65-file cached-context archive before model trials. The model matrix began on
+that clean revision at 14:29 PDT. No subsequent GitHits requests were made.
+
+The [matrix](results/2026-10-15-hard-v2-run-001/results.json) completed 12 planned
+cells: 11 evaluated cells, 12 model calls, five matched pairs. Both matched arms
+solved all five tasks on call one. T04's standalone baseline solved on call two;
+its unavailable treatment made zero calls and has null solved. All six baselines
+therefore solved within the two-call cap. No treatment outcome is imputed.
+
+The [model-free replay](results/2026-10-15-hard-v2-recheck-001.json) verified 265
+evidence hashes and 17 fixture/arm records, reproducing 24 tree evaluations:
+six broken starts, six references and twelve model candidates. It also verifies
+the registration, source hashes and original cached receipts. Manual review of
+all twelve patches found only allowed source edits and no check bypasses. All
+twelve calls used distinct sessions and identical requested model, effort and
+tool settings; no tool execution was observed. First-call prompts exclude check
+and reference source; treatment excerpts match the frozen receipts exactly.
+The operator inspected outcomes only after the whole matrix completed.
+
+Partial blinding and availability-conditioned sampling are limits. This is
+same-host replay, not independent validation. See [the full report](REPORT-hard-v2.md).
+The updated brief shows both ties and the coverage gap at 390 by 844 CSS pixels
+without horizontal or vertical overflow.
 
 ## Authenticated paired follow-up
 
@@ -158,6 +196,6 @@ under `benchmarks/githits/`; regression tests are in `tests/test_githits.py`.
 No core package, protocol, policy, admission rule or runtime dependency changed.
 Branch: `bench/githits-verified`. No pull request or merge.
 
-The authenticated paired follow-up is complete. A harder task set requires
-a new preregistration before observing either arm. Do not reuse this observed
-tie as a claim of general parity or uplift.
+Both paired follow-ups are complete, with T04's missing treatment explicitly
+unavailable. Further tasks or repeats require a new preregistration before
+observing outcomes. Do not reuse either tie as general parity or uplift.

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "actions": {
+    "accept_change": {
+      "roles": [
+        "developer"
+      ]
+    }
+  }
+}

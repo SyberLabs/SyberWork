@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "284a07bd28fbee544d92188a6a991d732736c83a",
+    "tree": "d9834f466ab33c67b310f9fe3e764901440b2f8c",
+    "base": "cb17b417bf79d017deab4e2003a19d188aa6c5aa",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1924,
+    "signal": {
+      "rationale": "Each row is flushed inside its own savepoint, and only row-level IntegrityError failures are rejected; begin_nested runs outside the handler so failures flushing the caller’s pending changes propagate. Explicitly starting SQLite’s physical transaction when needed ensures releasing savepoints cannot prevent a later caller rollback from undoing successful inserts.",
+      "model_usage": {
+        "input_tokens": 13572,
+        "output_tokens": 1443,
+        "cache_read_input_tokens": 11008,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Isolate each row in a savepoint while preserving the caller’s transaction.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 468,
+        "output_tail": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.026s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 92,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]
