@@ -41,6 +41,22 @@ sandbox**. No change is made to the core protocol, admission, or evaluator.
 
 ## Reproduce
 
+The newest `upstream-v3` profile is registered in
+[PREREGISTRATION-upstream-v3.md](PREREGISTRATION-upstream-v3.md). Install
+`requirements-upstream-v3.txt` in place of the original requirements below.
+Run the module `benchmarks.githits.upstream_v3` with mode `preflight` for
+authenticated retrieval only, then mode `run --access ABSOLUTE_PREFLIGHT_PATH`
+for the frozen-context model matrix. Both require `--python ABSOLUTE_INTERPRETER`
+and `--write NEW_DIRECTORY`. Mode `verify --folder SAVED_MATRIX --write NEW_JSON`
+replays saved trees without model calls or new retrieval. Do not regenerate
+the committed registration. No core runtime dependency was added.
+
+For the **retained hard-v2** measurement/rerun, use a separate short checkout
+at `9abb733846f8754386875008296361362309ecf6`. That publication contains its exact
+frozen implementation and raw evidence. New upstream-v3 source files correctly
+fail the older whole-source guard on a newer checkout. Original three-task
+evidence remains separate, and all historical reports/registrations stay intact.
+
 Python 3.11+, Git, the Codex CLI, and an existing model login are required.
 The main packages remain free of runtime dependencies.
 

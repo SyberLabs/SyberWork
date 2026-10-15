@@ -1,0 +1,42 @@
+{
+  "retrieved_at": "2026-10-15T22:46:10.2816006Z",
+  "source": "GitHub public issue API",
+  "records": [
+    {
+      "number": 3065,
+      "url": "https://github.com/pallets/werkzeug/issues/3065",
+      "title": "werkzeug misdecodes multipart line breaks if 64kb chunk ends in the middle of final CR+LF",
+      "created_at": "2025-11-13T09:52:32Z",
+      "closed_at": "2025-11-27T02:22:10Z",
+      "state": "closed",
+      "body_sha256": "d018cf2a759b6ecfe024882ba9b2171d5f879f57768b66ad68e364bc56d41bba"
+    },
+    {
+      "number": 3189,
+      "url": "https://github.com/pallets/werkzeug/issues/3189",
+      "title": "uri_to_iri and iri_to_uri drop an empty username or password",
+      "created_at": "2026-06-22T05:28:06Z",
+      "closed_at": "2026-07-30T14:09:02Z",
+      "state": "closed",
+      "body_sha256": "59fea2309b6305dfcfd6e0d47c23f7f11f857c220078fec42339a54908edaa55"
+    },
+    {
+      "number": 3254,
+      "url": "https://github.com/pallets/werkzeug/pull/3254",
+      "title": "sort converter matches numerically",
+      "created_at": "2026-08-21T21:14:25Z",
+      "closed_at": "2026-08-21T21:15:46Z",
+      "state": "closed",
+      "body_sha256": "4cb3fd31b99867c4660f25de2e0765200263b1f5b80793481d10a9352830c0ed"
+    },
+    {
+      "number": 3253,
+      "url": "https://github.com/pallets/werkzeug/pull/3253",
+      "title": "avoid resizing buffer",
+      "created_at": "2026-08-21T20:34:42Z",
+      "closed_at": "2026-08-21T20:40:36Z",
+      "state": "closed",
+      "body_sha256": "a2e508aaf982a7f174ba34da505ef038514a03678346abca01e4e813202a9f57"
+    }
+  ]
+}

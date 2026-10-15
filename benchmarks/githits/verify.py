@@ -60,7 +60,7 @@ def verify_bundle(name: str, folder: Path, python: str, broken: dict | None = No
         if (repo.read(base, "src/integration.py").decode().replace("\r\n", "\n") != FIXTURES[name]["broken"]
                 or repo.read(base, "checks.py").decode().replace("\r\n", "\n") != FIXTURES[name]["checks"]
                 or repo.read(base, "requirements.txt").decode().replace("\r\n", "\n") !=
-                (ROOT / "benchmarks/githits/requirements.txt").read_text()):
+                (ROOT / FIXTURES[name].get("requirements", "benchmarks/githits/requirements.txt")).read_text()):
             raise ValueError("fixture_base_changed")
         evaluation = contract(name, python, max(1, len(evaluations)))["evolution"]["evaluation"]
         if broken:

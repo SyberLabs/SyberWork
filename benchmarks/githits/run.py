@@ -61,13 +61,14 @@ def contract(name: str, python: str, calls: int) -> dict:
 def create_base(name: str, root: Path) -> str:
     root.mkdir(parents=True)
     (root / "src").mkdir()
-    (root / "src/integration.py").write_text(FIXTURES[name]["broken"], encoding="utf-8")
-    (root / "checks.py").write_text(FIXTURES[name]["checks"], encoding="utf-8")
-    shutil.copyfile(ROOT / "benchmarks/githits/requirements.txt", root / "requirements.txt")
+    (root / "src/integration.py").write_bytes(FIXTURES[name]["broken"].encode("utf-8"))
+    (root / "checks.py").write_bytes(FIXTURES[name]["checks"].encode("utf-8"))
+    requirements = FIXTURES[name].get("requirements", "benchmarks/githits/requirements.txt")
+    shutil.copyfile(ROOT / requirements, root / "requirements.txt")
     git(root, "init", "-q", "-b", "main")
     git(root, "config", "core.autocrlf", "false")
     git(root, "add", ".")
-    git(root, "commit", "-qm", "Authored dependency integration regression: " + name)
+    git(root, "commit", "-qm", FIXTURES[name].get("base_message", "Authored dependency integration regression: ") + name)
     return git(root, "rev-parse", "HEAD")
 
 

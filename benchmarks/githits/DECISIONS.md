@@ -216,3 +216,29 @@ Claim ceiling at start: proposed; no model comparison measured.
     Describe higher authored complexity without claiming measured difficulty,
     full blinding, independent validation, general parity or product advantage.
     Publish both ties and the coverage gap in the report and phone brief.
+39. The user requested real upstream dependency bugs. Select four traceable,
+    pure-Python Werkzeug cases reproducible at one pinned version, using whole
+    unmodified upstream modules rather than injecting authored bugs. Record
+    source blob hashes, issue/fix links, BSD license and exact context hashes.
+    This is one dependency's convenience sample, not a representative sample.
+    No model pilot or outcome guided selection. Keep both existing ties visible.
+40. Before registration, host authoring found two harness defects: Windows
+    newline conversion inflated full-module diffs, and routing package imports
+    needed initialization before module replacement. Preserve source bytes and
+    initialize packages in host-only loading. An LF-only separator plus trailing
+    payload CR is ambiguous; use an unambiguous LF-only regression case instead.
+    U01's upstream reference also emitted a CR at a partial closing delimiter;
+    extend its lookbehind by two bytes and retain that regression check. Label
+    this reference as an authored extension, not an unchanged upstream repair.
+41. Freeze four cases and 20 host test methods, same gpt-6.1-sol/high and
+    two-call budget, eight cells/16-call maximum. Predeclare unavailable context
+    handling: preserve every baseline, null unavailable treatments, matched-only
+    scoring out of four planned. No replacement, alternate version or direct
+    fallback. Authenticate five fixed reads after pushing registration, verify
+    exact tag commit and line content, clear token, then reuse frozen receipts.
+42. Extend the existing fixture, host runner and replay seams for full upstream
+    modules and optional benchmark-only requirements. Keep all core product and
+    protocol code untouched. Older hard-v2's whole-source guard intentionally
+    rejects the newly added Python files; replay that retained set at publication
+    commit 9abb733, where its original frozen source and evidence coexist.
+    Do not weaken old registrations to make a changed implementation appear frozen.
