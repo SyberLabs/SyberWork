@@ -28,7 +28,12 @@ The project permits only the named read-only grounding tools in
 `.claude/settings.json`: `search`, `get_example`, `read`, `list`, and `grep`.
 It does not approve arbitrary GitHits tools or feedback/effectful calls.
 
-Read the resolved version from the lockfile first. For documentation search use
+This repository has no maintained lockfile and its optional dependencies are ranges.
+Use installed distribution metadata from the actual target environment (for
+example, Python importlib.metadata.version("psycopg")) and record that environment
+before claiming an exact version. If it is not installed, state that the pin is
+unavailable; do not treat a declared lower bound as the installed version.
+For documentation search use
 `search` with `source: "docs"` and the exact package target/version supported by
 the returned tool schema; use `read` to inspect the cited page or source. Never
 substitute latest docs for an installed pin without stating the mismatch.
