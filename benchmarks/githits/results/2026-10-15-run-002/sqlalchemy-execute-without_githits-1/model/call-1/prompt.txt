@@ -1,0 +1,37 @@
+You change a software repository to meet an objective. You propose; a separate host runs the project's checks and a person decides whether to accept. Return complete new contents for each file you change, only for files in the stated scope. Keep the change as small as the objective allows. Do not weaken tests or checks to make them pass. Set delete true (with empty content) only to remove a file. The rationale is one or two sentences a reviewer can check against the diff.
+Use first principles. Return the requested JSON patch without calling tools.
+
+Objective: Migrate src/integration.py to SQLAlchemy 2.0.36. upsert_and_list must create its SQLite table, insert/update rows using bound parameters in one transaction, return plain dicts ordered by id, preserve prior rows across calls, accept an empty batch, and roll back the entire batch if a row violates NOT NULL. Keep the engine argument and function signature; use supported SQLAlchemy execution/result APIs and keep dependency pins.
+
+Mutable scope: requirements.txt, src
+
+Propose one patch that meets the objective.
+
+<file path="src/integration.py">
+def upsert_and_list(engine, records):
+    with engine.begin() as connection:
+        connection.execute("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        for record in records:
+            connection.execute("INSERT INTO items(id, name) VALUES (:id, :name) "
+                               "ON CONFLICT(id) DO UPDATE SET name=excluded.name", record)
+        rows = connection.execute("SELECT id, name FROM items ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+</file>
+
+<file path="requirements.txt">
+annotated-types==0.7.0
+anyio==4.9.0
+certifi==2025.1.31
+greenlet==3.1.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.10
+pydantic==2.10.6
+pydantic_core==2.27.2
+sniffio==1.3.1
+SQLAlchemy==2.0.36
+typing_extensions==4.12.2
+
+</file>

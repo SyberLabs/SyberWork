@@ -1,0 +1,11 @@
+{
+  "message": "Migrate fetch_json to HTTPX 0.28.1\u2019s explicit ASGI transport.",
+  "rationale": "ASGITransport calls the supplied app in process while preserving headers and query strings. The async context manager closes the client, and status checking and JSON decoding remain unchanged.",
+  "files": [
+    {
+      "path": "src/integration.py",
+      "content": "import httpx\n\n\nasync def fetch_json(app, path, headers=None):\n    async with httpx.AsyncClient(\n        transport=httpx.ASGITransport(app=app), base_url=\"http://test\", headers=headers\n    ) as client:\n        response = await client.get(path)\n        response.raise_for_status()\n        return response.json()\n",
+      "delete": false
+    }
+  ]
+}

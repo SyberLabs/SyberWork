@@ -1,0 +1,70 @@
+{
+  "fixture": "pydantic-attributes",
+  "base_commit": "3b90c6839d37301331d1a1e70fcb1f1819e295d0",
+  "base_tree": "dc0cd8b74e02a521b34176fd2ead3d1643f0fd75",
+  "broken": {
+    "candidate": "base",
+    "commit": "3b90c6839d37301331d1a1e70fcb1f1819e295d0",
+    "tree": "dc0cd8b74e02a521b34176fd2ead3d1643f0fd75",
+    "evaluator": "syberlabs.checks/1",
+    "checks": [
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "output_tail": ""
+      },
+      {
+        "name": "behavior",
+        "state": "failed",
+        "exit_code": 1,
+        "duration_ms": 250,
+        "output_digest": "5e080ec15e82faf399c1de340e2e68b9b7c5109b3e79c5e22cd322912f2d935c",
+        "output_tail": "antic.errors.PydanticUserError: You must set the config attribute `from_attributes=True` to use from_orm\r\n\r\n======================================================================\r\nERROR: test_mapping_alias_and_field_name (__main__.Behavior.test_mapping_alias_and_field_name)\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 14, in test_mapping_alias_and_field_name\r\n    self.assertEqual(serialize_user({\"id\": \"9\", key: \"Lin\"}), {\"id\": 9, \"displayName\": \"Lin\"})\r\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-8euhb3tu\\tree\\src\\integration.py\", line 15, in serialize_user\r\n    return UserView.from_orm(value).dict(by_alias=True)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\pydantic\\main.py\", line 1324, in from_orm\r\n    raise PydanticUserError(\r\npydantic.errors.PydanticUserError: You must set the config attribute `from_attributes=True` to use from_orm\r\n\r\n======================================================================\r\nERROR: test_rejects_invalid_and_extra_fields (__main__.Behavior.test_rejects_invalid_and_extra_fields) (value={'id': 1})\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 20, in test_rejects_invalid_and_extra_fields\r\n    serialize_user(value)\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-8euhb3tu\\tree\\src\\integration.py\", line 15, in serialize_user\r\n    return UserView.from_orm(value).dict(by_alias=True)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\pydantic\\main.py\", line 1324, in from_orm\r\n    raise PydanticUserError(\r\npydantic.errors.PydanticUserError: You must set the config attribute `from_attributes=True` to use from_orm\r\n\r\n======================================================================\r\nERROR: test_rejects_invalid_and_extra_fields (__main__.Behavior.test_rejects_invalid_and_extra_fields) (value={'id': 'bad', 'displayName': 'A'})\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 20, in test_rejects_invalid_and_extra_fields\r\n    serialize_user(value)\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-8euhb3tu\\tree\\src\\integration.py\", line 15, in serialize_user\r\n    return UserView.from_orm(value).dict(by_alias=True)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\pydantic\\main.py\", line 1324, in from_orm\r\n    raise PydanticUserError(\r\npydantic.errors.PydanticUserError: You must set the config attribute `from_attributes=True` to use from_orm\r\n\r\n======================================================================\r\nERROR: test_rejects_invalid_and_extra_fields (__main__.Behavior.test_rejects_invalid_and_extra_fields) (value={'id': 1, 'displayName': 'A', 'admin': True})\r\n----------------------------------------------------------------------\r\nTraceback (most recent call last):\r\n  File \"checks.py\", line 20, in test_rejects_invalid_and_extra_fields\r\n    serialize_user(value)\r\n  File \"C:\\Users\\scarl\\AppData\\Local\\Temp\\syberlabs-eval-8euhb3tu\\tree\\src\\integration.py\", line 15, in serialize_user\r\n    return UserView.from_orm(value).dict(by_alias=True)\r\n           ^^^^^^^^^^^^^^^^^^^^^^^^\r\n  File \"C:\\Users\\scarl\\Documents\\Codex\\2026-10-14\\overnight-task-githits-x-syberwork-verified\\work\\githits-venv\\Lib\\site-packages\\pydantic\\main.py\", line 1324, in from_orm\r\n    raise PydanticUserError(\r\npydantic.errors.PydanticUserError: You must set the config attribute `from_attributes=True` to use from_orm\r\n\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.003s\r\n\r\nFAILED (errors=5)\r\n"
+      }
+    ]
+  },
+  "reference": {
+    "id": "c1",
+    "commit": "3f80d750f6fe9b243cacccf94df1182ede945ec4",
+    "tree": "ff79e0dae36a6ea43e25ca7c8bb34ef65ca597fa",
+    "base": "3b90c6839d37301331d1a1e70fcb1f1819e295d0",
+    "parents": [],
+    "operator": "patch",
+    "provider": "reference",
+    "provider_revision": "authored-v1",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 851,
+    "signal": null,
+    "note": "",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 203,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.001s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  },
+  "reference_acceptable": true,
+  "source_url": "https://docs.pydantic.dev/2.10/migration/"
+}

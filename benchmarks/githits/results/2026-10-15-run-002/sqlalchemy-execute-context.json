@@ -1,0 +1,25 @@
+{
+  "status": "unavailable",
+  "reason": "AUTHENTICATION_REQUIRED",
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Asqlalchemy%402.0.36&path=lib%2Fsqlalchemy%2Fengine%2Fbase.py&start_line=1380&end_line=1440&wait_timeout_ms=20000",
+      "at": "2026-10-15T07:11:01.688639+00:00",
+      "authenticated": false,
+      "status": 401,
+      "request_id": "e6af1b6a455ab5fd99f9c6baed86b0dc",
+      "retry_after": null,
+      "body_sha256": "de97952eb719ae38027f57af46a18d56f415f96ad76f1dcac5b07087ffe074a9",
+      "seconds": 0.157,
+      "body": {
+        "type": "about:blank",
+        "title": "Authentication required",
+        "status": 401,
+        "detail": "A bearer credential is required.",
+        "instance": "e6af1b6a455ab5fd99f9c6baed86b0dc",
+        "code": "AUTHENTICATION_REQUIRED"
+      }
+    }
+  ],
+  "context": null
+}

@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "acc6f6fe49e088085acad0c3ab622f309370d1eb",
+    "tree": "58f98cabd95d96516f14b7f2735500d5363c6919",
+    "base": "3b90c6839d37301331d1a1e70fcb1f1819e295d0",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 888,
+    "signal": {
+      "rationale": "ConfigDict enables attribute validation, field-name population alongside the displayName alias, and rejection of extra mapping fields. model_validate preserves integer coercion and required-field validation, while model_dump(by_alias=True) outputs exactly id and displayName.",
+      "model_usage": {
+        "input_tokens": 12342,
+        "output_tokens": 303,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Migrate UserView to Pydantic v2 configuration, validation, and serialization APIs while preserving the function signature and dependency pins.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 266,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.000s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 108,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]
