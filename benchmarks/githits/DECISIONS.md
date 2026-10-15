@@ -242,3 +242,16 @@ Claim ceiling at start: proposed; no model comparison measured.
     rejects the newly added Python files; replay that retained set at publication
     commit 9abb733, where its original frozen source and evidence coexist.
     Do not weaken old registrations to make a changed implementation appear frozen.
+43. After registration 0ab8736 was pushed, the required token was unavailable
+    on this machine. Presence-only checks found no process/user/machine token
+    and no callable authenticated connector. Close only the unused prompt we
+    created. Do not issue avoidable unauthenticated reads, spend model calls
+    on a baseline-only attempt, or manufacture unavailable rows without a run.
+    Preserve the frozen set and prepare a portable launcher. This is a local
+    credential blocker, not a new API coverage result or comparative outcome.
+44. The user chose a ready-to-run handoff and objected to repeated token entry.
+    Do not ask for the token again. The portable launcher reuses an existing
+    environment credential when supplied, otherwise offers one masked entry
+    only when explicitly launched. It retrieves context once, clears the
+    credential before models, and reuses saved receipts for the whole matrix
+    and replay. No credential persistence or new access is configured silently.

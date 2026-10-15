@@ -8,6 +8,11 @@
 **Preregistered harder set: 5/5 without context, 5/5 with frozen GitHits context
 (five of six planned pairs). No additional fixes were observed.**
 
+**New upstream-bug set: preregistered, awaiting GitHits authentication.**
+Four real upstream-derived cases are frozen at `0ab8736`; no new API or model
+calls have run. [Status and remaining action](REPORT-upstream-v3.md) ·
+[Preregistration](PREREGISTRATION-upstream-v3.md). This adds no comparative result.
+
 All paired fixes in both sets passed on their first model call. The harder
 set's T04 treatment is unavailable: pinned `pydantic-core 2.27.2` returned
 `VERSION_NOT_FOUND`. Its standalone baseline solved on call two and is

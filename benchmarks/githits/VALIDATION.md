@@ -5,7 +5,29 @@ replayed on this host. Original: 3/3 versus 3/3. Harder: 5/5 versus 5/5 across
 five of six planned pairs. Neither observed tie establishes general parity
 or improvement. Results are not pooled.
 
-## Preregistered harder follow-up
+## Upstream-v3 preparation (no model comparison)
+
+Registration `0ab8736` freezes four whole upstream Werkzeug 3.1.3 modules,
+20 authored host test methods and 150 source/data hashes. The original bytes
+match upstream Git blob identities. Each broken start failed behavior with
+the correct dependency pin; each reference repair passed behavior and admission.
+A fresh remote checkout verified all 150 frozen hashes. No model pilots ran.
+
+The frozen implementation passed **26 focused offline tests** and all **23
+conformance traces**. During preparation the local full suite passed **288
+tests, 22 skipped**, in 335.158 seconds; its process started before the final
+preflight-manifest/replay guard addition. [Captured output](results/validation-upstream-v3-unit.txt).
+[CI on exact frozen source 0ab8736](https://github.com/SyberLabs/SyberWork/actions/runs/38819543263)
+is a separate revision check. The portable PowerShell launcher passed syntax
+validation and rejected a dirty checkout before any credential prompt or call.
+
+Credentials were unavailable, and the user chose a ready-to-run handoff.
+**Zero new GitHits requests and zero new model calls** were made. The paired
+matrix, authenticated upstream-v3 path and candidate replay are therefore not
+claimed as exercised. The [status report](REPORT-upstream-v3.md) distinguishes
+fixture validation from model results. Both earlier ties remain unchanged.
+
+## Hard-v2 measurement
 
 Initial registration `291a7a1` passed 283 local tests with 22 skips in 364.755
 seconds, 21 focused tests and all 23 conformance golden traces. All six broken
