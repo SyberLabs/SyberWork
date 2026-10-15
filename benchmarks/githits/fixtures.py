@@ -225,3 +225,8 @@ FIXTURES = {
                   {"path": "lib/sqlalchemy/engine/result.py", "start_line": 1170, "end_line": 1210}],
     },
 }
+
+# Preserve the original default set and its published evidence identities.
+LEGACY_FIXTURES = tuple(FIXTURES)
+from benchmarks.githits.hard_fixtures import HARD_FIXTURES  # noqa: E402
+FIXTURES.update(HARD_FIXTURES)

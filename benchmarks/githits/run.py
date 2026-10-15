@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from benchmarks.githits.client import collect, digest
-from benchmarks.githits.fixtures import FIXTURES
+from benchmarks.githits.fixtures import FIXTURES, LEGACY_FIXTURES, HARD_FIXTURES
 from benchmarks.model_vs_patch import Patches
 from examples.evolve import git
 from syberlabs import Kit
@@ -42,7 +42,8 @@ def write_json(path: Path, value) -> None:
 
 def contract(name: str, python: str, calls: int) -> dict:
     fixture = FIXTURES[name]
-    return {"id": "githits-" + name, "version": 1, "title": fixture["objective"],
+    identity = ("task-" if fixture.get("blind") else "githits-") + name
+    return {"id": identity, "version": 1, "title": fixture["objective"],
             "inputs": {"objective": "string"}, "actions": {"accept_change": {}},
             "acceptance": [{"id": "accepted", "kind": "effect", "action": "accept_change"}],
             "evolution": {
@@ -128,6 +129,8 @@ def run_arm(name: str, arm: str, seed: int, root: Path, evidence: Path, python: 
     kit, thread, doc = open_thread(name, root, python, calls)
     argv = [sys.executable, str(ROOT / "benchmarks/githits/codex_adapter.py"),
             "--record", str(evidence / "model"), "--model", model, "--effort", effort]
+    if fixture.get("blind"):
+        argv += ["--blind"]
     if arm == "with_githits":
         context_file = evidence / "context.json"
         write_json(context_file, context["context"])
@@ -196,11 +199,24 @@ def main() -> None:
     parser.add_argument("--write", type=Path, required=True, help="new evidence directory; must not exist")
     parser.add_argument("--calls", type=int, default=2, choices=range(1, 5))
     parser.add_argument("--repeats", type=int, default=1, choices=range(1, 11))
-    parser.add_argument("--fixtures", nargs="+", default=list(FIXTURES), choices=list(FIXTURES))
+    parser.add_argument("--suite", choices=("original", "hard-v2"), default="original")
+    parser.add_argument("--fixtures", nargs="+", choices=list(FIXTURES))
     parser.add_argument("--validate-only", action="store_true", help="no model calls; still records GitHits access preflight")
     parser.add_argument("--model", default="gpt-6.1-sol")
     parser.add_argument("--effort", default="high", choices=("low", "medium", "high", "xhigh"))
     args = parser.parse_args()
+    args.fixtures = args.fixtures or list(HARD_FIXTURES if args.suite == "hard-v2" else LEGACY_FIXTURES)
+    if args.suite == "original" and any(name in HARD_FIXTURES for name in args.fixtures):
+        parser.error("hard-v2 tasks require the frozen --suite hard-v2 procedure")
+    preregistration = None
+    if args.suite == "hard-v2":
+        from benchmarks.githits.preregister import verify_registration
+        if (args.fixtures != list(HARD_FIXTURES) or args.calls != 2 or args.repeats != 1
+                or args.model != "gpt-6.1-sol" or args.effort != "high"):
+            parser.error("hard-v2 must use its complete frozen task set and preregistered configuration")
+        preregistration = verify_registration()
+        if git(ROOT, "diff", "HEAD"):
+            parser.error("commit the frozen hard-v2 implementation before running")
     if not Path(args.python).is_absolute() or not Path(args.python).is_file():
         parser.error("--python must be an existing absolute interpreter path")
     packages = json.loads(subprocess.run([args.python, "-m", "pip", "list", "--format=json"],
@@ -214,12 +230,16 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=False)
     # Hash the actual artifact bytes, preserving them through Windows Git checkouts.
     (output / ".gitattributes").write_bytes(b"* -text -whitespace\n")
+    if preregistration:
+        write_json(output / "preregistration.json", preregistration)
     rows, validations, contexts = [], [], {}
     write_json(output / "environment.json", {
         "at": datetime.now(timezone.utc).isoformat(), "platform": platform.platform(), "machine": platform.machine(),
         "python_host": sys.version, "python_checks": args.python, "model_requested": args.model,
         "model_effort": args.effort, "calls_per_arm": args.calls, "repeats": args.repeats,
         "order_seed": 20261015, "source_commit": git(ROOT, "rev-parse", "HEAD"),
+        "suite": args.suite,
+        "preregistration_sha256": digest(json.dumps(preregistration, sort_keys=True).encode()) if preregistration else None,
         "source_diff_sha256": digest(git(ROOT, "diff", "HEAD").encode()),
         "requirements_sha256": digest((ROOT / "benchmarks/githits/requirements.txt").read_bytes()),
         "packages": packages})
@@ -233,13 +253,15 @@ def main() -> None:
                 contexts[name] = collect(FIXTURES[name])
                 write_json(output / (name + "-context.json"), contexts[name])
             write_json(output / "validation.json", validations)
+            if args.suite == "hard-v2" and any(c["status"] != "ready" for c in contexts.values()):
+                raise RuntimeError("frozen_context_preflight_failed_no_models_invoked")
             if not args.validate_only:
                 order = [(name, seed, list(ARMS)) for seed in range(1, args.repeats + 1) for name in args.fixtures]
                 rng = random.Random(20261015)
                 for name, seed, arms in order:
                     rng.shuffle(arms)
                     for arm in arms:
-                        label = f"{name}-{arm}-{seed}"
+                        label = f"cell-{len(rows) + 1:02}" if args.suite == "hard-v2" else f"{name}-{arm}-{seed}"
                         root = work / label
                         # Both arms clone the same base commit; reference candidate refs stay out.
                         git(work, "clone", "-q", "--no-hardlinks", str(work / (name + "-base")), str(root))
@@ -248,7 +270,10 @@ def main() -> None:
                         rows.append(row)
                         write_json(output / "results.json", rows)
                         (output / "results.txt").write_text(summarize(rows, args.calls), encoding="utf-8")
-                        print(f"{label}: {row['status']} solved={row['solved']}", flush=True)
+                        if args.suite == "hard-v2":
+                            print(f"Completed cell {len(rows)}/{len(args.fixtures) * 2}; outcomes withheld until matrix completion.", flush=True)
+                        else:
+                            print(f"{label}: {row['status']} solved={row['solved']}", flush=True)
     except BaseException:
         write_json(output / "interrupted.json", {"completed_rows": len(rows), "status": "incomplete"})
         raise

@@ -11,6 +11,17 @@ solves: 0; baseline-only solves: 0. No uplift was observed on this task set.**
 [One-screen brief](phone.html) · [Raw paired results](results/2026-10-15-run-004/results.json)
 · [Host replay](results/2026-10-15-recheck-004.json)
 
+## Preregistered follow-up
+
+The separate [hard-v2 preregistration](PREREGISTRATION-v2.md) freezes six new
+higher-complexity authored tasks before model trials. Its source and task
+hashes are in [PREREGISTRATION-v2.json](PREREGISTRATION-v2.json). The same
+requested model and host checks will be used for both arms. Checks/reference
+fixes are hidden from the model; the provider receives unbranded source
+context and automatic scoring is arm-unaware. The operator is not blinded,
+and the extra context remains visible to the model. Results are pending.
+The original **3/3 versus 3/3 tie above stays separate** and will not be pooled.
+
 ## What the result supports
 
 The authenticated GitHits integration supplied the six planned source

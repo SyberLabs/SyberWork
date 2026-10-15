@@ -84,6 +84,12 @@ def verify_bundle(name: str, folder: Path, python: str, broken: dict | None = No
 
 def verify(folder: Path, python: str) -> dict:
     files = verify_manifest(folder)
+    environment = load(folder / "environment.json")
+    if environment.get("suite") == "hard-v2":
+        from benchmarks.githits.preregister import check_registration
+        registration = check_registration(load(folder / "preregistration.json"))
+        if digest(json.dumps(registration, sort_keys=True).encode()) != environment["preregistration_sha256"]:
+            raise ValueError("preregistration_receipt_changed")
     observations = []
     for validation in load(folder / "validation.json"):
         name = validation["fixture"]

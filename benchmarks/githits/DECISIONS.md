@@ -170,3 +170,21 @@ Claim ceiling at start: proposed; no model comparison measured.
     checkout then verified all 140 hashes and replayed all 12 evaluations.
     Document the short-path requirement rather than editing archived data
     or weakening manifest verification. No runtime code changed for this.
+32. The user requested a harder blinded follow-up. Define six new authored
+    tasks across the same pinned HTTPX, Pydantic/core and SQLAlchemy families,
+    six behavioral test methods each, without a model pilot. Higher complexity
+    refers to interacting constraints, not a guaranteed lower solve rate.
+    Keep run 004's 3/3-versus-3/3 tie prominent and unpooled. Freeze objectives,
+    checks, references, reads, code hashes, model/budget and reporting rules
+    in a pushed preregistration before the first model call.
+33. Use partial blinding: hidden checks/references, opaque task/cell labels,
+    no supplier branding in treatment input, and deterministic arm-unaware
+    host checks. Do not claim independent authoring, double blinding or that
+    a model cannot notice extra context. Do not inspect cell outcomes until
+    the 12-cell matrix completes; raw rows remain saved for interrupted work.
+34. During reference-only authoring, T04 initially failed its JSON-schema
+    check. Correct the reference to emit forbidden-extra schema metadata
+    through the supported JSON-schema hook before freezing; do not relax its
+    acceptance checks. All six final references pass their 36 behavior methods
+    and all six starting implementations fail behavior with correct versions.
+    No new-suite model or GitHits calls preceded these authoring decisions.
