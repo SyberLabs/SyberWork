@@ -62,3 +62,27 @@ Claim ceiling at start: proposed; no model comparison measured.
     behavior checks with correct package versions, and all three held-out
     reference fixes passed host checks and admission preview. Nine offline
     boundary tests passed. Store the dated validation evidence with the report.
+14. Run 001 at 00:00 PDT October 15: all three baseline tasks solved on the
+    first model call, each with host-verified version and behavior checks.
+    All three GitHits reads returned `AUTHENTICATION_REQUIRED`. Completed
+    matched pairs: zero. Do not add tasks after seeing this ceiling merely
+    to search for a favorable headline. A harder task set would be a new,
+    explicitly preregistered experiment, with this result still retained.
+15. Preserve raw evidence bytes with a run-local `.gitattributes`; otherwise
+    Windows Git line-ending conversion invalidates artifact SHA-256 hashes.
+    Save self-contained Git bundles and provide a model-free host recheck.
+    A replay compares pass/fail states and exit codes; timings and temporary
+    paths make byte-for-byte check-output replay inappropriate.
+16. Before publishing the evidence, found that Windows text-mode output
+    converted line endings in saved prompts. Fix capture to write the exact
+    UTF-8 bytes passed to model stdin; add a regression test; retain run 001
+    unchanged with a capture-limitation note; repeat the unchanged task set
+    as run 002 for the final report. Do not pool the runs or choose outcomes.
+    Raw archives intentionally retain their whitespace; Git whitespace lint
+    remains active for source and documentation outside those archives.
+17. The standard clean-install check fails on this Windows runtime because
+    its minimal environment drops `SYSTEMROOT`, preventing SSL context
+    initialization. A minimal reproduction fails without it and passes with
+    it. Running the same wheel/origin/example checks with only `SYSTEMROOT`
+    preserved passed. Keep the unrelated conformance source unchanged and
+    report the standard-command failure alongside this workaround.

@@ -212,6 +212,8 @@ def main() -> None:
             parser.error(f"benchmark dependency is not pinned: {name}=={version}")
     output = args.write.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    # Hash the actual artifact bytes, preserving them through Windows Git checkouts.
+    (output / ".gitattributes").write_bytes(b"* -text -whitespace\n")
     rows, validations, contexts = [], [], {}
     write_json(output / "environment.json", {
         "at": datetime.now(timezone.utc).isoformat(), "platform": platform.platform(), "machine": platform.machine(),

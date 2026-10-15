@@ -1,0 +1,25 @@
+{
+  "status": "unavailable",
+  "reason": "AUTHENTICATION_REQUIRED",
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Ahttpx%400.28.1&path=httpx%2F_transports%2Fasgi.py&start_line=63&end_line=180&wait_timeout_ms=20000",
+      "at": "2026-10-15T07:00:04.823011+00:00",
+      "authenticated": false,
+      "status": 401,
+      "request_id": "9657ef4e6a166e7829d827a114e07cb1",
+      "retry_after": null,
+      "body_sha256": "c9ce182683b973e08841f7b910647254a568a64c7e4eeeeb026b2536403bbccf",
+      "seconds": 0.297,
+      "body": {
+        "type": "about:blank",
+        "title": "Authentication required",
+        "status": 401,
+        "detail": "A bearer credential is required.",
+        "instance": "9657ef4e6a166e7829d827a114e07cb1",
+        "code": "AUTHENTICATION_REQUIRED"
+      }
+    }
+  ],
+  "context": null
+}

@@ -1,0 +1,41 @@
+{
+  "at": "2026-10-15T07:07:30.565559+00:00",
+  "url": "https://api.githits.dev/v1/openapi.json",
+  "http_status": 200,
+  "body_sha256": "07d957edac7de5e412288777eb540c27671c6f7b1d88bd7deebcad066d6db0de",
+  "bytes": 1272898,
+  "title": "GitHits Public API",
+  "version": "0.1.0",
+  "read_security": [
+    {
+      "bearer_auth": []
+    }
+  ],
+  "read_parameters": [
+    "target",
+    "path",
+    "start_line",
+    "end_line",
+    "wait_timeout_ms",
+    "fields",
+    "X-GitHits-Client-Name",
+    "X-GitHits-Client-Version",
+    "X-GitHits-Agent",
+    "X-GitHits-Session-ID"
+  ],
+  "served_identity_fields": [
+    "kind",
+    "registry",
+    "name",
+    "version",
+    "repo_url",
+    "git_ref",
+    "commit_sha"
+  ],
+  "code_content_fields": [
+    "body",
+    "start_line",
+    "end_line"
+  ],
+  "note": "Public schema metadata only. A public OpenAPI response is not authenticated source retrieval."
+}

@@ -1,0 +1,20 @@
+{
+  "model_requested": "gpt-6.1-sol",
+  "effort": "high",
+  "disabled": [
+    "apps",
+    "plugins",
+    "shell_tool",
+    "unified_exec",
+    "browser_use",
+    "computer_use",
+    "multi_agent",
+    "memories",
+    "hooks",
+    "goals",
+    "image_generation",
+    "view_image"
+  ],
+  "web_search": "disabled",
+  "cli": "codex-cli 0.162.0-alpha.17.2"
+}

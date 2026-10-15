@@ -1,0 +1,41 @@
+[
+  {
+    "id": "c1",
+    "commit": "6278623e958bbdd8dd5e7bd1181d109e789dfe97",
+    "tree": "6e642e7fd7bf1ea84b65072d1640b0ec65809884",
+    "base": "b8d074d4922c53fe14f6147aa97f5c069b07ff41",
+    "parents": [],
+    "operator": "patch",
+    "provider": "reference",
+    "provider_revision": "authored-v1",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 1274,
+    "signal": null,
+    "note": "",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 360,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.015s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 109,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

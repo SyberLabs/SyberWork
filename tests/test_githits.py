@@ -1,13 +1,17 @@
 """Offline tests of the benchmark's information and evidence boundaries."""
 
+import io
 import json
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from benchmarks.githits import client, run
+from benchmarks.githits import codex_adapter
+from benchmarks.githits import verify as replay
 from benchmarks.githits.fixtures import FIXTURES
 
 
@@ -42,6 +46,57 @@ class Context(unittest.TestCase):
             row = run.run_arm("httpx-asgi", "with_githits", 1, Path("unused"), Path("unused"), sys.executable,
                               2, "model", "high", {"status": "unavailable", "reason": "AUTHENTICATION_REQUIRED"})
         self.assertEqual((row["status"], row["calls"], row["solved"]), ("unavailable", 0, None))
+
+    def test_credential_is_sent_only_as_header_and_not_saved(self):
+        response = io.BytesIO(b'{"code":"AUTHENTICATION_REQUIRED"}')
+        response.code, response.headers = 401, {"X-Request-ID": "test-request"}
+        with patch.object(client.urllib.request, "build_opener") as make:
+            make.return_value.open.return_value = response
+            record = client.request("/v1/read", {"target": "pypi:httpx@0.28.1"}, token="test-only-secret")
+        sent = make.return_value.open.call_args.args[0]
+        self.assertEqual(sent.get_header("Authorization"), "Bearer test-only-secret")
+        self.assertNotIn("test-only-secret", json.dumps(record))
+        self.assertTrue(record["authenticated"])
+
+
+class Manifest(unittest.TestCase):
+    def test_tampering_and_unlisted_files_are_detected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            payload = root / "output.txt"
+            payload.write_bytes(b"original\r\n")
+            run.manifest(root)
+            self.assertEqual(replay.verify_manifest(root), 1)
+            payload.write_bytes(b"original\n")
+            with self.assertRaisesRegex(ValueError, "evidence_digest_mismatch"):
+                replay.verify_manifest(root)
+            payload.write_bytes(b"original\r\n")
+            (root / "extra.txt").write_bytes(b"unlisted")
+            with self.assertRaisesRegex(ValueError, "evidence_file_set_changed"):
+                replay.verify_manifest(root)
+
+
+class Capture(unittest.TestCase):
+    def test_saved_prompt_is_exactly_model_stdin(self):
+        with tempfile.TemporaryDirectory() as folder:
+            record = Path(folder) / "call"
+            captured = []
+
+            def cli(argv, **kwargs):
+                if "--version" in argv:
+                    return SimpleNamespace(stdout="test-cli")
+                captured.append(kwargs["input"])
+                final = Path(argv[argv.index("-o") + 1])
+                final.write_text(json.dumps({"message": "m", "rationale": "r", "files": []}))
+                events = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}})
+                return SimpleNamespace(returncode=0, stdout=events.encode(), stderr=b"")
+
+            with patch.object(codex_adapter, "build_prompt", return_value="mixed\r\nnewlines\n"), \
+                    patch.object(codex_adapter.shutil, "which", return_value="codex"), \
+                    patch.object(codex_adapter.subprocess, "run", side_effect=cli):
+                codex_adapter.respond({"protocol": "syberlabs.search/v0alpha1"}, record, None, "model", "high")
+            self.assertEqual((record / "prompt.txt").read_bytes(), captured[0])
+            self.assertIn(b"mixed\r\nnewlines\n", captured[0])
 
 
 class Summary(unittest.TestCase):

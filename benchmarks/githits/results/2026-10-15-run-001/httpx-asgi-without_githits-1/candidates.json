@@ -1,0 +1,50 @@
+[
+  {
+    "id": "c1",
+    "commit": "69e7366bc72c0b16fb5c48731a852d5d8aab5e09",
+    "tree": "18c301779de86684e4245fbe40d5931907466c5d",
+    "base": "6cb9adf23425be382c01f4923fc460404f59dda7",
+    "parents": [],
+    "operator": "patch",
+    "provider": "codex-repair",
+    "provider_revision": "gpt-6.1-sol",
+    "changed_paths": [
+      "src/integration.py"
+    ],
+    "scope_violations": [],
+    "limit_violations": [],
+    "diff_bytes": 761,
+    "signal": {
+      "rationale": "Replacing the removed app argument with ASGITransport keeps requests in process while preserving headers, query strings, HTTPStatusError handling, JSON decoding, and client cleanup. Dependency pins and checks remain unchanged.",
+      "model_usage": {
+        "input_tokens": 12306,
+        "output_tokens": 306,
+        "cache_read_input_tokens": 0,
+        "model": "gpt-6.1-sol",
+        "stop_reason": "end_turn"
+      }
+    },
+    "note": "Migrate fetch_json to HTTPX 0.28.1 using an in-process ASGI transport.",
+    "evaluation": "passed",
+    "promotion": "provisional",
+    "promotion_reason": null,
+    "proposal_id": null,
+    "checks": [
+      {
+        "name": "behavior",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 186,
+        "output_tail": "...\r\n----------------------------------------------------------------------\r\nRan 3 tests in 0.006s\r\n\r\nOK\r\n"
+      },
+      {
+        "name": "dependency_pin",
+        "state": "passed",
+        "exit_code": 0,
+        "duration_ms": 110,
+        "output_tail": ""
+      }
+    ],
+    "origin": null
+  }
+]

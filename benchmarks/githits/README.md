@@ -72,6 +72,9 @@ The output directory must be new. Tests need no model or GitHits account:
 
 ```powershell
 & $benchPython -m unittest tests.test_githits -v
+
+# Re-run saved candidate trees: no model, token, or network.
+& $benchPython -m benchmarks.githits.verify work/githits-run --python $benchPython --write work/githits-recheck.json
 ```
 
 The Codex adapter uses the installed CLI's supported noninteractive JSON
@@ -96,6 +99,11 @@ Candidate refs are included in the bundle; they are not pushed as branches.
 The core stores only a 4 KB check-output tail, not full original check logs.
 `sha256.json` covers evidence files. `environment.json` records interpreter,
 platform, package versions, source revision and requirements digest.
+Every run includes `.gitattributes` to preserve raw artifact bytes across Git
+checkouts on Windows. The recheck verifies the manifest, event hashes, Git
+commit/tree identities, untouched tests/pins and candidate scope before
+re-running version and behavior checks. It compares states and exit codes;
+elapsed times and temporary paths can change output hashes on replay.
 
 `with_githits` is **unavailable** when access or pinned context fails. Its
 `solved` is null, and it cannot enter a matched denominator. A model/transport

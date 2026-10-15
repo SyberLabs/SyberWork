@@ -1,0 +1,25 @@
+{
+  "status": "unavailable",
+  "reason": "AUTHENTICATION_REQUIRED",
+  "requests": [
+    {
+      "url": "https://api.githits.dev/v1/read?target=pypi%3Apydantic%402.10.6&path=pydantic%2Fconfig.py&start_line=320&end_line=400&wait_timeout_ms=20000",
+      "at": "2026-10-15T07:00:08.205217+00:00",
+      "authenticated": false,
+      "status": 401,
+      "request_id": "306f0ea4f31426e616fe28f6f1710e4f",
+      "retry_after": null,
+      "body_sha256": "34342d74fd163ad5ecba3e25321c3e1efeb33fe8e8bcfef263eca6822e3168ec",
+      "seconds": 0.281,
+      "body": {
+        "type": "about:blank",
+        "title": "Authentication required",
+        "status": 401,
+        "detail": "A bearer credential is required.",
+        "instance": "306f0ea4f31426e616fe28f6f1710e4f",
+        "code": "AUTHENTICATION_REQUIRED"
+      }
+    }
+  ],
+  "context": null
+}
