@@ -36,6 +36,14 @@ earlier overnight suite results below.
 The 23 conformance golden traces matched after the fix. GitHub CI passed for
 the validator/source commit [`4188cac`](https://github.com/SyberLabs/SyberWork/actions/runs/38801619308).
 The brief was inspected at a 390 by 844 CSS-pixel viewport without overflow.
+An actual remote clone of `b5a2d98`, with `core.autocrlf=true` and
+`core.longpaths=true`, also verified all 140 hashes and replayed all 12 tree
+evaluations. One deliberately deeper checkout placed a journal file at a
+260-character full path: Git checked it out, but this Python runtime could
+not open it through the ordinary path. The same file was present through
+Windows extended-path syntax. A shorter checkout replayed successfully.
+Use both a short checkout path and Git's long-path setting on Windows;
+the archived bytes and manifest were not changed.
 
 ## Benchmark evidence
 

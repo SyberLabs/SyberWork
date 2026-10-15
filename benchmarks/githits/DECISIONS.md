@@ -163,3 +163,10 @@ Claim ceiling at start: proposed; no model comparison measured.
     seconds; 16 focused tests; 23 conformance golden traces; successful CI
     on source `4188cac`. Report/evidence publication is a later commit and
     remains a distinct revision boundary. Only the benchmark branch is pushed.
+31. Fresh remote checkout `b5a2d98` preserved all evidence bytes. A deep
+    checkout put one journal file at exactly 260 characters: Git's long-path
+    setting handled it, but ordinary Python file access did not. Confirmed
+    the file existed through the Windows extended-path prefix; a shorter
+    checkout then verified all 140 hashes and replayed all 12 evaluations.
+    Document the short-path requirement rather than editing archived data
+    or weakening manifest verification. No runtime code changed for this.

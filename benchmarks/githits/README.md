@@ -47,6 +47,10 @@ The main packages remain free of runtime dependencies.
 On Windows, enable long paths for the clone before checkout: the archived
 host journals can exceed Git's default path limit in a deep workspace.
 This setting applies to the new checkout only.
+Keep the checkout path short as well: some Windows Python file operations
+still fail at a 260-character full path even when Git can check it out.
+If replay reports a missing journal file, move to a shorter checkout path;
+do not alter the evidence manifest to hide the file.
 
 ```powershell
 git clone --config core.longpaths=true --branch bench/githits-verified https://github.com/SyberLabs/SyberWork.git
