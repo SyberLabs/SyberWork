@@ -106,3 +106,21 @@ Claim ceiling at start: proposed; no model comparison measured.
     setting and `core.autocrlf=true` passed the 86-file manifest verification
     and all nine host re-evaluations. Add the setting to the handoff; keep
     runtime code, fixtures and measurements unchanged.
+22. Upstream main advanced externally to `a1ccbdb` at 00:27 PDT, after the
+    report was first committed. It requires private usage accounting. Do
+    not merge main or rewrite measured source/results. Adapt only the
+    benchmark transport to call the approved private CLI wrapper, keeping
+    private paths and the ledger out of public evidence and refusing a
+    direct fallback. Its unit is CLI invocations, not API request volume.
+23. The approved runtime paths became available as user environment values.
+    No API token, default bridge OAuth store or alternative OAuth-store
+    setting was present. All three real dependency reads through the wrapper
+    returned `AUTHENTICATION_REQUIRED`. This later access check confirms
+    the same credential boundary; do not synthesize treatment context or
+    add a further model repeat. Positive authenticated retrieval is still
+    unverified. Preserve the original pre-accounting runs as historical data.
+24. After the accounting-only transport adaptation, the full suite passed:
+    276 tests, 22 skipped, in 259.758 seconds; all 14 focused offline tests
+    also passed. The primary model run, its fixtures, host checks, candidate
+    objects and manifest remain unchanged. No private runtime or ledger
+    files are included in the source branch or downloadable handoff.

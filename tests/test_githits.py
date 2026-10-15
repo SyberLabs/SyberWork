@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -52,11 +53,37 @@ class Context(unittest.TestCase):
         response.code, response.headers = 401, {"X-Request-ID": "test-request"}
         with patch.object(client.urllib.request, "build_opener") as make:
             make.return_value.open.return_value = response
-            record = client.request("/v1/read", {"target": "pypi:httpx@0.28.1"}, token="test-only-secret")
+            record = client._http_request("/v1/read", {"target": "pypi:httpx@0.28.1"}, token="test-only-secret")
         sent = make.return_value.open.call_args.args[0]
         self.assertEqual(sent.get_header("Authorization"), "Bearer test-only-secret")
         self.assertNotIn("test-only-secret", json.dumps(record))
         self.assertTrue(record["authenticated"])
+
+    def test_missing_accounting_runtime_never_falls_back_to_network(self):
+        with patch.dict(os.environ, {"GITHITS_USAGE_NODE": "", "GITHITS_USAGE_HOME": ""}), \
+                patch.object(client, "_http_request", side_effect=AssertionError("unaccounted request")), \
+                patch.object(client.subprocess, "run", side_effect=AssertionError("unexpected child")):
+            found = client.request("/v1/read", {"target": "pypi:httpx@0.28.1"})
+        self.assertEqual(found["error"], "accounting_runtime_unavailable")
+
+    def test_accounted_child_carries_token_only_in_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            node = home / "node"
+            node.write_text("")
+            (home / "usage.mjs").write_text("")
+            params = {"target": "pypi:httpx@0.28.1"}
+            url = client.API + "/v1/read?" + client.urllib.parse.urlencode(params)
+            returned = {"url": url, "status": 401, "body": {"code": "AUTHENTICATION_REQUIRED"}}
+            with patch.dict(os.environ, {"GITHITS_USAGE_NODE": str(node), "GITHITS_USAGE_HOME": str(home)}), \
+                    patch.object(client.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=1, stdout=json.dumps(returned).encode())) as child:
+                found = client.request("/v1/read", params, token="test-only-secret")
+            self.assertEqual(found["status"], 401)
+            self.assertEqual(found["transport"], "private-accounted-cli")
+            self.assertEqual(child.call_args.kwargs["env"]["GITHITS_API_TOKEN"], "test-only-secret")
+            self.assertNotIn("test-only-secret", json.dumps(child.call_args.args))
+            self.assertNotIn("test-only-secret", json.dumps(found))
 
 
 class Manifest(unittest.TestCase):

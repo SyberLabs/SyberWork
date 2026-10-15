@@ -1,0 +1,86 @@
+{
+  "at": "2026-10-15T07:35:03.623913+00:00",
+  "upstream_configuration": "a1ccbdb309aceba06c253fea8deef7867cffbd4a",
+  "ledger_unit": "cli-invocation",
+  "results": {
+    "httpx-asgi": {
+      "status": "unavailable",
+      "reason": "AUTHENTICATION_REQUIRED",
+      "requests": [
+        {
+          "url": "https://api.githits.dev/v1/read?target=pypi%3Ahttpx%400.28.1&path=httpx%2F_transports%2Fasgi.py&start_line=63&end_line=180&wait_timeout_ms=20000",
+          "at": "2026-10-15T07:35:02.212899+00:00",
+          "authenticated": false,
+          "status": 401,
+          "request_id": "85b038c27a9c2b35dad348e6644f42cc",
+          "retry_after": null,
+          "body_sha256": "dfd0d0deb589633ca8c22703e7d6e5829485ca7a97d848efbe111c647e8a2b3a",
+          "seconds": 0.359,
+          "body": {
+            "type": "about:blank",
+            "title": "Authentication required",
+            "status": 401,
+            "detail": "A bearer credential is required.",
+            "instance": "85b038c27a9c2b35dad348e6644f42cc",
+            "code": "AUTHENTICATION_REQUIRED"
+          },
+          "transport": "private-accounted-cli"
+        }
+      ],
+      "context": null
+    },
+    "pydantic-attributes": {
+      "status": "unavailable",
+      "reason": "AUTHENTICATION_REQUIRED",
+      "requests": [
+        {
+          "url": "https://api.githits.dev/v1/read?target=pypi%3Apydantic%402.10.6&path=pydantic%2Fconfig.py&start_line=320&end_line=400&wait_timeout_ms=20000",
+          "at": "2026-10-15T07:35:02.843500+00:00",
+          "authenticated": false,
+          "status": 401,
+          "request_id": "98669269017ea6bcd5374d0f3623c125",
+          "retry_after": null,
+          "body_sha256": "a386bd4694aa235c5fc93300b1144c4ee66abbff346d049d69bb6b61d29276e8",
+          "seconds": 0.187,
+          "body": {
+            "type": "about:blank",
+            "title": "Authentication required",
+            "status": 401,
+            "detail": "A bearer credential is required.",
+            "instance": "98669269017ea6bcd5374d0f3623c125",
+            "code": "AUTHENTICATION_REQUIRED"
+          },
+          "transport": "private-accounted-cli"
+        }
+      ],
+      "context": null
+    },
+    "sqlalchemy-execute": {
+      "status": "unavailable",
+      "reason": "AUTHENTICATION_REQUIRED",
+      "requests": [
+        {
+          "url": "https://api.githits.dev/v1/read?target=pypi%3Asqlalchemy%402.0.36&path=lib%2Fsqlalchemy%2Fengine%2Fbase.py&start_line=1380&end_line=1440&wait_timeout_ms=20000",
+          "at": "2026-10-15T07:35:03.306888+00:00",
+          "authenticated": false,
+          "status": 401,
+          "request_id": "a6a3a4d5eed2f5ea31fc7a544231a9ea",
+          "retry_after": null,
+          "body_sha256": "fb70cbfd46ec21487b3ae6f35ec11546982fefffde8411bbc8000a26bb9f2140",
+          "seconds": 0.312,
+          "body": {
+            "type": "about:blank",
+            "title": "Authentication required",
+            "status": 401,
+            "detail": "A bearer credential is required.",
+            "instance": "a6a3a4d5eed2f5ea31fc7a544231a9ea",
+            "code": "AUTHENTICATION_REQUIRED"
+          },
+          "transport": "private-accounted-cli"
+        }
+      ],
+      "context": null
+    }
+  },
+  "collector_source_sha256": "5c32096dca2b642855413409897ffd8a163dad747c8e6e367cd14f46bd3ebe24"
+}

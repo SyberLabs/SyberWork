@@ -24,6 +24,15 @@ host recheck. The first deep-path checkout hit Git's Windows filename limit;
 cloning with `--config core.longpaths=true` succeeded. The README and handoff
 include that per-checkout setting. No system setting was changed.
 
+After upstream adopted accounting in `a1ccbdb`, the benchmark's live lookup
+path was adapted to the private CLI wrapper. All three real, accounted reads
+returned HTTP 401; the public receipt is
+[accounted-access-2026-10-15.json](results/accounted-access-2026-10-15.json).
+No private ledger, token or private runtime path is copied into this repository.
+These are CLI-invocation accounting records, not an API-volume measurement.
+The two additional offline tests cover missing-runtime failure with no direct
+fallback and environment-only credential propagation to the accounted child.
+
 The exact archived bytes also matched after staging in Git. Run-local and
 parent `.gitattributes` preserve raw bytes; whitespace lint remains active on
 source and documentation. Early run 001 is retained with a separate capture
@@ -36,10 +45,11 @@ Host Python:
 Benchmark Python:
 `C:\Users\scarl\Documents\Codex\2026-10-14\overnight-task-githits-x-syberwork-verified\work\githits-venv\Scripts\python.exe`.
 
-- `python -m unittest discover -s tests -q`: **OK**, 274 tests, 22 skipped,
-  351.454 seconds. [Captured output](results/validation-final-unit.txt).
+- `python -m unittest discover -s tests -q`: **OK**, 276 tests, 22 skipped,
+  259.758 seconds after the accounting transport update.
+  [Captured output](results/validation-final-unit.txt).
   Optional database/browser checks were not all exercised locally.
-- `python -m unittest tests.test_githits -q`: **OK**, 12 offline tests,
+- `python -m unittest tests.test_githits -q`: **OK**, 14 offline tests,
   including false provider claims, check rewrites, unavailable arms,
   wrong-version context, credential handling, artifact tampering and exact
   model-stdin capture across mixed newline conventions.

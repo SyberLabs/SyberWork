@@ -45,6 +45,13 @@ request IDs and bodies saved in the per-task context records. No existing
 GitHits token was available in the environment. Hosted MCP initialization
 also returned 401. No account was created or new access granted.
 
+While this task was running, upstream `main` adopted private usage accounting
+in `a1ccbdb`. The rerun path now honors that requirement and refuses a direct
+fallback. A [later accounted access check](results/accounted-access-2026-10-15.json)
+still returned 401 for all three dependencies. Accounting was available;
+credentials were not. Historical model results and their original transport
+records were retained without alteration.
+
 Those arms are **unavailable**, with `solved: null`; they are not failed fixes
 and do not enter a success-rate denominator. Public OpenAPI access does not
 prove authenticated package retrieval. The positive retrieval integration
@@ -80,5 +87,5 @@ network. [VALIDATION.md](VALIDATION.md) records the repository checks and the
 stock Windows clean-install failure, including the passing environment
 workaround. Host checks are controlled subprocess execution, not a sandbox.
 
-Only `bench/githits-verified` was pushed. No pull request, merge, deployment
-or change to `main` is part of this work.
+This task pushed only `bench/githits-verified`. No pull request, merge,
+deployment or write to `main` is part of this work.

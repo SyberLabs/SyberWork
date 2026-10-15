@@ -62,9 +62,23 @@ benchmark's fully version-pinned extras:
 $benchPython = (Resolve-Path '.\.venv-githits\Scripts\python.exe').Path
 ```
 
+For live lookups, use the approved private MasterMind usage runtime introduced
+upstream in `a1ccbdb`, with Node 24. Load `GITHITS_USAGE_NODE` and
+`GITHITS_USAGE_HOME` before starting the benchmark; they are non-secret absolute
+paths. On an existing Windows installation, reload the configured user values:
+
+```powershell
+$env:GITHITS_USAGE_NODE = [Environment]::GetEnvironmentVariable('GITHITS_USAGE_NODE', 'User')
+$env:GITHITS_USAGE_HOME = [Environment]::GetEnvironmentVariable('GITHITS_USAGE_HOME', 'User')
+```
+
 Use `GITHITS_API_TOKEN` from the existing secret environment; never put its
-value in a file, argument, transcript or commit. The runner sends only public
-package/version/path locators to `https://api.githits.dev/v1/read`. It rejects
+value in a file, argument, transcript or commit. Each HTTP lookup runs through
+the private `usage.mjs exec` wrapper; its ledger remains outside this repository.
+Missing accounting configuration stops retrieval, with no direct fallback.
+The accounting unit is one CLI invocation, not an API request-volume metric.
+The runner sends only public package/version/path locators to
+`https://api.githits.dev/v1/read`. It rejects
 missing content, binary data, path mismatches, and different **served** package
 versions, including a fallback to another release. It never substitutes
 ordinary documentation or an authored reference patch for GitHits data.
@@ -126,3 +140,10 @@ An authenticated retrieval path is implemented against the fetched OpenAPI
 schema. Offline tests exercise its validation; an HTTP 401 preflight exercises
 the real unauthenticated path. Without a successful authenticated run, do not
 describe the positive integration as live-verified.
+
+Historical runs 001 and 002 used the direct REST transport before the upstream
+accounting change. They remain unchanged. The later
+`results/accounted-access-2026-10-15.json` records all three dependency reads
+through the approved wrapper; each still returned 401. Installing accounting
+did not supply an API token or an existing OAuth profile. No new model run was
+needed to establish that this credential boundary persisted.

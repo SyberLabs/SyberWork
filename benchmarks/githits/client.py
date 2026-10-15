@@ -10,11 +10,14 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 API = "https://api.githits.dev"
 MAX_RESPONSE = 256_000
@@ -29,7 +32,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request(path: str, params: dict, *, token: str | None = None) -> dict:
+def _http_request(path: str, params: dict, *, token: str | None = None) -> dict:
     url = API + path + "?" + urllib.parse.urlencode(params)
     headers = {"Accept": "application/json", "X-GitHits-Client-Name": "SyberWork-benchmark",
                "X-GitHits-Client-Version": "1"}
@@ -57,6 +60,45 @@ def request(path: str, params: dict, *, token: str | None = None) -> dict:
     except (ValueError, UnicodeDecodeError):
         record["error"] = "invalid_json"
     return record
+
+
+def request(path: str, params: dict, *, token: str | None = None) -> dict:
+    """Run one HTTP lookup through the approved private CLI accounting wrapper.
+
+    Upstream adopted this runtime after the historical baseline runs. One
+    wrapper invocation contains one lookup, but its ledger unit is CLI, not
+    an API request metric. No direct fallback is allowed when it is missing.
+    """
+    started = time.monotonic()
+    record = {"url": API + path + "?" + urllib.parse.urlencode(params),
+              "at": datetime.now(timezone.utc).isoformat(), "transport": "private-accounted-cli",
+              "authenticated": bool(token or os.environ.get("GITHITS_API_TOKEN"))}
+    node, home = os.environ.get("GITHITS_USAGE_NODE", ""), os.environ.get("GITHITS_USAGE_HOME", "")
+    runtime = Path(home) / "usage.mjs"
+    if not node or not home or not Path(node).is_absolute() or not Path(node).is_file() or not runtime.is_file():
+        return {**record, "status": None, "error": "accounting_runtime_unavailable", "seconds": 0.0}
+    env = dict(os.environ)
+    if token is not None:
+        env["GITHITS_API_TOKEN"] = token
+    env["SYBERLABS_GITHITS_ACCOUNTED"] = "1"
+    env["GITHITS_USAGE_ARGS_JSON"] = json.dumps({"path": path, "params": params})
+    argv = [node, str(runtime), "exec", "--db", str(Path(home) / "data/usage.sqlite"),
+            "--repo", "SyberLabs/SyberWork", "--caller", "test-harness",
+            "--reason", "GitHits verified dependency benchmark", "--endpoint", path,
+            "--", sys.executable, str(Path(__file__).resolve()), "--accounted-request"]
+    try:
+        done = subprocess.run(argv, input=json.dumps({"path": path, "params": params}).encode(),
+                              capture_output=True, env=env, timeout=60)
+        # A nonzero HTTP outcome is also a failed CLI invocation in the private ledger.
+        if done.returncode not in (0, 1) or len(done.stdout) > MAX_RESPONSE * 2:
+            raise ValueError("accounting_failed")
+        found = json.loads(done.stdout)
+        if not isinstance(found, dict) or found.get("url") != record["url"] or "status" not in found:
+            raise ValueError("accounting_failed")
+        return {**found, "transport": record["transport"]}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {**record, "status": None, "error": "accounting_failed",
+                "seconds": round(time.monotonic() - started, 3)}
 
 
 def normalize_name(name: str) -> str:
@@ -98,3 +140,14 @@ def collect(fixture: dict) -> dict:
                          "start_line": found["body"]["content"]["start_line"],
                          "end_line": found["body"]["content"]["end_line"]})
     return {"status": "ready", "reason": None, "requests": records, "context": excerpts}
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--accounted-request"] or os.environ.get("SYBERLABS_GITHITS_ACCOUNTED") != "1":
+        sys.exit("Invoke this lookup through the private usage wrapper.")
+    payload = json.load(sys.stdin)
+    if payload.get("path") != "/v1/read" or not isinstance(payload.get("params"), dict):
+        sys.exit("Only a public dependency read is supported.")
+    result = _http_request(payload["path"], payload["params"])
+    print(json.dumps(result))
+    sys.exit(0 if result.get("status") == 200 and not result.get("error") else 1)
