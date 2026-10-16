@@ -1,0 +1,44 @@
+{
+  "model_calls": 0,
+  "at": "2026-10-16T21:27:05.1718430Z",
+  "githits_requests": 0,
+  "cases": [
+    {
+      "passed": true,
+      "name": "no_implicit_prompt",
+      "phases": "registration",
+      "exit_code": 1
+    },
+    {
+      "passed": true,
+      "name": "reuse_preflight",
+      "phases": "registration,cached_validate,run,verify",
+      "exit_code": 0
+    },
+    {
+      "passed": true,
+      "name": "retrieve_once",
+      "phases": "registration,preflight,run,verify",
+      "exit_code": 0
+    },
+    {
+      "passed": true,
+      "name": "reject_bad_preflight",
+      "phases": "registration,cached_validate",
+      "exit_code": 1
+    },
+    {
+      "passed": true,
+      "name": "no_silent_retry",
+      "phases": "registration,preflight,run",
+      "exit_code": 1
+    },
+    {
+      "passed": true,
+      "name": "reject_output_in_repo",
+      "phases": "",
+      "exit_code": 1
+    }
+  ],
+  "test_kind": "offline launcher control flow with test doubles"
+}

@@ -7,6 +7,14 @@ or improvement. Results are not pooled.
 
 ## Upstream-v3 preparation (no model comparison)
 
+October 16 continuation: [all five CI jobs on handoff c189956 passed](https://github.com/SyberLabs/SyberWork/actions/runs/38820180839).
+The added PowerShell coordinator defaults to no prompting and supports verified
+cached preflight reuse. Its six offline process-control cases passed, using
+recording process doubles (zero API/model calls), and are now wired into
+Windows CI. The real pinned interpreter also verified the source and stopped
+without prompting when no credential was present. The original 150 frozen
+hashes remain unchanged. This continuation produces no new benchmark outcome.
+
 Registration `0ab8736` freezes four whole upstream Werkzeug 3.1.3 modules,
 20 authored host test methods and 150 source/data hashes. The original bytes
 match upstream Git blob identities. Each broken start failed behavior with

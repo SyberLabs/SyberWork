@@ -255,3 +255,11 @@ Claim ceiling at start: proposed; no model comparison measured.
     only when explicitly launched. It retrieves context once, clears the
     credential before models, and reuses saved receipts for the whole matrix
     and replay. No credential persistence or new access is configured silently.
+45. On October 16, the user asked to continue. Confirm c189956's five CI jobs
+    passed; no new credential, authenticated preflight or model matrix exists.
+    Add an administrative PowerShell coordinator with no prompting by default,
+    an explicit masked-entry opt-in and verified -Access reuse. Test credential
+    clearing, cache reuse, no implicit prompt, invalid cache, interruption and
+    output scope with offline process doubles; add these tests to Windows CI.
+    No frozen Python source, fixture, budget, registration or check is changed.
+    Keep both earlier ties visible and do not turn workflow tests into results.

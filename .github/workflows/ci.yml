@@ -53,5 +53,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Benchmark launcher control flow (offline)
+        run: pwsh -NoProfile -File benchmarks/githits/test-upstream-launcher.ps1 -Repo (Get-Location).Path -WriteRoot (Join-Path $env:RUNNER_TEMP 'githits-launcher-tests')
       - name: Unit tests
         run: $env:PYTHONPATH='.'; python -m unittest discover -s tests -q

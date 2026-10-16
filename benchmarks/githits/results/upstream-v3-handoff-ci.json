@@ -1,0 +1,39 @@
+{
+  "checked_at": "2026-10-16T21:28:17.4502823Z",
+  "head_sha": "c1899563bd0f8c6b52446b5e0469b629b1dec19d",
+  "run_id": 38820180839,
+  "url": "https://github.com/SyberLabs/SyberWork/actions/runs/38820180839",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "windows",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/SyberLabs/SyberWork/actions/runs/38820180839/job/116714589306"
+    },
+    {
+      "name": "test (3.11)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/SyberLabs/SyberWork/actions/runs/38820180839/job/116714589372"
+    },
+    {
+      "name": "compose",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/SyberLabs/SyberWork/actions/runs/38820180839/job/116714589397"
+    },
+    {
+      "name": "test (3.13)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/SyberLabs/SyberWork/actions/runs/38820180839/job/116714589453"
+    },
+    {
+      "name": "test (3.12)",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/SyberLabs/SyberWork/actions/runs/38820180839/job/116714589503"
+    }
+  ]
+}

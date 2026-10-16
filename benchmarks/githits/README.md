@@ -51,6 +51,21 @@ and `--write NEW_DIRECTORY`. Mode `verify --folder SAVED_MATRIX --write NEW_JSON
 replays saved trees without model calls or new retrieval. Do not regenerate
 the committed registration. No core runtime dependency was added.
 
+On Windows, [run-upstream-v3.ps1](run-upstream-v3.ps1) coordinates those modes.
+Supply `-Python` with the pinned interpreter and keep `-OutputRoot` outside the
+checkout. It uses an existing environment credential; **it never prompts by
+default**. An explicit `-PromptForToken` permits one masked entry for a new
+preflight. If preflight already finished and the model matrix has not started,
+pass `-Access SAVED_PREFLIGHT_DIRECTORY` to verify/reuse those authenticated
+receipts without a token, accounting runtime or new retrieval. If a matrix
+already started, preserve its evidence and review it before any new attempt.
+Completed matrices can be replayed with mode `verify`, without a token.
+
+The launcher has six offline process-control tests in
+[test-upstream-launcher.ps1](test-upstream-launcher.ps1), also run in Windows CI.
+These use recording process doubles and make no API or model calls; their
+passes are not dependency-benchmark outcomes.
+
 For the **retained hard-v2** measurement/rerun, use a separate short checkout
 at `9abb733846f8754386875008296361362309ecf6`. That publication contains its exact
 frozen implementation and raw evidence. New upstream-v3 source files correctly

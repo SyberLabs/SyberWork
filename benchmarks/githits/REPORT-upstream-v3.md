@@ -1,6 +1,6 @@
 # Upstream-v3: preregistered; paired run awaiting authentication
 
-Draft status report — October 15, 2026, Pacific time.
+Draft status report — updated October 16, 2026, Pacific time.
 Owner: Seth Carlson. Acting agent: Codex.
 
 **No new model comparison has run.** The four-case registration was committed
@@ -42,6 +42,15 @@ uplift. See [the main brief](REPORT.md) and [phone brief](phone.html).
   there is no new core runtime dependency or protocol change.
 
 ## Remaining action
+
+On October 16, all five CI jobs for handoff commit `c189956` were confirmed
+successful. The [launcher](run-upstream-v3.ps1) now defaults to no prompting and
+can reuse a saved authenticated preflight with `-Access`. Six offline launcher
+tests passed, including credential clearing, cache reuse and stopping after
+failure. A check with the real pinned interpreter stopped without a prompt
+when credentials were absent. All 150 original frozen hashes still match.
+These are workflow checks, not new model results; there is still no upstream-v3
+authenticated preflight or matrix on this host.
 
 On a machine with approved private accounting configured and an available
 GitHits token, follow [README.md](README.md) using the frozen source. The
