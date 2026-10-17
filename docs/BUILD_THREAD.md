@@ -111,7 +111,7 @@ Every installed document and event is one fsynced line in `.syberlabs/journal/` 
 
 - a torn final line from a crash is dropped;
 - a malformed line, an event that breaks its hash chain, or a registry contract that no longer validates refuses to load (`journal_corrupt`);
-- another process's appends are read before each operation (POSIX file lock).
+- another process's appends are read before each operation (a cross-process file lock: `flock` on POSIX, `msvcrt.locking` on Windows).
 
 An acceptance interrupted after its durable claim shows as an open item, and `syberlabs recover` settles it from the branch. A thread holds at most 20,000 events.
 

@@ -1,11 +1,14 @@
 """One conformance run across the in-memory and the durable session, plus journal failure modes."""
 
+import errno
 import importlib.util
 import json
+import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from syberlabs import Rejected, Session
 from syberlabs import journal as journal_module
@@ -45,6 +48,30 @@ def shape(session, case):
     return {"kinds": [e["kind"] for e in inspected["events"]],
             "decisions": [(e["body"]["status"], e["body"]["reason"]) for e in inspected["events"] if e["kind"] == "decision"],
             "status": inspected["status"], "acceptance": inspected["acceptance"], "chain": inspected["chain_valid"]}
+
+
+class FakeMsvcrt:
+    """Stands in for ``msvcrt`` on any platform: refuses the first ``busy`` LK_NBLCK calls.
+
+    Records (mode, bytes, descriptor position) per call, then moves the position
+    away from zero so only code that seeks before each call records zero.
+    """
+
+    LK_UNLCK, LK_LOCK, LK_NBLCK = 0, 1, 2
+
+    def __init__(self, busy=0):
+        self.busy = busy
+        self.error = None
+        self.calls = []
+
+    def locking(self, fd, mode, nbytes):
+        self.calls.append((mode, nbytes, os.lseek(fd, 0, os.SEEK_CUR)))
+        os.lseek(fd, 7, os.SEEK_SET)
+        if mode == self.LK_NBLCK and self.error is not None:
+            raise OSError(self.error, "broken handle")
+        if mode == self.LK_NBLCK and self.busy:
+            self.busy -= 1
+            raise OSError(errno.EACCES, "locked by another handle")
 
 
 class Durable(unittest.TestCase):
@@ -142,6 +169,45 @@ class Durable(unittest.TestCase):
                 durable.observe(case, "c", 1, "s", "v", "x")
         self.assertEqual(caught.exception.code, "thread_full")
         self.assertEqual(len(self.durable().inspect(case)["events"]), 3)
+
+    def test_windows_lock_path_acquires_once_and_releases_once(self):
+        fake = FakeMsvcrt(busy=2)
+        journal = Journal(self.home)
+        self.addCleanup(journal.close)
+        with patch.object(journal_module, "fcntl", None), patch.object(journal_module, "msvcrt", fake), \
+                patch.object(journal_module, "LOCKING", True), patch.object(journal_module.time, "sleep") as sleep:
+            with journal.locked():
+                with journal.locked():
+                    self.assertEqual(fake.calls, [(fake.LK_NBLCK, 1, 0)] * 3)
+            self.assertEqual(fake.calls, [(fake.LK_NBLCK, 1, 0)] * 3 + [(fake.LK_UNLCK, 1, 0)])
+            self.assertEqual(sleep.call_args_list, [call(0.05), call(0.05)])
+            fake.error = errno.EBADF
+            with self.assertRaises(OSError) as caught:
+                with journal.locked():
+                    self.fail("entered the lock through a broken handle")
+            self.assertEqual(caught.exception.errno, errno.EBADF)
+            self.assertEqual(fake.calls[-1], (fake.LK_NBLCK, 1, 0))
+            self.assertEqual(sleep.call_count, 2)
+
+    @unittest.skipUnless(journal_module.LOCKING, "neither fcntl nor msvcrt: the lock is in-process only")
+    def test_the_lock_serializes_two_journals_on_one_home(self):
+        first = Journal(self.home)
+        self.addCleanup(first.close)
+        second = Journal(self.home)
+        self.addCleanup(second.close)
+        entered = threading.Event()
+
+        def contend():
+            with second.locked():
+                entered.set()
+
+        worker = threading.Thread(target=contend, daemon=True)
+        with first.locked():
+            worker.start()
+            self.assertFalse(entered.wait(0.5), "a second handle entered while the first held the lock")
+        self.assertTrue(entered.wait(5), "the second handle never entered after release")
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
 
 
 class Executors(unittest.TestCase):
