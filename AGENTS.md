@@ -5,9 +5,13 @@ or any other agent that reads `AGENTS.md`) and for humans. It carries the
 SyberLabs rules that apply to every task, then this project's own notes.
 Precedence: the human's direct instructions, this file, `CLAUDE.md`, defaults.
 
-The organizational rules are copied from SyberLabs/MasterMind
-(`docs/org/AUTHORITY.md`, adopted 2026-10-02). That record wins if the two
-ever differ; fix this file, do not argue from it.
+The organizational rules were copied from SyberLabs/MasterMind
+`docs/org/AUTHORITY.md` (adopted 2026-10-02). On 2026-10-17 MasterMind
+replaced that module with `CHARTER.md`, its whole normative surface; the old
+text is kept at `archive/2026-10-17/docs/org/AUTHORITY.md`. MasterMind's
+record wins if the two ever differ; fix this file, do not argue from it.
+Whether the charter's path-computed class floors apply to this repository is
+an open ask (see "The charter's three keys" below).
 
 ## 1. Classify the act before you start
 
@@ -30,11 +34,27 @@ decision that would unblock it. Also stop when two canonical stores disagree
 unclear, or when a model output would become an effect without a host gate.
 Most of this repository's volume is Class R and should stay fast.
 
+### The charter's three keys (2026-10-17)
+
+MasterMind's `CHARTER.md` §3 admits by three human keys and one autonomous
+class: **auto** (an independent agent's `Reviewed-by` and green CI; merges
+itself), **direction** (the owner's handle), **keys** (the key holder's
+handle), **tiebreak** (a human's handle). R, C, P and X remain valid aliases:
+auto, direction, auto with an `Evidence:` grade, keys. In MasterMind the class
+is computed from the paths a change touches (`tools/ledger/policy.json`),
+never declared by the agent. That policy file says it is for MasterMind;
+whether it, and the three keys, apply to SyberWork is ASK-007 (owner Seth, due
+2026-11-04; default on silence: the policy applies only to MasterMind). Until
+it is answered, the table above is the operative rule in this repository. A
+`Reviewed-by:` line from an independent session that did not author the
+change costs nothing and satisfies both texts; add it.
+
 ## 2. The attribution rule
 
 Agents commit under human GitHub identities, so the record cannot tell a
 human judgment from an agent generation unless the pull request says so.
-From `AUTHORITY.md` section 4:
+From `AUTHORITY.md` section 4 (archived 2026-10-17 at
+`archive/2026-10-17/docs/org/AUTHORITY.md`):
 
 > Every PR body states the acting agent platform and the human whose key
 > admitted it, and every head branch carries its platform prefix
@@ -59,7 +79,7 @@ neither the kit nor the `main` ruleset requires an approval.
 ## 3. State the claim ceiling
 
 SyberLabs is strict about the difference between code, tests, measurements,
-deployment, and adoption (MasterMind `docs/CLAIMS_AND_EVIDENCE.md`). Every
+deployment, and adoption (MasterMind `CHARTER.md` §5, Evidence). Every
 pull request and every workstream document says which of these it reached:
 
 - **Implemented** — the behavior exists in source code.
@@ -145,9 +165,9 @@ python3 -m conformance.clean_install                      # wheel in a fresh ven
 
 ## Models and providers
 
-The `README.md` banner records the provider direction: SyberLabs is migrating
-existing bounded decisions from **Jev to Kev**, and this repository has no
-active Kev provider call. The model seam is a process boundary
+The provider direction is recorded in MasterMind, not in this repository (the
+README's one-line Jev-to-Kev notice was removed in #22), and this repository
+has no active Kev provider call. The model seam is a process boundary
 (`CommandProvider`, `CommandMutator`): the adapter for Kev, Jev, or any other
 model is the command, and `syberlabs` imports no model SDK. The one real
 adapter, `adapters/anthropic_adapter.py`, exists for
