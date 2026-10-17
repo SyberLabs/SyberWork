@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/certificate/v0alpha1/certificate.schema.json",
+  "title": "AdmissionCertificate",
+  "description": "Payload of a DSSE envelope with payloadType application/vnd.syberlabs.admission-certificate+json. The bytes are RFC 8785 JSON of this object. A separate identity from sdk.syberlabs.space/v0alpha1: not an event, not in the hash chain, not in the transparency log. The host states what its journal said about one accepted candidate at the moment of certification. v0 is signed in the certifying process.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "payload_type", "version", "issuer", "issued_at", "thread", "objective", "act_class", "contract", "policy_version", "base", "result", "provider", "evaluation", "admission", "chain"],
+  "$defs": {
+    "object_id": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+    "microseconds": {"type": "integer", "minimum": 0}
+  },
+  "properties": {
+    "protocol": {"const": "sdk.syberlabs.space/certificate/v0alpha1"},
+    "payload_type": {"const": "application/vnd.syberlabs.admission-certificate+json"},
+    "version": {"const": 0},
+    "issuer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tool", "host", "seed_env", "signing"],
+      "properties": {
+        "tool": {"const": "syberlabs.certificate/0"},
+        "host": {"const": "syberlabs.host"},
+        "seed_env": {"type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,63}$"},
+        "signing": {"const": "in-process"}
+      }
+    },
+    "issued_at": {"$ref": "#/$defs/microseconds"},
+    "thread": {"$ref": "#/$defs/uuid"},
+    "objective": {"type": "string", "minLength": 1},
+    "act_class": {"anyOf": [{"enum": ["R", "C", "P", "X"]}, {"type": "null"}]},
+    "contract": {
+      "type": "object", "additionalProperties": false, "required": ["id", "version"],
+      "properties": {"id": {"type": "string", "minLength": 1}, "version": {"type": "integer", "minimum": 1}}
+    },
+    "policy_version": {"type": "integer", "minimum": 1},
+    "base": {
+      "type": "object", "additionalProperties": false, "required": ["commit", "tree", "branch"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/object_id"},
+        "tree": {"$ref": "#/$defs/object_id"},
+        "branch": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate", "commit", "tree", "operator", "changed_paths", "diff_digest", "diff_bytes", "files", "origin"],
+      "properties": {
+        "candidate": {"$ref": "#/$defs/id"},
+        "commit": {"$ref": "#/$defs/object_id"},
+        "tree": {"$ref": "#/$defs/object_id"},
+        "operator": {"$ref": "#/$defs/name"},
+        "changed_paths": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1}},
+        "diff_digest": {"$ref": "#/$defs/digest"},
+        "diff_bytes": {"type": "integer", "minimum": 0},
+        "files": {"type": "integer", "minimum": 0},
+        "origin": {"anyOf": [
+          {"type": "object", "additionalProperties": false, "required": ["host", "candidate"],
+           "properties": {"host": {"$ref": "#/$defs/id"}, "candidate": {"$ref": "#/$defs/id"}}},
+          {"type": "null"}]}
+      }
+    },
+    "provider": {
+      "type": "object", "additionalProperties": false, "required": ["name", "revision"],
+      "properties": {"name": {"$ref": "#/$defs/name"}, "revision": {"type": "string", "minLength": 1}}
+    },
+    "evaluation": {
+      "type": "object", "additionalProperties": false, "required": ["evaluator", "event_hash", "at", "checks"],
+      "properties": {
+        "evaluator": {"type": "string", "minLength": 1},
+        "event_hash": {"$ref": "#/$defs/digest"},
+        "at": {"$ref": "#/$defs/microseconds"},
+        "checks": {
+          "type": "array", "minItems": 1, "maxItems": 32,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["name", "required", "state", "exit_code", "duration_ms", "output_digest"],
+            "properties": {
+              "name": {"$ref": "#/$defs/name"},
+              "required": {"type": "boolean"},
+              "state": {"enum": ["passed", "failed", "timed_out", "error"]},
+              "exit_code": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+              "duration_ms": {"type": "integer", "minimum": 0},
+              "output_digest": {"$ref": "#/$defs/digest"}
+            }
+          }
+        }
+      }
+    },
+    "admission": {
+      "type": "object", "additionalProperties": false,
+      "required": ["proposal_id", "actor", "roles", "origin", "approvers", "decision", "claim_hash", "effect_hash", "effect_kind", "target_ref"],
+      "properties": {
+        "proposal_id": {"$ref": "#/$defs/uuid"},
+        "actor": {"type": "string", "minLength": 1},
+        "roles": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "origin": {"const": "human"},
+        "approvers": {"type": "array", "items": {
+          "type": "object", "additionalProperties": false, "required": ["actor", "role"],
+          "properties": {"actor": {"type": "string", "minLength": 1}, "role": {"type": "string", "minLength": 1}}}},
+        "decision": {
+          "type": "object", "additionalProperties": false, "required": ["status", "reason"],
+          "properties": {"status": {"enum": ["allowed", "needs_approval"]}, "reason": {"type": "string", "minLength": 1}}
+        },
+        "claim_hash": {"$ref": "#/$defs/digest"},
+        "effect_hash": {"$ref": "#/$defs/digest"},
+        "effect_kind": {"enum": ["effect_succeeded", "reconciled"]},
+        "target_ref": {"type": "string", "pattern": "^refs/heads/[A-Za-z0-9._/-]{1,200}$"}
+      }
+    },
+    "chain": {
+      "type": "object", "additionalProperties": false, "required": ["head", "count"],
+      "properties": {"head": {"$ref": "#/$defs/digest"}, "count": {"type": "integer", "minimum": 1}}
+    }
+  }
+}
