@@ -34,11 +34,12 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
+from syberlabs import outcome
 from syberlabs.errors import Rejected
 from syberlabs.session import NoWrite
 from syberlabs.targets import guard_request, trusted_origin
 
-EFFECTS = ("git_push", "github_pull_request", "command")
+EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
 _REMOTE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 _BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
@@ -100,6 +101,8 @@ def validate(doc: dict) -> None:
     effect = doc.get("effect")
     if doc.get("kind") != "local" or effect not in EFFECTS:
         raise _bad("publishing actions are kind local with effect " + ", ".join(EFFECTS))
+    if effect == "intervention":
+        return outcome.validate(doc)
     allowed = {"kind", "effect", "title", "settle_seconds", "timeout_seconds"}
     if "settle_seconds" in doc and (type(doc["settle_seconds"]) is not int or not 0 <= doc["settle_seconds"] <= 86_400):
         raise _bad("settle_seconds must be 0 to 86400")
@@ -299,4 +302,6 @@ class Command(_Publisher):
 
 
 def executor(kit, doc: dict):
-    return {"git_push": GitPush, "github_pull_request": GitHubPullRequest, "command": Command}[doc["effect"]](kit, doc)
+    executors = {"git_push": GitPush, "github_pull_request": GitHubPullRequest, "command": Command,
+                 "intervention": outcome.Intervention}
+    return executors[doc["effect"]](kit, doc)
