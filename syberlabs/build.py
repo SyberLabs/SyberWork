@@ -50,6 +50,7 @@ THREAD_INPUTS = frozenset({"objective", "act_class"})
 # A program that does not exist: the check it names fails to start, and its name says what to do.
 UNNAMED_CHECK = "name-your-checks-in-the-syberlabs-contract"
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+PUBLISH_EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
 
 HINTS = {
     "candidate_not_evaluated": "Run its checks: syberlabs check {cid}",
@@ -413,7 +414,7 @@ class Kit:
         for name, action in self.session.actions.items():
             if action.get("effect") == "git_ref":
                 self.session.bind_effect(name, self._effect)
-            elif action.get("effect") in ("git_push", "github_pull_request", "command"):
+            elif action.get("effect") in PUBLISH_EFFECTS:
                 from syberlabs import publish
                 self.session.bind_effect(name, publish.executor(self, action))
 
@@ -912,7 +913,7 @@ class Thread:
         actor, roles = actor or self.kit.actor, list(roles or self.kit.roles)
         contract = self.kit.session.contracts[self.contract]
         config = self.kit.session.actions.get(action, {})
-        if action not in contract["actions"] or config.get("effect") not in ("git_push", "github_pull_request", "command"):
+        if action not in contract["actions"] or config.get("effect") not in PUBLISH_EFFECTS:
             raise Rejected("unknown_action", f"{self.contract[0]}.v{self.contract[1]} has no publishing action {action!r}; "
                            "add it to a new contract version, policy.json, and actions.json (docs/BUILD_THREAD.md)")
         view = self._accepted()
@@ -997,7 +998,7 @@ class Thread:
         published = {e["body"]["action"] for e in events if e["kind"] == "effect_succeeded" or verified_reconciliation(e)}
         for name in contract["actions"]:
             effect = self.kit.session.actions.get(name, {}).get("effect")
-            if accepted and effect in ("git_push", "github_pull_request", "command") and name not in published and not (started - done):
+            if accepted and effect in PUBLISH_EFFECTS and name not in published and not (started - done):
                 next_steps.append(f"syberlabs publish {name}")
         if inspected["status"] == "in_progress" and not (started - done):
             if not views:
