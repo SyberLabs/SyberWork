@@ -385,6 +385,66 @@ class Mutations(CertificateCase):
         path.write_bytes(original)
         self.assertTrue(self.verify(envelope).passed)
 
+    def test_verify_reads_a_read_only_journal_and_leaves_a_torn_record_in_place(self):
+        kit, thread, envelope, payload = self.certified()
+        kit.close()
+        journal = self.root / ".syberlabs" / "journal"
+        path, registry = self.journal_path(thread), journal / "registry.jsonl"
+
+        def snapshot() -> dict[str, bytes]:
+            return {file.relative_to(journal).as_posix(): file.read_bytes() for file in sorted(journal.rglob("*")) if file.is_file()}
+
+        def read_only(*files: Path) -> None:
+            for file in files:
+                os.chmod(file, 0o444)
+                self.addCleanup(os.chmod, file, 0o644)
+
+        def verified_without_opening_the_journal():
+            # No Journal is constructed anywhere, so no lock file is opened and no lock is taken.
+            with patch("syberlabs.journal.Journal.__init__", side_effect=AssertionError("verify opened a Journal")):
+                return self.verify(envelope)
+
+        expected = format_report(self.verify(envelope))
+        self.assertEqual(expected[-1], "verdict    pass")
+        # Read-only files: the same report as before, and not a byte of the journal changes.
+        read_only(path, registry, journal / ".lock")
+        before = snapshot()
+        report = verified_without_opening_the_journal()
+        self.assertTrue(report.passed, report.reason)
+        self.assertEqual(format_report(report), expected)
+        self.assertEqual(snapshot(), before)
+        # A torn trailing record (a writer that died mid-line) is ignored and reported, never truncated.
+        torn = b'{"event":{"kind":"candidate_proposed","seq":'
+        os.chmod(path, 0o644)
+        path.write_bytes(path.read_bytes() + torn)
+        read_only(path)
+        before = snapshot()
+        self.assertTrue(before["threads/" + path.name].endswith(torn))
+        report = verified_without_opening_the_journal()
+        self.assertTrue(report.passed, report.reason)
+        self.assertEqual((report.repository, report.journal), ("ok", "ok"))
+        lines = format_report(report)
+        self.assertEqual(lines[:2], expected[:2])
+        self.assertEqual(lines[2], expected[2] + "; 1 torn trailing record ignored")
+        self.assertEqual(lines[3], "verdict    pass")
+        self.assertEqual(snapshot(), before)
+        self.assertTrue(path.read_bytes().endswith(torn))
+        # The registry is read the same way.
+        os.chmod(registry, 0o644)
+        registry.write_bytes(registry.read_bytes() + b'{"t":"policy","doc":{"version":')
+        read_only(registry)
+        before = snapshot()
+        report = verified_without_opening_the_journal()
+        self.assertTrue(report.passed, report.reason)
+        self.assertTrue(format_report(report)[2].endswith("; 2 torn trailing records ignored"))
+        self.assertEqual(snapshot(), before)
+        # A complete but unreadable line is still corruption, and a missing event still breaks the chain.
+        os.chmod(path, 0o644)
+        path.write_bytes(path.read_bytes() + b"\n")
+        report = self.verify(envelope)
+        self.assertEqual((report.journal, report.reason), ("journal_corrupt", "journal_corrupt"))
+        self.assertIn(f"{path.name}: unreadable record after byte ", format_report(report)[2])
+
     def test_wrong_contract_version_and_policy_version(self):
         kit, thread, envelope, payload = self.certified()
         forged = copy_of(payload)
