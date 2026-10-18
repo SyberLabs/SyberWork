@@ -1,9 +1,12 @@
 ## Admission
 
 <!-- See AGENTS.md. Class R self-admits on green CI; C, P and X need a named human key.
-     A Build Thread writes Class, Agent-platform and Admitted-by (and Approved-by when an
-     independent approval was recorded). Reviewed-by is written by an independent session or
-     person who did not author the change. Evidence is the claim ceiling you reached. -->
+     A Build Thread writes Class, Agent-platform, Admitted-by, Reviewed-by and Evidence from
+     its journal (and Approved-by when an approval was recorded); its Reviewed-by names the
+     recorded independent approvers or says "none recorded", and its Evidence is tested or
+     implemented, never more. The placeholders below are for a hand-authored pull request:
+     Reviewed-by is written by an independent session or person who did not author the
+     change, and Evidence is the claim ceiling you reached. -->
 
 Class: <!-- R (reversible/internal) | C (canonical) | P (public claim) | X (external effect) -->
 Agent-platform: <!-- claude | codex | cursor | human -->
