@@ -33,6 +33,7 @@ EXPECTED_ORDER = [
     "bindings.inputs",
     "bindings.arguments",
     "candidate.promotable",
+    "critic.no_high_finding",
     "approval.required",
     "admission.passed",
 ]
@@ -116,6 +117,43 @@ def promotion_cases():
     }
 
 
+def critic_cases():
+    """One context per critic.no_high_finding reason. candidate.promotable passes in both."""
+    evolution = {
+        "scope": {"paths": ["src/"]},
+        "operators": ["patch"],
+        "budget": {"max_candidates": 4},
+        "evaluation": {"checks": {"tests": {"argv": ["true"]}, "critic": {"argv": ["review"]}},
+                       "required": ["tests", "critic"], "max_age_seconds": 60},
+        "promotion": {"action": "promote", "roles": ["developer"]},
+    }
+    candidate = {"kind": "candidate_registered", "at": 1_000_000.0, "hash": "h", "body": {
+        "id": "c1", "commit": COMMIT, "tree": TREE, "base": BASE, "parents": [], "operator": "patch",
+        "provider": {"name": "p", "revision": "1"}, "changed_paths": ["src/a.py"], "scope_violations": [],
+        "limit_violations": [], "diff": {"digest": "d" * 64, "bytes": 1, "files": 1}, "signal": None,
+        "note": "", "actor": "host"}}
+    evaluation = {"kind": "candidate_evaluated", "at": 1_000_000.0, "hash": "e", "body": {
+        "candidate": "c1", "commit": COMMIT, "tree": TREE, "evaluator": "host",
+        "checks": [{"name": name, "state": "passed", "exit_code": 0, "duration_ms": 1,
+                    "output_digest": "0" * 64, "output_tail": ""} for name in ("tests", "critic")]}}
+    observed = {"kind": "observed", "at": 1_000_000.0, "hash": "o", "body": {
+        "key": "critic", "source": "check:critic", "version": "0" * 64, "actor": "syberlabs.host", "verified": True,
+        "value": {"candidate": "c1", "check": "critic", "reviewer": {"name": "rules", "revision": "1"},
+                  "counts": {"high": 1, "medium": 0, "low": 0}, "findings_digest": "0" * 64, "findings": []}}}
+
+    def ctx(history):
+        doc = proposal("promote", {"candidate": "c1", "commit": COMMIT, "base": BASE}, ["developer"])
+        found = context(history=list(history), proposal_doc=doc, contract_actions={"promote": {}},
+                        policy_actions={"promote": {"roles": ["developer"]}}, installed={"promote"})
+        found.contract["evolution"] = evolution
+        return found
+
+    return {
+        "critic_observation_missing:critic": ctx([candidate, evaluation]),
+        "high_finding:critic:1": ctx([candidate, evaluation, observed]),
+    }
+
+
 class AdmissionRegistry(unittest.TestCase):
     def test_registry_order(self):
         self.assertEqual(rule_order(), EXPECTED_ORDER)
@@ -183,6 +221,7 @@ class AdmissionRegistry(unittest.TestCase):
             "approval_required:manager": context(policy_actions={"review": {"roles": ["operator"], "approval_role": "manager"}}),
             "economic_adapter_required": context(policy_actions={"review": {"roles": ["operator"], "economic": {"budget_id": "ops"}}}),
             **promotion_cases(),
+            **critic_cases(),
             "all_checks_passed": context(),
         }
         seen = {}

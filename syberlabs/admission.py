@@ -9,11 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from syberlabs import critic
 from syberlabs.canonical import digest
 from syberlabs.clock import as_seconds
 from syberlabs.economic import denial as economic_denial
 from syberlabs.evidence import verified_reconciliation
-from syberlabs.evolution import promotion_denial
+from syberlabs.evolution import latest_evaluation, promotion_denial, registered, settings
 from syberlabs.values import at_path
 
 
@@ -303,6 +304,36 @@ def candidate_promotable(ctx: AdmissionContext) -> dict | None:
     reason = promotion_denial(ctx.contract, ctx.history, ctx.proposal, ctx.now)
     if reason:
         return deny(reason, "candidate.promotable")
+    return None
+
+
+@rule("critic.no_high_finding", "high_finding:", "critic_observation_missing:")
+def critic_no_high_finding(ctx: AdmissionContext) -> dict | None:
+    """No-op unless a required check of the promotion's contract is a critic (``critic``, ``critic.*``).
+
+    Ordered after ``candidate.promotable``, which already demanded that every required check,
+    the critic included, passed on the candidate's exact tree. This rule reads the host's own
+    observation of that critic's document, matched by candidate, check and output digest, and
+    refuses promotion while it counts a high finding. Medium and low findings never block. A
+    passed critic check with no observation is refused too: the review is evidence only when it
+    is in the record.
+    """
+    config = settings(ctx.contract)
+    if config is None or ctx.action != config["promotion"]["action"]:
+        return None
+    names = critic.critic_checks(config["evaluation"]["required"])
+    if not names:
+        return None
+    candidate = registered(ctx.history, ctx.args["candidate"])
+    evaluation = latest_evaluation(ctx.history, candidate)
+    results = {item["name"]: item for item in evaluation["body"]["checks"]}
+    for name in names:
+        found = critic.observation(ctx.history, candidate["id"], name, results[name]["output_digest"])
+        if found is None:
+            return deny("critic_observation_missing:" + name, "critic.no_high_finding")
+        high = found["counts"].get("high")
+        if type(high) is not int or high > 0:
+            return deny(f"high_finding:{name}:{high}", "critic.no_high_finding")
     return None
 
 

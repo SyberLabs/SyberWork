@@ -5,6 +5,7 @@
     syberlabs context
     syberlabs propose --from-worktree          # or --command ./my_model_adapter
     syberlabs check c1
+    syberlabs findings c1                      # what the contract's critic found
     syberlabs diff c1
     syberlabs accept c1
     syberlabs status
@@ -20,6 +21,7 @@ import json
 import sys
 from pathlib import Path
 
+from syberlabs import critic
 from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.errors import Rejected
 from syberlabs.providers import CommandProvider, PatchProvider, split_command
@@ -125,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("candidate")
     check.add_argument("--rerun", action="store_true")
     check.add_argument("--json", action="store_true")
+    findings = commands.add_parser("findings", help="the critic's findings from a candidate's latest evaluation")
+    findings.add_argument("candidate")
     diff = commands.add_parser("diff", help="show a candidate's diff against the thread base")
     diff.add_argument("candidate")
     accept = commands.add_parser("accept", help="accept a candidate: moves only the thread's target branch")
@@ -285,6 +289,23 @@ def _run(kit: Kit, args) -> int:
                 if result.state not in ("passed", "not_run") and result.output_tail:
                     print(f"--- {result.name} output (tail) ---\n{result.output_tail[-1500:]}")
         return 0 if verdict.acceptable else 1
+    elif args.command == "findings":
+        view = thread._view(args.candidate)
+        if not critic.critic_checks(thread.config["evaluation"]["checks"]):
+            print("this contract has no critic check (a check named critic or critic.<reviewer>)")
+            return 0
+        reviews = critic.reviews(thread.history(), view)
+        if not reviews:
+            print(f"no critic observation for {args.candidate}; run: syberlabs check {args.candidate}")
+            return 1
+        for name, found in reviews:
+            for finding in found["findings"]:
+                line = "" if finding.get("line") is None else str(finding["line"])
+                print(f"{finding['severity']} {finding['file']}:{line} {finding['claim']}")
+            if found.get("truncated"):
+                print(f"[{name}: findings truncated in the record; full document digest {found['findings_digest']}]")
+        if not any(found["findings"] for _name, found in reviews):
+            print("no findings")
     elif args.command == "diff":
         sys.stdout.write(thread.diff(args.candidate))
     elif args.command == "accept":
