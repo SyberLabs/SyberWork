@@ -14,7 +14,8 @@ from syberlabs.canonical import digest
 from syberlabs.clock import as_seconds
 from syberlabs.economic import denial as economic_denial
 from syberlabs.evidence import verified_reconciliation
-from syberlabs.evolution import latest_evaluation, promotion_denial, registered, settings
+from syberlabs.evolution import (latest_evaluation, promotion_budget_denial, promotion_denial, registered,
+                                 search_budget_denial, settings)
 from syberlabs.values import at_path
 
 
@@ -334,6 +335,36 @@ def critic_no_high_finding(ctx: AdmissionContext) -> dict | None:
         high = found["counts"].get("high")
         if type(high) is not int or high > 0:
             return deny(f"high_finding:{name}:{high}", "critic.no_high_finding")
+    return None
+
+
+@rule("budget.search", "spend_unrecorded:", "search_over_budget:")
+def budget_search(ctx: AdmissionContext) -> dict | None:
+    """No-op unless the contract prices usage (``evolution.budget.prices``) and this is its promotion action.
+
+    Ordered after ``critic.no_high_finding``. It reads the candidate's own ``spend``, the host's
+    measurement at registration (dollars of host-observed usage, seconds since its search started),
+    and refuses a candidate that was produced over the budget, or that a priced contract's host
+    registered without measuring. A provider's ``model_usage`` in the signal is never read.
+    """
+    reason = search_budget_denial(ctx.contract, ctx.history, ctx.proposal)
+    if reason:
+        return deny(reason, "budget.search")
+    return None
+
+
+@rule("budget.promotion", "over_budget:", "unknown_spend:")
+def budget_promotion(ctx: AdmissionContext) -> dict | None:
+    """No-op unless the contract prices usage and this is its promotion action.
+
+    Ordered after ``budget.search``. It sums the host-observed dollars of the thread's finished
+    searches and refuses promotion while the thread as a whole is over ``max_dollars``: a thread
+    cannot accept a candidate it could not afford to produce. With ``strict``, usage of a model
+    the price table does not name refuses promotion too.
+    """
+    reason = promotion_budget_denial(ctx.contract, ctx.history, ctx.proposal)
+    if reason:
+        return deny(reason, "budget.promotion")
     return None
 
 

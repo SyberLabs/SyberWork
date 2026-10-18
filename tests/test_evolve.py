@@ -431,6 +431,65 @@ class BranchPolicySeam(unittest.TestCase):
         self.assertTrue(all("model_usage" in c.signal and c.signal["mutator"] == "m" * 64
                             for c in found if c.operator == "mutation"))
 
+    def priced_thread(self, name, doc):
+        """Like ``fixture`` but under the given contract document."""
+        root = self.folder / name
+        make_repository(root)
+        home = root / ".syberlabs"
+        (home / "contracts").mkdir(parents=True)
+        (home / "contracts" / "pricing-evolution.v1.json").write_text(json.dumps(doc))
+        kit = Kit.local(home, root, actor="dev@example.test")
+        self.addCleanup(kit.close)
+        return kit.start("Fix the pricing rules", "pricing-evolution.v1")
+
+    def test_a_priced_search_stops_after_the_first_priced_candidate(self):
+        script = self.folder / "priced_model.py"
+        script.write_text(textwrap.dedent('''            import json, sys
+            request = json.load(sys.stdin)
+            text = request["files"]["src/pricing.py"]
+            print(json.dumps({"changes": {"src/pricing.py": text.replace("return 0", "return weight * 5")},
+                              "usage": {"input_tokens": 2000, "output_tokens": 500, "model": "fixture-model"}}))
+            '''))
+        doc = contract()
+        doc["evolution"]["budget"] = {"max_candidates": 8, "max_evaluations": 8, "max_seconds": 60, "max_dollars": 0.01,
+                                      "prices": {"fixture-model": {"input_per_million": 3, "output_per_million": 15}}}
+        cost = round(2000 * 3 / 1_000_000 + 500 * 15 / 1_000_000, 6)  # 0.0135 > max_dollars
+        thread = self.priced_thread("priced", doc)
+        mutator = CommandMutator([sys.executable, str(script)], name="fixture-model")
+        provider = EvolutionaryProvider(mutator, population=3, generations=4)
+        found = thread.propose(provider, seed=1)
+        self.assertEqual([c.id for c in found], ["c1"], "the candidate that crossed the line is recorded; no more are bought")
+        self.assertEqual(mutator.calls, 1)
+        self.assertEqual(found[0].evaluation, "none", "no evaluation is bought over budget")
+        registered = next(e["body"] for e in thread.history() if e["kind"] == "candidate_registered")
+        self.assertEqual((registered["spend"]["dollars"], registered["spend"]["host_observed"]), (cost, True))
+        self.assertEqual(registered["signal"]["model_usage"]["model"], "fixture-model")
+        search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
+        self.assertEqual(search["stopped"], "budget_exhausted")
+        self.assertEqual((search["spend"]["dollars"], search["spend"]["evaluations"], search["spend"]["candidates"]), (cost, 0, 1))
+        self.assertEqual(provider.trace[-1]["action"], "stop")
+        self.assertEqual(provider.trace[-1]["reason"], "budget", "the policy saw no dollars left and stopped as it does for counts")
+
+    def test_a_mutator_that_declares_usage_without_run_json_is_not_priced(self):
+        class Declaring:
+            name = "declaring"
+            last_usage = {"input_tokens": 10**6, "output_tokens": 10**6, "model": "fixture-model"}
+
+            def __call__(self, space, parent, rng):
+                return {"src/pricing.py": fix(PRICING, rng.choice(("discount", "tax", "shipping")))}
+
+        doc = contract()
+        doc["evolution"]["budget"] = {"max_candidates": 8, "max_evaluations": 8, "max_seconds": 60, "max_dollars": 0.01,
+                                      "prices": {"fixture-model": {"input_per_million": 3, "output_per_million": 15}}}
+        thread = self.priced_thread("declaring", doc)
+        found = thread.propose(EvolutionaryProvider(Declaring(), population=2, generations=1), seed=1)
+        self.assertGreater(len(found), 1)
+        self.assertTrue(all("model_usage" in c.signal for c in found if c.operator == "mutation"))
+        for body in (e["body"] for e in thread.history() if e["kind"] == "candidate_registered"):
+            self.assertEqual((body["spend"]["dollars"], body["spend"]["host_observed"]), (0.0, False))
+        search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
+        self.assertEqual((search["stopped"], search["spend"]["dollars"], search["spend"]["host_observed"]), ("completed", 0.0, False))
+
     def test_search_records_are_unchanged(self):
         _kit, thread = self.fixture("records")
         thread.propose(EvolutionaryProvider(RuleMutator(), population=2, generations=2), seed=1)
