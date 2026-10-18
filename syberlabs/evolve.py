@@ -30,20 +30,35 @@ What differs, on purpose, in SyberLabs:
 
 The mutation operator is pluggable. ``CommandMutator`` is the model seam: any
 model adapter that reads JSON on stdin and prints changed files.
+
+Where the search branches is a seam too. Before every step the provider asks
+a ``BranchPolicy`` (``syberlabs.search``) for the next action from a
+``Situation``; ``FixedPolicy`` is the branching described above and the
+default. The provider executes every action itself, keeps the selection rule,
+records each decision in its trace and in the child's ``signal``, and refuses
+anything outside the closed action set.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import random
+import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
 from syberlabs.errors import Rejected
 from syberlabs.providers import model_usage, run_json
-from syberlabs.search import SearchSpace
+from syberlabs.search import (ACTION_KINDS, Action, BranchPolicy, Crossover, Evaluate, Individual, Migrate, Mutate,
+                              OperatorStats, Score, SearchSpace, Situation, Stop)
 
-Score = tuple[int, int]
+_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+
+# Stop reasons that end the search at a generation boundary: the last generation that ran is closed with a
+# plain trace entry. Any other reason ends the search inside the round the stop labels, which is closed with
+# a ``"stopped"`` entry, as the exhausted-mutator stop always was.
+CLEAN_STOPS = ("budget", "passing", "empty", "generations")
 
 
 class Mutator(Protocol):
@@ -119,13 +134,105 @@ def resolve_conflicts(text: str, rng: random.Random, accept_ours: float) -> str:
     return "".join(out)
 
 
+class FixedPolicy:
+    """Today's branching as a policy: the loop ``search()`` ran before the seam, replayed decision for decision.
+
+    Seeds are evaluated while there is room; the population is filled from ``base``
+    with at most four attempts per slot; then every generation is a mutation round
+    over each slot in order, or a crossover round over a random pairing every
+    ``crossover_every`` generations and whenever the mutator is exhausted, followed
+    by a migration on its cadence. The search stops at the top of a generation when
+    the generations are used up, there is no room, an individual passes (with
+    ``stop_when_passing``) or the population is empty, and inside a crossover round
+    when the mutator is exhausted and recombination improved nothing.
+    """
+
+    name, revision = "fixed", "1"
+
+    def __init__(self, *, population: int, generations: int, crossover_every: int, seeds: Sequence[str] = (),
+                 stop_when_passing: bool = True, migrate_every: int = 0):
+        self.population, self.generations, self.crossover_every = population, generations, crossover_every
+        self.seeds, self.stop_when_passing, self.migrate_every = tuple(seeds)[:population], stop_when_passing, migrate_every
+        self.reset()
+
+    def reset(self) -> None:
+        self._phase = "seeds"  # seeds -> fill -> top -> (a round) -> end_of_round -> top ...
+        self._seed_index = 0
+        self._fill_attempts = 0
+        self._generation = 1
+        self._pending: list[Action] = []  # the rest of the current round, in order
+        self._round: tuple[str, bool, int] | None = None  # (kind, exhausted, improvements before the round)
+
+    def _round_kind(self, situation: Situation, exhausted: bool) -> str:
+        """``"crossover"`` or ``"mutation"`` for the round about to start. The hook a learning policy overrides."""
+        return "crossover" if self._generation % self.crossover_every == 0 or exhausted else "mutation"
+
+    def decide(self, s: Situation) -> Action:
+        while True:
+            if self._pending:
+                return self._pending.pop(0)
+            if self._phase == "seeds":
+                while self._seed_index < len(self.seeds):
+                    seed = self.seeds[self._seed_index]
+                    self._seed_index += 1
+                    if s.room:
+                        return Evaluate(seed, 0)
+                self._phase = "fill"
+            if self._phase == "fill":
+                if len(s.population) < self.population and s.room and self._fill_attempts < 4 * self.population:
+                    self._fill_attempts += 1
+                    return Mutate("base", None, 0)
+                self._phase = "top"
+            if self._phase == "end_of_round":
+                kind, exhausted, improved_before = self._round
+                self._round, self._phase = None, "top"
+                if kind == "crossover" and exhausted and s.history["crossover"].improved == improved_before:
+                    return Stop("exhausted", self._generation)  # inside the round: the provider writes the "stopped" entry
+                g, self._generation = self._generation, self._generation + 1
+                if self.migrate_every and g % self.migrate_every == 0 and s.room:
+                    return Migrate(g)
+            g = self._generation
+            if g > self.generations:
+                return Stop("generations", g)
+            if not s.room:
+                return Stop("budget", g)
+            if self.stop_when_passing and any(p.passed for p in s.population):
+                return Stop("passing", g)
+            if not s.population:
+                return Stop("empty", g)
+            exhausted = s.mutator_exhausted
+            if self._round_kind(s, exhausted) == "crossover":
+                n = len(s.population)
+                order = s.rng.sample(range(n), n)  # the one draw a policy makes from the provider's stream
+                self._pending = [Crossover(s.population[i].id, s.population[j].id, (i, j), g)
+                                 for i, j in zip(order[::2], order[1::2])]
+                self._round = ("crossover", exhausted, s.history["crossover"].improved)
+            else:
+                self._pending = [Mutate(p.id, slot, g) for slot, p in enumerate(s.population)]
+                self._round = ("mutation", exhausted, s.history["mutate"].improved)
+            self._phase = "end_of_round"
+            # A crossover round over one slot has no pairs: the round ends at once and the loop closes it.
+
+
+def _describe(action: Action) -> dict:
+    if isinstance(action, Mutate):
+        return {"parent": action.parent, "slot": action.slot}
+    if isinstance(action, Crossover):
+        return {"pair": [action.a, action.b], "slots": list(action.slots)}
+    if isinstance(action, Evaluate):
+        return {"candidate": action.candidate}
+    if isinstance(action, Stop):
+        return {"reason": action.reason}
+    return {}
+
+
 class EvolutionaryProvider:
     """Mutation, crossover, and pairwise selection over Git-lineaged candidates."""
 
     def __init__(self, mutate: Mutator | Callable, *, population: int = 4, generations: int = 6,
                  crossover_every: int = 3, accept_ours: float = 0.5, seeds: Sequence[str] = (),
                  stop_when_passing: bool = True, name: str = "evolutionary", revision: str = "1",
-                 exchange=None, migrate_every: int = 0, migrants: int = 1):
+                 exchange=None, migrate_every: int = 0, migrants: int = 1, policy: BranchPolicy | None = None):
         if population < 2 or generations < 1 or crossover_every < 1 or not 0 <= accept_ours <= 1:
             raise Rejected("invalid_provider", "population >= 2, generations >= 1, crossover_every >= 1, 0 <= accept_ours <= 1")
         if exchange is not None and (migrate_every < 1 or migrants < 1):
@@ -136,6 +243,15 @@ class EvolutionaryProvider:
         self.crossover_every, self.accept_ours, self.seeds = crossover_every, accept_ours, tuple(seeds)
         self.stop_when_passing, self.name, self.revision = stop_when_passing, name, revision
         self.trace: list[dict] = []
+        self.policy = policy if policy is not None else FixedPolicy(
+            population=population, generations=generations, crossover_every=crossover_every, seeds=self.seeds,
+            stop_when_passing=stop_when_passing, migrate_every=migrate_every if exchange is not None else 0)
+        if (not isinstance(self.policy, BranchPolicy) or not isinstance(self.policy.name, str)
+                or not _NAME.match(self.policy.name) or not isinstance(self.policy.revision, str)
+                or not 0 < len(self.policy.revision) <= 128):
+            raise Rejected("invalid_provider", "a branch policy needs a lowercase name and a revision of at most 128 characters")
+        self._decision = 0
+        self._stats: dict[str, OperatorStats] = {}
 
     # Budget: stop cleanly before the host has to refuse.
 
@@ -164,12 +280,13 @@ class EvolutionaryProvider:
         return self._judge(space, made.id)
 
     def _signal(self, operator: str, generation: int) -> dict:
-        if operator != "mutation":
-            return {"generation": generation}
-        found = {"generation": generation, "mutator": getattr(self.mutate, "name", "function")}
-        usage = getattr(self.mutate, "last_usage", None)
-        if usage:
-            found["model_usage"] = usage
+        found = {"generation": generation,
+                 "policy": {"name": self.policy.name, "revision": self.policy.revision, "decision": self._decision}}
+        if operator == "mutation":
+            found["mutator"] = getattr(self.mutate, "name", "function")
+            usage = getattr(self.mutate, "last_usage", None)
+            if usage:
+                found["model_usage"] = usage
         return found
 
     def _mutation(self, space, parent, rng, generation):
@@ -233,43 +350,98 @@ class EvolutionaryProvider:
                             "parents": list(found.parents), "score": list(score)})
         self.exchange.publish(space.base, entries)
 
+    # The policy seam: the policy decides, the provider performs, records and counts.
+
+    def _situation(self, space: SearchSpace, people: list, generation: int, rng: random.Random) -> Situation:
+        return Situation(generation=generation,
+                         population=tuple(Individual(cid, score, passed) for cid, score, passed in people),
+                         capacity=self.population, remaining=space.remaining(), room=self._room(space),
+                         history=dict(self._stats), mutator_exhausted=bool(getattr(self.mutate, "exhausted", False)),
+                         exchange=self.exchange is not None, decisions=self._decision, rng=rng)
+
+    @staticmethod
+    def _holds(people: list, slot, candidate: str) -> bool:
+        return type(slot) is int and 0 <= slot < len(people) and people[slot][0] == candidate
+
+    def _perform(self, space: SearchSpace, people: list, rng: random.Random, action: Action) -> dict:
+        """Execute one action with the mechanics above and apply the replacement rule. Draws nothing itself."""
+        before = space.remaining().max_evaluations
+        child, produced, improved, passed = None, False, False, False
+        if isinstance(action, Evaluate):
+            judged = self._judge(space, action.candidate)
+            slot = next((i for i, p in enumerate(people) if p[0] == action.candidate), None)
+            if slot is None:
+                people.append(judged)
+            else:
+                people[slot] = judged
+            child, improved, passed = judged, slot is None, judged[2]
+        elif isinstance(action, Mutate):
+            if action.slot is not None and not self._holds(people, action.slot, action.parent):
+                raise Rejected("invalid_policy", f"{self.policy.name}: mutate names a slot that does not hold its parent")
+            child = self._mutation(space, action.parent, rng, action.generation)
+            if child is not None:
+                produced, passed = True, child[2]
+                if action.slot is None:
+                    people.append(child)
+                    improved = True
+                elif child[1] > people[action.slot][1]:
+                    people[action.slot] = child
+                    improved = True
+        elif isinstance(action, Crossover):
+            i, j = action.slots
+            if not self._holds(people, i, action.a) or not self._holds(people, j, action.b):
+                raise Rejected("invalid_policy", f"{self.policy.name}: crossover names slots that do not hold its parents")
+            child = self._crossover(space, people[i][0], people[j][0], rng, action.generation)
+            if child is not None:
+                produced, passed = True, child[2]
+                if child[1] > people[i][1] and child[1] > people[j][1]:
+                    people[i] = people[j] = child
+                    improved = True
+        else:
+            snapshot, entries = list(people), len(self.trace)
+            self._migration(space, people, action.generation)
+            produced, improved = len(self.trace) > entries, people != snapshot
+        evaluated = before - space.remaining().max_evaluations
+        self._count(action.kind, produced, evaluated, improved, passed)
+        return {"candidate": child[0] if child else None, "score": list(child[1]) if child else None,
+                "improved": improved, "evaluated": evaluated}
+
+    def _count(self, kind: str, produced: bool, evaluated: int, improved: bool, passed: bool) -> None:
+        stats = self._stats[kind]
+        self._stats[kind] = dataclasses.replace(
+            stats, attempted=stats.attempted + 1, produced=stats.produced + produced, evaluated=stats.evaluated + evaluated,
+            improved=stats.improved + improved, passed=stats.passed + passed)
+
     def search(self, space: SearchSpace) -> Sequence[str]:
         rng = random.Random(space.seed)
         people: list[tuple[str, Score, bool]] = []
-        for seed in self.seeds[: self.population]:
-            if self._room(space):
-                people.append(self._judge(space, seed))
-        attempts = 0
-        while len(people) < self.population and self._room(space) and attempts < 4 * self.population:
-            attempts += 1
-            child = self._mutation(space, "base", rng, 0)
-            if child is not None:
-                people.append(child)
-        self.trace.append({"generation": 0, "population": [p[0] for p in people]})
-        for generation in range(1, self.generations + 1):
-            if not self._room(space) or (self.stop_when_passing and any(p[2] for p in people)) or not people:
+        self._stats = {kind: OperatorStats() for kind in ACTION_KINDS if kind != "stop"}
+        self._decision = 0
+        self.policy.reset()
+        generation, ran = 0, True  # generation 0, the initial population, is always recorded
+        while True:
+            action = self.policy.decide(self._situation(space, people, generation, rng))
+            if (not isinstance(action, (Mutate, Crossover, Migrate, Evaluate, Stop)) or type(action.generation) is not int
+                    or action.generation < generation or action.generation > self.generations + 1):
+                raise Rejected("invalid_policy", f"{self.policy.name} returned an action outside the closed set "
+                                                 "or a generation label out of order")
+            while action.generation > generation:  # close every generation up to the label; a skipped one ran empty
+                self.trace.append({"generation": generation, "population": [p[0] for p in people]})
+                generation, ran = generation + 1, False
+            self._decision += 1
+            entry = {"decision": self._decision, "generation": generation,
+                     "policy": {"name": self.policy.name, "revision": self.policy.revision},
+                     "action": action.kind, **_describe(action)}
+            if isinstance(action, Stop):
+                if action.reason not in CLEAN_STOPS:
+                    self.trace.append({"generation": generation, "population": [p[0] for p in people], "stopped": action.reason})
+                elif ran:
+                    self.trace.append({"generation": generation, "population": [p[0] for p in people]})
+                self.trace.append(entry)
                 break
-            exhausted = getattr(self.mutate, "exhausted", False)
-            if generation % self.crossover_every == 0 or exhausted:
-                improved = False
-                order = rng.sample(range(len(people)), len(people))
-                for i, j in zip(order[::2], order[1::2]):
-                    child = self._crossover(space, people[i][0], people[j][0], rng, generation)
-                    if child and child[1] > people[i][1] and child[1] > people[j][1]:
-                        people[i] = people[j] = child
-                        improved = True
-                if exhausted and not improved:
-                    # No model calls left and recombination found nothing better: stop spending evaluations.
-                    self.trace.append({"generation": generation, "population": [p[0] for p in people], "stopped": "exhausted"})
-                    break
-            else:
-                for index, (parent, score, _passed) in enumerate(list(people)):
-                    child = self._mutation(space, parent, rng, generation)
-                    if child and child[1] > score:
-                        people[index] = child
-            if self.exchange is not None and generation % self.migrate_every == 0 and self._room(space):
-                self._migration(space, people, generation)
-            self.trace.append({"generation": generation, "population": [p[0] for p in people]})
+            self.trace.append(entry)
+            entry["outcome"] = self._perform(space, people, rng, action)
+            ran = True
         if self.exchange is not None and people:
             self._publish(space, people)
         ranked = sorted(dict.fromkeys(people), key=lambda p: p[1], reverse=True)

@@ -12,9 +12,10 @@ These are structural types. The Build Thread supplies the Git-backed space.
 
 from __future__ import annotations
 
+import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -176,3 +177,117 @@ class SearchProvider(Protocol):
 
     def search(self, space: SearchSpace) -> Sequence[str] | None:
         ...
+
+
+# Branch policy: what the evolutionary provider asks before it branches.
+#
+# A ``BranchPolicy`` proposes the next step of an evolutionary search from a
+# ``Situation``: the population summary, the budget, and the outcomes so far.
+# It never sees the session, the repository or file contents, and it cannot
+# keep a worse child: the provider applies the replacement rule, has the host
+# judge every candidate, and refuses an action outside the closed set. These
+# are structural types; ``syberlabs.evolve`` holds the behaviour.
+
+Score = tuple[int, int]  # Evaluation.score(): required checks passed, then all checks passed
+
+
+@dataclass(frozen=True)
+class Individual:
+    """One population slot as a policy sees it. Lineage is absent on purpose: provenance is not a decision input."""
+
+    id: str
+    score: Score
+    passed: bool
+
+
+@dataclass(frozen=True)
+class OperatorStats:
+    """Outcomes of the decisions of one kind in this search, counted by the provider."""
+
+    attempted: int = 0  # decisions executed
+    produced: int = 0  # ... that registered a candidate
+    evaluated: int = 0  # evaluations the host ran for them (budget consumed)
+    improved: int = 0  # ... whose candidate entered the population or replaced its parent(s)
+    passed: int = 0  # ... whose candidate passed every required check
+
+
+@dataclass(frozen=True)
+class Situation:
+    """What a BranchPolicy may read. It never includes the session, the repository or file contents."""
+
+    generation: int  # label of the last executed action; 0 before the first round
+    population: tuple[Individual, ...]  # slots in order; duplicates are possible after a crossover win
+    capacity: int  # the provider's population size
+    remaining: Budget  # space.remaining()
+    room: bool  # every budget dimension is above zero
+    history: Mapping[str, OperatorStats]  # keys: mutate, crossover, migrate, evaluate
+    mutator_exhausted: bool  # the mutator reports it will make no more calls
+    exchange: bool  # a migration exchange is configured
+    decisions: int  # decisions taken so far in this search
+    rng: random.Random  # the provider's seeded stream; a policy draws from it only to pair a crossover round
+
+
+@dataclass(frozen=True)
+class Mutate:
+    """Mutate ``parent`` (a candidate id or ``"base"``). The child replaces ``slot`` if it scores higher; ``None`` appends."""
+
+    parent: str
+    slot: int | None
+    generation: int
+    kind: ClassVar[str] = "mutate"
+
+
+@dataclass(frozen=True)
+class Crossover:
+    """Cross ``a`` and ``b``, held in ``slots``. The child replaces both if it beats both."""
+
+    a: str
+    b: str
+    slots: tuple[int, int]
+    generation: int
+    kind: ClassVar[str] = "crossover"
+
+
+@dataclass(frozen=True)
+class Migrate:
+    """Run the provider's migration step once: publish, fetch offers, try up to ``migrants``."""
+
+    generation: int
+    kind: ClassVar[str] = "migrate"
+
+
+@dataclass(frozen=True)
+class Evaluate:
+    """Judge an existing candidate (a seed) and append it if it is not in the population."""
+
+    candidate: str
+    generation: int
+    kind: ClassVar[str] = "evaluate"
+
+
+@dataclass(frozen=True)
+class Stop:
+    """End the search. ``budget``, ``passing``, ``empty`` and ``generations`` stop at a generation boundary;
+    any other reason (``exhausted``, or the policy's own word) stops inside the round the label names."""
+
+    reason: str
+    generation: int
+    kind: ClassVar[str] = "stop"
+
+
+Action = Mutate | Crossover | Migrate | Evaluate | Stop
+ACTION_KINDS = ("mutate", "crossover", "migrate", "evaluate", "stop")  # closed; the provider refuses anything else
+
+
+@runtime_checkable
+class BranchPolicy(Protocol):
+    """Decides what the evolutionary provider does next. It proposes branching; the host still judges every candidate."""
+
+    name: str  # lowercase, at most 64 characters, like a provider name
+    revision: str  # 1 to 128 characters
+
+    def reset(self) -> None:
+        """Forget per-search state. Called once at the start of every search."""
+
+    def decide(self, situation: Situation) -> Action:
+        """The next action. Its ``generation`` is the policy's round label and never decreases."""
