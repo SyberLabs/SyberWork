@@ -1,0 +1,58 @@
+{
+  "_comment": "Class floors by path, for SyberWork, in the form MasterMind tools/ledger/cli.mjs reads with --policy. Adopted 2026-10-17 by the owner's direction; the highest-ranked matching rule wins and everything unmatched floors at auto. Not yet enforced by the kit; a Build Thread records the declared class and the floor is checked by the ledger.",
+  "floors": [
+    {
+      "class": "direction",
+      "why": "what only a human intends: this policy and the frozen sdk.syberlabs.space/v0alpha1 vocabulary (AGENTS.md and new spec identities are auto, as in the charter)",
+      "paths": [
+        "policy.json",
+        "spec/SPEC.md",
+        "spec/acceptance-clause.schema.json",
+        "spec/action-definition.schema.json",
+        "spec/admission-decision.schema.json",
+        "spec/candidate.schema.json",
+        "spec/contract.schema.json",
+        "spec/effect-outcome.schema.json",
+        "spec/event-body.schema.json",
+        "spec/event.schema.json",
+        "spec/evolution.schema.json",
+        "spec/observation.schema.json",
+        "spec/policy.schema.json",
+        "spec/proposal.schema.json",
+        "spec/reconciliation.schema.json",
+        "spec/resolution-task.schema.json",
+        "spec/source-definition.schema.json"
+      ]
+    },
+    {
+      "class": "keys",
+      "why": "credentials, money, legal identity, licensing, a production deploy",
+      "paths": [
+        "**/.env",
+        "**/.env.*",
+        "**/*.pem",
+        "**/*.key",
+        "**/secrets/**",
+        ".github/workflows/*deploy*",
+        ".github/workflows/*release*",
+        ".github/workflows/*publish*",
+        "LICENSE",
+        "NOTICE",
+        ".mcp.json",
+        ".claude/**",
+        "CLAUDE.md"
+      ]
+    },
+    {
+      "class": "auto",
+      "why": "a public claim: autonomous, with an Evidence grade",
+      "requires": [
+        "evidence"
+      ],
+      "paths": [
+        "README.md",
+        "docs/E3_BENCHMARK_PLAN.md"
+      ]
+    }
+  ]
+}
