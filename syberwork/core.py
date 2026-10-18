@@ -40,7 +40,12 @@ from syberwork.storage import (
     open_store,
 )
 
-__all__ = ["Rejected", "Work", "canonical", "digest", "trusted_origin"]
+__all__ = ["METRIC_KEYS", "Rejected", "Work", "canonical", "digest", "trusted_origin"]
+
+# The cell's own numbers, each counted from the store by ``Work.metric``. The service serves them at
+# ``GET /metrics/<key>`` (plus ``uptime_seconds``, which is the process's, not the store's).
+METRIC_KEYS = ("cases_open", "cases_total", "proposals_admitted_total", "proposals_denied_total", "effects_pending",
+               "effects_settled_applied_total", "effects_settled_not_applied_total", "queue_depth")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -754,6 +759,60 @@ class Work:
     def list_cases(self) -> list[dict]:
         with self.tx() as db:
             return [dict(row) for row in CaseStore(db).list_all()]
+
+    def metric(self, key: str) -> int:
+        """One number about this cell, counted from the store in one transaction. Read only.
+
+        ``cases_open`` counts cases that are neither cancelled nor complete, by the rule ``inspect``
+        applies. The proposal counters count recorded ``decision`` events by status (``allowed`` or
+        ``denied``; ``needs_approval`` is neither). Every claimed effect is in exactly one of
+        ``effects_settled_applied_total`` (``effect_succeeded`` or a verified ``reconciled``),
+        ``effects_settled_not_applied_total`` (``effect_rejected``: a no-write refusal or ``not_applied``)
+        and ``effects_pending`` (queued, running, or ``effect_unknown`` awaiting reconciliation).
+        ``queue_depth`` counts worker obligations that are queued or leased. An unknown key is
+        refused with ``unknown_metric``.
+        """
+        if key not in METRIC_KEYS:
+            raise Rejected("unknown_metric", key)
+        with self.tx() as db:
+            if key == "cases_total":
+                return int(db.execute("SELECT COUNT(*) AS n FROM cases").fetchone()["n"])
+            if key == "queue_depth":
+                row = db.execute("SELECT COUNT(*) AS n FROM effect_obligations WHERE state IN ('queued', 'leased')").fetchone()
+                return int(row["n"])
+            if key == "cases_open":
+                count = 0
+                for row in CaseStore(db).list_all():
+                    contract = self._contract(db, row["contract_id"], row["contract_version"])
+                    history = self._events(db, row["id"])
+                    clauses = self._acceptance(contract, history)
+                    cancelled = any(e["kind"] == "case_cancelled" for e in history)
+                    complete = bool(clauses) and all(v["passed"] for v in clauses)
+                    count += int(not cancelled and not complete)
+                return count
+            if key in ("proposals_admitted_total", "proposals_denied_total"):
+                wanted = "allowed" if key == "proposals_admitted_total" else "denied"
+                rows = db.execute("SELECT body FROM events WHERE kind = 'decision'").fetchall()
+                return sum(1 for row in rows if json.loads(row["body"]).get("status") == wanted)
+            rows = db.execute("SELECT kind, body FROM events WHERE kind IN "
+                              "('effect_started', 'effect_succeeded', 'effect_rejected', 'reconciled')").fetchall()
+            claimed, applied, not_applied = set(), set(), set()
+            for row in rows:
+                body = json.loads(row["body"])
+                proposal_id = body.get("proposal_id")
+                if row["kind"] == "effect_started":
+                    claimed.add(proposal_id)
+                elif row["kind"] == "effect_succeeded" or verified_reconciliation({"kind": row["kind"], "body": body}):
+                    applied.add(proposal_id)
+                elif row["kind"] == "effect_rejected":
+                    not_applied.add(proposal_id)
+            applied &= claimed
+            not_applied = (not_applied & claimed) - applied
+            if key == "effects_settled_applied_total":
+                return len(applied)
+            if key == "effects_settled_not_applied_total":
+                return len(not_applied)
+            return len(claimed - applied - not_applied)
 
     def replay(self, case_id: str, contract_version: int, policy_version: int) -> dict:
         with self.tx() as db:

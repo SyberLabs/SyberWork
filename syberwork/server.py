@@ -4,12 +4,14 @@ import hashlib
 import hmac
 import json
 import os
+import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from .builder_http import dispatch_get, dispatch_post
-from .core import Rejected, Work
+from .core import Rejected, Work, digest
 
 STATIC = Path(__file__).parent / "static"
 
@@ -25,6 +27,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
     loopback = host in ("127.0.0.1", "::1", "localhost")
     if not loopback and os.getenv("SYBERWORK_BIND", "") != host:
         raise Rejected("unsafe_bind", "the operator service must bind to loopback")
+    started = time.monotonic()
 
     class Handler(BaseHTTPRequestHandler):
         def _user(self):
@@ -38,13 +41,15 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 return principal
             raise Rejected("unauthorized", "valid bearer token required")
 
-        def _json(self, data, status=200):
+        def _json(self, data, status=200, headers=None):
             body = json.dumps(data, separators=(",", ":"), default=str).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
@@ -70,7 +75,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._static(parts[0], "text/javascript" if parts[0].endswith(".js") else "text/css")
                     return
                 user = self._user()
-                if parts == ["api", "me"]:
+                if len(parts) == 2 and parts[0] == "metrics":
+                    self._metric(unquote(parts[1]))
+                elif parts == ["api", "me"]:
                     profile = {"name": user["name"], "roles": user.get("roles", []), "sources": user.get("sources", [])}
                     for key in ("principal_id", "kind", "organization", "delegation"):
                         if key in user:
@@ -95,10 +102,26 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 else:
                     self._json({"error": "not_found"}, 404)
             except Rejected as e:
-                status = {"unauthorized": 401, "not_found": 404}.get(e.code, 409)
+                status = {"unauthorized": 401, "not_found": 404, "unknown_metric": 404}.get(e.code, 409)
                 self._json({"error": e.code, "detail": e.detail}, status)
             except Exception:
                 self._json({"error": "internal_error"}, 500)
+
+        def _metric(self, key):
+            """GET /metrics/<key>: one number as the intervention effect reads it (docs/OUTCOMES.md section 5).
+
+            ``observed_at`` is the time of this read in epoch seconds, which is the form the effect's
+            freshness rule understands; ``observed_at_utc`` is the same instant for people. The version is
+            a digest of key, value and ``observed_at``, so a repeated read of an unchanged value still
+            carries a new stamp and a new version. It is sent as ``X-Record-Version`` and, quoted, as the ETag.
+            """
+            observed_at = time.time()
+            value = round(time.monotonic() - started, 3) if key == "uptime_seconds" else work.metric(key)
+            version = digest({"key": key, "value": value, "observed_at": observed_at})
+            when = datetime.fromtimestamp(observed_at, timezone.utc).isoformat(timespec="milliseconds")
+            self._json({"key": key, "value": value, "observed_at": observed_at,
+                        "observed_at_utc": when.replace("+00:00", "Z"), "version": version},
+                       headers={"ETag": '"' + version + '"', "X-Record-Version": version})
 
         def _static(self, name, mime):
             body = (STATIC / name).read_bytes()
