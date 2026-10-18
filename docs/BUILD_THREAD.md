@@ -102,6 +102,7 @@ The class is recorded at case creation, inside the hash chain, not written by ha
 | `git_push` | `--force-with-lease`: the branch must be absent, or at the thread base for a branch without `{thread}`. A refused ref is a guaranteed no-write (412). | `git ls-remote` |
 | `github_pull_request` | Looks for a pull request from the branch at that commit before creating one. 401, 403, 404, and 422 happen before creation (409, no write). The body cites the thread, the candidate, and the host's check results. | The same lookup |
 | `command` | Admin-fixed argv run in a worktree of the accepted commit, with `SYBERLABS_IDEMPOTENCY_KEY`, `SYBERLABS_COMMIT`, and `SYBERLABS_THREAD`. The last stdout line must be `{"external_id": ...}`. Declared `no_write_exit_codes` mean no write (409). | `status_argv` prints `{"state": "applied" \| "absent" \| "unknown", ...}` |
+| `intervention` | Reads a metric as the baseline and leaves the claim open on purpose (`effect_unknown`, `window_open`). Refusals before the baseline are no-writes. | Re-reads the metric after `window_seconds`: `applied` when it moved as predeclared, `not_applied` when it did not. See [OUTCOMES.md](OUTCOMES.md). |
 
 A transport failure is `unknown`, and `syberlabs recover` asks the destination. A remote that does not show the write is `absent`. That becomes `not_applied`, which frees the action for a fresh proposal, only after the action's `settle_seconds` (120 by default). Inside that window the effect stays pending, because a remote that has not shown a write yet is not proof it never will.
 
@@ -111,7 +112,7 @@ Every installed document and event is one fsynced line in `.syberlabs/journal/` 
 
 - a torn final line from a crash is dropped;
 - a malformed line, an event that breaks its hash chain, or a registry contract that no longer validates refuses to load (`journal_corrupt`);
-- another process's appends are read before each operation (POSIX file lock).
+- another process's appends are read before each operation (a cross-process file lock: `flock` on POSIX, `msvcrt.locking` on Windows).
 
 An acceptance interrupted after its durable claim shows as an open item, and `syberlabs recover` settles it from the branch. A thread holds at most 20,000 events.
 

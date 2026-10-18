@@ -10,17 +10,20 @@ fsynced before the session changes memory, so a crash can lose at most the
 record being written. A torn final line (no newline) is truncated on the next
 locked read; a malformed line anywhere else is corruption and refuses to load.
 
-A lock file serializes writers across processes on POSIX. Before each
-operation the session reads records other processes appended. The lock is a
-no-op where ``fcntl`` is unavailable; use one process per journal there.
+A lock file serializes writers across processes: ``flock`` where ``fcntl``
+exists, ``msvcrt.locking`` on Windows. Before each operation the session reads
+records other processes appended. Where neither module exists the lock is
+in-process only; use one process per journal there.
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -31,6 +34,14 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows
     fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - not Windows
+    msvcrt = None
+
+LOCKING = fcntl is not None or msvcrt is not None
+# msvcrt.locking reports a refused LK_NBLCK as EACCES and an exhausted LK_LOCK as EDEADLOCK.
+_BUSY = frozenset({errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK)})
 
 CASE_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_EVENTS = 20_000
@@ -57,15 +68,40 @@ class Journal:
     @contextmanager
     def locked(self):
         with self._mutex:
-            if self._depth == 0 and fcntl is not None and self._lock_file is not None:
-                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX)
+            if self._depth == 0 and LOCKING and self._lock_file is not None:
+                self._acquire()
             self._depth += 1
             try:
                 yield
             finally:
                 self._depth -= 1
-                if self._depth == 0 and fcntl is not None and self._lock_file is not None:
-                    fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+                if self._depth == 0 and LOCKING and self._lock_file is not None:
+                    self._release()
+
+    def _acquire(self) -> None:
+        if fcntl is not None:
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX)
+            return
+        # msvcrt.locking locks one byte at the descriptor's position. LK_LOCK gives
+        # up after about ten seconds, so retry LK_NBLCK and block like flock does.
+        fd = self._lock_file.fileno()
+        while True:
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                if exc.errno not in _BUSY:  # a broken handle, not contention
+                    raise
+                time.sleep(0.05)
+
+    def _release(self) -> None:
+        if fcntl is not None:
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+            return
+        fd = self._lock_file.fileno()
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
     def thread_path(self, case_id: str) -> Path:
         if not isinstance(case_id, str) or not CASE_ID.match(case_id):
