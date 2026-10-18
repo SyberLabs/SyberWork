@@ -11,10 +11,10 @@ PYTHONPATH=. python -m conformance.run                   # golden traces; any di
 python -m conformance.clean_install                      # wheel in a fresh venv
 ```
 
-The package has no runtime dependencies and the unit suite needs none. One
-module, `tests/test_properties.py`, needs `hypothesis`; install it with the
-`test` extra and the module runs, otherwise it reports itself as skipped and
-the rest of the suite is unchanged:
+The package has no runtime dependencies and the unit suite needs none. Two
+modules, `tests/test_properties.py` and `tests/test_properties_journal.py`,
+need `hypothesis`; install it with the `test` extra and they run, otherwise
+each reports itself as skipped and the rest of the suite is unchanged:
 
 ```sh
 python -m pip install -e ".[test]"
@@ -131,6 +131,131 @@ every run explores new sequences. No example database is written
 The in-memory session only: not `syberwork.core.Work`, its SQLite or
 PostgreSQL stores, or the HTTP layer, which share the rule list but not the
 session code. Not the `economic.reserve` rule, `resolution.current`,
-`bindings.inputs`, retention or `forget`, or the journal. Not the Build Thread
-(`syberlabs/build.py`), whose checks run real commands. A passing run says the
-six properties held for the sequences drawn on that run; it is not a proof.
+`bindings.inputs`, retention or `forget`. The journal and the Build Thread
+are the next section's subject. A passing run says the six properties held
+for the sequences drawn on that run; it is not a proof.
+
+## Journal and Build Thread properties: death between appends
+
+`tests/test_properties_journal.py` drives the same operations as the kernel
+suite through `syberlabs.journal.Journal` in a temporary home, and then drives
+the Build Thread on a real repository, with the process killed at drawn
+points. Death is a `BaseException` raised by the journal right after an event
+append is durable, or by an executor right after its destination write, so no
+`except Exception` in the kernel can turn it into a recorded outcome: the
+record stops where a killed process would stop. Every death is followed by a
+fresh `Session` or `Kit.local` on the same home, which is what a restarted
+process does.
+
+### The journal-backed driver
+
+`JournalDriver` is the kernel suite's `Driver` with a journal, two extra
+executor modes (`die_before_write`, `die_after_write`), a `reopen` operation
+that replaces the session with a new one, and a death schedule: a set of
+append counters, counted from the first operation, at which the process dies.
+Its `recover` is what `syberlabs recover` does at the session level: a new
+process, the destination answering truthfully, every open claim reconciled
+after the settle window. The tests:
+
+- **The six invariants hold across reopens and deaths.** One drawn sequence
+  with reopens and deaths, then all six checks of the kernel suite over the
+  history a fresh session reads back from disk. One torn window is tolerated
+  and counted: `propose` is two appends (`proposed`, `decision`), so a death
+  between them leaves a proposal the kernel never decided; `commit`
+  recomputes admission, so the record is incomplete but not wrong, and the
+  count of such proposals may not exceed the number of deaths.
+- **Recovery settles every interrupted bound effect once and truthfully.**
+  After the sequence, every open claim of the executor-bound action settles
+  to exactly one of verified `reconciled` or `effect_rejected`, and whenever
+  the destination answered truthfully the settlement agrees with it: a claim
+  whose write happened is never `not_applied`, a claim whose write did not
+  happen is never verified.
+- **Recovery settles an interrupted recorded effect.** Expected failure, see
+  below.
+- **A torn tail is repaired or refused, never half accepted.** After a
+  sequence, a partial final record with no newline (a prefix of a plausible
+  next record, or random bytes) is appended to the thread file or the
+  registry. Reopening either yields exactly the history before the tear and
+  restores the file byte for byte, or refuses with `journal_corrupt`; it then
+  keeps appending with a valid chain.
+- **Two openers interleave under the lock and agree.** Two sessions on one
+  home, each primitive step run by whichever the drawn turn list names; no
+  `journal_changed`, the same history and side channel from both, all six
+  invariants. A plain test also appends from two threads at once.
+
+### The Build Thread driver
+
+`Factory` makes a project in a temporary directory with a bare remote, a
+contract whose check is a no-op interpreter call (the kernel's check runner is
+exercised, the sample tests are not what is under test), `push_branch` as a
+`git_push` action and, when asked, `measure` as an `intervention` against a
+loopback `MetricSource` on a fake clock. `drive` does what an operator does at
+the command line: run `status`, run the first thing it names next that is not
+denied, `recover` when it reports an interrupted effect, move the clock past
+a window when a claim is pending on it, and stop when the same step has come
+up twice. A death inside any step reopens the kit and continues.
+
+- **Accept and push survive a death anywhere.** The process dies after the
+  n-th append counted from the end of `start` (the flow has about fourteen),
+  or right after `GitRefEffect.apply` moved the target ref, or right after
+  `GitPush.apply` pushed. Afterwards every claim has one settlement, the
+  acceptance and the push each completed exactly once, the spec validator
+  accepts every event, and the target ref, the remote branch and the record
+  agree.
+- **A death during start leaves a thread that reopens or refuses.** Expected
+  failure, see below.
+- **An intervention settles once from its first durable reading.** Expected
+  failure, see below.
+
+### What the first run found
+
+Three properties fail on this branch. Each test is kept, marked
+`expectedFailure`, with its counterexample and the kernel code believed
+responsible in its docstring; none was weakened. When the kernel is fixed the
+test reports an unexpected success, which is the signal to remove the mark.
+
+1. **An intervention measured twice, settled the other way** (the window
+   found on #35). `publish measure`, baseline 10.0, metric 12.0 after the
+   window, death right after the settlement observation and before the
+   `reconciled` event, metric back to 10.0, `recover`. `Intervention.status`
+   reads the metric again, appends a second settlement observation (outcome
+   `unchanged`) and the claim settles `effect_rejected not_applied` although
+   the first durable settlement said `moved`. PR #38 (`f555ab2`) added the
+   read-back of a durable settlement, but it was merged into
+   `syberlabs/c323757b` three seconds after #35 was squashed into `main`, so
+   the fix is on neither `main` nor this branch. The property reproduces the
+   window by construction; it needs no knowledge of the review that found it.
+2. **A recorded effect cannot be recovered.** An action without an executor
+   (`review` here) whose commit dies between `effect_started` and
+   `effect_succeeded`: `reconcile` refuses with `reconciliation_unavailable`
+   because no executor is bound, and every later proposal of the action is
+   denied `effect_unresolved`, with no path out. `syberlabs/session.py`,
+   `commit`'s executor-less branch and `reconcile`'s first refusal.
+3. **A thread that died during `start` cannot be opened.** `start` is three
+   appends (`case_created`, the `base` observation, the context). After a
+   death between the first two the journal lists the thread, `syberlabs
+   threads` shows it, and `Kit.open` raises `TypeError` from
+   `Thread.__init__` reading the missing base, not a `Rejected` with a code.
+   `syberlabs/build.py`, `Thread.__init__`.
+
+### Budget
+
+`SYBERLABS_JOURNAL_EXAMPLES` (default 30) sets the examples per journal
+property and `SYBERLABS_THREAD_EXAMPLES` (default 8) per Build Thread
+property. Every journaled append is an fsync, so journal examples cost about
+a second each; a Build Thread example is a Git repository and a few
+subprocesses, about four seconds. The module ran in 75 seconds on the Windows
+machine that wrote it. The Build Thread tests do not shrink: the drawn values
+are one crash point and a few metric values, so shrinking would only replay
+the same seconds, and the failing example is printed as drawn; the known
+counterexamples are pinned with `@example` so an expected failure cannot
+become a lucky pass. Determinism and the absence of an example database are
+as for the kernel suite.
+
+### What it does not cover
+
+Deaths inside the registry writes and `create_thread` (a thread file with its
+case row and no events), `forget`, the `github_pull_request` and `command`
+executors, and the lock on a platform with neither `fcntl` nor `msvcrt`. Two
+openers are two `Session` objects in one process holding two lock handles,
+not two operating-system processes.
