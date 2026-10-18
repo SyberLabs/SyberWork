@@ -1,0 +1,68 @@
+name: admit
+
+# Every pull request, from any agent or person, is run through a Build Thread here: its
+# checks are host-run on the exact head tree, journaled, and the record is uploaded as an
+# artifact. The job reads only; it never pushes, merges, comments or certifies. See docs/ADMIT.md.
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      head:
+        description: Branch, tag or commit whose tree is admitted
+        required: true
+        type: string
+      base:
+        description: Commit the thread starts from
+        default: main
+        type: string
+      title:
+        description: One-line objective recorded on the thread
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: admit-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  admit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # The tool: SyberWork at the head under test, so a change to the kit, this action or
+      # scripts/admit.sh is exercised by the pull request that makes it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || inputs.head }}
+          path: tool
+          persist-credentials: false
+      # The repository to admit, at the base commit, with the history the thread's base needs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || inputs.base }}
+          fetch-depth: 0
+          path: repo
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - id: admit
+        uses: ./tool/.github/actions/admit
+        with:
+          repository: repo
+          base: ${{ github.event.pull_request.base.sha || inputs.base }}
+          head: ${{ github.event.pull_request.head.sha || inputs.head }}
+          fetch: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/head', github.event.pull_request.number) || inputs.head }}
+          title: ${{ github.event.pull_request.title || inputs.title }}
+          author: ${{ github.event.pull_request.user.login || github.actor }}
+          label: ${{ github.event.pull_request.number || format('dispatch-{0}', github.run_id) }}
+          out: admission
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        if: always()
+        with:
+          name: admission-${{ github.event.pull_request.number || github.run_id }}
+          path: admission/
+          if-no-files-found: warn

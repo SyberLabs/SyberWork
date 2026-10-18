@@ -1,0 +1,88 @@
+name: Admit through a Build Thread
+description: >-
+  Run a tree, normally a pull request's head, through a SyberWork Build Thread in this job:
+  the contract's checks are host-run on that exact tree, journaled, and exported under `out`.
+  Nothing is pushed, merged, commented on or certified. The thread is run by the SyberWork
+  checkout this action belongs to (PYTHONPATH), so no package is installed.
+
+inputs:
+  head:
+    description: The commit, branch or ref whose tree is admitted (a pull request's head).
+    required: true
+  base:
+    description: The commit the thread starts from (a pull request's base). Resolved in `repository`.
+    default: HEAD
+  fetch:
+    description: A ref to fetch from origin before resolving `head`, for example `refs/pull/7/head`.
+    default: ""
+  repository:
+    description: Path of the checked-out repository to admit, with enough history to contain `base`.
+    default: "."
+  title:
+    description: One-line objective recorded on the thread, normally the pull request title.
+    default: ""
+  author:
+    description: The pull request author's login, recorded as the provider that proposed the tree.
+    default: ""
+  label:
+    description: First part of the export file names, normally the pull request number.
+    default: run
+  checks:
+    description: >-
+      NAME=COMMAND lines, one per line, for scripts/admit_contract.py; `{python}` is the interpreter
+      that runs syberlabs. Default: SyberWork's own unit tests and conformance.
+    default: ""
+  out:
+    description: Directory that receives the export and the journal copy.
+    default: admission
+  python:
+    description: The interpreter that runs syberlabs and, through `{python}`, the checks.
+    default: python
+
+outputs:
+  status:
+    description: accepted, not_acceptable, tree_mismatch, not_reproducible, no_change, not_applied or error.
+    value: ${{ steps.admit.outputs.status }}
+  thread:
+    description: The thread id.
+    value: ${{ steps.admit.outputs.thread }}
+  candidate:
+    description: The candidate that carried the head's tree.
+    value: ${{ steps.admit.outputs.candidate }}
+  export:
+    description: Path of the exported thread record.
+    value: ${{ steps.admit.outputs.export }}
+  head:
+    description: The admitted commit.
+    value: ${{ steps.admit.outputs.head }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      working-directory: ${{ inputs.repository }}
+      env:
+        FETCH: ${{ inputs.fetch }}
+        HEAD: ${{ inputs.head }}
+      run: |
+        if [ -n "$FETCH" ]; then
+          git fetch --no-tags origin "$FETCH"
+        fi
+        sha=$(git rev-parse --verify --quiet "$HEAD^{commit}" || git rev-parse --verify FETCH_HEAD^{commit})
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+    - id: admit
+      shell: bash
+      env:
+        ADMIT_REPO: ${{ inputs.repository }}
+        ADMIT_BASE: ${{ inputs.base }}
+        ADMIT_HEAD: ${{ steps.resolve.outputs.sha }}
+        ADMIT_TITLE: ${{ inputs.title }}
+        ADMIT_AUTHOR: ${{ inputs.author }}
+        ADMIT_LABEL: ${{ inputs.label }}
+        ADMIT_CHECKS: ${{ inputs.checks }}
+        ADMIT_OUT: ${{ inputs.out }}
+        ADMIT_PYTHON: ${{ inputs.python }}
+      run: |
+        root=$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)
+        PYTHONPATH="$root" bash "$root/scripts/admit.sh" "$ADMIT_BASE" "$ADMIT_HEAD"
