@@ -13,10 +13,12 @@ from unittest.mock import patch
 from spec.validate import SchemaError, check as check_schema, validate_events
 from syberlabs import Rejected, build, certificate
 from syberlabs.build import GitRefEffect
-from syberlabs.certificate import (DEFAULT_SEED_ENV, PAYLOAD_TYPE, certify, check_payload, first_difference,
-                                   format_report, load_seed, verify_certificate, write_certificate)
+from syberlabs.certificate import (DEFAULT_SEED_ENV, PAYLOAD_TYPE, PREDICATE_TYPE, STATEMENT_PAYLOAD_TYPE, STATEMENT_TYPE,
+                                   certify, check_payload, first_difference, format_report, load_seed, statement,
+                                   verify_certificate, write_certificate)
 from syberlabs.cli import main as cli
-from syberlabs.dsse import CHAIN_HEAD_TYPE, pae, sign_dsse
+from syberlabs.dsse import CHAIN_HEAD_TYPE, pae, sign_dsse, verified_payload
+from syberlabs.ed25519 import verify as ed25519_verify
 from syberlabs.gitspace import Repo
 from syberlabs.jcs import jcs_bytes
 from tests.test_build_thread import GOOD, Crash, RepoCase, git, git_ref
@@ -33,17 +35,30 @@ def decoded(envelope: dict) -> dict:
     return json.loads(base64.standard_b64decode(envelope["payload"]))
 
 
+def predicate_of(envelope: dict) -> dict:
+    """The v0 payload inside either form."""
+    body = decoded(envelope)
+    return body["predicate"] if envelope["payloadType"] == STATEMENT_PAYLOAD_TYPE else body
+
+
 def copy_of(payload: dict) -> dict:
     return json.loads(json.dumps(payload))
 
 
 def resign(payload: dict, seed: bytes = SEED) -> dict:
+    """The bare form of ``payload``."""
     return sign_dsse(PAYLOAD_TYPE, jcs_bytes(payload), seed)
 
 
+def restate(body: dict, seed: bytes = SEED) -> dict:
+    """``body`` (``statement(payload)`` or a mutated copy of one) signed as an in-toto statement."""
+    return sign_dsse(STATEMENT_PAYLOAD_TYPE, jcs_bytes(body), seed)
+
+
 def unsigned(envelope: dict, payload: dict) -> dict:
-    """The envelope with its payload replaced and its signature left as it was."""
-    return {**envelope, "payload": base64.standard_b64encode(jcs_bytes(payload)).decode("ascii")}
+    """The envelope with its payload replaced, in the envelope's own form, and its signature left as it was."""
+    body = statement(payload) if envelope["payloadType"] == STATEMENT_PAYLOAD_TYPE else payload
+    return {**envelope, "payload": base64.standard_b64encode(jcs_bytes(body)).decode("ascii")}
 
 
 class CertificateCase(RepoCase):
@@ -64,9 +79,9 @@ class CertificateCase(RepoCase):
         self.assertEqual(thread.accept("c1").status, "succeeded")
         return kit, thread
 
-    def certified(self, **kwargs):
+    def certified(self, bare=False, **kwargs):
         kit, thread = self.accepted(**kwargs)
-        envelope, payload = certify(kit, thread.id, "c1", seed=SEED, now=NOW)
+        envelope, payload = certify(kit, thread.id, "c1", seed=SEED, now=NOW, bare=bare)
         return kit, thread, envelope, payload
 
     def verify(self, envelope, public=PUBLIC, *, repo=True, home=True):
@@ -94,13 +109,22 @@ class Genuine(CertificateCase):
         self.assertEqual(lines[-1], "verdict    pass")
         self.assertIn(f"target {thread.target_ref} at {payload['result']['commit'][:10]}", lines[1])
         self.assertIn("every certified field matches", lines[2])
-        # The envelope is sign_dsse over the JCS bytes of the payload, under the certificate's own type.
-        self.assertEqual(envelope["payloadType"], PAYLOAD_TYPE)
-        self.assertEqual(base64.standard_b64decode(envelope["payload"]), jcs_bytes(payload))
+        # The default envelope is sign_dsse over the JCS bytes of the in-toto statement, under the in-toto type;
+        # --bare is sign_dsse over the JCS bytes of the payload, under the certificate's own type.
+        self.assertEqual(envelope["payloadType"], STATEMENT_PAYLOAD_TYPE)
+        self.assertEqual(base64.standard_b64decode(envelope["payload"]), jcs_bytes(statement(payload)))
         self.assertEqual(envelope["signatures"][0]["keyid"], PUBLIC.hex())
+        bare, same = certify(kit, thread.id, "c1", seed=SEED, now=NOW, bare=True)
+        self.assertEqual(same, payload)
+        self.assertEqual(bare["payloadType"], PAYLOAD_TYPE)
+        self.assertEqual(base64.standard_b64decode(bare["payload"]), jcs_bytes(payload))
+        self.assertEqual(bare["signatures"][0]["keyid"], PUBLIC.hex())
         self.assertEqual(pae(PAYLOAD_TYPE, b"{}"), b"DSSEv1 52 application/vnd.syberlabs.admission-certificate+json 2 {}")
-        # The schema and the strict shape check agree on the genuine payload.
+        self.assertEqual(pae(STATEMENT_PAYLOAD_TYPE, b"{}"), b"DSSEv1 28 application/vnd.in-toto+json 2 {}")
+        self.assertEqual(self.verify(bare).payload, payload)
+        # The schema accepts the payload and the statement (one oneOf branch each); the strict shape check agrees.
         check_schema(payload, "certificate.schema.json")
+        check_schema(statement(payload), "certificate.schema.json")
         self.assertIs(check_payload(payload), payload)
         self.assertEqual(certificate.HOST, build.HOST)
         self.assertEqual(certificate.ACT_CLASSES, build.ACT_CLASSES)
@@ -113,8 +137,11 @@ class Genuine(CertificateCase):
         self.assertNotIn(b"\r\n", written)
         self.assertEqual(json.loads(written), envelope)
         self.assertEqual(verify_certificate(written, PUBLIC).passed, True)
+        plain, _ = write_certificate(bare, PUBLIC, self.root.parent / "certs" / "c1.bare.json")
+        self.assertEqual(verify_certificate(plain.read_bytes(), PUBLIC).passed, True)
         for secret in (SEED.hex().encode(), SEED):
             self.assertNotIn(secret, written)
+            self.assertNotIn(secret, plain.read_bytes())
             self.assertNotIn(secret, pub.read_bytes())
 
     def test_payload_names_what_the_journal_says(self):
@@ -267,6 +294,169 @@ class Genuine(CertificateCase):
         self.assertEqual(caught.exception.code, "seed_env_invalid")
         envelope, payload = certify(kit, thread.id, "c1", seed=SEED, seed_env="MY_SEED")
         self.assertEqual((payload["result"]["candidate"], payload["issuer"]["seed_env"]), ("c1", "MY_SEED"))
+
+
+class Statement(CertificateCase):
+    def test_statement_and_bare_forms_verify_identically(self):
+        kit, thread, envelope, payload = self.certified()
+        bare, same = certify(kit, thread.id, "c1", seed=SEED, now=NOW, bare=True)
+        self.assertEqual(same, payload)
+        body = decoded(envelope)
+        self.assertEqual(list(body), ["_type", "predicate", "predicateType", "subject"])  # JCS key order
+        self.assertEqual((body["_type"], body["predicateType"]),
+                         ("https://in-toto.io/Statement/v1", "https://sdk.syberlabs.space/certificate/v0alpha1"))
+        self.assertEqual((STATEMENT_TYPE, PREDICATE_TYPE, STATEMENT_PAYLOAD_TYPE),
+                         (body["_type"], body["predicateType"], "application/vnd.in-toto+json"))
+        commit = git(self.root, "rev-parse", thread.target_ref)
+        self.assertEqual(body["subject"], [{"name": thread.target_ref, "digest": {
+            "gitCommit": commit, "gitTree": git(self.root, "rev-parse", commit + "^{tree}")}}])
+        # The predicate is the v0 payload byte for byte: its JCS bytes are the bytes the bare form signs, and its
+        # own protocol, version and payload_type fields are unchanged.
+        self.assertEqual(body["predicate"], payload)
+        self.assertEqual(jcs_bytes(body["predicate"]), base64.standard_b64decode(bare["payload"]))
+        self.assertIn(base64.standard_b64decode(bare["payload"]), base64.standard_b64decode(envelope["payload"]))
+        self.assertEqual((payload["protocol"], payload["version"], payload["payload_type"]),
+                         ("sdk.syberlabs.space/certificate/v0alpha1", 0, PAYLOAD_TYPE))
+        # Three layers, identical reports and identical lines, for both forms, from objects and from written files.
+        for repo, home in ((False, False), (True, False), (True, True)):
+            with_statement = self.verify(envelope, repo=repo, home=home)
+            with_bare = self.verify(bare, repo=repo, home=home)
+            self.assertTrue(with_statement.passed, with_statement.reason)
+            self.assertEqual(with_statement, with_bare)
+            self.assertEqual(format_report(with_statement), format_report(with_bare))
+        lines = format_report(self.verify(envelope))
+        self.assertEqual(lines[-1], "verdict    pass")
+        self.assertIn(f"target {thread.target_ref} at {payload['result']['commit'][:10]}", lines[1])
+        self.assertIn("every certified field matches", lines[2])
+        out = self.root.parent / "certs"
+        cert, _ = write_certificate(envelope, PUBLIC, out / "c1.json")
+        plain, _ = write_certificate(bare, PUBLIC, out / "c1.bare.json")
+        self.assertEqual(json.loads(cert.read_bytes())["payloadType"], STATEMENT_PAYLOAD_TYPE)
+        self.assertEqual(format_report(self.verify(cert.read_bytes())), lines)
+        self.assertEqual(format_report(self.verify(plain.read_bytes())), lines)
+        # Neither form appended anything.
+        self.assertEqual(payload["chain"]["count"], len(thread.history()))
+        self.assertTrue(self.clean())
+
+    def test_statement_mutations_are_named(self):
+        kit, thread, envelope, payload = self.certified()
+        genuine = decoded(envelope)
+        result = payload["result"]
+
+        def mutated(**changes):
+            body = copy_of(genuine)
+            body.update(changes)
+            return restate(body)
+
+        # Wrong _type: the first check, before anything in the statement is trusted.
+        report = self.verify(mutated(_type="https://in-toto.io/Statement/v0.1"))
+        self.assertEqual((report.signature, report.repository, report.journal, report.payload, report.reason),
+                         ("statement_type_mismatch", None, None, None, "statement_type_mismatch"))
+        self.assertEqual(format_report(report), [
+            "signature  FAIL statement_type_mismatch  _type is not https://in-toto.io/Statement/v1",
+            "verdict    fail: statement_type_mismatch"])
+        self.assertEqual(self.verify(mutated(_type=None)).reason, "statement_type_mismatch")
+        # Two subjects, none, not a list, or one whose digest, name or key set is not the predicate's result.
+        [one] = genuine["subject"]
+        report = self.verify(mutated(subject=[one, one]))
+        self.assertEqual((report.signature, report.reason), ("subject_mismatch", "subject_mismatch"))
+        self.assertEqual(format_report(report)[0], "signature  FAIL subject_mismatch  2 subjects, expected one")
+        self.assertEqual(self.verify(mutated(subject=[])).reason, "subject_mismatch")
+        self.assertEqual(self.verify(mutated(subject=one)).reason, "subject_mismatch")
+        for change in ({"digest": {"gitCommit": result["commit"], "gitTree": payload["base"]["tree"]}},
+                       {"digest": {"gitCommit": payload["base"]["commit"], "gitTree": result["tree"]}},
+                       {"digest": {"gitCommit": result["commit"], "gitTree": result["tree"], "sha256": "0" * 64}},
+                       {"digest": {"gitCommit": result["commit"].upper(), "gitTree": result["tree"]}},
+                       {"digest": {"gitCommit": result["commit"]}},
+                       {"name": "refs/heads/main"},
+                       {"uri": "git+https://example.test/repo"}):
+            report = self.verify(mutated(subject=[{**copy_of(one), **change}]))
+            self.assertEqual(report.reason, "subject_mismatch", change)
+            self.assertIn(f"the subject is not {thread.target_ref} at gitCommit {result['commit'][:10]}, "
+                          f"gitTree {result['tree'][:10]}", format_report(report)[0])
+        # The subject is compared with the predicate, not with Git: a statement forged consistently passes the
+        # signature layer, as a re-signed bare certificate does, and the repository layer catches both alike.
+        forged = copy_of(payload)
+        forged["result"]["tree"] = payload["base"]["tree"]
+        report = self.verify(restate(statement(forged)))
+        self.assertEqual((report.signature, report.repository, report.reason), ("ok", "tree_mismatch:result", "tree_mismatch:result"))
+        self.assertEqual(format_report(report), format_report(self.verify(resign(forged))))
+        # Wrong predicateType.
+        report = self.verify(mutated(predicateType="https://slsa.dev/provenance/v1"))
+        self.assertEqual((report.signature, report.payload, report.reason), ("predicate_type_mismatch", None, "predicate_type_mismatch"))
+        self.assertEqual(format_report(report)[0],
+                         "signature  FAIL predicate_type_mismatch  predicateType is not https://sdk.syberlabs.space/certificate/v0alpha1")
+        # The statement's own field set: a missing or extra field is payload_shape, named like the predicate's.
+        body = copy_of(genuine)
+        del body["predicate"]
+        self.assertEqual(self.verify(restate(body)).reason, "payload_shape:predicate")
+        self.assertEqual(self.verify(mutated(note="an extra field")).reason, "payload_shape:note")
+        self.assertEqual(self.verify(mutated(predicate=[])).reason, "payload_shape:$")
+        # The predicate goes through the same shape check, identity check and journal comparison as the bare form.
+        forged = copy_of(payload)
+        forged["note"] = "an extra field"
+        self.assertEqual(self.verify(restate(statement(forged))).reason, "payload_shape:note")
+        forged = copy_of(payload)
+        forged["version"] = 1
+        self.assertEqual(self.verify(restate(statement(forged))).reason, "certificate_version_unsupported")
+        forged = copy_of(payload)
+        forged["evaluation"]["checks"][0]["state"] = "failed"
+        report = self.verify(restate(statement(forged)))
+        self.assertEqual((report.signature, report.repository, report.journal),
+                         ("ok", "ok", "field_mismatch:evaluation.checks[0].state"))
+        self.assertIn('certified "failed", journal "passed"', format_report(report)[2])
+        self.assertEqual(self.verify(unsigned(envelope, forged)).reason, "signature_invalid")
+        # Signature failures are unchanged: a foreign key or keyid, and bytes signed under the other type.
+        self.assertEqual(self.verify(restate(genuine, OTHER_SEED)).reason, "signature_invalid")
+        self.assertTrue(self.verify(restate(genuine, OTHER_SEED), OTHER_PUBLIC).passed)
+        foreign = copy_of(envelope)
+        foreign["signatures"][0]["keyid"] = OTHER_PUBLIC.hex()
+        self.assertEqual(self.verify(foreign).reason, "signature_invalid")
+        self.assertEqual(self.verify({**envelope, "payloadType": PAYLOAD_TYPE}).reason, "signature_invalid")
+        self.assertEqual(self.verify({**resign(payload), "payloadType": STATEMENT_PAYLOAD_TYPE}).reason, "signature_invalid")
+        self.assertEqual(self.verify({**envelope, "payloadType": CHAIN_HEAD_TYPE}).reason, "payload_type_mismatch")
+        self.assertEqual(self.verify({**envelope, "payloadType": "application/vnd.in-toto+json; charset=utf-8"}).reason,
+                         "payload_type_mismatch")
+        # A statement signed under the bare type, or a bare payload under the statement type, is the wrong shape for its type.
+        self.assertEqual(self.verify(sign_dsse(PAYLOAD_TYPE, jcs_bytes(genuine), SEED)).reason, "payload_shape:protocol")
+        self.assertEqual(self.verify(sign_dsse(STATEMENT_PAYLOAD_TYPE, jcs_bytes(payload), SEED)).reason, "statement_type_mismatch")
+        # The whole statement must be canonical, not only its predicate.
+        loose = sign_dsse(STATEMENT_PAYLOAD_TYPE, json.dumps(genuine, indent=1).encode(), SEED)
+        self.assertEqual(self.verify(loose).reason, "payload_not_canonical")
+        self.assertEqual(self.verify(sign_dsse(STATEMENT_PAYLOAD_TYPE, b"[]", SEED)).reason, "payload_unreadable")
+        # The schema's statement branch refuses the same mutations.
+        for bad in (decoded(mutated(predicateType="https://slsa.dev/provenance/v1")), decoded(mutated(subject=[one, one])),
+                    decoded(mutated(_type="https://in-toto.io/Statement/v0.1")), decoded(mutated(note="x"))):
+            with self.assertRaises(SchemaError):
+                check_schema(bad, "certificate.schema.json")
+
+    def test_statement_verifies_as_plain_dsse_without_this_module(self):
+        kit, thread, envelope, payload = self.certified()
+        # What any DSSE verifier does with the .pub key: PAE over the envelope's own payloadType, then Ed25519.
+        raw = verified_payload(envelope, PUBLIC, "application/vnd.in-toto+json")
+        self.assertIsNotNone(raw)
+        self.assertIsNone(verified_payload(envelope, PUBLIC, PAYLOAD_TYPE))
+        self.assertIsNone(verified_payload(envelope, OTHER_PUBLIC, "application/vnd.in-toto+json"))
+        message = b"DSSEv1 28 application/vnd.in-toto+json " + str(len(raw)).encode("ascii") + b" " + raw
+        self.assertEqual(message, pae(STATEMENT_PAYLOAD_TYPE, raw))
+        [signature] = envelope["signatures"]
+        self.assertEqual(signature["keyid"], PUBLIC.hex())
+        self.assertTrue(ed25519_verify(PUBLIC, message, base64.standard_b64decode(signature["sig"])))
+        self.assertFalse(ed25519_verify(PUBLIC, pae(PAYLOAD_TYPE, raw), base64.standard_b64decode(signature["sig"])))
+        # What it then reads, with no certificate code: a Statement v1 whose one subject is the Git result.
+        body = json.loads(raw)
+        self.assertEqual(body["_type"], "https://in-toto.io/Statement/v1")
+        self.assertEqual(body["predicateType"], "https://sdk.syberlabs.space/certificate/v0alpha1")
+        [subject] = body["subject"]
+        self.assertEqual(subject["name"], thread.target_ref)
+        self.assertEqual(subject["digest"], {"gitCommit": payload["result"]["commit"], "gitTree": payload["result"]["tree"]})
+        self.assertEqual(subject["digest"]["gitCommit"], git(self.root, "rev-parse", thread.target_ref))
+        self.assertEqual(subject["digest"]["gitTree"], git(self.root, "rev-parse", thread.target_ref + "^{tree}"))
+        self.assertEqual(body["predicate"], payload)
+        # The bare form is the predicate alone under the certificate's own type; the same tool reads it with that type.
+        bare, _ = certify(kit, thread.id, "c1", seed=SEED, now=NOW, bare=True)
+        self.assertEqual(json.loads(verified_payload(bare, PUBLIC, PAYLOAD_TYPE)), body["predicate"])
+        self.assertIsNone(verified_payload(bare, PUBLIC, "application/vnd.in-toto+json"))
 
 
 class SeedRules(unittest.TestCase):
@@ -580,8 +770,18 @@ class CommandLine(CertificateCase):
         self.assertEqual(code, 0)
         self.assertIn("seed from $MY_SEED", out)
         other = json.loads((self.root.parent / "cert.json").read_text())
-        self.assertEqual(decoded(other)["issuer"]["seed_env"], "MY_SEED")
+        self.assertEqual(other["payloadType"], STATEMENT_PAYLOAD_TYPE)
+        self.assertEqual(predicate_of(other)["issuer"]["seed_env"], "MY_SEED")
         self.assertTrue((self.root.parent / "cert.pub").is_file())
+        # --bare: the same payload under its own type, the same summary line, and the same verify lines (below).
+        first = out.splitlines()[0]
+        code, out, _ = self.run_cli("certify", "c1", "--bare", "--out", str(self.root.parent / "bare.json"))
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines()[0], first)
+        bare = json.loads((self.root.parent / "bare.json").read_text())
+        self.assertEqual(bare["payloadType"], PAYLOAD_TYPE)
+        without_time = lambda payload: {key: value for key, value in payload.items() if key != "issued_at"}
+        self.assertEqual(without_time(decoded(bare)), without_time(predicate_of(json.loads(cert.read_text()))))
 
         code, out, err = self.run_cli("verify", str(cert), "--public", str(pub))
         self.assertEqual(code, 0, err)
@@ -600,7 +800,9 @@ class CommandLine(CertificateCase):
         self.assertTrue(lines[2].startswith("journal    ok   "))
         self.assertIn(" events certified, head ", lines[2])
         self.assertEqual(lines[3], "verdict    pass")
-        forged = decoded(json.loads(cert.read_text()))
+        code, out, err = self.run_cli("verify", str(self.root.parent / "bare.json"), "--public", str(pub), "--repo", str(self.root))
+        self.assertEqual((code, out.splitlines()), (0, lines), err)
+        forged = predicate_of(json.loads(cert.read_text()))
         forged["result"]["tree"] = forged["base"]["tree"]
         bad = self.root.parent / "bad.json"
         bad.write_text(json.dumps(resign(forged)))
@@ -639,6 +841,8 @@ class CommandLine(CertificateCase):
         self.assertEqual(verify_certificate(b"\xff\xfe", PUBLIC).reason, "certificate_unreadable")
         self.assertEqual(verify_certificate(b'{"payloadType": "x"}', PUBLIC).reason, "payload_type_mismatch")
         self.assertEqual(verify_certificate({"payloadType": PAYLOAD_TYPE, "payload": 5, "signatures": []}, PUBLIC).reason,
+                         "signature_invalid")
+        self.assertEqual(verify_certificate({"payloadType": STATEMENT_PAYLOAD_TYPE, "payload": 5, "signatures": []}, PUBLIC).reason,
                          "signature_invalid")
         pub = self.root.parent / "key.pub"
         pub.write_bytes(PUBLIC.hex().encode() + b"\n")

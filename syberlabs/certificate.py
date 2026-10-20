@@ -1,8 +1,9 @@
 """Admission certificate v0: what the journal said about one accepted candidate, under a signature.
 
-    syberlabs certify c1                         # reads the journal, signs, writes <out> and <out>.pub
-    syberlabs verify CERT --public KEY --repo .  # signature and shape; commits, trees and the diff from Git;
-                                                 # the certified journal prefix when it is present
+    syberlabs certify c1                         # reads the journal, signs an in-toto Statement, writes <out> and <out>.pub
+    syberlabs certify c1 --bare                  # the same payload under the certificate's own payloadType
+    syberlabs verify CERT --public KEY --repo .  # either form: signature and shape; commits, trees and the diff from
+                                                 # Git; the certified journal prefix when it is present
 
 The host that ran a Build Thread states, under a DSSE signature a verifier can check with only
 the public key, which exact tree it accepted, under which contract and policy, with which
@@ -15,6 +16,14 @@ not proof that ``main`` took the change: it proves what the journal said at cert
 the thread's target branch. And in v0 it is not witnessed: the certifying process holds the
 seed, so a certificate proves possession of that seed plus read access to the journal, not an
 independent party. ``issuer.signing`` says ``in-process`` for that reason.
+
+By default the envelope carries an in-toto Statement v1 (``payloadType``
+``application/vnd.in-toto+json``): one subject, the target ref with the result commit and tree
+as ``gitCommit`` and ``gitTree``; ``predicateType`` ``PREDICATE_TYPE``; and the v0 payload as the
+predicate, byte for byte. Any DSSE or in-toto verifier can check the signature and read the
+statement with the public key; the repository and journal layers remain this module's. ``--bare``
+signs the payload under its own ``PAYLOAD_TYPE`` instead, and ``verify_certificate`` reads both
+forms and prints the same lines for both.
 
 One pure function, ``claims``, derives every journal-sourced field. ``certify`` runs it on the
 live history and signs; ``verify_certificate`` runs it on the certified prefix of the journal
@@ -47,8 +56,12 @@ from syberlabs.gitspace import Repo
 from syberlabs.jcs import JcsError, envelope_jcs, jcs_bytes
 from syberlabs.journal import CASE_ID
 
-PAYLOAD_TYPE = "application/vnd.syberlabs.admission-certificate+json"
+PAYLOAD_TYPE = "application/vnd.syberlabs.admission-certificate+json"   # the bare form, and the predicate's own type
 CERTIFICATE_TYPE = PAYLOAD_TYPE
+STATEMENT_PAYLOAD_TYPE = "application/vnd.in-toto+json"                  # the default form: an in-toto Statement v1
+STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+PREDICATE_TYPE = "https://sdk.syberlabs.space/certificate/v0alpha1"
+STATEMENT_FIELDS = ("_type", "subject", "predicateType", "predicate")
 PROTOCOL = "sdk.syberlabs.space/certificate/v0alpha1"
 VERSION = 0
 ISSUER = "syberlabs.certificate/0"
@@ -167,6 +180,23 @@ def build_payload(row: dict, events: list[dict], contract: dict, *, seed_env: st
         "issuer": {"tool": ISSUER, "host": HOST, "seed_env": seed_env, "signing": SIGNING},
         "issued_at": stamp(now),
         **claims(row, events, contract),
+    }
+
+
+def statement(payload: dict) -> dict:
+    """The in-toto Statement v1 around an unchanged v0 payload.
+
+    One subject, the certified target ref, carrying the result commit and tree as ``gitCommit``
+    and ``gitTree``; ``predicateType`` is ``PREDICATE_TYPE``; the predicate is ``payload`` itself,
+    so its JCS bytes inside the statement are exactly the bytes the bare form signs. Pure.
+    """
+    result = payload["result"]
+    return {
+        "_type": STATEMENT_TYPE,
+        "subject": [{"name": payload["admission"]["target_ref"],
+                     "digest": {"gitCommit": result["commit"], "gitTree": result["tree"]}}],
+        "predicateType": PREDICATE_TYPE,
+        "predicate": payload,
     }
 
 
@@ -370,14 +400,16 @@ def read_public(path: str | Path) -> bytes:
 # Certify: read, sign, write. Nothing is appended.
 
 def certify(kit, thread_id: str, candidate: str, *, seed: bytes, seed_env: str = DEFAULT_SEED_ENV,
-            now: float | None = None) -> tuple[dict, dict]:
+            now: float | None = None, bare: bool = False) -> tuple[dict, dict]:
     """Sign what the journal says about ``candidate``. Returns ``(envelope, payload)``.
 
-    Opens the thread, verifies its chain and side digests, and appends nothing: no event, no
-    observation, no ref. ``seed_env`` is recorded by name; the seed itself reaches only
-    ``sign_dsse``. Refuses ``unknown_candidate``, ``not_accepted`` (the candidate is not the
-    thread's authoritative one, or the acceptance is unresolved), ``invalid_chain`` and
-    ``seed_env_invalid``.
+    The envelope is a DSSE envelope over the in-toto ``statement`` of the payload under
+    ``STATEMENT_PAYLOAD_TYPE``, or with ``bare`` over the payload itself under ``PAYLOAD_TYPE``;
+    ``payload`` is the v0 payload either way. Opens the thread, verifies its chain and side
+    digests, and appends nothing: no event, no observation, no ref. ``seed_env`` is recorded by
+    name; the seed itself reaches only ``sign_dsse``. Refuses ``unknown_candidate``,
+    ``not_accepted`` (the candidate is not the thread's authoritative one, or the acceptance is
+    unresolved), ``invalid_chain`` and ``seed_env_invalid``.
     """
     if not isinstance(seed_env, str) or _ENV.fullmatch(seed_env) is None:
         raise Rejected("seed_env_invalid", "the seed variable must be an uppercase environment variable name")
@@ -392,7 +424,9 @@ def certify(kit, thread_id: str, candidate: str, *, seed: bytes, seed_env: str =
     payload = build_payload(row, events, contract, seed_env=seed_env, now=time.time() if now is None else now)
     if payload["result"]["candidate"] != candidate:
         raise Rejected("not_accepted", f"{candidate} is not the accepted candidate of this thread")
-    return sign_dsse(PAYLOAD_TYPE, jcs_bytes(payload), seed), payload
+    if bare:
+        return sign_dsse(PAYLOAD_TYPE, jcs_bytes(payload), seed), payload
+    return sign_dsse(STATEMENT_PAYLOAD_TYPE, jcs_bytes(statement(payload)), seed), payload
 
 
 def write_certificate(envelope: dict, public: bytes, out: str | Path) -> tuple[Path, Path]:
@@ -452,8 +486,11 @@ def verify_certificate(envelope: object, public: bytes, *, repo: Repo | None = N
     """Check a certificate with only the public key, then with what the repository and journal can re-derive.
 
     Layer 1 always: the file size and that it is a JSON object (when ``envelope`` is bytes),
-    the ``payloadType``, the signature before any parsing of the payload, the strict shape, the
-    identity constants, and that the signed bytes are the JCS form of the object they parse to.
+    the ``payloadType`` (the in-toto statement type or the bare certificate type), the signature
+    over that type's PAE before any parsing of the payload, for a statement its ``_type``, field
+    set and ``predicateType``, the strict shape of the payload (the predicate), for a statement
+    that its one subject is the predicate's target ref, result commit and tree, the identity
+    constants, and that the signed bytes are the JCS form of the object they parse to.
     Layer 2 with ``repo``: both commits exist, their trees match ``rev-parse ^{tree}``, and the
     changed paths, diff digest and diff size match; the target ref's current state is reported,
     never judged. Layer 3 with ``home`` (the kit's ``.syberlabs``) when the thread's journal file
@@ -510,9 +547,10 @@ def _layer_signature(envelope: object, public: bytes) -> dict:
             raise _Fail("certificate_unreadable", "the file is not JSON") from None
     if not isinstance(envelope, dict):
         raise _Fail("certificate_unreadable", "the file is not a JSON object")
-    if envelope.get("payloadType") != PAYLOAD_TYPE:
-        raise _Fail("payload_type_mismatch", f"payloadType is not {PAYLOAD_TYPE}")
-    signed = verified_payload(envelope, public, PAYLOAD_TYPE)
+    payload_type = envelope.get("payloadType")
+    if payload_type not in (STATEMENT_PAYLOAD_TYPE, PAYLOAD_TYPE):
+        raise _Fail("payload_type_mismatch", f"payloadType is neither {STATEMENT_PAYLOAD_TYPE} nor {PAYLOAD_TYPE}")
+    signed = verified_payload(envelope, public, payload_type)
     if signed is None:
         raise _Fail("signature_invalid", f"no signature verifies under ed25519 {public.hex()[:10]}")
     try:
@@ -521,11 +559,14 @@ def _layer_signature(envelope: object, public: bytes) -> dict:
         raise _Fail("payload_unreadable", "the signed bytes are not JSON") from None
     if not isinstance(parsed, dict):
         raise _Fail("payload_unreadable", "the signed bytes are not a JSON object")
+    payload = _predicate(parsed) if payload_type == STATEMENT_PAYLOAD_TYPE else parsed
     try:
-        check_payload(parsed)
+        check_payload(payload)
     except Rejected as exc:
         raise _Fail(f"payload_shape:{exc.detail}", "a field is missing, extra or malformed") from None
-    if parsed["protocol"] != PROTOCOL or parsed["version"] != VERSION or parsed["payload_type"] != PAYLOAD_TYPE:
+    if payload_type == STATEMENT_PAYLOAD_TYPE:
+        _check_subject(parsed["subject"], payload)
+    if payload["protocol"] != PROTOCOL or payload["version"] != VERSION or payload["payload_type"] != PAYLOAD_TYPE:
         raise _Fail("certificate_version_unsupported", f"this verifier reads {PROTOCOL} version {VERSION}")
     try:
         canonical = jcs_bytes(parsed)
@@ -533,7 +574,37 @@ def _layer_signature(envelope: object, public: bytes) -> dict:
         canonical = None
     if canonical != signed:
         raise _Fail("payload_not_canonical", "the signed bytes are not RFC 8785 JSON of the object they parse to")
-    return parsed
+    return payload
+
+
+def _predicate(parsed: dict) -> object:
+    """The predicate of an in-toto Statement whose ``_type``, field set and ``predicateType`` are this certificate's."""
+    if parsed.get("_type") != STATEMENT_TYPE:
+        raise _Fail("statement_type_mismatch", f"_type is not {STATEMENT_TYPE}")
+    try:
+        _object(parsed, "", STATEMENT_FIELDS)
+    except Rejected as exc:
+        raise _Fail(f"payload_shape:{exc.detail}", "a field of the statement is missing or extra") from None
+    if parsed["predicateType"] != PREDICATE_TYPE:
+        raise _Fail("predicate_type_mismatch", f"predicateType is not {PREDICATE_TYPE}")
+    return parsed["predicate"]
+
+
+def _check_subject(subjects: object, payload: dict) -> None:
+    """Exactly one subject, equal to the predicate's target ref with its result commit and tree.
+
+    The comparison is with the predicate, which ``check_payload`` has already accepted, not with
+    Git: the repository layer compares the predicate with Git.
+    """
+    result = payload["result"]
+    expected = {"name": payload["admission"]["target_ref"],
+                "digest": {"gitCommit": result["commit"], "gitTree": result["tree"]}}
+    if not isinstance(subjects, list) or len(subjects) != 1:
+        count = len(subjects) if isinstance(subjects, list) else "no"
+        raise _Fail("subject_mismatch", f"{count} subjects, expected one")
+    if subjects[0] != expected:
+        raise _Fail("subject_mismatch", f"the subject is not {expected['name']} at gitCommit {result['commit'][:10]}, "
+                                        f"gitTree {result['tree'][:10]}")
 
 
 def _layer_repository(repo: Repo, payload: dict) -> str:

@@ -150,6 +150,9 @@ def main(argv: list[str] | None = None) -> int:
     certify.add_argument("--seed-env", default=certificate.DEFAULT_SEED_ENV, metavar="NAME",
                          help="environment variable holding the signing seed, as the path of a 32-byte file or 64 hex "
                               "characters (default SYBERLABS_CERTIFICATE_SEED); only the name is recorded")
+    certify.add_argument("--bare", action="store_true",
+                         help="sign the payload under its own payloadType (application/vnd.syberlabs.admission-certificate+json) "
+                              "instead of wrapping it in an in-toto Statement (application/vnd.in-toto+json); verify reads both")
     verify = commands.add_parser("verify", help="check a certificate with its public key; builds no Kit and runs nothing")
     verify.add_argument("certificate")
     verify.add_argument("--public", required=True, metavar="KEY", help="path to the signer's public key (the .pub file)")
@@ -356,7 +359,8 @@ def _run(kit: Kit, args) -> int:
             print(f"{event['seq']:4} {event['kind']:22} {str(detail)[:40]:40} {extra}")
     elif args.command == "certify":
         seed = certificate.load_seed(args.seed_env)
-        envelope, payload = certificate.certify(kit, thread.id, args.candidate, seed=seed, seed_env=args.seed_env)
+        envelope, payload = certificate.certify(kit, thread.id, args.candidate, seed=seed, seed_env=args.seed_env,
+                                                bare=args.bare)
         out = Path(args.out) if args.out else kit.home / "certificates" / f"{thread.id[:8]}-{args.candidate}.json"
         cert, pub = certificate.write_certificate(envelope, public_from_seed(seed), out)
         print(certificate.summary(payload))
