@@ -580,7 +580,9 @@ class Kit:
         inputs = {"objective": objective.strip()}
         if records_class:
             inputs["act_class"] = act_class or "R"
-        case = self.session.create_case(cid, version, inputs, actor or self.actor)
+        case = self._interrupted(cid, version, inputs)
+        if case is None:
+            case = self.session.create_case(cid, version, inputs, actor or self.actor)
         self.session.observe(case, "base", {"commit": base, "tree": self.repo.tree(base), "branch": self.repo.current_branch()},
                              "git", base, HOST, verified=True)
         thread = Thread(self, case)
@@ -589,19 +591,44 @@ class Kit:
         return thread
 
     def open(self, thread_id: str) -> "Thread":
+        """Open a thread by id or unique prefix.
+
+        A thread whose ``start`` died before the base observation is refused with
+        ``thread_incomplete``: ``start`` again with the same objective completes it, or ``forget`` it.
+        """
+        case_id = self._find(thread_id)
+        self.session.inspect(case_id)
+        return Thread(self, case_id)
+
+    def _find(self, thread_id: str) -> str:
         matches = [t for t in self.journal.thread_ids() if t.startswith(thread_id)] if thread_id else []
         if len(matches) != 1:
             raise Rejected("unknown_thread", f"{thread_id!r} matches {len(matches)} threads")
-        self.session.inspect(matches[0])
-        return Thread(self, matches[0])
+        return matches[0]
+
+    def _incomplete(self, case_id: str) -> bool:
+        """True when ``start`` was interrupted after ``case_created`` and before the base observation."""
+        return latest_observation(self.session.history(case_id), "base") is None
+
+    def _interrupted(self, contract_id: str, version: int, inputs: dict) -> str | None:
+        """The most recent thread, when its start was interrupted and it was started with exactly these inputs."""
+        rows = [row for row in map(self.journal.first, self.journal.thread_ids()) if row]
+        if not rows:
+            return None
+        latest = max(rows, key=lambda row: row["created"])
+        if latest["inputs"] != inputs or (latest["contract_id"], latest["contract_version"]) != (contract_id, version):
+            return None
+        return latest["id"] if self._incomplete(latest["id"]) else None
 
     def threads(self) -> list[dict]:
+        """Every thread the journal lists; ``state`` is ``incomplete`` for an interrupted start, else ``started``."""
         rows = []
         for case_id in self.journal.thread_ids():
             row = self.journal.first(case_id)
             if row:
                 rows.append({"id": case_id, "objective": row["inputs"].get("objective"),
-                             "contract": f"{row['contract_id']}.v{row['contract_version']}", "created": row["created"]})
+                             "contract": f"{row['contract_id']}.v{row['contract_version']}", "created": row["created"],
+                             "state": "incomplete" if self._incomplete(case_id) else "started"})
         return sorted(rows, key=lambda r: r["created"])
 
     def contract_diff(self, a: str, b: str) -> list[dict]:
@@ -662,16 +689,17 @@ class Kit:
 
         The target branch and anything published stay: forgetting never undoes an effect.
         """
-        thread = self.open(thread_id)
-        result = self.session.forget(thread.id, actor or self.actor, reason)
+        case_id = self._find(thread_id)  # not open(): an interrupted start may be forgotten too
+        target_ref, _ = self._target(case_id)
+        result = self.session.forget(case_id, actor or self.actor, reason)
         removed = 0
-        for ref in self.repo.refs(f"{CANDIDATE_REFS}/{thread.id[:8]}/"):
+        for ref in self.repo.refs(f"{CANDIDATE_REFS}/{case_id[:8]}/"):
             self.repo.delete_ref(ref)
             removed += 1
         current = self.home / "current"
-        if current.exists() and current.read_text().strip() == thread.id:
+        if current.exists() and current.read_text().strip() == case_id:
             current.unlink()
-        return {**result, "candidate_refs_removed": removed, "kept": thread.target_ref}
+        return {**result, "candidate_refs_removed": removed, "kept": target_ref}
 
     def export(self, thread_id: str) -> dict:
         thread = self.open(thread_id)
@@ -681,6 +709,13 @@ class Kit:
 
 
 _MISSING = object()
+
+
+def latest_observation(events: Sequence[dict], key: str) -> dict | None:
+    """The body of the latest verified host or Git observation under ``key``, or None."""
+    found = next((e for e in reversed(events) if e["kind"] == "observed" and e["body"]["key"] == key
+                  and e["body"]["source"] in ("git", HOST) and e["body"].get("verified")), None)
+    return found["body"] if found else None
 
 
 class Thread:
@@ -693,7 +728,11 @@ class Thread:
         self.act_class = row["inputs"].get("act_class")
         self.contract = (row["contract_id"], row["contract_version"])
         self.config = settings(kit.session.contracts[self.contract])
-        self.base = self._latest("base")["value"]["commit"]
+        base = self._latest("base")
+        if base is None:
+            raise Rejected("thread_incomplete", f"{case_id[:8]}: start was interrupted before the base was recorded; "
+                           "run start again with the same objective to complete it, or forget it")
+        self.base = base["value"]["commit"]
         self.target_ref, self._create = kit._target(case_id)
 
     # Views over the history
@@ -702,10 +741,7 @@ class Thread:
         return self.kit.session.history(self.id)
 
     def _latest(self, key: str) -> dict | None:
-        events = self._events()
-        found = next((e for e in reversed(events) if e["kind"] == "observed" and e["body"]["key"] == key
-                      and e["body"]["source"] in ("git", HOST) and e["body"].get("verified")), None)
-        return found["body"] if found else None
+        return latest_observation(self._events(), key)
 
     def _views(self) -> list[dict]:
         return self.kit.session.candidates(self.id)

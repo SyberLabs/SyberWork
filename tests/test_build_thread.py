@@ -297,6 +297,65 @@ class Recovery(RepoCase):
         self.assertEqual(caught.exception.code, "journal_corrupt")
 
 
+def died_after_case_created(kit, objective="Add a CSV export"):
+    """Write only the ``case_created`` record, exactly as ``Kit.start`` does before the base observation."""
+    cid, version = kit._resolve(None)
+    inputs = {"objective": objective}
+    if "act_class" in kit.session.contracts[(cid, version)]["inputs"]:
+        inputs["act_class"] = "R"
+    return kit.session.create_case(cid, version, inputs, "dev@example.test")
+
+
+class InterruptedStart(RepoCase):
+    """``start`` is several appends; a death between the first and the base observation must stay recognisable."""
+
+    OBJECTIVE = "Add a CSV export"
+
+    def test_open_refuses_with_a_code_threads_says_incomplete_and_start_completes_it(self):
+        kit = self.kit()
+        partial = died_after_case_created(kit)
+        kit.close()
+        restarted = self.kit()
+        with self.assertRaises(Rejected) as caught:
+            restarted.open(partial[:6])
+        self.assertEqual(caught.exception.code, "thread_incomplete")
+        self.assertIn(partial[:8], caught.exception.detail)
+        self.assertIn("forget", caught.exception.detail)
+        [row] = restarted.threads()
+        self.assertEqual((row["id"], row["state"]), (partial, "incomplete"))
+        with self.assertRaises(Rejected) as caught:
+            restarted.export(partial)
+        self.assertEqual(caught.exception.code, "thread_incomplete")
+        thread = restarted.start(self.OBJECTIVE, paths=["src", "tests"])
+        self.assertEqual(thread.id, partial)
+        self.assertEqual(thread.base, self.head)
+        self.assertEqual([row["state"] for row in restarted.threads()], ["started"])
+        reopened = restarted.open(partial[:6])
+        self.assertEqual(reopened.status()["base"], self.head)
+        self.assertEqual(reopened.read_scope()["paths"], ["src", "tests"])
+        self.assertEqual([e["kind"] for e in reopened.history()], ["case_created", "observed", "observed"])
+        self.assertTrue(restarted.session.verify_chain(partial))
+        self.assertEqual(validate_events(reopened.history(), "completed"), [])
+        again = restarted.start(self.OBJECTIVE)
+        self.assertNotEqual(again.id, partial, "a completed thread is never reused")
+
+    def test_a_different_objective_starts_a_new_thread_and_the_partial_one_can_be_forgotten(self):
+        kit = self.kit()
+        partial = died_after_case_created(kit)
+        other = kit.start("Rename the report module")
+        self.assertNotEqual(other.id, partial)
+        states = {row["id"]: row["state"] for row in kit.threads()}
+        self.assertEqual(states, {partial: "incomplete", other.id: "started"})
+        same_words_other_class = kit.start(self.OBJECTIVE, act_class="C")
+        self.assertNotEqual(same_words_other_class.id, partial, "the recorded inputs must match exactly")
+        found = kit.forget(partial, reason="interrupted start")
+        self.assertEqual(found["forgotten"], partial)
+        self.assertNotIn(partial, kit.journal.thread_ids())
+        with self.assertRaises(Rejected) as caught:
+            kit.open(partial)
+        self.assertEqual(caught.exception.code, "unknown_thread")
+
+
 class Search(RepoCase):
     def test_budget_bounds_candidates(self):
         kit = self.kit(self.contract(**{"evolution.budget": {"max_candidates": 2, "max_evaluations": 2}}))
@@ -577,6 +636,25 @@ class CommandLine(RepoCase):
         self.assertIn("class     C", status)
         self.assertIn("[claude@opus-5.5]", status)
         self.assertIn("act class R", self.run_cli("start", "A reversible change")[1])
+
+    def test_an_interrupted_start_is_shown_refused_and_completed_from_the_terminal(self):
+        self.assertEqual(self.run_cli("init")[0], 0)
+        kit = self.kit()
+        partial = died_after_case_created(kit, "Add a CSV export")
+        kit.close()
+        code, out, _ = self.run_cli("threads")
+        self.assertEqual(code, 0)
+        self.assertIn(f"{partial[:8]}", out)
+        self.assertIn("[incomplete", out)
+        code, _, err = self.run_cli("use", partial[:6])
+        self.assertEqual(code, 2)
+        self.assertIn("thread_incomplete", err)
+        code, out, _ = self.run_cli("start", "Add a CSV export", "--paths", "src", "tests")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"completed interrupted start of {partial[:8]}", out)
+        code, out, _ = self.run_cli("threads")
+        self.assertNotIn("incomplete", out)
+        self.assertIn(f"* {partial[:8]}", out)
 
     def test_a_class_the_contract_cannot_record_is_an_error_with_a_hint(self):
         legacy = default_contract(self.root)
