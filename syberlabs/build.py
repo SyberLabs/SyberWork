@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from syberlabs import checks as runner
+from syberlabs import critic
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import clean_path, in_scope, settings
@@ -792,8 +793,14 @@ class Thread:
             skipped = tuple(CheckResult(name, "not_run", None, 0, "outside the contract's scope; not executed")
                             for name in self.config["evaluation"]["checks"])
             return Evaluation(candidate, skipped, required), 0
-        body = runner.evaluate(self.kit.repo, view, self.config["evaluation"])
+        # A critic check reads the objective, the acceptance clauses and the scope; the host then
+        # records every document it accepted as an observation, right after the evaluation.
+        context = {"objective": self.objective, "scope": self.config["scope"],
+                   "acceptance": self.kit.session.contracts[self.contract]["acceptance"]}
+        documents: list = []
+        body = runner.evaluate(self.kit.repo, view, self.config["evaluation"], context=context, documents=documents)
         self.kit.session.record_evaluation(self.id, body, HOST)
+        critic.observe(self.kit.session, self.id, body, documents)
         results = tuple(CheckResult(c["name"], c["state"], c["exit_code"], c["duration_ms"], c["output_tail"])
                         for c in body["checks"])
         return Evaluation(candidate, results, required), 1

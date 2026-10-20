@@ -5,6 +5,12 @@ Checks run in declaration order, as argv lists without a shell, with a scrubbed
 environment, a per-check timeout, and an output cap. Output goes to a file,
 not memory; the record keeps a SHA-256 of all of it and a short tail.
 
+A check whose name is ``critic`` or starts with ``critic.`` is a critic
+(``syberlabs.critic``): it reads a JSON request on stdin, its stdout must be a
+findings document, and the host parses that document, checks that the reviewer
+is not the candidate's provider, and hands the parsed documents back through
+``documents`` so the Build Thread can record them as observations.
+
 This is a controlled environment, not a sandbox. The commands are the
 project's own and run with the developer's permissions against candidate code.
 """
@@ -12,6 +18,7 @@ project's own and run with the developer's permissions against candidate code.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import signal
@@ -21,6 +28,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from syberlabs import critic
 from syberlabs.evolution import MAX_TAIL_CHARS
 from syberlabs.gitspace import Repo
 
@@ -47,12 +55,14 @@ def _stop(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
-def run_check(argv: list[str], cwd: Path, env: dict, timeout: int, max_output: int, log: Path) -> dict:
+def run_check(argv: list[str], cwd: Path, env: dict, timeout: int, max_output: int, log: Path,
+              stdin: Path | None = None) -> dict:
+    """Run one check. ``stdin`` is a file handed to the command's standard input; without one it reads nothing."""
     started = time.monotonic()
     state, code = "error", None
-    with open(log, "wb") as out:
+    with open(log, "wb") as out, (open(stdin, "rb") if stdin else open(os.devnull, "rb")) as feed:
         try:
-            proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out,
+            proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=feed, stdout=out,
                                     stderr=subprocess.STDOUT, start_new_session=hasattr(os, "setsid"))
         except OSError as exc:
             out.write(f"could not start {argv[0]!r}: {exc.strerror or exc}\n".encode())
@@ -87,14 +97,49 @@ def run_check(argv: list[str], cwd: Path, env: dict, timeout: int, max_output: i
             "output_digest": sha.hexdigest(), "output_tail": tail}
 
 
-def evaluate(repo: Repo, candidate: dict, evaluation: dict) -> dict:
-    """Return an evaluation record body for ``Session.record_evaluation``."""
+def _review(log: Path, found: dict, candidate: dict) -> tuple | None:
+    """Judge a critic's output. Returns ``(bytes, document)`` to observe, or None after marking the result."""
+    if found["state"] != "passed":
+        return None
+    raw = log.read_bytes()
+    try:
+        document = critic.parse(raw)
+    except critic.Invalid as exc:
+        found.update(state="error", output_tail=exc.code)
+        return None
+    if not critic.independent(document, candidate["provider"]):
+        found.update(state="error", output_tail="reviewer_not_independent")
+        return None
+    return raw, document
+
+
+def evaluate(repo: Repo, candidate: dict, evaluation: dict, *, context: dict | None = None,
+             documents: list | None = None) -> dict:
+    """Return an evaluation record body for ``Session.record_evaluation``.
+
+    ``context`` (objective, acceptance, scope) goes to critic checks on stdin. ``documents``, when
+    given, receives ``(check name, stdout bytes, parsed document)`` for every critic whose document
+    the host accepted; the caller records them (``critic.observe``). Callers that pass neither get
+    today's behaviour, and a critic's result is still recorded like any check's.
+    """
     results = []
+    diff = None
     with tempfile.TemporaryDirectory(prefix="syberlabs-home-") as home, repo.worktree(candidate["commit"]) as tree:
         env = _environment(Path(home), candidate["id"])
         for name, check in evaluation["checks"].items():
             log = Path(home) / f"{name}.log"
-            found = run_check(check["argv"], tree, env, check["timeout_seconds"], evaluation["max_output_bytes"], log)
+            feed = None
+            if critic.is_critic(name):
+                if diff is None:
+                    text, size, _digest = repo.diff(candidate["base"], candidate["commit"], max_bytes=critic.MAX_DIFF_BYTES)
+                    diff = text if size <= critic.MAX_DIFF_BYTES else text + f"\n[diff truncated: {size} bytes total]\n"
+                feed = Path(home) / f"{name}.request.json"
+                feed.write_bytes(json.dumps(critic.request(candidate, results, diff, context)).encode())
+            found = run_check(check["argv"], tree, env, check["timeout_seconds"], evaluation["max_output_bytes"], log, stdin=feed)
+            if critic.is_critic(name):
+                reviewed = _review(log, found, candidate)
+                if reviewed is not None and documents is not None:
+                    documents.append((name, *reviewed))
             results.append({"name": name, **found})
     return {"candidate": candidate["id"], "commit": candidate["commit"], "tree": candidate["tree"],
             "evaluator": EVALUATOR, "checks": results}
