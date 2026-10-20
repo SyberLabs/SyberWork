@@ -170,8 +170,11 @@ after the settle window. The tests:
   the destination answered truthfully the settlement agrees with it: a claim
   whose write happened is never `not_applied`, a claim whose write did not
   happen is never verified.
-- **Recovery settles an interrupted recorded effect.** Expected failure, see
-  below.
+- **Recovery settles an interrupted recorded effect.** `review` has no
+  executor; its commit dies after the claim (`effect_started`) and before
+  `effect_succeeded`. `recover` (one `reconcile` per open claim) settles the
+  claim, and a later proposal of `review` is allowed. Found failing on the
+  first run, see below; fixed in the kernel afterwards.
 - **A torn tail is repaired or refused, never half accepted.** After a
   sequence, a partial final record with no newline (a prefix of a plausible
   next record, or random bytes) is appended to the thread file or the
@@ -209,10 +212,11 @@ up twice. A death inside any step reopens the kit and continues.
 
 ### What the first run found
 
-Three properties fail on this branch. Each test is kept, marked
+Three properties failed on the first run. Each test was kept, marked
 `expectedFailure`, with its counterexample and the kernel code believed
 responsible in its docstring; none was weakened. When the kernel is fixed the
 test reports an unexpected success, which is the signal to remove the mark.
+Finding 2 is fixed and its mark is off; findings 1 and 3 still carry theirs.
 
 1. **An intervention measured twice, settled the other way** (the window
    found on #35). `publish measure`, baseline 10.0, metric 12.0 after the
@@ -225,12 +229,29 @@ test reports an unexpected success, which is the signal to remove the mark.
    `syberlabs/c323757b` three seconds after #35 was squashed into `main`, so
    the fix is on neither `main` nor this branch. The property reproduces the
    window by construction; it needs no knowledge of the review that found it.
-2. **A recorded effect cannot be recovered.** An action without an executor
-   (`review` here) whose commit dies between `effect_started` and
-   `effect_succeeded`: `reconcile` refuses with `reconciliation_unavailable`
-   because no executor is bound, and every later proposal of the action is
+2. **A recorded effect could not be recovered** (fixed). An action without
+   an executor (`review` here) whose commit died between `effect_started` and
+   `effect_succeeded`: `reconcile` refused with `reconciliation_unavailable`
+   because no executor was bound, and every later proposal of the action was
    denied `effect_unresolved`, with no path out. `syberlabs/session.py`,
-   `commit`'s executor-less branch and `reconcile`'s first refusal.
+   `commit`'s executor-less branch and `reconcile`'s first refusal. Now, for
+   an action that declares no `effect`, the record is the effect:
+   `Session.reconcile` (after the usual role check and the check that the
+   claim is unresolved) appends `effect_succeeded` with the same output commit
+   would have written, `{"recorded": true, "args": <the proposal's args>}`,
+   and `claim_hash` set to the claim's hash, and returns `status:
+   "recovered"`. The event body is unchanged in shape, so the frozen schemas
+   still hold; the recovery is read from the record's structure (a success
+   appended by reconcile after the claim, in a later process) and from the
+   return value, not from a flag. A second `reconcile` is refused with
+   `reconciliation_denied` as for any settled claim. An action that declares
+   an effect but has no executor bound is still refused
+   `reconciliation_unavailable`: a missing binding is not a record. The
+   property's assertions now also accept `effect_succeeded` as the
+   settlement and expect the proposal after recovery to be denied
+   `action_already_completed` (the state after any completed effect of the
+   action in a case, by `effect.not_completed`), not `allowed` as first
+   written; `tests/test_session.py` pins the direct case.
 3. **A thread that died during `start` cannot be opened.** `start` is three
    appends (`case_created`, the `base` observation, the context). After a
    death between the first two the journal lists the thread, `syberlabs
