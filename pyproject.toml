@@ -11,6 +11,8 @@ license = {text = "Apache-2.0"}
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
+# Development only: tests/test_properties.py skips itself when hypothesis is absent.
+test = ["hypothesis>=6"]
 
 [project.scripts]
 syberwork = "syberwork.cli:main"
