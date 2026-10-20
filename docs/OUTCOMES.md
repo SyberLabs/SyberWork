@@ -108,7 +108,7 @@ Three events carry the intervention, and the kernel's own events wrap them.
 
 **The open claim**: `effect_unknown` with `error: "window_open"`.
 
-**The settlement**: an `observed` event with the same key, source, actor and `verified`, written at most once per claim, immediately before the kernel's settlement event.
+**The settlement**: an `observed` event with the same key, source, actor and `verified`, written once per claim, immediately before the kernel's settlement event. The two are separate appends. If the process dies between them, the reading is durable and the claim is still open; the next `recover` finds that reading in the chain and settles from it without consulting the metric again, so one claim never carries two settlement readings, and a metric that moved the other way in the meantime cannot reverse the first measurement.
 
 ```json
 {"proposal_id": "...", "phase": "settlement", "metric": "checkout_conversion_7d", "commit": "<accepted commit>",
@@ -121,7 +121,7 @@ Three events carry the intervention, and the kernel's own events wrap them.
 
 The kernel's `reconciled` proof carries `external_id` = the settlement version and `response_digest` = the digest of the executor's proof `{external_id, outcome, baseline, baseline_version, value, delta}`, so the verdict is bound to the numbers in the chain.
 
-`status` reads the baseline only from the event at `claim.seq + 1`, and only when that event is a verified `intervention` observation by the host for this proposal, in phase `baseline`, with a numeric value and a version. The baseline is written inside `commit`, under the session lock, as the next append after the claim, so nothing else can hold that position. An observation appended later with the same shape is ignored; a proposal argument other than `commit` is never read; `reconcile` takes no caller-supplied outcome. Given the same chain, the same clock and the same source response, `status` returns the same answer, in the same process or after reopening the kit. Once settled, the verdict is a hash-chained event; `reconcile` refuses to run again, and a later move of the metric changes nothing.
+`status` reads the baseline only from the event at `claim.seq + 1`, and only when that event is a verified `intervention` observation by the host for this proposal, in phase `baseline`, with a numeric value and a version. The baseline is written inside `commit`, under the session lock, as the next append after the claim, so nothing else can hold that position. A baseline-shaped observation appended later is ignored. A settlement is read back only when it is a verified `intervention` observation by the host for this proposal, in phase `settlement`, with a numeric value and a version, placed after the baseline, and stamped at least `window_seconds` after the claim, because `status` never writes one earlier; a settlement-shaped observation inside the window is ignored. A proposal argument other than `commit` is never read; `reconcile` takes no caller-supplied outcome. Given the same chain, the same clock and the same source response, `status` returns the same answer, in the same process or after reopening the kit. Once settled, the verdict is a hash-chained event; `reconcile` refuses to run again, and a later move of the metric changes nothing.
 
 ## 5. The metric source contract
 
@@ -140,6 +140,7 @@ Loopback HTTP needs an explicit port; anything else needs HTTPS to a public host
 - **One intervention per action name per thread.** After `applied`, `effect.not_completed` denies another proposal of that action. After `not_applied`, a fresh proposal is admitted and reads a new baseline.
 - **A claim without a baseline is void after the window.** If the process dies between the claim and the baseline, `recover` reports pending until the window ends and then `not_applied`. Nothing is measured.
 - **`unknown` at settlement is retried, not timed out.** A source that stays unreadable keeps the claim open, the action occupied and the thread unforgettable (`retention_unresolved`), because nobody may assert the outcome.
+- **A settlement reading in the chain is final.** After the window, a settlement-shaped observation by the host for the claim is taken as the settlement and is not measured again. That is what makes the settlement at-most-once across a crash; it also means the session API, which is the host's own, can supply that reading. The same trust boundary already holds for the baseline.
 - **One process per journal where there is no file lock.** The `claim.seq + 1` rule relies on the session lock holding across `apply`. The journal's cross-process lock is a no-op where `fcntl` is unavailable, as `syberlabs/journal.py` already states.
 - **Wording.** While any claim is open, `syberlabs status` says "an acceptance was interrupted; its outcome is unknown until recovered". For an intervention that is the designed state; the next step it prints, `syberlabs recover`, is right.
 
