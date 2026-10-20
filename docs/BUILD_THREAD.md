@@ -64,6 +64,23 @@ A provider gets a `SearchSpace` and nothing else. It can list and read files in 
 
 An in-process provider runs as Python code in your process. The interface keeps model *output* away from authority; it is not a sandbox for untrusted provider *code*. Run untrusted providers as a `CommandProvider`.
 
+## Spend and the dollar budget
+
+A contract may price model usage. `evolution.budget.prices` maps a model name to dollars per million tokens (`input_per_million`, `output_per_million`; optional `cache_read_per_million` and `cache_creation_per_million`, which default to the input rate), `max_dollars` bounds the thread, and `strict: true` makes usage of an unpriced model a refusal rather than a note. Without `prices` nothing below exists: no record gains a field, no rule decides, and `status` prints no spend. The schemas are `v0alpha1` and do not list these fields yet (`spec/GAPS.md`, 30).
+
+```json
+"budget": {"max_candidates": 12, "max_evaluations": 24, "max_seconds": 1800, "max_dollars": 5,
+           "prices": {"claude-opus-5": {"input_per_million": 15, "output_per_million": 75}}}
+```
+
+The host measures; the provider only reports. The one place a model call crosses the host is `providers.run_json`, the subprocess boundary `CommandProvider` and `CommandMutator` use. Inside a search, every `run_json` call asks the host's ledger for permission before the command starts and hands it the adapter's reported `usage` afterwards, stamped `host_observed`. That usage, priced under the contract's table, is the thread's spend. A `model_usage` a provider writes into a candidate's `signal`, or any usage reported by code that did not go through `run_json`, is the provider's declaration: it stays in the signal, is shown as "provider says (unverified)", and is never priced. Wall time is measured with the monotonic clock.
+
+The spend is in the record. Under a priced contract each `candidate_registered` carries `spend: {dollars, seconds, host_observed}`: the dollars of the host-observed calls made since the previous registration in that search (`null` when one of them named a model the table does not price), the seconds since the search started, and whether any usage was observed at all. Each `search_finished` carries `spend: {dollars, seconds, evaluations, candidates, host_observed, unknown_models}` for the whole search. `syberlabs status` sums the finished searches: `spend     $0.0405 / $5.0000, 12.3s over 2 searches (max 1800s each)`, and `export` includes the same object.
+
+The budget stops a search by itself. Once the ledger, pending usage included, is over `max_dollars`, no further command is started (`budget_exhausted`, before the purchase); the call that crossed the line still gets its candidate registered, with that spend on it, and the next registration or evaluation is refused. `space.remaining().max_dollars` tells a provider what is left (`None` without a dollar bound), so the evolutionary provider stops cleanly with `Stop("budget")` exactly as it does for candidates and evaluations; a provider that returns normally while over budget is recorded as `stopped: "budget_exhausted"` all the same, the existing word for a host-enforced stop. Seconds keep their own stop, `deadline`.
+
+Two admission rules read these records, after `critic.no_high_finding` and before `approval.required`, and decide nothing under an unpriced contract. `budget.search` refuses a candidate whose own registration was over budget (`search_over_budget:dollars`, `search_over_budget:seconds`) or that a priced contract's host registered without measuring (`spend_unrecorded:<id>`). `budget.promotion` sums the thread's finished searches and refuses while the thread is over `max_dollars` (`over_budget:dollars`), so a thread cannot accept a candidate it could not afford to produce; with `strict`, an unpriced model refuses too (`unknown_spend:<model>`). The dollar bound is per thread. A per-actor or per-day budget needs a store outside one thread and is not built.
+
 ## Contracts, policy, and people
 
 `.syberlabs/contracts/<id>.v<N>.json` files are installed when the kit opens. A published version is immutable. Editing `repo-change.v1.json` after its first use is refused with the file name to use instead, and `syberlabs contract-diff repo-change.v1 repo-change.v2` shows what changed. A thread stays on the version it started with. `.syberlabs/policy.json` is the global policy; a contract cannot widen it.
@@ -121,7 +138,7 @@ An acceptance interrupted after its durable claim shows as an open item, and `sy
 
 ## Memory and forgetting
 
-`syberlabs memory` reports what is kept. The thread record (the journal) is kept because it is what proves an accepted change. Context is kept as references only. Candidate refs are removed by `syberlabs prune` for finished threads. There is no project-knowledge store and no personal profile. Bounds: context 24 KB per selection by default, 256 KB per file read, 1 MB per submitted file and 4 MB per candidate, check output capped per contract (64 KB by default; over the cap is an `error`), a 4 KB output tail in the record, and contract budgets on candidates, evaluations, and seconds.
+`syberlabs memory` reports what is kept. The thread record (the journal) is kept because it is what proves an accepted change. Context is kept as references only. Candidate refs are removed by `syberlabs prune` for finished threads. There is no project-knowledge store and no personal profile. Bounds: context 24 KB per selection by default, 256 KB per file read, 1 MB per submitted file and 4 MB per candidate, check output capped per contract (64 KB by default; over the cap is an `error`), a 4 KB output tail in the record, and contract budgets on candidates, evaluations, seconds and, when the contract prices usage, dollars.
 
 `syberlabs forget THREAD --reason "..." [--export FILE]` deletes a thread's history and its candidate refs, under a retention rule in `policy.json`:
 

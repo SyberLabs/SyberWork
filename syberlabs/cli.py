@@ -58,6 +58,13 @@ def _print_status(status: dict) -> None:
     used = status["budget"]
     print(f"budget    candidates {used['candidates'][0]}/{used['candidates'][1]}, "
           f"evaluations {used['evaluations'][0]}/{used['evaluations'][1]}")
+    spend = used.get("spend")
+    if spend:  # present only when the contract prices usage; dollars are the host's own observation
+        cap = f" / ${spend['max_dollars']:.4f}" if spend["max_dollars"] is not None else " (no max_dollars)"
+        print(f"spend     ${spend['dollars']:.4f}{cap}, {spend['seconds']:.1f}s over {spend['searches']} searches "
+              f"(max {spend['max_seconds']}s each)"
+              + ("" if spend["host_observed"] else "; no host-observed usage")
+              + (f"; unpriced models: {', '.join(spend['unknown_models'])}" if spend["unknown_models"] else ""))
     for item in status["candidates"]:
         lineage = ("from " + "+".join(item["parents"])) if item["parents"] else "from base"
         scope = "" if item["in_scope"] else "  OUT OF SCOPE"

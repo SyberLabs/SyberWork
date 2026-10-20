@@ -34,6 +34,8 @@ EXPECTED_ORDER = [
     "bindings.arguments",
     "candidate.promotable",
     "critic.no_high_finding",
+    "budget.search",
+    "budget.promotion",
     "approval.required",
     "admission.passed",
 ]
@@ -154,12 +156,66 @@ def critic_cases():
     }
 
 
+def budget_cases():
+    """One context per budget rule reason. The contract prices usage; candidate.promotable and the critic pass."""
+    evolution = {
+        "scope": {"paths": ["src/"]},
+        "operators": ["patch"],
+        "budget": {"max_candidates": 4, "max_seconds": 60, "max_dollars": 1.0, "strict": True,
+                   "prices": {"m": {"input_per_million": 3, "output_per_million": 15}}},
+        "evaluation": {"checks": {"tests": {"argv": ["true"]}}, "required": ["tests"], "max_age_seconds": 60},
+        "promotion": {"action": "promote", "roles": ["developer"]},
+    }
+
+    def candidate(spend=None):
+        body = {"id": "c1", "commit": COMMIT, "tree": TREE, "base": BASE, "parents": [], "operator": "patch",
+                "provider": {"name": "p", "revision": "1"}, "changed_paths": ["src/a.py"], "scope_violations": [],
+                "limit_violations": [], "diff": {"digest": "d" * 64, "bytes": 1, "files": 1}, "signal": None,
+                "note": "", "actor": "host"}
+        if spend is not None:
+            body["spend"] = spend
+        return {"kind": "candidate_registered", "at": 1_000_000.0, "hash": "h", "body": body}
+
+    evaluation = {"kind": "candidate_evaluated", "at": 1_000_000.0, "hash": "e", "body": {
+        "candidate": "c1", "commit": COMMIT, "tree": TREE, "evaluator": "host",
+        "checks": [{"name": "tests", "state": "passed", "exit_code": 0, "duration_ms": 1,
+                    "output_digest": "0" * 64, "output_tail": ""}]}}
+
+    def finished(dollars, unknown=()):
+        return {"kind": "search_finished", "at": 1_000_000.0, "hash": "s", "body": {
+            "id": "s1", "stopped": "completed", "candidates": ["c1"], "recommended": [], "evaluations": 1,
+            "elapsed_ms": 5, "error": None, "actor": "host",
+            "spend": {"dollars": dollars, "seconds": 0.005, "evaluations": 1, "candidates": 1,
+                      "host_observed": True, "unknown_models": list(unknown)}}}
+
+    def ctx(history):
+        doc = proposal("promote", {"candidate": "c1", "commit": COMMIT, "base": BASE}, ["developer"])
+        found = context(history=list(history), proposal_doc=doc, contract_actions={"promote": {}},
+                        policy_actions={"promote": {"roles": ["developer"]}}, installed={"promote"})
+        found.contract["evolution"] = evolution
+        return found
+
+    within = {"dollars": 0.4, "seconds": 2.5, "host_observed": True}
+    return {
+        "spend_unrecorded:c1": ctx([candidate(), evaluation]),
+        "search_over_budget:seconds": ctx([candidate({**within, "seconds": 61}), evaluation]),
+        "search_over_budget:dollars": ctx([candidate({**within, "dollars": 1.5}), evaluation]),
+        "over_budget:dollars": ctx([candidate(within), evaluation, finished(0.4), finished(0.7)]),
+        "unknown_spend:other": ctx([candidate(within), evaluation, finished(0.4, ["other"])]),
+    }
+
+
 class AdmissionRegistry(unittest.TestCase):
     def test_registry_order(self):
         self.assertEqual(rule_order(), EXPECTED_ORDER)
         self.assertEqual(EXPECTED_ORDER.index("facts.required") + 1, EXPECTED_ORDER.index("economic.reserve"))
         self.assertEqual(EXPECTED_ORDER.index("economic.reserve") + 1, EXPECTED_ORDER.index("bindings.inputs"))
         self.assertEqual(ECONOMIC_INSERT_AFTER, "facts.required")
+        # The budget rules read the host's spend records of a candidate that candidate.promotable and the
+        # critic already admitted; they sit right after the critic and before any approval is asked for.
+        self.assertEqual(EXPECTED_ORDER.index("critic.no_high_finding") + 1, EXPECTED_ORDER.index("budget.search"))
+        self.assertEqual(EXPECTED_ORDER.index("budget.search") + 1, EXPECTED_ORDER.index("budget.promotion"))
+        self.assertEqual(EXPECTED_ORDER.index("budget.promotion") + 1, EXPECTED_ORDER.index("approval.required"))
 
     def test_each_reason_code_has_one_rule(self):
         owners = {}
@@ -222,6 +278,7 @@ class AdmissionRegistry(unittest.TestCase):
             "economic_adapter_required": context(policy_actions={"review": {"roles": ["operator"], "economic": {"budget_id": "ops"}}}),
             **promotion_cases(),
             **critic_cases(),
+            **budget_cases(),
             "all_checks_passed": context(),
         }
         seen = {}
