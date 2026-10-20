@@ -9,6 +9,7 @@
     syberlabs diff c1
     syberlabs accept c1
     syberlabs status
+    syberlabs run --once                       # or a loop: every open thread's next safe step
 
 The current thread is remembered in ``.syberlabs/current``. Every command
 reads the journal fresh, so a thread can be resumed from any terminal.
@@ -44,6 +45,8 @@ def _print_status(status: dict) -> None:
     print(f"objective {status['objective']}")
     if status.get("act_class"):
         print(f"class     {status['act_class']}")
+    if status.get("unattended"):
+        print("mode      unattended: syberlabs run may accept an acceptable candidate on this thread")
     print(f"contract  {status['contract']}   base {status['base'][:10]}   target {status['target_ref']}"
           + (f" -> {status['target'][:10]}" if status["target"] else " (not created)"))
     print(f"sources   {', '.join(status['sources'])}")
@@ -113,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--class", dest="act_class", choices=list(ACT_CLASSES),
                        help="act class: R reversible, C canonical, P public claim, X external effect "
                             "(default R when the contract records a class)")
+    start.add_argument("--unattended", action="store_true",
+                       help="record that syberlabs run may accept an acceptable candidate on this thread")
     commands.add_parser("threads", help="list threads")
     use = commands.add_parser("use", help="make a thread current")
     use.add_argument("id")
@@ -158,6 +163,14 @@ def main(argv: list[str] | None = None) -> int:
     publish = commands.add_parser("publish", help="run a publishing action after acceptance (push, pull request, command)")
     publish.add_argument("action")
     commands.add_parser("recover", help="settle an interrupted acceptance by reading the target branch")
+    run = commands.add_parser("run", help="drive every open thread through its next safe step, from the journal; "
+                                          "recovers first, never proposes")
+    run.add_argument("--once", action="store_true", help="one pass, then exit: 0 nothing refused, 1 a step was refused, "
+                                                         "2 unexpected error")
+    run.add_argument("--interval", type=float, default=30.0, help="seconds between passes (default 30)")
+    run.add_argument("--thread", dest="run_thread", help="only this thread (id or unique prefix)")
+    run.add_argument("--publish", action="store_true",
+                     help="also run the contract's publishing actions after acceptance (off by default)")
     commands.add_parser("log", help="the thread's events")
     export = commands.add_parser("export", help="the thread's full record as JSON")
     export.add_argument("--out")
@@ -197,12 +210,15 @@ def _run(kit: Kit, args) -> int:
         return 0
     if args.command == "start":
         interrupted = {row["id"] for row in kit.threads() if row["state"] == "incomplete"}
-        thread = kit.start(args.objective, args.contract, paths=args.paths, act_class=args.act_class)
+        thread = kit.start(args.objective, args.contract, paths=args.paths, act_class=args.act_class,
+                           unattended=args.unattended)
         (kit.home / "current").write_text(thread.id + "\n")
         verb = "completed interrupted start of" if thread.id in interrupted else "started"
         print(f"{verb} {thread.id[:8]} on {thread.contract[0]}.v{thread.contract[1]} at {thread.base[:10]}")
         if thread.act_class:
             print(f"act class {thread.act_class}; a publishing effect states it with the admitting key")
+        if thread.unattended:
+            print("unattended: syberlabs run may accept an acceptable candidate on this thread")
         print(f"accepting will move {thread.target_ref}; it never pushes or merges")
         return 0
     if args.command == "threads":
@@ -249,6 +265,11 @@ def _run(kit: Kit, args) -> int:
         for change in kit.contract_diff(args.a, args.b):
             print(f"{change['path']}: {json.dumps(change['before'])} -> {json.dumps(change['after'])}")
         return 0
+    if args.command == "run":
+        if args.interval < 0:
+            raise Rejected("invalid_interval", "--interval is seconds, zero or more")
+        return kit.run(once=args.once, interval=args.interval, thread=args.run_thread or args.thread,
+                       publish=args.publish, log=print)
 
     thread = _thread(kit, args)
     if args.command == "status":

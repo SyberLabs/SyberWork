@@ -30,10 +30,11 @@ from typing import Any, Mapping, Sequence
 
 from syberlabs import checks as runner
 from syberlabs import critic
+from syberlabs.clock import as_seconds
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.economic import dollars, price_usage
-from syberlabs.evolution import clean_path, in_scope, priced, settings, spend_total
+from syberlabs.evolution import clean_path, in_scope, latest_evaluation, priced, settings, spend_total
 from syberlabs.gitspace import CANDIDATE_REFS, MAX_FILE_BYTES, GitError, Repo
 from syberlabs.journal import Journal
 from syberlabs import retention
@@ -55,6 +56,14 @@ THREAD_INPUTS = frozenset({"objective", "act_class"})
 UNNAMED_CHECK = "name-your-checks-in-the-syberlabs-contract"
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 PUBLISH_EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
+# A thread started ``--unattended`` carries this verified host observation; ``syberlabs run`` accepts
+# an acceptable candidate only on such a thread. It is an observation, not a case input, because
+# the contract inputs are objective and act_class and a new input would be a contract change.
+UNATTENDED = "unattended"
+# The runner re-runs a check whose evidence would have less than this many seconds of life left
+# at accept time (bounded by half the contract's max_age_seconds), rather than trip the kernel's
+# candidate_evidence_stale refusal on an acceptance it could see coming.
+FRESHNESS_MARGIN_SECONDS = 60
 
 HINTS = {
     "candidate_not_evaluated": "Run its checks: syberlabs check {cid}",
@@ -396,9 +405,12 @@ def detect_checks(root: Path) -> dict:
                 if npm:
                     # A fresh worktree has no node_modules; ``install`` runs first (name order) and
                     # the checks after it are ``setup_failed`` when it does not pass. ``npm ci``
-                    # needs a lockfile; without one, ``npm install``.
+                    # needs a lockfile; without one, ``npm install``. ``--ignore-scripts`` keeps a
+                    # candidate's dependency tree from running lifecycle scripts inside the check;
+                    # a project whose build needs them removes the flag in a new contract version.
                     locked = (root / "package-lock.json").exists() or (root / "npm-shrinkwrap.json").exists()
-                    return {"install": {"argv": [npm, "ci" if locked else "install", "--no-audit", "--no-fund"],
+                    return {"install": {"argv": [npm, "ci" if locked else "install", "--no-audit", "--no-fund",
+                                                 "--ignore-scripts"],
                                         "timeout_seconds": 1200},
                             "tests": {"argv": [npm, "test", "--silent"], "timeout_seconds": 600}}
         except (ValueError, AttributeError):
@@ -554,11 +566,13 @@ class Kit:
         return cid, version if version is not None else versions[-1]
 
     def start(self, objective: str, contract: str | None = None, *, paths: Sequence[str] | None = None,
-              actor: str | None = None, act_class: str | None = None) -> "Thread":
+              actor: str | None = None, act_class: str | None = None, unattended: bool = False) -> "Thread":
         """Start a thread from HEAD.
 
         A contract that declares an ``act_class`` input records one on every thread: the class
         given, or R. A class given to a contract that cannot record it is refused, never dropped.
+        ``unattended`` records a verified host observation (key ``unattended``) that lets
+        ``syberlabs run`` accept an acceptable candidate on this thread without a person present.
         """
         if not isinstance(objective, str) or not objective.strip():
             raise Rejected("invalid_objective", "describe the change in a sentence")
@@ -588,6 +602,9 @@ class Kit:
         thread = Thread(self, case)
         if paths:
             thread.attach_source("repository", paths=paths)
+        if unattended:
+            self.session.observe(case, UNATTENDED, {"unattended": True, "by": actor or self.actor}, HOST, "1", HOST,
+                                 verified=True)
         return thread
 
     def open(self, thread_id: str) -> "Thread":
@@ -707,6 +724,11 @@ class Kit:
         return {"status": thread.status(), "contract": inspected["contract"], "events": inspected["events"],
                 "side": self.session.side_channel(thread.id), "chain_valid": inspected["chain_valid"]}
 
+    def run(self, *, once: bool = False, interval: float = 30.0, thread: str | None = None, publish: bool = False,
+            log=None) -> int:
+        """Drive open threads unattended; see ``Runner``. Returns the process exit code."""
+        return Runner(self, thread=thread, publish=publish, log=log).run(once=once, interval=interval)
+
 
 _MISSING = object()
 
@@ -757,6 +779,11 @@ class Thread:
 
     def history(self) -> list[dict]:
         return self._events()
+
+    @property
+    def unattended(self) -> bool:
+        """True when ``start`` recorded the ``unattended`` host observation on this thread."""
+        return self._latest(UNATTENDED) is not None
 
     def read_scope(self) -> dict:
         attached = self._latest("sources")
@@ -1195,7 +1222,8 @@ class Thread:
                                "unknown_models": total["unknown_models"]}
         return {
             "thread": self.id, "objective": self.objective, "contract": f"{self.contract[0]}.v{self.contract[1]}",
-            "act_class": self.act_class, "status": inspected["status"], "base": self.base, "target_ref": self.target_ref,
+            "act_class": self.act_class, "unattended": self.unattended, "status": inspected["status"],
+            "base": self.base, "target_ref": self.target_ref,
             "target": self.kit.repo.read_ref(self.target_ref), "accepted": accepted["id"] if accepted else None,
             "sources": self.read_scope()["paths"],
             "context": ({"digest": context["value"]["digest"], "files": len({e["path"] for e in context["value"]["entries"]}),
@@ -1207,3 +1235,194 @@ class Thread:
             "budget": budget,
             "open": open_items, "next": next_steps, "events": len(events), "chain_valid": inspected["chain_valid"],
         }
+
+
+# Running unattended: one pass derives the next safe step of every thread from the journal.
+
+@dataclass(frozen=True)
+class Step:
+    """One line of a runner pass: the thread, what the runner did, and what the kernel said."""
+
+    thread: str
+    step: str                     # recover, check, accept, publish, idle, skip
+    candidate: str | None         # a candidate id, or a publishing action's name
+    outcome: str
+    reason: str | None = None
+
+    @property
+    def taken(self) -> bool:
+        """A step that asked the kernel to do something (checks ran, an action was proposed)."""
+        return self.step in ("check", "accept", "publish")
+
+    @property
+    def refused(self) -> bool:
+        return self.taken and self.outcome not in ("acceptable", "succeeded", "needs_approval")
+
+    @property
+    def line(self) -> str:
+        return (f"{self.thread[:8]} {self.step} {self.candidate or '-'} -> {self.outcome}"
+                + (f" ({self.reason})" if self.reason else ""))
+
+
+def _unresolved(events: Sequence[dict]) -> bool:
+    started = {e["body"]["proposal_id"] for e in events if e["kind"] == "effect_started"}
+    done = {e["body"]["proposal_id"] for e in events
+            if e["kind"] in ("effect_succeeded", "effect_rejected") or verified_reconciliation(e)}
+    return bool(started - done)
+
+
+class Runner:
+    """Drive every open thread through its next safe step, chosen from the journal alone.
+
+    One pass visits each thread the journal lists, oldest first (an interrupted start is skipped
+    with a note). For each: first ``Thread.recover`` settles any interrupted acceptance or
+    publishing effect; then at most ONE step, derived from the record:
+
+    - the newest candidate is unchecked or its evidence is stale (or would be stale by accept time):
+      ``check`` (a re-run when a passed evaluation is about to age out);
+    - the newest candidate is acceptable and the thread was started ``--unattended``: ``accept``;
+    - a candidate is accepted and ``publish=True``: the first publishing action the contract lists
+      whose prerequisite effect is already recorded; otherwise nothing.
+
+    The runner never proposes: generation is another station's job. Every step is a kernel
+    operation whose idempotence comes from the record (a pending proposal is reused, a claimed
+    effect is reconciled, not repeated), so a runner killed anywhere leaves a valid chain and the
+    next pass continues from it. A candidate whose checks failed, a thread waiting for approval,
+    and an attended thread are reported as idle, not retried.
+    """
+
+    def __init__(self, kit: Kit, *, thread: str | None = None, publish: bool = False, log=None,
+                 margin: float = FRESHNESS_MARGIN_SECONDS):
+        self.kit, self.only, self.publish, self.margin = kit, thread, publish, margin
+        self.log = log or (lambda line: None)
+
+    def run(self, *, once: bool = False, interval: float = 30.0) -> int:
+        """Loop over passes until interrupted. ``once`` does one pass: exit 0 when no step was refused
+        (nothing left, or progress made), 1 when a step was refused, 2 when the pass hit an unexpected
+        error (the kernel writes whole events or nothing, so the chain is still valid)."""
+        while True:
+            try:
+                steps = self.once()
+            except KeyboardInterrupt:
+                self.log("stopped")
+                return 0
+            except Rejected:
+                raise
+            except Exception as exc:
+                self.log(f"error: {type(exc).__name__}: {exc}")
+                return 2
+            taken = [s for s in steps if s.taken]
+            refused = [s for s in taken if s.refused]
+            self.log(f"pass: {len(taken)} steps, {len(refused)} refused"
+                     + ("; nothing left to do" if not taken else ""))
+            if once:
+                return 1 if refused else 0
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                self.log("stopped")
+                return 0
+
+    def once(self) -> list[Step]:
+        """One pass over the threads; returns what happened, one Step per line printed."""
+        steps: list[Step] = []
+        rows = self.kit.threads()
+        if self.only:
+            wanted = self.kit._find(self.only)
+            rows = [row for row in rows if row["id"] == wanted]
+        for row in rows:
+            if row["state"] == "incomplete":
+                steps.append(self._emit(Step(row["id"], "skip", None, "incomplete start",
+                                             "start again with the same objective, or forget it")))
+                continue
+            thread = self.kit.open(row["id"])
+            try:
+                receipts = thread.recover()
+            except Rejected as exc:
+                steps.append(self._emit(Step(thread.id, "recover", None, "refused", exc.code)))
+                continue
+            for receipt in receipts:
+                steps.append(self._emit(Step(thread.id, "recover", receipt.candidate or receipt.ref, receipt.status,
+                                             receipt.reason)))
+            step, target, reason = self._choose(thread)
+            if step == "idle":
+                steps.append(self._emit(Step(thread.id, "idle", target, "nothing to do", reason)))
+                continue
+            try:
+                steps.append(self._emit(self._take(thread, step, target)))
+            except Rejected as exc:
+                steps.append(self._emit(Step(thread.id, step, target, "refused", exc.code)))
+        return steps
+
+    def _emit(self, step: Step) -> Step:
+        self.log(step.line)
+        return step
+
+    def _choose(self, thread: "Thread") -> tuple[str, str | None, str | None]:
+        """(step, candidate or action, reason): the next safe step the record implies, or idle and why."""
+        events = thread.history()
+        if _unresolved(events):
+            return "idle", None, "effect_unresolved"
+        views = thread._views()
+        accepted = next((v for v in views if v["authoritative"]), None)
+        if accepted is not None:
+            if not self.publish:
+                return "idle", accepted["id"], "accepted; publishing needs --publish"
+            action = self._next_publish(thread, events)
+            return ("publish", action, None) if action else ("idle", accepted["id"], "accepted and published")
+        if not views:
+            return "idle", None, "no candidate; the runner never proposes"
+        view = views[-1]
+        if view["scope_violations"] or view["limit_violations"]:
+            return "idle", view["id"], "candidate_out_of_scope"
+        state = view["evaluation"]["state"]
+        if state == "failed":
+            return "idle", view["id"], "candidate_check_failed"
+        if state in ("none", "stale") or self._aging(thread, view, events):
+            used = sum(1 for e in events if e["kind"] == "candidate_evaluated")
+            if used >= thread.config["budget"]["max_evaluations"]:
+                return "idle", view["id"], "budget_exhausted"
+            return "check", view["id"], None
+        promotion = view["promotion"]
+        if promotion["state"] == "needs_approval":
+            # The pending proposal is reused by ``accept``; it is a step only once admission, read
+            # against the history as it is now, would allow it (the approval has been recorded).
+            now = self.kit.session.explain_admission(thread.id, promotion["proposal_id"], when="now")
+            if now.get("status") != "allowed":
+                return "idle", view["id"], "approval_required"
+        if not thread.unattended:
+            return "idle", view["id"], f"attended thread: syberlabs accept {view['id']}"
+        verdict = thread.check(view["id"], run=False)
+        if not verdict.acceptable:
+            return "idle", view["id"], verdict.reason or "not_acceptable"
+        return "accept", view["id"], None
+
+    def _aging(self, thread: "Thread", view: dict, events: Sequence[dict]) -> bool:
+        """True when the passed evaluation would be within the margin of ``max_age_seconds`` now."""
+        evaluation = latest_evaluation(list(events), view)
+        if evaluation is None:
+            return False
+        max_age = thread.config["evaluation"]["max_age_seconds"]
+        margin = min(self.margin, max_age / 2)
+        return max_age - (time.time() - as_seconds(evaluation["at"])) <= margin
+
+    def _next_publish(self, thread: "Thread", events: Sequence[dict]) -> str | None:
+        contract = self.kit.session.contracts[thread.contract]
+        recorded = {e["body"]["action"] for e in events if e["kind"] == "effect_succeeded" or verified_reconciliation(e)}
+        for name, spec in contract["actions"].items():
+            effect = self.kit.session.actions.get(name, {}).get("effect")
+            if effect not in PUBLISH_EFFECTS or name in recorded:
+                continue
+            prior = spec.get("requires_effect") if isinstance(spec, dict) else None
+            if prior and prior not in recorded:
+                continue
+            return name
+        return None
+
+    def _take(self, thread: "Thread", step: str, target: str) -> Step:
+        if step == "check":
+            verdict = thread.check(target, rerun=True)
+            return Step(thread.id, step, target, "acceptable" if verdict.acceptable else "refused",
+                        None if verdict.acceptable else (verdict.reason or "not_acceptable"))
+        receipt = thread.accept(target) if step == "accept" else thread.publish(target)
+        return Step(thread.id, step, target, receipt.status, receipt.reason)
