@@ -16,6 +16,7 @@ from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import Witness, WitnessClient
 
 __all__ = [
+    "CERTIFICATE_TYPE",
     "Candidate",
     "Kit",
     "Receipt",
@@ -29,6 +30,7 @@ __all__ = [
     "WitnessClient",
     "at_microseconds",
     "canonical",
+    "certify",
     "cloudevent",
     "digest",
     "event_digest",
@@ -39,17 +41,22 @@ __all__ = [
     "sign_chain_head",
     "translate_stabilize",
     "trusted_origin",
+    "verify_certificate",
     "verify_chain_head",
     "verify_events",
     "witness",
 ]
 
-_BUILD = {"Kit", "Thread", "Verdict", "Receipt"}
+# Names that load on first use, so ``import syberlabs`` stays small: the Build Thread and the certificate.
+_LAZY = {
+    "Kit": "build", "Thread": "build", "Verdict": "build", "Receipt": "build",
+    "CERTIFICATE_TYPE": "certificate", "certify": "certificate", "verify_certificate": "certificate",
+}
 
 
 def __getattr__(name):
-    """The Build Thread loads on first use, so ``import syberlabs`` stays small."""
-    if name in _BUILD:
-        from syberlabs import build
-        return getattr(build, name)
-    raise AttributeError(f"module 'syberlabs' has no attribute {name!r}")
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module 'syberlabs' has no attribute {name!r}")
+    from importlib import import_module
+    return getattr(import_module(f"syberlabs.{module}"), name)
