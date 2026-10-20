@@ -19,7 +19,9 @@ independent party. ``issuer.signing`` says ``in-process`` for that reason.
 One pure function, ``claims``, derives every journal-sourced field. ``certify`` runs it on the
 live history and signs; ``verify_certificate`` runs it on the certified prefix of the journal
 and compares leaf by leaf, so there is no second derivation to drift. The verifier never runs
-a check, a provider or a model, and never writes to the repository or the journal.
+a check, a provider or a model, and never writes to the repository or the journal: the journal
+layer reads ``registry.jsonl`` and the thread file with a read-only loader of its own, takes no
+lock, and leaves a torn final line in place where the session's reader would truncate it.
 """
 
 from __future__ import annotations
@@ -32,17 +34,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from syberlabs.canonical import canonical
 from syberlabs.clock import stamp
+from syberlabs.contracts import prepare_contract
 from syberlabs.dsse import sign_dsse, verified_payload
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
-from syberlabs.events import verify_events
+from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import candidate_views, latest_evaluation, registered, settings
 from syberlabs.gitspace import Repo
-from syberlabs.jcs import JcsError, jcs_bytes
-from syberlabs.journal import CASE_ID, Journal
-from syberlabs.session import Session
+from syberlabs.jcs import JcsError, envelope_jcs, jcs_bytes
+from syberlabs.journal import CASE_ID
 
 PAYLOAD_TYPE = "application/vnd.syberlabs.admission-certificate+json"
 CERTIFICATE_TYPE = PAYLOAD_TYPE
@@ -393,7 +396,11 @@ def certify(kit, thread_id: str, candidate: str, *, seed: bytes, seed_env: str =
 
 
 def write_certificate(envelope: dict, public: bytes, out: str | Path) -> tuple[Path, Path]:
-    """Write the envelope to ``out`` and the public key to ``<out>.pub``, both as bytes with LF."""
+    """Write the envelope to ``out`` and the public key beside it, both as bytes with LF.
+
+    The key file is ``out`` with its last suffix replaced by ``.pub``: ``c1.json`` gives
+    ``c1.pub`` and ``c1.cert.json`` gives ``c1.cert.pub``.
+    """
     cert = Path(out)
     cert.parent.mkdir(parents=True, exist_ok=True)
     pub = cert.with_suffix(".pub")
@@ -452,7 +459,8 @@ def verify_certificate(envelope: object, public: bytes, *, repo: Repo | None = N
     never judged. Layer 3 with ``home`` (the kit's ``.syberlabs``) when the thread's journal file
     exists: the chain is not truncated, the head matches at the certified count, the prefix
     links, and ``claims`` recomputed on that prefix equals the certificate leaf by leaf. The
-    first failure stops the run. Nothing is executed and nothing is written.
+    first failure stops the run. Nothing is executed and nothing is written: the journal is read
+    without its lock, and a torn final record is ignored and reported, never truncated.
     """
     keyid = public.hex()
     states: list[str | None] = [None, None, None]
@@ -557,23 +565,85 @@ def _layer_repository(repo: Repo, payload: dict) -> str:
             f"{len(paths)} changed paths and diff digest match; target {target_ref} {state}")
 
 
+# The journal layer's loader. It mirrors ``Session._sync`` and ``Session._load`` check for check
+# but opens ``registry.jsonl`` and the thread file ``rb`` only, takes no lock, creates nothing,
+# and leaves a torn final line (a writer that died mid-record) in place where ``Journal.read_new``
+# would truncate it. A verifier may therefore hold a read-only copy of a journal.
+
+def _complete_records(path: Path) -> tuple[list[dict], int]:
+    """The complete records of one journal file, and 1 when a torn final line was ignored."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    complete = data.rfind(b"\n") + 1
+    records, offset = [], 0
+    for line in data[:complete].splitlines(keepends=True):
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            raise Rejected("journal_corrupt", f"{path.name}: unreadable record after byte {offset}") from None
+        offset += len(line)
+    return records, int(complete < len(data))
+
+
+def _read_contracts(registry: Path) -> tuple[dict[tuple[str, int], dict], int]:
+    """Installed contracts from ``registry.jsonl``, validated as ``Session._sync`` validates them."""
+    if not registry.exists():
+        return {}, 0
+    records, torn = _complete_records(registry)
+    contracts: dict[tuple[str, int], dict] = {}
+    for record in records:
+        if record["t"] != "contract":
+            continue
+        doc = record["doc"]
+        try:
+            valid = json.loads(canonical(prepare_contract(doc))) == doc
+        except Rejected:
+            valid = False
+        if not valid:
+            raise Rejected("journal_corrupt", f"contract {doc.get('id')}@{doc.get('version')} does not validate")
+        contracts[(doc["id"], doc["version"])] = doc
+    return contracts, torn
+
+
+def _read_thread(path: Path, thread: str) -> tuple[dict, list[dict], int]:
+    """The case row and events of a thread file, linked as ``Session._load`` links them."""
+    records, torn = _complete_records(path)
+    row, events = None, []
+    for record in records:
+        if record["t"] == "case":
+            row = record["row"]
+            continue
+        event = record["event"]
+        previous = events[-1]["hash"] if events else "0" * 64
+        if (event["previous"] != previous or event["hash"] != event_digest(event)
+                or event["case_id"] != thread or event["seq"] != len(events) + 1):
+            raise Rejected("journal_corrupt", f"thread {thread} breaks its hash chain at seq {event.get('seq')}")
+        side = record.get("side") or {}
+        if isinstance(side.get("jcs"), str) and side["jcs"] != envelope_jcs(event):
+            raise Rejected("journal_corrupt", f"thread {thread} side record differs at seq {event['seq']}")
+        events.append(event)
+    if row is None:
+        raise Rejected("unknown_case", thread)
+    return row, events, torn
+
+
 def _layer_journal(path: Path, home: Path, payload: dict) -> str:
     thread, chain = payload["thread"], payload["chain"]
-    journal = Journal(home / "journal")
     try:
-        try:
-            session = Session(journal=journal)
-            events = session.history(thread)
-            row = session.cases[thread]
-            contract = session.contracts.get((row["contract_id"], row["contract_version"]))
-        except Rejected as exc:
-            if exc.code == "journal_corrupt":
-                raise _Fail("journal_corrupt", exc.detail) from None
-            raise _Fail(f"journal_unreadable:{exc.code}", exc.detail) from None
-        except (KeyError, TypeError, ValueError):
-            raise _Fail("journal_corrupt", f"{path.name} does not read as a thread journal") from None
-    finally:
-        journal.close()
+        if not CASE_ID.match(thread):
+            raise Rejected("unknown_case", thread[:64])
+        contracts, torn_registry = _read_contracts(home / "journal" / "registry.jsonl")
+        row, events, torn_thread = _read_thread(path, thread)
+        contract = contracts.get((row["contract_id"], row["contract_version"]))
+    except Rejected as exc:
+        if exc.code == "journal_corrupt":
+            raise _Fail("journal_corrupt", exc.detail) from None
+        raise _Fail(f"journal_unreadable:{exc.code}", exc.detail) from None
+    except OSError as exc:
+        raise _Fail("journal_unreadable:io_error",
+                    f"cannot read {Path(exc.filename or path).name}: {exc.strerror or exc}") from None
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise _Fail("journal_corrupt", f"{path.name} does not read as a thread journal") from None
     if contract is None:
         raise _Fail("journal_unreadable:unknown_contract",
                     f"{row['contract_id']}@{row['contract_version']} is not in the journal's registry")
@@ -596,8 +666,10 @@ def _layer_journal(path: Path, home: Path, payload: dict) -> str:
         if where is not None:
             raise _Fail(f"field_mismatch:{where}",
                         f"certified {_short(_dig(payload, where))}, journal {_short(_dig(expected, where))}")
+    torn = torn_registry + torn_thread
+    note = f"; {torn} torn trailing record{'s' if torn > 1 else ''} ignored" if torn else ""
     return (f"{path}: {chain['count']} of {len(events)} events certified, head {chain['head'][:10]}; "
-            f"every certified field matches")
+            f"every certified field matches{note}")
 
 
 def first_difference(expected: Any, actual: Any, path: str = "") -> str | None:
