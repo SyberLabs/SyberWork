@@ -5,7 +5,8 @@ records it in the thread's hash chain at the sequence number after the claim, an
 claim open on purpose: nothing about the outcome can be known until the window has elapsed, so
 ``Session.commit`` stores ``effect_unknown`` with error ``window_open`` and ``publish`` returns
 ``unknown``. ``status`` reads the metric again once the window has elapsed, records that reading
-too, and returns the kernel's own verdicts, so ``Session.reconcile`` settles the claim unchanged:
+too, and returns the kernel's own verdicts, so ``Session.reconcile`` settles the claim unchanged
+(a settlement reading that is already in the chain is reused, never taken again):
 ``applied`` when the metric moved by at least ``min_delta`` in the predeclared direction, and
 ``not_applied`` when it did not, a move against the expectation included. A reading that cannot
 be taken, is unversioned, or is older than ``max_age_seconds`` leaves the claim pending, to be
@@ -207,8 +208,41 @@ class Intervention:
               and isinstance(value.get("version"), str))
         return claim, (value if ok else None)
 
+    def _settlement(self, case_id: str, claim: dict, key: str) -> dict | None:
+        """The first durable settlement reading for this claim, or None.
+
+        ``status`` writes the settlement observation and ``Session.reconcile`` writes the verdict in
+        two appends. If the process dies between them the reading is durable but the claim is still
+        open, so the next ``status`` settles from that reading instead of measuring the metric again:
+        one claim gets one settlement, never a second one the other way. A settlement is recognised
+        only after the baseline, by the host, for this proposal, in phase ``settlement``, with a
+        numeric value and a version, and only when its own timestamp is at least ``window_seconds``
+        after the claim, because ``status`` never writes one earlier.
+        """
+        start = as_seconds(claim["at"])
+        for event in self.kit.session.history(case_id):
+            if event["seq"] <= claim["seq"] + 1 or event["kind"] != "observed":
+                continue
+            body = event["body"]
+            value = body.get("value") if isinstance(body.get("value"), dict) else {}
+            if (body.get("key") == KEY and body.get("verified") is True and body.get("actor") == self.actor
+                    and value.get("proposal_id") == key and value.get("phase") == "settlement"
+                    and type(value.get("value")) in (int, float) and math.isfinite(value["value"])
+                    and isinstance(value.get("version"), str) and as_seconds(event["at"]) - start >= self.settle_seconds):
+                return value
+        return None
+
+    def _verdict(self, baseline: dict, value: float, version: str) -> tuple[str, dict]:
+        """The kernel's state and the proof for one settlement reading against the baseline."""
+        delta = value - baseline["value"]
+        gain = delta if self.expect["direction"] == "up" else -delta
+        outcome = "moved" if gain >= self.expect["min_delta"] else "moved_against" if gain < 0 else "unchanged"
+        proof = {"external_id": version, "outcome": outcome, "baseline": baseline["value"],
+                 "baseline_version": baseline["version"], "value": value, "delta": delta}
+        return ("applied" if outcome == "moved" else "not_applied"), proof
+
     def status(self, case_id: str, args: dict, key: str) -> tuple[str, dict]:
-        """The kernel's verdict for an open claim. Writes the settlement reading only with a terminal verdict."""
+        """The kernel's verdict for an open claim. Writes the settlement reading once, with a terminal verdict."""
         claim, baseline = self._claim_and_baseline(case_id, key)
         if claim is None:
             return "unknown", {"error": "claim_missing"}
@@ -217,6 +251,10 @@ class Intervention:
         if baseline is None:
             # Nothing to measure against. Session.reconcile voids the claim once the window has passed.
             return "absent", {"reason": "baseline_missing"}
+        settlement = self._settlement(case_id, claim, key)
+        if settlement is not None:
+            # Already measured; the verdict was not recorded. Settle from the durable reading, not the metric.
+            return self._verdict(baseline, float(settlement["value"]), settlement["version"])
         if elapsed < self.settle_seconds:
             return "absent", {"reason": "window_open", "remaining_seconds": int(self.settle_seconds - elapsed)}
         try:
@@ -225,16 +263,12 @@ class Intervention:
             return "unknown", {"error": exc.code}
         if not self._fresh(reading, now):
             return "unknown", {"error": "metric_stale"}
-        delta = reading.value - baseline["value"]
-        gain = delta if self.expect["direction"] == "up" else -delta
-        outcome = "moved" if gain >= self.expect["min_delta"] else "moved_against" if gain < 0 else "unchanged"
+        state, proof = self._verdict(baseline, reading.value, reading.version)
         self.kit.session.observe(case_id, KEY, {
             "proposal_id": key, "phase": "settlement", "metric": self.key, "commit": args["commit"],
             "baseline": baseline["value"], "baseline_version": baseline["version"],
             "value": reading.value, "version": reading.version, "observed_at": reading.observed_at, "read_at": now,
-            "delta": delta, "direction": self.expect["direction"], "min_delta": self.expect["min_delta"],
-            "window_seconds": self.settle_seconds, "outcome": outcome,
+            "delta": proof["delta"], "direction": self.expect["direction"], "min_delta": self.expect["min_delta"],
+            "window_seconds": self.settle_seconds, "outcome": proof["outcome"],
         }, "metric:" + self.key, reading.version, self.actor, verified=True)
-        proof = {"external_id": reading.version, "outcome": outcome, "baseline": baseline["value"],
-                 "baseline_version": baseline["version"], "value": reading.value, "delta": delta}
-        return ("applied" if outcome == "moved" else "not_applied"), proof
+        return state, proof
