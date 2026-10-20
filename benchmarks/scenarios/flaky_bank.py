@@ -42,6 +42,7 @@ POLICY = {
 
 class FlakyBank:
     id = "flaky_bank"
+    expected_failures: list[str] = []
 
     def world(self) -> Ledger:
         return Ledger(balance=OPENING_BALANCE, faults=["drop_after_debit"])
