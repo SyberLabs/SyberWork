@@ -6,10 +6,18 @@
 - ``CommandProvider`` runs an external program with a JSON request on stdin
   and reads JSON candidates from stdout. This is the model seam: an adapter
   for any model provider can be a command, and SyberLabs imports no model SDK.
+
+``run_json`` is also where the host observes spend. Inside ``metered(meter)``
+every call asks the meter's ``permit()`` before the command runs and hands the
+adapter's reported ``usage`` to ``observe()`` afterwards, stamped
+``host_observed``. The Build Thread installs its ledger there, so only usage
+that crossed this boundary is ever priced; a ``model_usage`` a provider writes
+into a candidate's ``signal`` is the provider's declaration and is not.
 """
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import shlex
@@ -17,6 +25,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from syberlabs.errors import Rejected
@@ -24,6 +33,25 @@ from syberlabs.search import SearchSpace
 
 PROTOCOL = "syberlabs.search/v0alpha1"
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+# The host's usage meter for the search running in this context, or None.
+_METER: contextvars.ContextVar = contextvars.ContextVar("syberlabs.usage_meter", default=None)
+
+
+@contextmanager
+def metered(meter):
+    """Route every ``run_json`` call in the block through ``meter``.
+
+    ``meter.permit()`` runs before each command starts and may raise to refuse
+    the purchase; ``meter.observe(usage)`` runs after each successful call with
+    the adapter's reduced usage stamped ``host_observed: True``, or None when
+    the adapter reported none.
+    """
+    token = _METER.set(meter)
+    try:
+        yield meter
+    finally:
+        _METER.reset(token)
 
 
 def split_command(text: str) -> list[str]:
@@ -123,6 +151,9 @@ def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Pat
     Bounded by ``timeout`` seconds and 4 MB of output. The command inherits the
     caller's environment. Failures are ``Rejected`` with a ``provider_*`` code.
     """
+    meter = _METER.get()
+    if meter is not None:
+        meter.permit()
     request = json.dumps(payload).encode()
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:
@@ -150,6 +181,10 @@ def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Pat
     if len(data) > MAX_RESPONSE_BYTES:
         raise Rejected("provider_timeout", "the provider response exceeded its output limit")
     try:
-        return json.loads(data)
+        parsed = json.loads(data)
     except json.JSONDecodeError:
         raise Rejected("provider_shape", "the command did not print JSON") from None
+    if meter is not None:
+        usage = model_usage(parsed)
+        meter.observe({**usage, "host_observed": True} if usage else None)
+    return parsed

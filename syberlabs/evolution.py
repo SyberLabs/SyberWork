@@ -26,6 +26,7 @@ from typing import Any
 
 from syberlabs.canonical import canonical
 from syberlabs.clock import as_seconds
+from syberlabs.economic import DOLLAR_PLACES, MAX_DOLLARS, check_prices, dollars, is_money
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 
@@ -38,6 +39,12 @@ EVOLUTION_KEYS = {"scope", "operators", "budget", "evaluation", "promotion"}
 CHECK_STATES = ("passed", "failed", "timed_out", "error")
 PROMOTION_RANK = {"denied": 0, "not_applied": 1, "admitted": 2, "needs_approval": 2, "unresolved": 3, "promoted": 4}
 SEARCH_STOPS = ("completed", "budget_exhausted", "deadline", "cancelled", "error")
+# The counted budget every search_started records. The dollar budget (``prices``, ``max_dollars``,
+# ``strict``) is optional contract data; when it is absent nothing below mentions spend.
+COUNT_BUDGET = ("max_candidates", "max_evaluations", "max_seconds")
+BUDGET_KEYS = {*COUNT_BUDGET, "prices", "max_dollars", "strict"}
+CANDIDATE_SPEND = {"dollars", "seconds", "host_observed"}
+SEARCH_SPEND = {"dollars", "seconds", "evaluations", "candidates", "host_observed", "unknown_models"}
 
 DEFAULT_TARGET_REF = "refs/heads/syberlabs/{thread}"
 DEFAULTS = {
@@ -45,7 +52,9 @@ DEFAULTS = {
     "max_diff_bytes": 1_000_000,
     "max_seconds": 600,
     "max_age_seconds": 3600,
-    "max_output_bytes": 65_536,
+    # The validator's ceiling. Real test runners (vitest writes ~117 KB) overran the old 65,536
+    # default and turned a passing suite into ``error``; a contract may still declare less.
+    "max_output_bytes": 1_048_576,
 }
 
 # Hard ceilings. A contract can set lower limits, never higher ones.
@@ -157,13 +166,23 @@ def check_evolution(doc: dict) -> None:
             or any(not isinstance(op, str) or not _NAME.match(op) for op in operators) or len(set(operators)) != len(operators)):
         raise _fail("operators must be distinct lowercase names")
 
-    budget = _strict(evolution["budget"], "budget", {"max_candidates", "max_evaluations", "max_seconds"}, {"max_candidates"})
+    budget = _strict(evolution["budget"], "budget", BUDGET_KEYS, {"max_candidates"})
     if not _int(budget["max_candidates"], 1, MAX_PATHS):
         raise _fail(f"budget.max_candidates must be 1 to {MAX_PATHS}")
     if "max_evaluations" in budget and not _int(budget["max_evaluations"], 0, MAX_PATHS):
         raise _fail(f"budget.max_evaluations must be 0 to {MAX_PATHS}")
     if "max_seconds" in budget and not _int(budget["max_seconds"], 1, 86_400):
         raise _fail("budget.max_seconds must be 1 to 86400")
+    if "prices" in budget:
+        reason = check_prices(budget["prices"])
+        if reason:
+            raise _fail("budget." + reason)
+    elif "max_dollars" in budget or "strict" in budget:
+        raise _fail("budget.max_dollars and budget.strict need budget.prices")
+    if "max_dollars" in budget and (not is_money(budget["max_dollars"]) or not 0 < budget["max_dollars"] <= MAX_DOLLARS):
+        raise _fail(f"budget.max_dollars must be a positive number of dollars up to {MAX_DOLLARS}")
+    if "strict" in budget and type(budget["strict"]) is not bool:
+        raise _fail("budget.strict must be true or false")
 
     evaluation = _strict(evolution["evaluation"], "evaluation",
                          {"checks", "required", "max_age_seconds", "max_output_bytes"}, {"checks", "required"})
@@ -222,7 +241,11 @@ def settings(contract: dict) -> dict | None:
         "operators": list(evolution["operators"]),
         "budget": {"max_candidates": budget["max_candidates"],
                    "max_evaluations": budget.get("max_evaluations", budget["max_candidates"]),
-                   "max_seconds": budget.get("max_seconds", DEFAULTS["max_seconds"])},
+                   "max_seconds": budget.get("max_seconds", DEFAULTS["max_seconds"]),
+                   "prices": ({model: dict(rates) for model, rates in budget["prices"].items()}
+                              if isinstance(budget.get("prices"), dict) else None),
+                   "max_dollars": budget.get("max_dollars"),
+                   "strict": budget.get("strict", False)},
         "evaluation": {"checks": {name: {"argv": list(check["argv"]),
                                          "timeout_seconds": check.get("timeout_seconds", 300)}
                                   for name, check in evaluation["checks"].items()},
@@ -268,6 +291,31 @@ def registered(history: list, candidate_id: str) -> dict | None:
                  if event["kind"] == "candidate_registered" and event["body"].get("id") == candidate_id), None)
 
 
+def priced(config: dict | None) -> bool:
+    """True when the contract carries a price table, so spend is measured and recorded."""
+    return config is not None and config["budget"]["prices"] is not None
+
+
+def _spend(config: dict, value: Any, fields: set, what: str) -> dict:
+    """A host spend record: exact fields, finite numbers. Only a priced contract records one."""
+    if not priced(config):
+        raise _record_error(f"{what} spend is recorded only under a contract with budget.prices")
+    if not isinstance(value, dict) or set(value) != fields:
+        raise _record_error(f"{what} spend fields are " + ", ".join(sorted(fields)))
+    if not (value["dollars"] is None or is_money(value["dollars"])) or not is_money(value["seconds"]):
+        raise _record_error(f"{what} spend dollars must be null or a number, seconds a number")
+    if type(value["host_observed"]) is not bool:
+        raise _record_error(f"{what} spend host_observed must be true or false")
+    if "evaluations" in fields:
+        if (value["dollars"] is None or not _int(value["evaluations"], 0, MAX_PATHS) or not _int(value["candidates"], 0, MAX_PATHS)
+                or not isinstance(value["unknown_models"], list) or len(value["unknown_models"]) > 64
+                or any(not isinstance(m, str) or not 0 < len(m) <= 64 for m in value["unknown_models"])
+                or len(set(value["unknown_models"])) != len(value["unknown_models"])):
+            raise _record_error(f"{what} spend needs dollars, evaluation and candidate counts, and distinct unknown_models")
+    return {**value, "dollars": None if value["dollars"] is None else round(value["dollars"], DOLLAR_PLACES),
+            "seconds": round(value["seconds"], 3)}
+
+
 def candidate_record(contract: dict, history: list, raw: dict, actor: str) -> dict:
     """Validate a host's candidate record. Scope and limits are recomputed here."""
     config = settings(contract)
@@ -276,7 +324,7 @@ def candidate_record(contract: dict, history: list, raw: dict, actor: str) -> di
     if not isinstance(raw, dict):
         raise _record_error("candidate must be an object")
     allowed = {"id", "commit", "tree", "base", "parents", "operator", "provider", "changed_paths", "diff", "signal", "note",
-               "origin"}
+               "origin", "spend"}
     if set(raw) - allowed or {"id", "commit", "tree", "base", "parents", "operator", "provider", "changed_paths", "diff"} - set(raw):
         raise _record_error("candidate fields are " + ", ".join(sorted(allowed)))
     candidate_id = raw["id"]
@@ -315,6 +363,9 @@ def candidate_record(contract: dict, history: list, raw: dict, actor: str) -> di
     if origin is not None and (not isinstance(origin, dict) or set(origin) != {"host", "candidate"}
                                or not all(isinstance(origin[k], str) and _ID.match(origin[k]) for k in origin) or parents):
         raise _record_error("origin needs host and candidate ids; a migrant has no local parents")
+    spend = raw.get("spend")
+    if spend is not None:
+        spend = _spend(config, spend, CANDIDATE_SPEND, "candidate")
     scope = config["scope"]
     limits = []
     if len(paths) > scope["max_files"] or diff["files"] > scope["max_files"]:
@@ -327,6 +378,7 @@ def candidate_record(contract: dict, history: list, raw: dict, actor: str) -> di
         "changed_paths": paths, "scope_violations": [p for p in paths if not in_scope(scope, p)],
         "limit_violations": limits, "diff": dict(diff), "signal": _signal(raw.get("signal")),
         "note": note, "actor": actor, **({"origin": dict(origin)} if origin is not None else {}),
+        **({"spend": spend} if spend is not None else {}),
     })
 
 
@@ -389,7 +441,7 @@ def search_record(contract: dict, history: list, phase: str, raw: dict, actor: s
                 or any(op not in config["operators"] for op in operators)):
             raise Rejected("operator_not_permitted", "search operators must be contract operators")
         budget = raw["budget"]
-        if not isinstance(budget, dict) or set(budget) != set(config["budget"]) or any(
+        if not isinstance(budget, dict) or set(budget) != set(COUNT_BUDGET) or any(
                 type(budget[key]) is not int or not 0 <= budget[key] <= config["budget"][key] for key in budget):
             raise _record_error("search budget must not exceed the contract budget")
         if not isinstance(raw["base"], str) or not _OBJECT.match(raw["base"]):
@@ -399,8 +451,9 @@ def search_record(contract: dict, history: list, phase: str, raw: dict, actor: s
         return _bounded({**raw, "provider": _provider(raw["provider"]), "operators": list(operators),
                          "budget": dict(budget), "actor": actor})
     if phase == "finished":
-        if set(raw) != {"id", "stopped", "candidates", "recommended", "evaluations", "elapsed_ms", "error"}:
+        if set(raw) - {"spend"} != {"id", "stopped", "candidates", "recommended", "evaluations", "elapsed_ms", "error"}:
             raise _record_error("search_finished fields are id, stopped, candidates, recommended, evaluations, elapsed_ms, error")
+        spend = _spend(config, raw["spend"], SEARCH_SPEND, "search") if "spend" in raw else None
         if not started or finished:
             raise _record_error("search_finished needs one open search_started")
         if raw["stopped"] not in SEARCH_STOPS:
@@ -416,7 +469,7 @@ def search_record(contract: dict, history: list, phase: str, raw: dict, actor: s
             raise _record_error("evaluations and elapsed_ms must be counts")
         if raw["error"] is not None and (not isinstance(raw["error"], str) or not _NAME.match(raw["error"])):
             raise _record_error("error must be a short code or null")
-        return _bounded({**raw, "actor": actor})
+        return _bounded({**raw, **({"spend": spend} if spend is not None else {}), "actor": actor})
     raise _record_error("phase must be started or finished")
 
 
@@ -441,6 +494,79 @@ def evaluation_denial(config: dict, evaluation: dict | None, now) -> str | None:
             return "candidate_check_failed:" + name
     if as_seconds(now) - as_seconds(evaluation["at"]) > config["evaluation"]["max_age_seconds"]:
         return "candidate_evidence_stale"
+    return None
+
+
+def spend_total(history: list) -> dict:
+    """The thread's cumulative host-measured spend, summed from its finished searches.
+
+    Dollars count host-observed usage only. A search that never finished (the process died
+    inside ``propose``) contributes nothing here; its candidates still carry their own spend.
+    """
+    total = {"dollars": 0.0, "seconds": 0.0, "searches": 0, "host_observed": False, "unknown_models": []}
+    priced_calls = []
+    for event in history:
+        if event["kind"] != "search_finished":
+            continue
+        total["searches"] += 1
+        spend = event["body"].get("spend")
+        if not spend:
+            continue
+        priced_calls.append(spend["dollars"])
+        total["seconds"] = round(total["seconds"] + spend["seconds"], 3)
+        total["host_observed"] = total["host_observed"] or spend["host_observed"]
+        total["unknown_models"] += [m for m in spend["unknown_models"] if m not in total["unknown_models"]]
+    total["dollars"] = dollars(priced_calls)
+    return total
+
+
+def _budget_proposal(contract: dict, history: list, proposal: dict) -> tuple[dict, dict] | None:
+    """The settings and registered candidate when a budget rule applies: a priced contract's promotion action."""
+    config = settings(contract)
+    if not priced(config) or proposal["action"] != config["promotion"]["action"]:
+        return None
+    args = proposal.get("args")
+    candidate = registered(history, args["candidate"]) if isinstance(args, dict) and isinstance(args.get("candidate"), str) else None
+    return None if candidate is None else (config, candidate)
+
+
+def search_budget_denial(contract: dict, history: list, proposal: dict) -> str | None:
+    """``budget.search``: the candidate's own registration stayed inside the budget, by the host's measurement.
+
+    The record is the host's spend at registration: dollars for the host-observed usage that
+    produced the candidate and seconds since its search started. A priced contract's candidate
+    without one (registered by a host that measured nothing) is refused.
+    """
+    found = _budget_proposal(contract, history, proposal)
+    if found is None:
+        return None
+    config, candidate = found
+    spend = candidate.get("spend")
+    if spend is None:
+        return "spend_unrecorded:" + candidate["id"]
+    if spend["seconds"] > config["budget"]["max_seconds"]:
+        return "search_over_budget:seconds"
+    max_dollars = config["budget"]["max_dollars"]
+    if max_dollars is not None and spend["dollars"] is not None and spend["dollars"] > max_dollars:
+        return "search_over_budget:dollars"
+    return None
+
+
+def promotion_budget_denial(contract: dict, history: list, proposal: dict) -> str | None:
+    """``budget.promotion``: the thread's cumulative host-observed dollars are within ``max_dollars`` now.
+
+    With ``strict``, usage of a model the price table does not name also refuses promotion.
+    """
+    found = _budget_proposal(contract, history, proposal)
+    if found is None:
+        return None
+    config, _candidate = found
+    total = spend_total(history)
+    max_dollars = config["budget"]["max_dollars"]
+    if max_dollars is not None and total["dollars"] > max_dollars:
+        return "over_budget:dollars"
+    if config["budget"]["strict"] and total["unknown_models"]:
+        return "unknown_spend:" + total["unknown_models"][0]
     return None
 
 
@@ -529,6 +655,7 @@ def candidate_views(contract: dict, history: list, now) -> list[dict]:
                                                "changed_paths", "scope_violations", "limit_violations", "diff",
                                                "signal", "note")},
             "origin": candidate.get("origin"),
+            **({"spend": candidate["spend"]} if "spend" in candidate else {}),
             "registered_hash": event["hash"],
             "evaluation": {"state": evaluated,
                            "checks": evaluation["body"]["checks"] if evaluation else [],

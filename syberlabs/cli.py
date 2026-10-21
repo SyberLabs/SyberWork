@@ -5,9 +5,13 @@
     syberlabs context
     syberlabs propose --from-worktree          # or --command ./my_model_adapter
     syberlabs check c1
+    syberlabs findings c1                      # what the contract's critic found
     syberlabs diff c1
     syberlabs accept c1
     syberlabs status
+    syberlabs certify c1                         # sign what the journal says about the accepted candidate
+    syberlabs verify CERT --public KEY --repo .  # check it with the public key; no Kit, no checks, no model
+    syberlabs run --once                       # or a loop: every open thread's next safe step
 
 The current thread is remembered in ``.syberlabs/current``. Every command
 reads the journal fresh, so a thread can be resumed from any terminal.
@@ -20,8 +24,12 @@ import json
 import sys
 from pathlib import Path
 
+from syberlabs import certificate
+from syberlabs import critic
 from syberlabs.build import ACT_CLASSES, Kit, hint
+from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
+from syberlabs.gitspace import Repo
 from syberlabs.providers import CommandProvider, PatchProvider, split_command
 
 
@@ -42,6 +50,8 @@ def _print_status(status: dict) -> None:
     print(f"objective {status['objective']}")
     if status.get("act_class"):
         print(f"class     {status['act_class']}")
+    if status.get("unattended"):
+        print("mode      unattended: syberlabs run may accept an acceptable candidate on this thread")
     print(f"contract  {status['contract']}   base {status['base'][:10]}   target {status['target_ref']}"
           + (f" -> {status['target'][:10]}" if status["target"] else " (not created)"))
     print(f"sources   {', '.join(status['sources'])}")
@@ -51,6 +61,13 @@ def _print_status(status: dict) -> None:
     used = status["budget"]
     print(f"budget    candidates {used['candidates'][0]}/{used['candidates'][1]}, "
           f"evaluations {used['evaluations'][0]}/{used['evaluations'][1]}")
+    spend = used.get("spend")
+    if spend:  # present only when the contract prices usage; dollars are the host's own observation
+        cap = f" / ${spend['max_dollars']:.4f}" if spend["max_dollars"] is not None else " (no max_dollars)"
+        print(f"spend     ${spend['dollars']:.4f}{cap}, {spend['seconds']:.1f}s over {spend['searches']} searches "
+              f"(max {spend['max_seconds']}s each)"
+              + ("" if spend["host_observed"] else "; no host-observed usage")
+              + (f"; unpriced models: {', '.join(spend['unknown_models'])}" if spend["unknown_models"] else ""))
     for item in status["candidates"]:
         lineage = ("from " + "+".join(item["parents"])) if item["parents"] else "from base"
         scope = "" if item["in_scope"] else "  OUT OF SCOPE"
@@ -76,7 +93,19 @@ def _print_receipt(receipt) -> None:
         print("next: " + receipt.hint)
 
 
+def _survive_unicode() -> None:
+    """Never crash on a console that cannot encode a check's output (cp1252 and a vitest tick, say)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _survive_unicode()
     parser = argparse.ArgumentParser(prog="syberlabs", description="Governed, Git-lineaged changes to this repository.")
     parser.add_argument("--home", default=".syberlabs")
     parser.add_argument("--repo", default=".")
@@ -92,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--class", dest="act_class", choices=list(ACT_CLASSES),
                        help="act class: R reversible, C canonical, P public claim, X external effect "
                             "(default R when the contract records a class)")
+    start.add_argument("--unattended", action="store_true",
+                       help="record that syberlabs run may accept an acceptable candidate on this thread")
     commands.add_parser("threads", help="list threads")
     use = commands.add_parser("use", help="make a thread current")
     use.add_argument("id")
@@ -125,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("candidate")
     check.add_argument("--rerun", action="store_true")
     check.add_argument("--json", action="store_true")
+    findings = commands.add_parser("findings", help="the critic's findings from a candidate's latest evaluation")
+    findings.add_argument("candidate")
     diff = commands.add_parser("diff", help="show a candidate's diff against the thread base")
     diff.add_argument("candidate")
     accept = commands.add_parser("accept", help="accept a candidate: moves only the thread's target branch")
@@ -135,9 +168,33 @@ def main(argv: list[str] | None = None) -> int:
     publish = commands.add_parser("publish", help="run a publishing action after acceptance (push, pull request, command)")
     publish.add_argument("action")
     commands.add_parser("recover", help="settle an interrupted acceptance by reading the target branch")
+    run = commands.add_parser("run", help="drive every open thread through its next safe step, from the journal; "
+                                          "recovers first, never proposes")
+    run.add_argument("--once", action="store_true", help="one pass, then exit: 0 nothing refused, 1 a step was refused, "
+                                                         "2 unexpected error")
+    run.add_argument("--interval", type=float, default=30.0, help="seconds between passes (default 30)")
+    run.add_argument("--thread", dest="run_thread", help="only this thread (id or unique prefix)")
+    run.add_argument("--publish", action="store_true",
+                     help="also run the contract's publishing actions after acceptance (off by default)")
     commands.add_parser("log", help="the thread's events")
     export = commands.add_parser("export", help="the thread's full record as JSON")
     export.add_argument("--out")
+    certify = commands.add_parser("certify", help="sign what the journal says about an accepted candidate (DSSE, Ed25519)")
+    certify.add_argument("candidate")
+    certify.add_argument("--out", help="certificate path (default .syberlabs/certificates/<thread>-<candidate>.json); "
+                                       "the public key is written beside it as .pub")
+    certify.add_argument("--seed-env", default=certificate.DEFAULT_SEED_ENV, metavar="NAME",
+                         help="environment variable holding the signing seed, as the path of a 32-byte file or 64 hex "
+                              "characters (default SYBERLABS_CERTIFICATE_SEED); only the name is recorded")
+    certify.add_argument("--bare", action="store_true",
+                         help="sign the payload under its own payloadType (application/vnd.syberlabs.admission-certificate+json) "
+                              "instead of wrapping it in an in-toto Statement (application/vnd.in-toto+json); verify reads both")
+    verify = commands.add_parser("verify", help="check a certificate with its public key; builds no Kit and runs nothing")
+    verify.add_argument("certificate")
+    verify.add_argument("--public", required=True, metavar="KEY", help="path to the signer's public key (the .pub file)")
+    verify.add_argument("--repo", dest="verify_repo", nargs="?", const=".", default=None, metavar="PATH",
+                        help="also re-derive commits, trees and the diff from this repository, and the certified journal "
+                             "prefix under --home when the thread's journal is present (PATH defaults to .)")
     commands.add_parser("memory", help="what is stored, why, and how to remove it")
     inspect = commands.add_parser("inspect", help="read-only local web inspector for threads, lineage, diffs, and history")
     inspect.add_argument("--port", type=int, default=0)
@@ -153,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "verify":
+            return _verify(args)  # no Kit: works outside any repository and has none of Kit.local's side effects
         kit = _kit(args)
         try:
             return _run(kit, args)
@@ -166,6 +225,26 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
+def _verify(args) -> int:
+    """``syberlabs verify``: the key and the file, then Git and the journal when ``--repo`` names a repository."""
+    public = certificate.read_public(args.public)
+    path = Path(args.certificate)
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(certificate.MAX_CERTIFICATE_BYTES + 1)
+    except OSError as exc:
+        raise Rejected("certificate_unreadable", f"cannot read {path}: {exc.strerror or type(exc).__name__}") from None
+    repo = home = None
+    if args.verify_repo is not None:
+        repo = Repo(args.verify_repo)
+        home = Path(args.home)
+        home = home if home.is_absolute() else repo.root / home
+    report = certificate.verify_certificate(data, public, repo=repo, home=home)
+    for line in certificate.format_report(report):
+        print(line)
+    return 0 if report.passed else 1
+
+
 def _run(kit: Kit, args) -> int:
     if args.command == "init":
         contracts = sorted(p.name for p in (kit.home / "contracts").glob("*.json"))
@@ -173,18 +252,24 @@ def _run(kit: Kit, args) -> int:
         print("Review the checks in the contract, then: syberlabs start \"what to change\"")
         return 0
     if args.command == "start":
-        thread = kit.start(args.objective, args.contract, paths=args.paths, act_class=args.act_class)
+        interrupted = {row["id"] for row in kit.threads() if row["state"] == "incomplete"}
+        thread = kit.start(args.objective, args.contract, paths=args.paths, act_class=args.act_class,
+                           unattended=args.unattended)
         (kit.home / "current").write_text(thread.id + "\n")
-        print(f"started {thread.id[:8]} on {thread.contract[0]}.v{thread.contract[1]} at {thread.base[:10]}")
+        verb = "completed interrupted start of" if thread.id in interrupted else "started"
+        print(f"{verb} {thread.id[:8]} on {thread.contract[0]}.v{thread.contract[1]} at {thread.base[:10]}")
         if thread.act_class:
             print(f"act class {thread.act_class}; a publishing effect states it with the admitting key")
+        if thread.unattended:
+            print("unattended: syberlabs run may accept an acceptable candidate on this thread")
         print(f"accepting will move {thread.target_ref}; it never pushes or merges")
         return 0
     if args.command == "threads":
         current = (kit.home / "current").read_text().strip() if (kit.home / "current").exists() else ""
         for row in kit.threads():
             mark = "*" if row["id"] == current else " "
-            print(f"{mark} {row['id'][:8]}  {row['contract']:16} {row['objective']}")
+            note = "  [incomplete: start again with the same objective, or forget]" if row["state"] == "incomplete" else ""
+            print(f"{mark} {row['id'][:8]}  {row['contract']:16} {row['objective']}{note}")
         return 0
     if args.command == "use":
         thread = kit.open(args.id)
@@ -223,6 +308,11 @@ def _run(kit: Kit, args) -> int:
         for change in kit.contract_diff(args.a, args.b):
             print(f"{change['path']}: {json.dumps(change['before'])} -> {json.dumps(change['after'])}")
         return 0
+    if args.command == "run":
+        if args.interval < 0:
+            raise Rejected("invalid_interval", "--interval is seconds, zero or more")
+        return kit.run(once=args.once, interval=args.interval, thread=args.run_thread or args.thread,
+                       publish=args.publish, log=print)
 
     thread = _thread(kit, args)
     if args.command == "status":
@@ -283,8 +373,30 @@ def _run(kit: Kit, args) -> int:
             print(verdict.summary())
             for result in verdict.checks:
                 if result.state not in ("passed", "not_run") and result.output_tail:
-                    print(f"--- {result.name} output (tail) ---\n{result.output_tail[-1500:]}")
+                    tail = result.output_tail[-1500:]
+                    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+                    # The stream was reconfigured at entry when it could be; a stream that could
+                    # not be is still given text it can encode.
+                    tail = tail.encode(encoding, errors="replace").decode(encoding, errors="replace")
+                    print(f"--- {result.name} output (tail) ---\n{tail}")
         return 0 if verdict.acceptable else 1
+    elif args.command == "findings":
+        view = thread._view(args.candidate)
+        if not critic.critic_checks(thread.config["evaluation"]["checks"]):
+            print("this contract has no critic check (a check named critic or critic.<reviewer>)")
+            return 0
+        reviews = critic.reviews(thread.history(), view)
+        if not reviews:
+            print(f"no critic observation for {args.candidate}; run: syberlabs check {args.candidate}")
+            return 1
+        for name, found in reviews:
+            for finding in found["findings"]:
+                line = "" if finding.get("line") is None else str(finding["line"])
+                print(f"{finding['severity']} {finding['file']}:{line} {finding['claim']}")
+            if found.get("truncated"):
+                print(f"[{name}: findings truncated in the record; full document digest {found['findings_digest']}]")
+        if not any(found["findings"] for _name, found in reviews):
+            print("no findings")
     elif args.command == "diff":
         sys.stdout.write(thread.diff(args.candidate))
     elif args.command == "accept":
@@ -314,6 +426,16 @@ def _run(kit: Kit, args) -> int:
             detail = body.get("id") or body.get("candidate") or body.get("proposal_id") or body.get("key") or ""
             extra = body.get("reason") or body.get("stopped") or body.get("status") or ""
             print(f"{event['seq']:4} {event['kind']:22} {str(detail)[:40]:40} {extra}")
+    elif args.command == "certify":
+        seed = certificate.load_seed(args.seed_env)
+        envelope, payload = certificate.certify(kit, thread.id, args.candidate, seed=seed, seed_env=args.seed_env,
+                                                bare=args.bare)
+        out = Path(args.out) if args.out else kit.home / "certificates" / f"{thread.id[:8]}-{args.candidate}.json"
+        cert, pub = certificate.write_certificate(envelope, public_from_seed(seed), out)
+        print(certificate.summary(payload))
+        print(f"wrote {cert} and {pub} (ed25519 key {envelope['signatures'][0]['keyid'][:10]}, "
+              f"seed from ${args.seed_env}, signed in this process)")
+        print(f"next: syberlabs verify {cert} --public {pub} --repo .")
     elif args.command == "export":
         data = json.dumps(kit.export(thread.id), indent=2, sort_keys=True)
         if args.out:
