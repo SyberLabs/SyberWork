@@ -239,9 +239,11 @@ def _run(kit: Kit, args) -> int:
         print("Review the checks in the contract, then: syberlabs start \"what to change\"")
         return 0
     if args.command == "start":
+        interrupted = {row["id"] for row in kit.threads() if row["state"] == "incomplete"}
         thread = kit.start(args.objective, args.contract, paths=args.paths, act_class=args.act_class)
         (kit.home / "current").write_text(thread.id + "\n")
-        print(f"started {thread.id[:8]} on {thread.contract[0]}.v{thread.contract[1]} at {thread.base[:10]}")
+        verb = "completed interrupted start of" if thread.id in interrupted else "started"
+        print(f"{verb} {thread.id[:8]} on {thread.contract[0]}.v{thread.contract[1]} at {thread.base[:10]}")
         if thread.act_class:
             print(f"act class {thread.act_class}; a publishing effect states it with the admitting key")
         print(f"accepting will move {thread.target_ref}; it never pushes or merges")
@@ -250,7 +252,8 @@ def _run(kit: Kit, args) -> int:
         current = (kit.home / "current").read_text().strip() if (kit.home / "current").exists() else ""
         for row in kit.threads():
             mark = "*" if row["id"] == current else " "
-            print(f"{mark} {row['id'][:8]}  {row['contract']:16} {row['objective']}")
+            note = "  [incomplete: start again with the same objective, or forget]" if row["state"] == "incomplete" else ""
+            print(f"{mark} {row['id'][:8]}  {row['contract']:16} {row['objective']}{note}")
         return 0
     if args.command == "use":
         thread = kit.open(args.id)
