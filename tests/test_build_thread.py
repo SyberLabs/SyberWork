@@ -297,6 +297,65 @@ class Recovery(RepoCase):
         self.assertEqual(caught.exception.code, "journal_corrupt")
 
 
+def died_after_case_created(kit, objective="Add a CSV export"):
+    """Write only the ``case_created`` record, exactly as ``Kit.start`` does before the base observation."""
+    cid, version = kit._resolve(None)
+    inputs = {"objective": objective}
+    if "act_class" in kit.session.contracts[(cid, version)]["inputs"]:
+        inputs["act_class"] = "R"
+    return kit.session.create_case(cid, version, inputs, "dev@example.test")
+
+
+class InterruptedStart(RepoCase):
+    """``start`` is several appends; a death between the first and the base observation must stay recognisable."""
+
+    OBJECTIVE = "Add a CSV export"
+
+    def test_open_refuses_with_a_code_threads_says_incomplete_and_start_completes_it(self):
+        kit = self.kit()
+        partial = died_after_case_created(kit)
+        kit.close()
+        restarted = self.kit()
+        with self.assertRaises(Rejected) as caught:
+            restarted.open(partial[:6])
+        self.assertEqual(caught.exception.code, "thread_incomplete")
+        self.assertIn(partial[:8], caught.exception.detail)
+        self.assertIn("forget", caught.exception.detail)
+        [row] = restarted.threads()
+        self.assertEqual((row["id"], row["state"]), (partial, "incomplete"))
+        with self.assertRaises(Rejected) as caught:
+            restarted.export(partial)
+        self.assertEqual(caught.exception.code, "thread_incomplete")
+        thread = restarted.start(self.OBJECTIVE, paths=["src", "tests"])
+        self.assertEqual(thread.id, partial)
+        self.assertEqual(thread.base, self.head)
+        self.assertEqual([row["state"] for row in restarted.threads()], ["started"])
+        reopened = restarted.open(partial[:6])
+        self.assertEqual(reopened.status()["base"], self.head)
+        self.assertEqual(reopened.read_scope()["paths"], ["src", "tests"])
+        self.assertEqual([e["kind"] for e in reopened.history()], ["case_created", "observed", "observed"])
+        self.assertTrue(restarted.session.verify_chain(partial))
+        self.assertEqual(validate_events(reopened.history(), "completed"), [])
+        again = restarted.start(self.OBJECTIVE)
+        self.assertNotEqual(again.id, partial, "a completed thread is never reused")
+
+    def test_a_different_objective_starts_a_new_thread_and_the_partial_one_can_be_forgotten(self):
+        kit = self.kit()
+        partial = died_after_case_created(kit)
+        other = kit.start("Rename the report module")
+        self.assertNotEqual(other.id, partial)
+        states = {row["id"]: row["state"] for row in kit.threads()}
+        self.assertEqual(states, {partial: "incomplete", other.id: "started"})
+        same_words_other_class = kit.start(self.OBJECTIVE, act_class="C")
+        self.assertNotEqual(same_words_other_class.id, partial, "the recorded inputs must match exactly")
+        found = kit.forget(partial, reason="interrupted start")
+        self.assertEqual(found["forgotten"], partial)
+        self.assertNotIn(partial, kit.journal.thread_ids())
+        with self.assertRaises(Rejected) as caught:
+            kit.open(partial)
+        self.assertEqual(caught.exception.code, "unknown_thread")
+
+
 class Search(RepoCase):
     def test_budget_bounds_candidates(self):
         kit = self.kit(self.contract(**{"evolution.budget": {"max_candidates": 2, "max_evaluations": 2}}))
@@ -399,6 +458,58 @@ class Search(RepoCase):
         self.assertEqual(launched, [found["tests"]["argv"]])
         self.assertEqual(launched[0][0], PY)
         self.assertEqual(launched[0][1:], ["-m", "unittest", "discover", "-s", "tests", "-q"])
+
+    def test_detected_node_rust_and_go_checks_name_the_tool_by_absolute_path(self):
+        """Checks run as argv without a shell: a bare ``npm`` is ``npm.cmd`` on Windows and cannot start."""
+        from syberlabs import build
+
+        def project(*files):
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            for name, text in files:
+                (Path(folder.name) / name).write_text(text)
+            return Path(folder.name)
+
+        node = project(("package.json", json.dumps({"scripts": {"test": "vitest run"}})))
+        locked = project(("package.json", json.dumps({"scripts": {"test": "vitest run"}})), ("package-lock.json", "{}"))
+        npm_cmd = "C:" + "\\nodejs\\npm.cmd"
+        with patch.object(build.os, "name", "nt"), \
+                patch.object(build.shutil, "which", lambda name: {"npm.cmd": npm_cmd}.get(name)):
+            found = detect_checks(node)
+            self.assertEqual(found["install"]["argv"], [npm_cmd, "install", "--no-audit", "--no-fund", "--ignore-scripts"])
+            self.assertEqual(found["tests"]["argv"], [npm_cmd, "test", "--silent"])
+            self.assertEqual(detect_checks(locked)["install"]["argv"][1], "ci")
+        with patch.object(build.os, "name", "posix"), \
+                patch.object(build.shutil, "which", lambda name: {"npm": "/usr/bin/npm"}.get(name)):
+            found = detect_checks(node)
+            self.assertEqual(found["tests"]["argv"], ["/usr/bin/npm", "test", "--silent"])
+            self.assertEqual(sorted(found), ["install", "tests"])
+        with patch.object(build.shutil, "which", lambda name: {"cargo.exe": "/toolchains/cargo.exe", "cargo": "/toolchains/cargo",
+                                                                 "go.exe": "/toolchains/go.exe", "go": "/toolchains/go"}.get(name)):
+            rust = detect_checks(project(("Cargo.toml", "[package]\n")))["tests"]["argv"]
+            go = detect_checks(project(("go.mod", "module x\n")))["tests"]["argv"]
+        self.assertTrue(Path(rust[0]).name.startswith("cargo") and rust[1:] == ["test", "--quiet"], rust)
+        self.assertTrue(Path(go[0]).name.startswith("go") and go[1:] == ["test", "./..."], go)
+        # The real resolver, when the machine has the tool: still an absolute path, never a bare name.
+        real = detect_checks(node)
+        if "install" in real:
+            self.assertTrue(Path(real["tests"]["argv"][0]).is_absolute(), real)
+
+    def test_a_missing_tool_writes_no_check_and_says_so(self):
+        from syberlabs import build
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name)
+        (root / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run"}}))
+        (root / "go.mod").write_text("module x\n")
+        err = io.StringIO()
+        with patch.object(build.shutil, "which", lambda name: None), contextlib.redirect_stderr(err):
+            found = detect_checks(root)
+        self.assertEqual(list(found), ["configure"])
+        self.assertEqual(found["configure"]["argv"][0], PY)
+        self.assertIn("no npm on PATH", err.getvalue())
+        self.assertIn("no go on PATH", err.getvalue())
+        self.assertNotIn("npm", json.dumps(found))
 
     def test_worktree_snapshot_takes_only_attached_sources(self):
         kit = self.kit()
@@ -525,6 +636,25 @@ class CommandLine(RepoCase):
         self.assertIn("class     C", status)
         self.assertIn("[claude@opus-5.5]", status)
         self.assertIn("act class R", self.run_cli("start", "A reversible change")[1])
+
+    def test_an_interrupted_start_is_shown_refused_and_completed_from_the_terminal(self):
+        self.assertEqual(self.run_cli("init")[0], 0)
+        kit = self.kit()
+        partial = died_after_case_created(kit, "Add a CSV export")
+        kit.close()
+        code, out, _ = self.run_cli("threads")
+        self.assertEqual(code, 0)
+        self.assertIn(f"{partial[:8]}", out)
+        self.assertIn("[incomplete", out)
+        code, _, err = self.run_cli("use", partial[:6])
+        self.assertEqual(code, 2)
+        self.assertIn("thread_incomplete", err)
+        code, out, _ = self.run_cli("start", "Add a CSV export", "--paths", "src", "tests")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"completed interrupted start of {partial[:8]}", out)
+        code, out, _ = self.run_cli("threads")
+        self.assertNotIn("incomplete", out)
+        self.assertIn(f"* {partial[:8]}", out)
 
     def test_a_class_the_contract_cannot_record_is_an_error_with_a_hint(self):
         legacy = default_contract(self.root)

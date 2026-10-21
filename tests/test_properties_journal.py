@@ -38,7 +38,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
-    from hypothesis import HealthCheck, Phase, example, given, note, settings, strategies as st
+    from hypothesis import HealthCheck, Phase, assume, example, given, note, settings, strategies as st
 except ImportError:  # the package has no dependencies; this module is dev-only
     raise unittest.SkipTest("hypothesis is not installed; pip install -e .[test]")
 
@@ -740,7 +740,7 @@ class BuildThreadDeaths(unittest.TestCase):
             finally:
                 factory.close()
 
-    @unittest.expectedFailure
+    # Fixed on main by #54 (thread_incomplete and an idempotent start); kept as a regression property.
     @THREAD
     @example(1)
     @given(st.integers(min_value=1, max_value=3))
@@ -774,7 +774,7 @@ class BuildThreadDeaths(unittest.TestCase):
             finally:
                 factory.close()
 
-    @unittest.expectedFailure
+    # Fixed on main by #49 (the settlement read-back); kept as a regression property.
     @THREAD
     @example(7, 12.0, 10.0)
     @given(st.integers(min_value=0, max_value=7), st.sampled_from((12.0, 10.0, 8.0)), st.sampled_from((12.0, 10.0, 8.0)))
@@ -822,7 +822,7 @@ class BuildThreadDeaths(unittest.TestCase):
                 note(f"appends after start: {factory.death.appends}; steps: {taken}")
                 history = self.assert_consistent(factory, factory.thread)
                 claims = [e for e in history if e["kind"] == "effect_started" and e["body"]["action"] == "measure"]
-                self.assertTrue(claims, taken)
+                assume(claims)  # the process died before the effect was claimed: there is nothing to settle
                 for claim in claims:
                     key = claim["body"]["proposal_id"]
                     readings = [e for e in history if e["kind"] == "observed" and e["body"]["key"] == "intervention"

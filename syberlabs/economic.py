@@ -1,11 +1,15 @@
-"""Exact-unit economic admission and settlement receipt checks.
+"""Exact-unit economic admission and settlement receipt checks, and model-usage pricing.
 
 Budget totals are supplied by the caller. This module does not open a database
-and does not import syberwork.
+and does not import syberwork. The exact-unit functions settle payments; the
+pricing functions at the end turn an adapter's token usage into dollars under a
+contract's price table for the Build Thread's budget, which is a bound, not a
+settlement.
 """
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Sequence
 
@@ -145,3 +149,63 @@ def denial(config, policy_action, local, history, args, now, budget_reserved: Ca
     if type(reserved) is not int or reserved > cap - amount:
         return "economic_budget_exceeded" if type(reserved) is int else "economic_policy_invalid"
     return None
+
+
+# Model-usage pricing for the Build Thread budget (``evolution.budget.prices``).
+#
+# A price table maps a model name to dollars per million tokens. The host prices only
+# usage it observed itself at the ``providers.run_json`` boundary; a usage claim a
+# provider puts in a candidate's ``signal`` is declared, never priced. Dollars are
+# floats rounded to micro-dollars: a budget bound, not a settlement.
+
+PRICE_FIELDS = ("input_per_million", "output_per_million", "cache_read_per_million", "cache_creation_per_million")
+PRICED_TOKENS = {"input_tokens": "input_per_million", "output_tokens": "output_per_million",
+                 "cache_read_input_tokens": "cache_read_per_million",
+                 "cache_creation_input_tokens": "cache_creation_per_million"}
+MAX_PRICE_MODELS = 64
+MAX_RATE = 1_000_000  # dollars per million tokens
+MAX_DOLLARS = 1_000_000_000
+DOLLAR_PLACES = 6
+
+
+def is_money(value) -> bool:
+    """A finite, non-negative int or float (never a bool)."""
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def check_prices(prices) -> str | None:
+    """Why a price table is invalid, or None. Unknown rate fields fail closed."""
+    if not isinstance(prices, dict) or not prices or len(prices) > MAX_PRICE_MODELS:
+        return f"prices must name 1 to {MAX_PRICE_MODELS} models"
+    for model, rates in prices.items():
+        if not isinstance(model, str) or not 0 < len(model) <= 64:
+            return "price model names must be 1 to 64 characters"
+        if (not isinstance(rates, dict) or set(rates) - set(PRICE_FIELDS)
+                or not {"input_per_million", "output_per_million"} <= set(rates)):
+            return (f"prices for {model} need input_per_million and output_per_million; "
+                    "cache_read_per_million and cache_creation_per_million are optional")
+        if any(not is_money(rate) or rate > MAX_RATE for rate in rates.values()):
+            return f"prices for {model} must be dollars per million tokens, 0 to {MAX_RATE}"
+    return None
+
+
+def price_usage(usage, prices) -> float | None:
+    """Dollars for one call's reduced usage under ``prices``, or None when its model is not priced.
+
+    Cache tokens without a rate of their own are priced at the input rate.
+    """
+    model = usage.get("model") if isinstance(usage, dict) else None
+    rates = prices.get(model) if isinstance(model, str) and isinstance(prices, dict) else None
+    if not isinstance(rates, dict):
+        return None
+    total = 0.0
+    for field, rate_name in PRICED_TOKENS.items():
+        tokens = usage.get(field, 0)
+        if type(tokens) is int and tokens > 0:
+            total += tokens * rates.get(rate_name, rates["input_per_million"])
+    return round(total / 1_000_000, DOLLAR_PLACES)
+
+
+def dollars(values) -> float:
+    """A sum of priced calls, rounded to micro-dollars."""
+    return round(sum(values), DOLLAR_PLACES)

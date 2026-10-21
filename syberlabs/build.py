@@ -19,7 +19,9 @@ publish anything. Reopening a thread rebuilds it from its journal.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -27,13 +29,16 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from syberlabs import checks as runner
+from syberlabs import critic
+from syberlabs.clock import as_seconds
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
-from syberlabs.evolution import clean_path, in_scope, settings
+from syberlabs.economic import dollars, price_usage
+from syberlabs.evolution import clean_path, in_scope, latest_evaluation, priced, settings, spend_total
 from syberlabs.gitspace import CANDIDATE_REFS, MAX_FILE_BYTES, GitError, Repo
 from syberlabs.journal import Journal
 from syberlabs import retention
-from syberlabs.providers import PatchProvider
+from syberlabs.providers import PatchProvider, metered
 from syberlabs.retrieval import Excerpt, context_digest, select
 from syberlabs.search import Budget, Candidate, CheckResult, Evaluation, MergeResult, SearchProvider
 from syberlabs.session import NoWrite, Session
@@ -51,6 +56,14 @@ THREAD_INPUTS = frozenset({"objective", "act_class"})
 UNNAMED_CHECK = "name-your-checks-in-the-syberlabs-contract"
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 PUBLISH_EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
+# A thread started ``--unattended`` carries this verified host observation; ``syberlabs run`` accepts
+# an acceptable candidate only on such a thread. It is an observation, not a case input, because
+# the contract inputs are objective and act_class and a new input would be a contract change.
+UNATTENDED = "unattended"
+# The runner re-runs a check whose evidence would have less than this many seconds of life left
+# at accept time (bounded by half the contract's max_age_seconds), rather than trip the kernel's
+# candidate_evidence_stale refusal on an acceptance it could see coming.
+FRESHNESS_MARGIN_SECONDS = 60
 
 HINTS = {
     "candidate_not_evaluated": "Run its checks: syberlabs check {cid}",
@@ -72,6 +85,10 @@ HINTS = {
     "remote_moved": "The remote branch exists or moved; nothing was written. Inspect it before publishing under this name.",
     "duplicate": "An identical candidate already exists in this thread; check that one instead.",
     "budget_exhausted": "The thread used its contract budget. Start a new thread or publish a contract with a larger budget.",
+    "over_budget": "The thread's host-observed spend exceeds the contract's max_dollars. Start a new thread or publish a contract with a larger budget.",
+    "search_over_budget": "This candidate was produced over the contract's budget, by the host's own measurement. Propose within budget in a new thread.",
+    "spend_unrecorded": "This contract prices usage but the host that registered the candidate recorded no spend. Propose it again through this host.",
+    "unknown_spend": "A model the contract does not price was used and budget.strict is set. Add its price in a new contract version.",
     "invalid_act_class": "Classify the change as R (reversible), C (canonical), P (public claim) or X (external effect).",
     "act_class_undeclared": "This contract cannot record an act class. Publish a new version whose inputs add "
                             "\"act_class\": \"string\", then start again.",
@@ -143,6 +160,17 @@ class SearchStopped(Exception):
         self.reason = reason
 
 
+@dataclass(frozen=True)
+class SpendBudget(Budget):
+    """``Budget`` plus the dollars left under ``evolution.budget.max_dollars``.
+
+    None when the contract prices nothing or sets no dollar bound. ``providers.run_json``
+    is the only place the host observes usage, so this counts that usage and nothing else.
+    """
+
+    max_dollars: float | None = None
+
+
 class GitRefEffect:
     """Compare-and-swap of a thread's target branch. The only authoritative write."""
 
@@ -183,20 +211,85 @@ class GitRefEffect:
 class GitSearchSpace:
     """The ``SearchSpace`` a provider sees. Reads stay in the read scope; every write is a candidate."""
 
-    def __init__(self, thread: "Thread", provider: SearchProvider, budget: Budget, excerpts: list[Excerpt], seed: int):
+    def __init__(self, thread: "Thread", provider: SearchProvider, budget: Budget, excerpts: list[Excerpt], seed: int,
+                 prior_dollars: float = 0.0):
         self._thread, self._provider = thread, provider
         self.objective, self.base = thread.objective, thread.base
         self.scope = tuple(thread.read_scope()["paths"])
         self.budget, self.seed = budget, seed
         self.context = tuple({"path": e.path, "lines": [e.start, e.end], "reason": e.reason, "text": e.text} for e in excerpts)
-        self._deadline = time.monotonic() + budget.max_seconds
+        self._started = time.monotonic()
+        self._deadline = self._started + budget.max_seconds
         self.submitted: list[str] = []
         self.evaluations = 0
         self._commits = {view["id"]: view["commit"] for view in thread._views()}
+        # The host's spend ledger. ``observed`` is every usage that crossed ``providers.run_json`` in this
+        # search; ``_pending`` the part not yet attributed to a candidate; ``dollars`` the priced part that
+        # is. ``prior_dollars`` is what the thread's earlier searches cost. All measured here, none declared.
+        budget_config = thread.config["budget"]
+        self.prices, self.max_dollars, self.strict = budget_config["prices"], budget_config["max_dollars"], budget_config["strict"]
+        self.prior_dollars = prior_dollars
+        self.observed: list[dict] = []
+        self._pending: list[dict] = []
+        self.dollars = 0.0
+        self.calls = 0
 
     def _time(self) -> None:
         if time.monotonic() > self._deadline:
             raise SearchStopped("deadline")
+
+    # The usage meter ``providers.run_json`` calls inside ``metered(space)``.
+
+    def _pending_dollars(self) -> float:
+        return dollars(u["dollars"] for u in self._pending if u.get("dollars") is not None)
+
+    def _spent(self, *, pending: bool) -> float:
+        return dollars([self.prior_dollars, self.dollars] + ([self._pending_dollars()] if pending else []))
+
+    def _afford(self, *, pending: bool) -> None:
+        if self.max_dollars is not None and self._spent(pending=pending) > self.max_dollars:
+            raise SearchStopped("budget_exhausted")
+
+    def permit(self) -> None:
+        """Before a model command runs: nothing more is bought once the ledger, pending usage included, is over budget."""
+        self._afford(pending=True)
+
+    def observe(self, usage: dict | None) -> None:
+        """After a model command ran: the adapter's reduced usage, priced under the contract's table."""
+        self.calls += 1
+        if usage is None:
+            return
+        entry = dict(usage)
+        if self.prices is not None:
+            entry["dollars"] = price_usage(usage, self.prices)
+        self.observed.append(entry)
+        self._pending.append(entry)
+
+    def _candidate_spend(self) -> dict | None:
+        """The spend record for the next registration: pending usage and seconds since the search started."""
+        if self.prices is None:
+            return None
+        unknown = any(u.get("dollars") is None for u in self._pending)
+        return {"dollars": None if unknown else self._pending_dollars(),
+                "seconds": round(time.monotonic() - self._started, 3), "host_observed": bool(self._pending)}
+
+    def _settle(self) -> None:
+        """A candidate was registered: its pending usage is now attributed and counts against the budget."""
+        self.dollars = dollars([self.dollars, self._pending_dollars()])
+        self._pending = []
+
+    @property
+    def over_budget(self) -> bool:
+        return self.max_dollars is not None and self._spent(pending=True) > self.max_dollars
+
+    def spend_record(self, elapsed: float) -> dict | None:
+        """The ``search_finished.spend`` body, or None when the contract prices nothing."""
+        if self.prices is None:
+            return None
+        unknown = sorted({u.get("model") or "unnamed" for u in self.observed if u.get("dollars") is None})
+        return {"dollars": dollars(u["dollars"] for u in self.observed if u.get("dollars") is not None),
+                "seconds": round(elapsed, 3), "evaluations": self.evaluations, "candidates": len(self.submitted),
+                "host_observed": bool(self.observed), "unknown_models": unknown}
 
     def _commit_of(self, ref: str) -> str:
         if ref == "base":
@@ -235,26 +328,34 @@ class GitSearchSpace:
     def submit(self, changes: Mapping[str, str | None], *, parents: Sequence[str] = (), operator: str,
                message: str = "", signal: Mapping[str, Any] | None = None) -> Candidate:
         self._time()
+        # Attributed spend only: the call that crossed the dollar line still gets its candidate recorded,
+        # with that spend on it; the next registration is refused.
+        self._afford(pending=False)
         if len(self.submitted) >= self.budget.max_candidates:
             raise SearchStopped("budget_exhausted")
         if operator not in self._provider.operators:
             raise Rejected("operator_not_permitted", f"{self._provider.name} did not declare {operator!r}")
-        found = self._thread._submit(changes, parents, operator, message, signal, self._provider, self.submitted)
+        found = self._thread._submit(changes, parents, operator, message, signal, self._provider, self.submitted,
+                                     spend=self._candidate_spend())
+        self._settle()
         self._commits[found.id] = found.commit
         return found
 
     def migrate(self, commit: str, *, origin: Mapping[str, str]) -> Candidate:
         self._time()
+        self._afford(pending=False)
         if len(self.submitted) >= self.budget.max_candidates:
             raise SearchStopped("budget_exhausted")
         if "migration" not in self._provider.operators:
             raise Rejected("operator_not_permitted", f"{self._provider.name} did not declare 'migration'")
-        found = self._thread._migrate(commit, origin, self._provider, self.submitted)
+        found = self._thread._migrate(commit, origin, self._provider, self.submitted, spend=self._candidate_spend())
+        self._settle()
         self._commits[found.id] = found.commit
         return found
 
     def evaluate(self, candidate: str) -> Evaluation:
         self._time()
+        self._afford(pending=True)
         if self.evaluations >= self.budget.max_evaluations:
             raise SearchStopped("budget_exhausted")
         found, ran = self._thread._evaluate(candidate)
@@ -262,9 +363,11 @@ class GitSearchSpace:
         return found
 
     def remaining(self) -> Budget:
-        return Budget(self.budget.max_candidates - len(self.submitted),
-                      self.budget.max_evaluations - self.evaluations,
-                      max(0, int(self._deadline - time.monotonic())))
+        """Budget left. ``max_dollars`` counts spend attributed to registered candidates (None: no dollar bound)."""
+        left = None if self.max_dollars is None else max(0.0, dollars([self.max_dollars, -self._spent(pending=False)]))
+        return SpendBudget(self.budget.max_candidates - len(self.submitted),
+                           self.budget.max_evaluations - self.evaluations,
+                           max(0, int(self._deadline - time.monotonic())), left)
 
 
 def detect_checks(root: Path) -> dict:
@@ -278,17 +381,48 @@ def detect_checks(root: Path) -> dict:
     tests = root / "tests"
     if python and tests.is_dir() and any(tests.glob("test*.py")):
         return {"tests": {"argv": [python, "-m", "unittest", "discover", "-s", "tests", "-q"], "timeout_seconds": 600}}
+
+    def resolve(tool: str, marker: str) -> str | None:
+        # Other toolchains are resolved the same way, now, by absolute path: checks run as argv
+        # without a shell, so a bare ``npm`` cannot start on Windows, where it is ``npm.cmd``. On
+        # Windows the ``.cmd`` and ``.exe`` spellings are tried first, since an older ``shutil.which``
+        # can return the extensionless POSIX launcher that sits beside ``npm.cmd``. An unresolved
+        # tool writes no check at all, with a note, rather than a check that can never start.
+        spellings = (tool + ".cmd", tool + ".exe", tool) if os.name == "nt" else (tool,)
+        for spelling in spellings:
+            found = shutil.which(spelling)
+            if found:
+                return found
+        print(f"note: {marker} found but no {tool} on PATH; no {tool} check written. "
+              "Name one in .syberlabs/contracts/repo-change.v1.json.", file=sys.stderr)
+        return None
+
     package = root / "package.json"
     if package.exists():
         try:
             if "test" in json.loads(package.read_text()).get("scripts", {}):
-                return {"tests": {"argv": ["npm", "test", "--silent"], "timeout_seconds": 600}}
+                npm = resolve("npm", "package.json")
+                if npm:
+                    # A fresh worktree has no node_modules; ``install`` runs first (name order) and
+                    # the checks after it are ``setup_failed`` when it does not pass. ``npm ci``
+                    # needs a lockfile; without one, ``npm install``. ``--ignore-scripts`` keeps a
+                    # candidate's dependency tree from running lifecycle scripts inside the check;
+                    # a project whose build needs them removes the flag in a new contract version.
+                    locked = (root / "package-lock.json").exists() or (root / "npm-shrinkwrap.json").exists()
+                    return {"install": {"argv": [npm, "ci" if locked else "install", "--no-audit", "--no-fund",
+                                                 "--ignore-scripts"],
+                                        "timeout_seconds": 1200},
+                            "tests": {"argv": [npm, "test", "--silent"], "timeout_seconds": 600}}
         except (ValueError, AttributeError):
             pass
     if (root / "Cargo.toml").exists():
-        return {"tests": {"argv": ["cargo", "test", "--quiet"], "timeout_seconds": 900}}
+        cargo = resolve("cargo", "Cargo.toml")
+        if cargo:
+            return {"tests": {"argv": [cargo, "test", "--quiet"], "timeout_seconds": 900}}
     if (root / "go.mod").exists():
-        return {"tests": {"argv": ["go", "test", "./..."], "timeout_seconds": 900}}
+        go = resolve("go", "go.mod")
+        if go:
+            return {"tests": {"argv": [go, "test", "./..."], "timeout_seconds": 900}}
     if not python:
         # An embedded interpreter can report no executable path. Guessing a bare "python" would bring
         # back the Windows alias failure, so write a check that cannot start until a person names one.
@@ -432,11 +566,13 @@ class Kit:
         return cid, version if version is not None else versions[-1]
 
     def start(self, objective: str, contract: str | None = None, *, paths: Sequence[str] | None = None,
-              actor: str | None = None, act_class: str | None = None) -> "Thread":
+              actor: str | None = None, act_class: str | None = None, unattended: bool = False) -> "Thread":
         """Start a thread from HEAD.
 
         A contract that declares an ``act_class`` input records one on every thread: the class
         given, or R. A class given to a contract that cannot record it is refused, never dropped.
+        ``unattended`` records a verified host observation (key ``unattended``) that lets
+        ``syberlabs run`` accept an acceptable candidate on this thread without a person present.
         """
         if not isinstance(objective, str) or not objective.strip():
             raise Rejected("invalid_objective", "describe the change in a sentence")
@@ -458,28 +594,58 @@ class Kit:
         inputs = {"objective": objective.strip()}
         if records_class:
             inputs["act_class"] = act_class or "R"
-        case = self.session.create_case(cid, version, inputs, actor or self.actor)
+        case = self._interrupted(cid, version, inputs)
+        if case is None:
+            case = self.session.create_case(cid, version, inputs, actor or self.actor)
         self.session.observe(case, "base", {"commit": base, "tree": self.repo.tree(base), "branch": self.repo.current_branch()},
                              "git", base, HOST, verified=True)
         thread = Thread(self, case)
         if paths:
             thread.attach_source("repository", paths=paths)
+        if unattended:
+            self.session.observe(case, UNATTENDED, {"unattended": True, "by": actor or self.actor}, HOST, "1", HOST,
+                                 verified=True)
         return thread
 
     def open(self, thread_id: str) -> "Thread":
+        """Open a thread by id or unique prefix.
+
+        A thread whose ``start`` died before the base observation is refused with
+        ``thread_incomplete``: ``start`` again with the same objective completes it, or ``forget`` it.
+        """
+        case_id = self._find(thread_id)
+        self.session.inspect(case_id)
+        return Thread(self, case_id)
+
+    def _find(self, thread_id: str) -> str:
         matches = [t for t in self.journal.thread_ids() if t.startswith(thread_id)] if thread_id else []
         if len(matches) != 1:
             raise Rejected("unknown_thread", f"{thread_id!r} matches {len(matches)} threads")
-        self.session.inspect(matches[0])
-        return Thread(self, matches[0])
+        return matches[0]
+
+    def _incomplete(self, case_id: str) -> bool:
+        """True when ``start`` was interrupted after ``case_created`` and before the base observation."""
+        return latest_observation(self.session.history(case_id), "base") is None
+
+    def _interrupted(self, contract_id: str, version: int, inputs: dict) -> str | None:
+        """The most recent thread, when its start was interrupted and it was started with exactly these inputs."""
+        rows = [row for row in map(self.journal.first, self.journal.thread_ids()) if row]
+        if not rows:
+            return None
+        latest = max(rows, key=lambda row: row["created"])
+        if latest["inputs"] != inputs or (latest["contract_id"], latest["contract_version"]) != (contract_id, version):
+            return None
+        return latest["id"] if self._incomplete(latest["id"]) else None
 
     def threads(self) -> list[dict]:
+        """Every thread the journal lists; ``state`` is ``incomplete`` for an interrupted start, else ``started``."""
         rows = []
         for case_id in self.journal.thread_ids():
             row = self.journal.first(case_id)
             if row:
                 rows.append({"id": case_id, "objective": row["inputs"].get("objective"),
-                             "contract": f"{row['contract_id']}.v{row['contract_version']}", "created": row["created"]})
+                             "contract": f"{row['contract_id']}.v{row['contract_version']}", "created": row["created"],
+                             "state": "incomplete" if self._incomplete(case_id) else "started"})
         return sorted(rows, key=lambda r: r["created"])
 
     def contract_diff(self, a: str, b: str) -> list[dict]:
@@ -540,16 +706,17 @@ class Kit:
 
         The target branch and anything published stay: forgetting never undoes an effect.
         """
-        thread = self.open(thread_id)
-        result = self.session.forget(thread.id, actor or self.actor, reason)
+        case_id = self._find(thread_id)  # not open(): an interrupted start may be forgotten too
+        target_ref, _ = self._target(case_id)
+        result = self.session.forget(case_id, actor or self.actor, reason)
         removed = 0
-        for ref in self.repo.refs(f"{CANDIDATE_REFS}/{thread.id[:8]}/"):
+        for ref in self.repo.refs(f"{CANDIDATE_REFS}/{case_id[:8]}/"):
             self.repo.delete_ref(ref)
             removed += 1
         current = self.home / "current"
-        if current.exists() and current.read_text().strip() == thread.id:
+        if current.exists() and current.read_text().strip() == case_id:
             current.unlink()
-        return {**result, "candidate_refs_removed": removed, "kept": thread.target_ref}
+        return {**result, "candidate_refs_removed": removed, "kept": target_ref}
 
     def export(self, thread_id: str) -> dict:
         thread = self.open(thread_id)
@@ -557,8 +724,20 @@ class Kit:
         return {"status": thread.status(), "contract": inspected["contract"], "events": inspected["events"],
                 "side": self.session.side_channel(thread.id), "chain_valid": inspected["chain_valid"]}
 
+    def run(self, *, once: bool = False, interval: float = 30.0, thread: str | None = None, publish: bool = False,
+            log=None) -> int:
+        """Drive open threads unattended; see ``Runner``. Returns the process exit code."""
+        return Runner(self, thread=thread, publish=publish, log=log).run(once=once, interval=interval)
+
 
 _MISSING = object()
+
+
+def latest_observation(events: Sequence[dict], key: str) -> dict | None:
+    """The body of the latest verified host or Git observation under ``key``, or None."""
+    found = next((e for e in reversed(events) if e["kind"] == "observed" and e["body"]["key"] == key
+                  and e["body"]["source"] in ("git", HOST) and e["body"].get("verified")), None)
+    return found["body"] if found else None
 
 
 class Thread:
@@ -571,7 +750,11 @@ class Thread:
         self.act_class = row["inputs"].get("act_class")
         self.contract = (row["contract_id"], row["contract_version"])
         self.config = settings(kit.session.contracts[self.contract])
-        self.base = self._latest("base")["value"]["commit"]
+        base = self._latest("base")
+        if base is None:
+            raise Rejected("thread_incomplete", f"{case_id[:8]}: start was interrupted before the base was recorded; "
+                           "run start again with the same objective to complete it, or forget it")
+        self.base = base["value"]["commit"]
         self.target_ref, self._create = kit._target(case_id)
 
     # Views over the history
@@ -580,10 +763,7 @@ class Thread:
         return self.kit.session.history(self.id)
 
     def _latest(self, key: str) -> dict | None:
-        events = self._events()
-        found = next((e for e in reversed(events) if e["kind"] == "observed" and e["body"]["key"] == key
-                      and e["body"]["source"] in ("git", HOST) and e["body"].get("verified")), None)
-        return found["body"] if found else None
+        return latest_observation(self._events(), key)
 
     def _views(self) -> list[dict]:
         return self.kit.session.candidates(self.id)
@@ -599,6 +779,11 @@ class Thread:
 
     def history(self) -> list[dict]:
         return self._events()
+
+    @property
+    def unattended(self) -> bool:
+        """True when ``start`` recorded the ``unattended`` host observation on this thread."""
+        return self._latest(UNATTENDED) is not None
 
     def read_scope(self) -> dict:
         attached = self._latest("sources")
@@ -668,10 +853,12 @@ class Thread:
             "budget": {"max_candidates": budget.max_candidates, "max_evaluations": budget.max_evaluations,
                        "max_seconds": budget.max_seconds},
             "base": self.base, "context_digest": context_digest(excerpts)}, HOST)
-        space = GitSearchSpace(self, provider, budget, excerpts, seed)
+        prior = spend_total(self._events())["dollars"] if priced(self.config) else 0.0
+        space = GitSearchSpace(self, provider, budget, excerpts, seed, prior_dollars=prior)
         started, stopped, error, recommended = time.monotonic(), "completed", None, []
         try:
-            chosen = provider.search(space)
+            with metered(space):
+                chosen = provider.search(space)
             recommended = [c for c in (chosen or []) if c in space.submitted]
         except SearchStopped as exc:
             stopped = exc.reason
@@ -686,12 +873,18 @@ class Thread:
         return [Candidate.from_view(self._view(c)) for c in space.submitted]
 
     def _finish(self, search_id, stopped, space, recommended, started, error) -> None:
-        self.kit.session.record_search(self.id, "finished", {
-            "id": search_id, "stopped": stopped, "candidates": list(space.submitted),
-            "recommended": list(dict.fromkeys(recommended)), "evaluations": space.evaluations,
-            "elapsed_ms": int((time.monotonic() - started) * 1000), "error": error}, HOST)
+        elapsed = time.monotonic() - started
+        if stopped == "completed" and space.over_budget:
+            stopped = "budget_exhausted"  # the host's word: the provider returned, but over the dollar budget
+        body = {"id": search_id, "stopped": stopped, "candidates": list(space.submitted),
+                "recommended": list(dict.fromkeys(recommended)), "evaluations": space.evaluations,
+                "elapsed_ms": int(elapsed * 1000), "error": error}
+        spend = space.spend_record(elapsed)
+        if spend is not None:
+            body["spend"] = spend
+        self.kit.session.record_search(self.id, "finished", body, HOST)
 
-    def _submit(self, changes, parents, operator, message, signal, provider, submitted) -> Candidate:
+    def _submit(self, changes, parents, operator, message, signal, provider, submitted, spend=None) -> Candidate:
         if not isinstance(changes, Mapping) or not changes:
             raise Rejected("invalid_change", "changes must map at least one path to text or None")
         encoded, total = {}, 0
@@ -723,9 +916,9 @@ class Thread:
         duplicate = next((v["id"] for v in views.values() if v["tree"] == tree), None)
         if duplicate is not None:
             raise Rejected("duplicate", f"the result is identical to {duplicate}")
-        return self._register(cid, commit, tree, list(parents), operator, provider, message, signal, None, submitted)
+        return self._register(cid, commit, tree, list(parents), operator, provider, message, signal, None, submitted, spend)
 
-    def _register(self, cid, commit, tree, parents, operator, provider, message, signal, origin, submitted) -> Candidate:
+    def _register(self, cid, commit, tree, parents, operator, provider, message, signal, origin, submitted, spend=None) -> Candidate:
         """Keep the commit alive on a candidate ref and record what the host computed from Git."""
         repo = self.kit.repo
         repo.git("update-ref", f"{CANDIDATE_REFS}/{self.id[:8]}/{cid}", commit)
@@ -738,11 +931,13 @@ class Thread:
             "signal": dict(signal) if signal is not None else None, "note": (message or "")[:500]}
         if origin is not None:
             record["origin"] = dict(origin)
+        if spend is not None:
+            record["spend"] = dict(spend)
         self.kit.session.record_candidate(self.id, record, HOST)
         submitted.append(cid)
         return Candidate.from_view(self._view(cid))
 
-    def _migrate(self, commit: str, origin: Mapping[str, str], provider, submitted) -> Candidate:
+    def _migrate(self, commit: str, origin: Mapping[str, str], provider, submitted, spend=None) -> Candidate:
         """Register a commit another host made. It is untrusted until evaluated here."""
         repo = self.kit.repo
         if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", commit) or repo.rev(commit) != commit:
@@ -753,7 +948,8 @@ class Thread:
         if any(view["commit"] == commit for view in views):
             raise Rejected("already_imported", "this commit is already a candidate here")
         return self._register(f"c{len(views) + 1}", commit, repo.tree(commit), [], "migration", provider,
-                              f"migrant {origin.get('candidate')} from host {origin.get('host')}", None, origin, submitted)
+                              f"migrant {origin.get('candidate')} from host {origin.get('host')}", None, origin, submitted,
+                              spend)
 
     def worktree_changes(self) -> tuple[dict[str, str | None], list[str]]:
         """Working-tree edits relative to the thread base, and paths left out.
@@ -792,8 +988,14 @@ class Thread:
             skipped = tuple(CheckResult(name, "not_run", None, 0, "outside the contract's scope; not executed")
                             for name in self.config["evaluation"]["checks"])
             return Evaluation(candidate, skipped, required), 0
-        body = runner.evaluate(self.kit.repo, view, self.config["evaluation"])
+        # A critic check reads the objective, the acceptance clauses and the scope; the host then
+        # records every document it accepted as an observation, right after the evaluation.
+        context = {"objective": self.objective, "scope": self.config["scope"],
+                   "acceptance": self.kit.session.contracts[self.contract]["acceptance"]}
+        documents: list = []
+        body = runner.evaluate(self.kit.repo, view, self.config["evaluation"], context=context, documents=documents)
         self.kit.session.record_evaluation(self.id, body, HOST)
+        critic.observe(self.kit.session, self.id, body, documents)
         results = tuple(CheckResult(c["name"], c["state"], c["exit_code"], c["duration_ms"], c["output_tail"])
                         for c in body["checks"])
         return Evaluation(candidate, results, required), 1
@@ -1009,9 +1211,19 @@ class Thread:
                 elif view["evaluation"]["state"] == "passed" and view["promotion"]["state"] in ("provisional", "denied", "not_applied", "admitted"):
                     next_steps.append(f"syberlabs accept {view['id']}")
         context = self._latest("context")
+        budget = {"candidates": [len(views), self.config["budget"]["max_candidates"]],
+                  "evaluations": [sum(1 for e in events if e["kind"] == "candidate_evaluated"),
+                                  self.config["budget"]["max_evaluations"]]}
+        if priced(self.config):  # host-observed spend; absent unless the contract prices usage
+            total = spend_total(events)
+            budget["spend"] = {"dollars": total["dollars"], "max_dollars": self.config["budget"]["max_dollars"],
+                               "seconds": total["seconds"], "max_seconds": self.config["budget"]["max_seconds"],
+                               "searches": total["searches"], "host_observed": total["host_observed"],
+                               "unknown_models": total["unknown_models"]}
         return {
             "thread": self.id, "objective": self.objective, "contract": f"{self.contract[0]}.v{self.contract[1]}",
-            "act_class": self.act_class, "status": inspected["status"], "base": self.base, "target_ref": self.target_ref,
+            "act_class": self.act_class, "unattended": self.unattended, "status": inspected["status"],
+            "base": self.base, "target_ref": self.target_ref,
             "target": self.kit.repo.read_ref(self.target_ref), "accepted": accepted["id"] if accepted else None,
             "sources": self.read_scope()["paths"],
             "context": ({"digest": context["value"]["digest"], "files": len({e["path"] for e in context["value"]["entries"]}),
@@ -1020,8 +1232,197 @@ class Thread:
                             "provider": f"{v['provider']['name']}@{v['provider']['revision']}",
                             "files": len(v["changed_paths"]), "in_scope": not v["scope_violations"] and not v["limit_violations"],
                             "evaluation": v["evaluation"]["state"], "promotion": v["promotion"]["state"]} for v in views],
-            "budget": {"candidates": [len(views), self.config["budget"]["max_candidates"]],
-                       "evaluations": [sum(1 for e in events if e["kind"] == "candidate_evaluated"),
-                                       self.config["budget"]["max_evaluations"]]},
+            "budget": budget,
             "open": open_items, "next": next_steps, "events": len(events), "chain_valid": inspected["chain_valid"],
         }
+
+
+# Running unattended: one pass derives the next safe step of every thread from the journal.
+
+@dataclass(frozen=True)
+class Step:
+    """One line of a runner pass: the thread, what the runner did, and what the kernel said."""
+
+    thread: str
+    step: str                     # recover, check, accept, publish, idle, skip
+    candidate: str | None         # a candidate id, or a publishing action's name
+    outcome: str
+    reason: str | None = None
+
+    @property
+    def taken(self) -> bool:
+        """A step that asked the kernel to do something (checks ran, an action was proposed)."""
+        return self.step in ("check", "accept", "publish")
+
+    @property
+    def refused(self) -> bool:
+        return self.taken and self.outcome not in ("acceptable", "succeeded", "needs_approval")
+
+    @property
+    def line(self) -> str:
+        return (f"{self.thread[:8]} {self.step} {self.candidate or '-'} -> {self.outcome}"
+                + (f" ({self.reason})" if self.reason else ""))
+
+
+def _unresolved(events: Sequence[dict]) -> bool:
+    started = {e["body"]["proposal_id"] for e in events if e["kind"] == "effect_started"}
+    done = {e["body"]["proposal_id"] for e in events
+            if e["kind"] in ("effect_succeeded", "effect_rejected") or verified_reconciliation(e)}
+    return bool(started - done)
+
+
+class Runner:
+    """Drive every open thread through its next safe step, chosen from the journal alone.
+
+    One pass visits each thread the journal lists, oldest first (an interrupted start is skipped
+    with a note). For each: first ``Thread.recover`` settles any interrupted acceptance or
+    publishing effect; then at most ONE step, derived from the record:
+
+    - the newest candidate is unchecked or its evidence is stale (or would be stale by accept time):
+      ``check`` (a re-run when a passed evaluation is about to age out);
+    - the newest candidate is acceptable and the thread was started ``--unattended``: ``accept``;
+    - a candidate is accepted and ``publish=True``: the first publishing action the contract lists
+      whose prerequisite effect is already recorded; otherwise nothing.
+
+    The runner never proposes: generation is another station's job. Every step is a kernel
+    operation whose idempotence comes from the record (a pending proposal is reused, a claimed
+    effect is reconciled, not repeated), so a runner killed anywhere leaves a valid chain and the
+    next pass continues from it. A candidate whose checks failed, a thread waiting for approval,
+    and an attended thread are reported as idle, not retried.
+    """
+
+    def __init__(self, kit: Kit, *, thread: str | None = None, publish: bool = False, log=None,
+                 margin: float = FRESHNESS_MARGIN_SECONDS):
+        self.kit, self.only, self.publish, self.margin = kit, thread, publish, margin
+        self.log = log or (lambda line: None)
+
+    def run(self, *, once: bool = False, interval: float = 30.0) -> int:
+        """Loop over passes until interrupted. ``once`` does one pass: exit 0 when no step was refused
+        (nothing left, or progress made), 1 when a step was refused, 2 when the pass hit an unexpected
+        error (the kernel writes whole events or nothing, so the chain is still valid)."""
+        while True:
+            try:
+                steps = self.once()
+            except KeyboardInterrupt:
+                self.log("stopped")
+                return 0
+            except Rejected:
+                raise
+            except Exception as exc:
+                self.log(f"error: {type(exc).__name__}: {exc}")
+                return 2
+            taken = [s for s in steps if s.taken]
+            refused = [s for s in taken if s.refused]
+            self.log(f"pass: {len(taken)} steps, {len(refused)} refused"
+                     + ("; nothing left to do" if not taken else ""))
+            if once:
+                return 1 if refused else 0
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                self.log("stopped")
+                return 0
+
+    def once(self) -> list[Step]:
+        """One pass over the threads; returns what happened, one Step per line printed."""
+        steps: list[Step] = []
+        rows = self.kit.threads()
+        if self.only:
+            wanted = self.kit._find(self.only)
+            rows = [row for row in rows if row["id"] == wanted]
+        for row in rows:
+            if row["state"] == "incomplete":
+                steps.append(self._emit(Step(row["id"], "skip", None, "incomplete start",
+                                             "start again with the same objective, or forget it")))
+                continue
+            thread = self.kit.open(row["id"])
+            try:
+                receipts = thread.recover()
+            except Rejected as exc:
+                steps.append(self._emit(Step(thread.id, "recover", None, "refused", exc.code)))
+                continue
+            for receipt in receipts:
+                steps.append(self._emit(Step(thread.id, "recover", receipt.candidate or receipt.ref, receipt.status,
+                                             receipt.reason)))
+            step, target, reason = self._choose(thread)
+            if step == "idle":
+                steps.append(self._emit(Step(thread.id, "idle", target, "nothing to do", reason)))
+                continue
+            try:
+                steps.append(self._emit(self._take(thread, step, target)))
+            except Rejected as exc:
+                steps.append(self._emit(Step(thread.id, step, target, "refused", exc.code)))
+        return steps
+
+    def _emit(self, step: Step) -> Step:
+        self.log(step.line)
+        return step
+
+    def _choose(self, thread: "Thread") -> tuple[str, str | None, str | None]:
+        """(step, candidate or action, reason): the next safe step the record implies, or idle and why."""
+        events = thread.history()
+        if _unresolved(events):
+            return "idle", None, "effect_unresolved"
+        views = thread._views()
+        accepted = next((v for v in views if v["authoritative"]), None)
+        if accepted is not None:
+            if not self.publish:
+                return "idle", accepted["id"], "accepted; publishing needs --publish"
+            action = self._next_publish(thread, events)
+            return ("publish", action, None) if action else ("idle", accepted["id"], "accepted and published")
+        if not views:
+            return "idle", None, "no candidate; the runner never proposes"
+        view = views[-1]
+        if view["scope_violations"] or view["limit_violations"]:
+            return "idle", view["id"], "candidate_out_of_scope"
+        state = view["evaluation"]["state"]
+        if state == "failed":
+            return "idle", view["id"], "candidate_check_failed"
+        if state in ("none", "stale") or self._aging(thread, view, events):
+            used = sum(1 for e in events if e["kind"] == "candidate_evaluated")
+            if used >= thread.config["budget"]["max_evaluations"]:
+                return "idle", view["id"], "budget_exhausted"
+            return "check", view["id"], None
+        promotion = view["promotion"]
+        if promotion["state"] == "needs_approval":
+            # The pending proposal is reused by ``accept``; it is a step only once admission, read
+            # against the history as it is now, would allow it (the approval has been recorded).
+            now = self.kit.session.explain_admission(thread.id, promotion["proposal_id"], when="now")
+            if now.get("status") != "allowed":
+                return "idle", view["id"], "approval_required"
+        if not thread.unattended:
+            return "idle", view["id"], f"attended thread: syberlabs accept {view['id']}"
+        verdict = thread.check(view["id"], run=False)
+        if not verdict.acceptable:
+            return "idle", view["id"], verdict.reason or "not_acceptable"
+        return "accept", view["id"], None
+
+    def _aging(self, thread: "Thread", view: dict, events: Sequence[dict]) -> bool:
+        """True when the passed evaluation would be within the margin of ``max_age_seconds`` now."""
+        evaluation = latest_evaluation(list(events), view)
+        if evaluation is None:
+            return False
+        max_age = thread.config["evaluation"]["max_age_seconds"]
+        margin = min(self.margin, max_age / 2)
+        return max_age - (time.time() - as_seconds(evaluation["at"])) <= margin
+
+    def _next_publish(self, thread: "Thread", events: Sequence[dict]) -> str | None:
+        contract = self.kit.session.contracts[thread.contract]
+        recorded = {e["body"]["action"] for e in events if e["kind"] == "effect_succeeded" or verified_reconciliation(e)}
+        for name, spec in contract["actions"].items():
+            effect = self.kit.session.actions.get(name, {}).get("effect")
+            if effect not in PUBLISH_EFFECTS or name in recorded:
+                continue
+            prior = spec.get("requires_effect") if isinstance(spec, dict) else None
+            if prior and prior not in recorded:
+                continue
+            return name
+        return None
+
+    def _take(self, thread: "Thread", step: str, target: str) -> Step:
+        if step == "check":
+            verdict = thread.check(target, rerun=True)
+            return Step(thread.id, step, target, "acceptable" if verdict.acceptable else "refused",
+                        None if verdict.acceptable else (verdict.reason or "not_acceptable"))
+        receipt = thread.accept(target) if step == "accept" else thread.publish(target)
+        return Step(thread.id, step, target, receipt.status, receipt.reason)

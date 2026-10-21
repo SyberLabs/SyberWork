@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/critic/1/finding.schema.json",
+  "title": "FindingsDocument",
+  "description": "What a critic check prints on stdout: an independent reviewer's findings about one candidate. Identity sdk.syberlabs.space/critic/1, separate from the frozen v0alpha1 event vocabulary. The host (syberlabs.critic.parse) refuses a document that does not conform, with findings_invalid:<path>, and refuses a reviewer equal to the candidate's provider name@revision with reviewer_not_independent. The host stores the parsed document as an observed event (key critic, source check:<name>, verified true) whose value is bounded to 65536 bytes; findings_digest in that value is the SHA-256 of the full stdout bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "reviewer", "findings"],
+  "properties": {
+    "version": {"const": 1},
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "revision"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+        "revision": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "summary": {"type": "string", "maxLength": 4000}
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "file", "claim", "falsifier"],
+      "properties": {
+        "severity": {"enum": ["high", "medium", "low"]},
+        "file": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "line": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "claim": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "falsifier": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "acceptance_ref": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    }
+  }
+}

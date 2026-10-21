@@ -177,10 +177,63 @@ def validate(instance, schema, *, base: Path, root: dict | None = None, path: st
             raise SchemaError(path, "maximum")
 
 
+# A priced, critic-bearing contract and a search_finished body with the host's spend record.
+# No shipped example prices usage or declares a critic, so the validator carries these two
+# documents itself (2026-10-20). The kind field is schema-only until the runtime reads it;
+# the runtime identifies a critic by name, so the check below is named critic.reviewer as well.
+PRICED_CONTRACT = {
+    "id": "priced-change",
+    "version": 1,
+    "title": "Change a repository under a dollar budget with an independent critic",
+    "inputs": {"objective": "string"},
+    "actions": {"accept_change": {}},
+    "acceptance": [{"id": "accepted", "kind": "effect", "action": "accept_change"}],
+    "evolution": {
+        "scope": {"paths": ["src"], "max_files": 20, "max_diff_bytes": 200000},
+        "operators": ["patch"],
+        "budget": {
+            "max_candidates": 6,
+            "max_evaluations": 6,
+            "max_seconds": 600,
+            "prices": {"example-model": {"input_per_million": 3, "output_per_million": 15,
+                                         "cache_read_per_million": 0.3}},
+            "max_dollars": 2.5,
+            "strict": True,
+        },
+        "evaluation": {
+            "checks": {
+                "tests": {"kind": "command", "argv": ["python", "-m", "unittest", "-q"], "timeout_seconds": 600},
+                "critic.reviewer": {"kind": "critic", "argv": ["python", "/opt/critic/review.py"], "timeout_seconds": 300},
+            },
+            "required": ["tests", "critic.reviewer"],
+        },
+        "promotion": {"action": "accept_change", "roles": ["developer"]},
+    },
+}
+
+SPEND_SEARCH_FINISHED = {
+    "id": "s1",
+    "stopped": "budget_exhausted",
+    "candidates": ["c1", "c2"],
+    "recommended": ["c2"],
+    "evaluations": 2,
+    "elapsed_ms": 4120,
+    "error": None,
+    "spend": {"dollars": 0.0405, "seconds": 4.12, "evaluations": 2, "candidates": 2,
+              "host_observed": True, "unknown_models": []},
+    "actor": "search",
+}
+
+
 def check(instance, schema_name: str) -> None:
-    path = SPEC / schema_name
+    """Validate against a schema file, or a fragment of one: ``name.schema.json#/$defs/x``."""
+    file_part, _, fragment = schema_name.partition("#")
+    path = SPEC / file_part
     schema = load_schema(path)
-    validate(instance, schema, base=path, root=schema)
+    target = schema
+    if fragment:
+        target, path, schema = resolve_ref("#" + fragment, path, schema)
+    validate(instance, target, base=path, root=schema)
 
 
 def validate_examples() -> list[str]:
@@ -219,6 +272,14 @@ def validate_examples() -> list[str]:
         check(POLICY, "policy.schema.json")
     except SchemaError as error:
         errors.append(f"enterprise policy: {error}")
+    try:
+        check(PRICED_CONTRACT, "contract.schema.json")
+    except SchemaError as error:
+        errors.append(f"priced contract: {error}")
+    try:
+        check({"kind": "search_finished", "body": SPEND_SEARCH_FINISHED}, "event-body.schema.json")
+    except SchemaError as error:
+        errors.append(f"search_finished with spend: {error}")
     return errors
 
 
