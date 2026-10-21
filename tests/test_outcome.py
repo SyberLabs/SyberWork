@@ -10,6 +10,7 @@ from spec.validate import validate_events
 from syberlabs import Rejected, publish
 from syberlabs.build import HOST, Kit
 from syberlabs.outcome import Intervention
+from syberlabs.session import Session
 from tests.test_build_thread import GOOD, Crash, RepoCase, default_contract, git
 
 FACTS = [{"key": "accepted", "source": "git", "verified": True}]
@@ -253,7 +254,8 @@ class Interventions(RepoCase):
         self.assertEqual(kit.session.commit(thread.id, pid, kit.actor)["status"], "unknown")
         [baseline] = self.observations(thread, "baseline")
         self.assertEqual(baseline["body"]["value"]["value"], 10.0)
-        # (b, c) A baseline and a settlement appended after the claim are not at claim.seq + 1 and are ignored.
+        # (b, c) A baseline appended after the claim is not at claim.seq + 1 and is ignored; a settlement appended
+        # inside the window cannot have been written by status and is ignored too.
         forged = {"proposal_id": pid, "phase": "baseline", "metric": "conversion", "commit": commit, "value": -1000,
                   "version": "forged-v9", "observed_at": self.clock[0], "read_at": self.clock[0]}
         kit.session.observe(thread.id, "intervention", forged, "metric:conversion", "forged-v9", HOST, verified=True)
@@ -321,6 +323,56 @@ class Interventions(RepoCase):
         receipt = self.settle(thread, 11.5)
         self.assertEqual((receipt.status, receipt.external_id), ("succeeded", "conversion-v2"))
         self.assertEqual(validate_events(thread.history(), "crash_after"), [])
+
+    def test_crash_between_the_settlement_reading_and_the_verdict_settles_once(self):
+        """The settlement observation and the kernel's verdict are two appends. A death between them must not
+        lead to a second reading: the next recover settles from the durable first one, whatever the metric does."""
+        kit, thread, _ = self.claim()
+        self.source.set("conversion", 11.5, observed_at=self.clock[0])
+        self.clock[0] += WINDOW + 1
+        original = Session._append
+
+        def dies(session, case_id, kind, body, **kwargs):
+            event = original(session, case_id, kind, body, **kwargs)
+            if kind == "observed" and body["key"] == "intervention" and body["value"].get("phase") == "settlement":
+                raise Crash()
+            return event
+
+        with patch.object(Session, "_append", dies), self.assertRaises(Crash):
+            thread.recover()
+        self.assertEqual(thread.history()[-1]["kind"], "observed")
+        [settlement] = self.observations(thread, "settlement")
+        self.assertEqual((settlement["body"]["version"], settlement["body"]["value"]["outcome"]), ("conversion-v2", "moved"))
+        self.assertEqual(thread.publish("measure").reason, "effect_unresolved:measure", "the claim is still open")
+        # The metric moves the other way before the next recover, and the source is not even consulted.
+        self.source.set("conversion", 8.0, observed_at=self.clock[0])
+        args, pid = {"commit": thread.candidates()[0].commit}, settlement["body"]["value"]["proposal_id"]
+        executor = publish.executor(kit, kit.session.actions["measure"])
+        length = len(thread.history())
+        with patch.object(Intervention, "_read", side_effect=AssertionError("the metric was read again")):
+            first = executor.status(thread.id, args, pid)
+            self.assertEqual(first[0], "applied")
+            self.assertEqual((first[1]["external_id"], first[1]["outcome"], first[1]["value"], first[1]["delta"]),
+                             ("conversion-v2", "moved", 11.5, 1.5))
+            self.assertEqual(executor.status(thread.id, args, pid), first)
+            self.assertEqual(len(thread.history()), length, "a durable settlement is read back, not written again")
+            [receipt] = thread.recover()
+        self.assertEqual((receipt.status, receipt.reason, receipt.external_id),
+                         ("succeeded", "destination_state_matched", "conversion-v2"))
+        reconciled = thread.history()[-1]
+        self.assertEqual((reconciled["kind"], reconciled["body"]["proof"]["external_id"]), ("reconciled", "conversion-v2"))
+        self.assertEqual(len(self.observations(thread, "settlement")), 1)
+        self.assertEqual(thread.publish("measure").reason, "action_already_completed")
+        self.assertEqual(thread.recover(), [])
+        self.assertEqual(validate_events(thread.history(), "crash_between"), [])
+
+    def test_a_move_of_exactly_min_delta_counts_as_moved(self):
+        kit, thread, _ = self.claim()
+        receipt = self.settle(thread, 11.0)
+        self.assertEqual((receipt.status, receipt.external_id), ("succeeded", "conversion-v2"))
+        [settlement] = self.observations(thread, "settlement")
+        self.assertEqual((settlement["body"]["value"]["outcome"], settlement["body"]["value"]["delta"]), ("moved", 1.0))
+        self.assertEqual(validate_events(thread.history(), "boundary"), [])
 
     def test_crash_before_the_baseline_voids_the_claim_after_the_window(self):
         kit, thread = self.open()

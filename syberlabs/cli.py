@@ -9,6 +9,8 @@
     syberlabs diff c1
     syberlabs accept c1
     syberlabs status
+    syberlabs certify c1                         # sign what the journal says about the accepted candidate
+    syberlabs verify CERT --public KEY --repo .  # check it with the public key; no Kit, no checks, no model
     syberlabs run --once                       # or a loop: every open thread's next safe step
 
 The current thread is remembered in ``.syberlabs/current``. Every command
@@ -22,9 +24,12 @@ import json
 import sys
 from pathlib import Path
 
+from syberlabs import certificate
 from syberlabs import critic
 from syberlabs.build import ACT_CLASSES, Kit, hint
+from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
+from syberlabs.gitspace import Repo
 from syberlabs.providers import CommandProvider, PatchProvider, split_command
 
 
@@ -174,6 +179,22 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("log", help="the thread's events")
     export = commands.add_parser("export", help="the thread's full record as JSON")
     export.add_argument("--out")
+    certify = commands.add_parser("certify", help="sign what the journal says about an accepted candidate (DSSE, Ed25519)")
+    certify.add_argument("candidate")
+    certify.add_argument("--out", help="certificate path (default .syberlabs/certificates/<thread>-<candidate>.json); "
+                                       "the public key is written beside it as .pub")
+    certify.add_argument("--seed-env", default=certificate.DEFAULT_SEED_ENV, metavar="NAME",
+                         help="environment variable holding the signing seed, as the path of a 32-byte file or 64 hex "
+                              "characters (default SYBERLABS_CERTIFICATE_SEED); only the name is recorded")
+    certify.add_argument("--bare", action="store_true",
+                         help="sign the payload under its own payloadType (application/vnd.syberlabs.admission-certificate+json) "
+                              "instead of wrapping it in an in-toto Statement (application/vnd.in-toto+json); verify reads both")
+    verify = commands.add_parser("verify", help="check a certificate with its public key; builds no Kit and runs nothing")
+    verify.add_argument("certificate")
+    verify.add_argument("--public", required=True, metavar="KEY", help="path to the signer's public key (the .pub file)")
+    verify.add_argument("--repo", dest="verify_repo", nargs="?", const=".", default=None, metavar="PATH",
+                        help="also re-derive commits, trees and the diff from this repository, and the certified journal "
+                             "prefix under --home when the thread's journal is present (PATH defaults to .)")
     commands.add_parser("memory", help="what is stored, why, and how to remove it")
     inspect = commands.add_parser("inspect", help="read-only local web inspector for threads, lineage, diffs, and history")
     inspect.add_argument("--port", type=int, default=0)
@@ -189,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "verify":
+            return _verify(args)  # no Kit: works outside any repository and has none of Kit.local's side effects
         kit = _kit(args)
         try:
             return _run(kit, args)
@@ -200,6 +223,26 @@ def main(argv: list[str] | None = None) -> int:
         if found:
             print("next: " + found, file=sys.stderr)
         return 2
+
+
+def _verify(args) -> int:
+    """``syberlabs verify``: the key and the file, then Git and the journal when ``--repo`` names a repository."""
+    public = certificate.read_public(args.public)
+    path = Path(args.certificate)
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(certificate.MAX_CERTIFICATE_BYTES + 1)
+    except OSError as exc:
+        raise Rejected("certificate_unreadable", f"cannot read {path}: {exc.strerror or type(exc).__name__}") from None
+    repo = home = None
+    if args.verify_repo is not None:
+        repo = Repo(args.verify_repo)
+        home = Path(args.home)
+        home = home if home.is_absolute() else repo.root / home
+    report = certificate.verify_certificate(data, public, repo=repo, home=home)
+    for line in certificate.format_report(report):
+        print(line)
+    return 0 if report.passed else 1
 
 
 def _run(kit: Kit, args) -> int:
@@ -383,6 +426,16 @@ def _run(kit: Kit, args) -> int:
             detail = body.get("id") or body.get("candidate") or body.get("proposal_id") or body.get("key") or ""
             extra = body.get("reason") or body.get("stopped") or body.get("status") or ""
             print(f"{event['seq']:4} {event['kind']:22} {str(detail)[:40]:40} {extra}")
+    elif args.command == "certify":
+        seed = certificate.load_seed(args.seed_env)
+        envelope, payload = certificate.certify(kit, thread.id, args.candidate, seed=seed, seed_env=args.seed_env,
+                                                bare=args.bare)
+        out = Path(args.out) if args.out else kit.home / "certificates" / f"{thread.id[:8]}-{args.candidate}.json"
+        cert, pub = certificate.write_certificate(envelope, public_from_seed(seed), out)
+        print(certificate.summary(payload))
+        print(f"wrote {cert} and {pub} (ed25519 key {envelope['signatures'][0]['keyid'][:10]}, "
+              f"seed from ${args.seed_env}, signed in this process)")
+        print(f"next: syberlabs verify {cert} --public {pub} --repo .")
     elif args.command == "export":
         data = json.dumps(kit.export(thread.id), indent=2, sort_keys=True)
         if args.out:
