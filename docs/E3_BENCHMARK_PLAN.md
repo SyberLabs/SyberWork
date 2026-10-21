@@ -1,6 +1,6 @@
 # E3: the comparison benchmark against a real model (plan)
 
-Status: **plan only**. No model has been called under this plan. Budget cap: **$50**, with a 30% margin, so the planned worst case must stay under **$38.46**.
+Status: **pilot run 2026-10-21, see `docs/MODEL_COMPARISON.md`** (uninformative by the rule below; the full run was not started). Budget cap: **$50**, with a 30% margin, so the planned worst case must stay under **$38.46**.
 
 ## What E3 is
 
@@ -103,14 +103,16 @@ export SYBERLABS_MODEL=claude-sonnet-5-5 SYBERLABS_EFFORT=medium
 
 # pilot: ≤ 57 calls, ≤ $9.58 worst case
 PYTHONPATH=. python benchmarks/model_vs_patch.py \
-    --adapter "python adapters/anthropic_adapter.py" --calls 6 --repeats 1 \
+    --adapter "python $PWD/adapters/anthropic_adapter.py" --calls 6 --repeats 1 \
     --write benchmarks/results/model-vs-patch-sonnet55-pilot
 
 # full: ≤ 171 calls, ≤ $28.73 worst case, only if the pilot's $ (mean) × 3 < $38.46
 PYTHONPATH=. python benchmarks/model_vs_patch.py \
-    --adapter "python adapters/anthropic_adapter.py" --calls 6 --repeats 3 \
+    --adapter "python $PWD/adapters/anthropic_adapter.py" --calls 6 --repeats 3 \
     --write benchmarks/results/model-vs-patch-sonnet55
 ```
+
+The adapter is named by absolute path because `benchmarks/model_vs_patch.py` runs the provider with the fixture worktree as its working directory (`os.chdir(root)` for `single`, `best_of_k` and `repair`; `CommandMutator(cwd=root)` for `evolve`), where a relative `adapters/anthropic_adapter.py` does not exist: the first pilot attempt on 2026-10-21 recorded twelve `provider_failed` calls with zero tokens and zero candidates before anything was spent.
 
 ## Key handling
 

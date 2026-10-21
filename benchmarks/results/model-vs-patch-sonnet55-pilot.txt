@@ -1,0 +1,14 @@
+Budget K = 6 model calls per run; every arm stops at its first passing candidate.
+fixture     arm         solved  calls(med)  tokens in/out (mean)   evaluations(med)  $ (mean)
+pricing     single       1/1            1        654/268                    1     0.0040
+pricing     best_of_k    1/1            1        654/265                    1     0.0040
+pricing     repair       1/1            1        654/271                    1     0.0040
+pricing     evolve       1/1            6       4113/1650                   1     0.0247
+slugify     single       1/1            1        683/334                    1     0.0047
+slugify     best_of_k    1/1            1        683/331                    1     0.0047
+slugify     repair       1/1            1        683/326                    1     0.0046
+slugify     evolve       1/1            6       4287/2005                   1     0.0286
+intervals   single       1/1            1        718/396                    1     0.0054
+intervals   best_of_k    1/1            1        718/386                    1     0.0053
+intervals   repair       1/1            1        718/387                    1     0.0053
+intervals   evolve       1/1            5       3747/2060                   4     0.0281

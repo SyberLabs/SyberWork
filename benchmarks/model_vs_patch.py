@@ -144,6 +144,7 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
             "output_tokens": sum(u.get("output_tokens", 0) for u in usage),
             "dollars": None if any(u.get("simulated") for u in usage) else dollars(usage),
             "simulated": any(u.get("simulated") for u in usage),
+            "provider_error": next((e["body"]["error"] for e in events if e["kind"] == "search_finished" and str(e["body"].get("error") or "").startswith("provider_")), None),
             "candidates": sum(1 for e in events if e["kind"] == "candidate_registered"),
             "evaluations": sum(1 for e in events if e["kind"] == "candidate_evaluated"), "seconds": round(seconds, 2)}
 
