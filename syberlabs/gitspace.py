@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -207,6 +208,26 @@ class Repo:
             self.git("-c", f"core.hooksPath={hooks}", "worktree", "add", "--detach", "--quiet", str(target), commit)
             yield target
         finally:
-            self.git("worktree", "remove", "--force", str(target), ok=(0, 128))
+            self._remove_worktree(target)
             self.git("worktree", "prune", ok=(0, 128))
             shutil.rmtree(parent, ignore_errors=True)
+
+    def _remove_worktree(self, target: Path, attempts: int = 6, first_delay: float = 0.1) -> None:
+        """Remove an evaluation worktree, retrying briefly when a file in it is still held.
+
+        On Windows a check's child process can outlive the check by a moment and hold a file
+        open, so ``git worktree remove`` fails with "Permission denied". The retries wait up to
+        about three seconds in total; after the last attempt the failure is tolerated, because
+        ``worktree prune`` and the directory removal that follow finish the job once the handle
+        is released. A worktree that cannot be removed never makes a passing check an error.
+        """
+        delay = first_delay
+        for attempt in range(attempts):
+            try:
+                self.git("worktree", "remove", "--force", str(target), ok=(0, 128))
+                return
+            except GitError:
+                if attempt + 1 == attempts:
+                    return
+                time.sleep(delay)
+                delay = min(delay * 2, 1.0)
