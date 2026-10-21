@@ -17,6 +17,13 @@ check and that admission would let a person accept. Token counts come from the
 adapter's reported usage; dollars use the price table below and are omitted for
 the simulated model. With the simulated model, results describe the harness and
 the simulator's probabilities, not a model.
+
+Each row names the served model (``usage.model``, or ``simulated``) and carries
+``provider_error`` (the ``provider_*`` code of a failed call, or null). With
+``--write PREFIX`` every run's thread journal is exported beside the rows, to
+``PREFIX-journals/<fixture>-<arm>-<seed>.json``, and the row's ``journal`` holds
+that path relative to the rows file, so a branching decision or a call that
+produced no candidate can be read back after the temporary worktree is gone.
 """
 
 from __future__ import annotations
@@ -103,11 +110,17 @@ class Patches:
         return []
 
 
-def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Path) -> dict:
+def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Path,
+        journals: Path | None = None) -> dict:
+    """One run. ``journals`` is a directory to export the thread's journal into, or None to keep nothing."""
     root = folder / f"{fixture}-{arm}-{seed}"
     (root / "src").mkdir(parents=True)
     for path, text in FIXTURES[fixture]["files"].items():
-        (root / path).write_text(text)
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(text, bytes):
+            (root / path).write_bytes(text)
+        else:
+            (root / path).write_text(text)
     git(root.parent, "init", "-q", "-b", "main", str(root))
     git(root, "add", ".")
     git(root, "commit", "-qm", "fixture")
@@ -138,33 +151,48 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
     passing = [c for c in thread.candidates() if c.evaluation == "passed"]
     solved = bool(passing) and thread.check(passing[0].id, run=False).acceptable
     events = thread.history()
+    journal = None
+    if journals is not None:
+        journals.mkdir(parents=True, exist_ok=True)
+        journal = f"{journals.name}/{fixture}-{arm}-{seed}.json"
+        (journals / f"{fixture}-{arm}-{seed}.json").write_text(json.dumps(kit.export(thread.id), indent=1) + "\n",
+                                                               encoding="utf-8")
     kit.close()
+    simulated = any(u.get("simulated") for u in usage)
+    served = sorted({u.get("model") for u in usage if u.get("model")})
     return {"fixture": fixture, "arm": arm, "seed": seed, "solved": solved, "calls": used,
+            "model": "simulated" if simulated else ("+".join(served) if served else None),
             "input_tokens": sum(u.get("input_tokens", 0) for u in usage),
             "output_tokens": sum(u.get("output_tokens", 0) for u in usage),
-            "dollars": None if any(u.get("simulated") for u in usage) else dollars(usage),
-            "simulated": any(u.get("simulated") for u in usage),
+            "dollars": None if simulated else dollars(usage),
+            "simulated": simulated,
             "provider_error": next((e["body"]["error"] for e in events if e["kind"] == "search_finished" and str(e["body"].get("error") or "").startswith("provider_")), None),
             "candidates": sum(1 for e in events if e["kind"] == "candidate_registered"),
-            "evaluations": sum(1 for e in events if e["kind"] == "candidate_evaluated"), "seconds": round(seconds, 2)}
+            "evaluations": sum(1 for e in events if e["kind"] == "candidate_evaluated"), "seconds": round(seconds, 2),
+            "journal": journal}
 
 
 def summarize(rows: list[dict], calls: int) -> str:
     simulated = any(r["simulated"] for r in rows)
     lines = [f"{'SIMULATED MODEL: these numbers describe the harness, not a model. ' if simulated else ''}"
              f"Budget K = {calls} model calls per run; every arm stops at its first passing candidate.",
-             "fixture     arm         solved  calls(med)  tokens in/out (mean)   evaluations(med)  $ (mean)"]
+             "fixture     arm         solved  calls(med)  tokens in/out (mean)   evaluations(med)  $ (mean)  "
+             "model                 provider_error"]
     for fixture in dict.fromkeys(r["fixture"] for r in rows):
         for arm in ARMS:
             group = [r for r in rows if r["fixture"] == fixture and r["arm"] == arm]
             if not group:
                 continue
             cost = [r["dollars"] for r in group if r["dollars"] is not None]
+            models = sorted({r.get("model") or "-" for r in group})
+            errors = [r["provider_error"] for r in group if r.get("provider_error")]
             lines.append(f"{fixture:11} {arm:11} {sum(r['solved'] for r in group):>2}/{len(group):<4} "
                          f"{statistics.median(r['calls'] for r in group):>9} "
                          f"{statistics.mean(r['input_tokens'] for r in group):>10.0f}/{statistics.mean(r['output_tokens'] for r in group):<9.0f} "
                          f"{statistics.median(r['evaluations'] for r in group):>14} "
-                         f"{('%.4f' % statistics.mean(cost)) if cost and len(cost) == len(group) else 'n/a':>10}")
+                         f"{('%.4f' % statistics.mean(cost)) if cost and len(cost) == len(group) else 'n/a':>10}  "
+                         f"{'+'.join(models):21} "
+                         f"{(str(len(errors)) + '/' + str(len(group)) + ' ' + ','.join(sorted(set(errors)))) if errors else 'none':}")
     return "\n".join(lines)
 
 
@@ -178,11 +206,12 @@ def main() -> None:
     parser.add_argument("--write", help="write the JSON rows and the summary to this path prefix")
     options = parser.parse_args()
     rows = []
+    journals = Path(options.write + "-journals") if options.write else None
     with tempfile.TemporaryDirectory() as folder:
         for fixture in options.fixtures:
             for arm in options.arms:
                 for seed in range(1, options.repeats + 1):
-                    rows.append(run(fixture, arm, options.adapter, options.calls, seed, Path(folder)))
+                    rows.append(run(fixture, arm, options.adapter, options.calls, seed, Path(folder), journals))
     report = summarize(rows, options.calls)
     print(report)
     if options.write:

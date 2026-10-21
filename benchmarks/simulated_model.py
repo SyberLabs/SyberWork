@@ -4,9 +4,13 @@
 It speaks the same two protocols as adapters/anthropic_adapter.py and edits the
 fixture's known slots: a patch sets every slot (right with probability
 ``SIM_PATCH``), a repair re-rolls the slots whose checks failed (right with
-``SIM_REPAIR``), a mutation re-rolls one slot (right with ``SIM_MUTATE``). Token
-usage is estimated from text length and marked ``simulated``. Results produced
-with it describe the harness and these probabilities, not any model.
+``SIM_REPAIR``), a mutation re-rolls one slot (right with ``SIM_MUTATE``). A slot
+replaces the first body line of its function. A slot with no correct variant
+(``correct: []``, the v2 fixtures) is always rolled wrong: the stand-in knows
+only line swaps, and on those fixtures no line swap passes, so it fails them by
+construction and no arm can solve them with it. Token usage is estimated from
+text length and marked ``simulated``. Results produced with it describe the
+harness and these probabilities, not any model.
 
 Environment: ``SYBERLABS_FIXTURE`` (required), ``SIM_PATCH`` (0.45),
 ``SIM_REPAIR`` (0.6), ``SIM_MUTATE`` (0.35).
@@ -28,13 +32,13 @@ from benchmarks.fixtures import FIXTURES  # noqa: E402
 
 def roll(slot: dict, rng: random.Random, right: float) -> str:
     wrong = [v for i, v in enumerate(slot["variants"]) if i not in slot["correct"] and i != 0] or slot["variants"]
-    if rng.random() < right:
+    if slot["correct"] and rng.random() < right:
         return slot["variants"][rng.choice(slot["correct"])]
     return rng.choice(wrong)
 
 
 def put(text: str, slot: dict, line: str) -> str:
-    pattern = re.compile(rf"(def {slot['function']}\([^)]*\):\n    )return [^\n]*")
+    pattern = re.compile(rf"(def {slot['function']}\([^)]*\):\n    )[^\n]*")
     return pattern.sub(lambda m: m.group(1) + line, text, count=1)
 
 
