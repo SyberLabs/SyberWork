@@ -36,7 +36,15 @@ a ``BranchPolicy`` (``syberlabs.search``) for the next action from a
 ``Situation``; ``FixedPolicy`` is the branching described above and the
 default. The provider executes every action itself, keeps the selection rule,
 records each decision in its trace and in the child's ``signal``, and refuses
-anything outside the closed action set.
+anything outside the closed action set. Two learning policies sit behind the
+same seam: ``EmpiricalPolicy``, the fixed schedule with the round kind chosen
+by Thompson sampling over this search's own outcomes, and ``JevPolicy``, a
+bounded choice among priced actions, one action per decision, that spends the
+next unit of budget where the expected admission per unit is highest. A policy
+with an ``audit()`` method has its account of each decision merged into that
+decision's trace entry, so a reader can tell from the entry alone why it was
+taken. Neither learning policy draws from the provider's seeded stream beyond
+the one crossover-pairing draw the fixed schedule makes.
 """
 
 from __future__ import annotations
@@ -48,6 +56,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from syberlabs.economic import is_money
 from syberlabs.errors import Rejected
 from syberlabs.providers import model_usage, run_json
 from syberlabs.search import (ACTION_KINDS, Action, BranchPolicy, Crossover, Evaluate, Individual, Migrate, Mutate,
@@ -226,6 +235,230 @@ class FixedPolicy:
             # A crossover round over one slot has no pairs: the round ends at once and the loop closes it.
 
 
+class EmpiricalPolicy(FixedPolicy):
+    """The fixed schedule with the round kind learned: the control for a learning policy.
+
+    Everything is ``FixedPolicy`` (seeds, the fill from ``base``, rounds over every
+    slot, the migration cadence, the stops, both revisions) except ``_round_kind``,
+    which chooses a mutation round or a crossover round by Thompson sampling: one
+    Beta posterior per operator over ``improved / attempted`` in the rounds of this
+    search (the fill is not a choice and is left out), a sample from each, the
+    larger wins. The sampler is a private ``random.Random`` seeded from a constant,
+    ``salt`` and ``situation.decisions``, so the one-draw rule holds: the only draw
+    from the provider's stream is the crossover pairing the fixed schedule makes.
+    An exhausted mutator still forces a crossover round and a population of one
+    slot a mutation round, as the fixed schedule has them. ``audit()`` reports the
+    posterior and the samples behind the first action of each round. Revision
+    ``"1"`` and ``"2"`` mean what they mean for ``FixedPolicy``.
+    """
+
+    name = "empirical"
+    KINDS = ("mutate", "crossover")
+
+    def __init__(self, *, prior: tuple[float, float] = (1.0, 1.0), salt: int = 0, **options):
+        if len(prior) != 2 or any(not is_money(x) or x <= 0 for x in prior) or type(salt) is not int:
+            raise Rejected("invalid_provider", "empirical: prior must be two positive numbers and salt an integer")
+        self.prior, self.salt = (float(prior[0]), float(prior[1])), salt
+        super().__init__(**options)
+
+    def reset(self) -> None:
+        super().reset()
+        self._baseline: dict[str, OperatorStats] | None = None
+        self._last_audit: dict | None = None
+
+    def posterior(self, s: Situation) -> dict[str, tuple[float, float]]:
+        """``(alpha, beta)`` per operator: the prior plus improvements and failures in this search's rounds."""
+        if self._baseline is None:
+            self._baseline = {kind: s.history[kind] for kind in self.KINDS}
+        found = {}
+        for kind in self.KINDS:
+            now, then = s.history[kind], self._baseline[kind]
+            improved, attempted = now.improved - then.improved, now.attempted - then.attempted
+            found[kind] = (self.prior[0] + improved, self.prior[1] + attempted - improved)
+        return found
+
+    def _round_kind(self, s: Situation, exhausted: bool) -> str:
+        posterior = self.posterior(s)
+        if exhausted:
+            return "crossover"
+        if len(s.population) < 2:
+            return "mutation"
+        rng = random.Random(f"syberlabs.empirical/{self.salt}/{s.decisions}")
+        sampled = {kind: rng.betavariate(*posterior[kind]) for kind in self.KINDS}
+        kind = max(self.KINDS, key=sampled.__getitem__)
+        self._last_audit = {"chosen_by": "thompson", "posterior": {k: [a, b] for k, (a, b) in posterior.items()},
+                            "sampled": {k: round(v, 6) for k, v in sampled.items()}}
+        return "crossover" if kind == "crossover" else "mutation"
+
+    def audit(self) -> dict | None:
+        found, self._last_audit = self._last_audit, None
+        return found
+
+
+class JevPolicy:
+    """Bounded choice among priced actions: each decision buys the action with the highest expected admission per unit of budget.
+
+    It decides per action, not per round. At each decision the available actions
+    are: evaluate the next seed; cross the two best distinct individuals not yet
+    crossed; mutate ``base`` while the population is below capacity, otherwise the
+    best individual (ties: the slot mutated least); migrate once when an exchange
+    is configured. Each is scored from ``Situation`` alone:
+
+    - value: the posterior probability that the action yields a child that passes,
+      ``(passed + a) / (attempted + a + b)`` with the Beta prior ``(a, b)`` over the
+      ``OperatorStats`` of its kind (a seed evaluation counts under ``evaluate``);
+    - price: its expected cost in the unit the host bounds. Priced (the host reports
+      ``max_dollars``): the mean host-observed dollars of past actions of that kind,
+      with ``prices[kind]`` as a prior worth one attempt, plus the evaluations it
+      is expected to consume valued at the shadow price ``remaining dollars /
+      remaining evaluations``, so a model-free action is not free when it spends
+      an evaluation. Unpriced: evaluations only. The price is never below one
+      micro-dollar, the host's rounding unit;
+    - score: ``(value + bonus) / price`` with an exploration bonus
+      ``explore / ((1 + decisions) * (1 + attempted))`` that decays with decisions.
+
+    It picks the highest score (ties: evaluate, crossover, mutate, migrate); it
+    returns ``Stop("passing")`` as soon as an individual passes, ``Stop("budget")``
+    when the host reports no room or when the best action's expected passes within
+    the remaining budget, ``value * remaining / price``, fall under ``floor``,
+    ``Stop("generations")`` after ``generations`` actions beyond seeds and fill, and
+    ``Stop("empty")`` when nothing is available. Each seed evaluation and each fill
+    mutation keeps the current generation label; every other action is a generation
+    of its own. It draws no randomness at all. ``audit()`` gives, for every decision
+    including stops, ``expected_value``, ``expected_dollars`` (None unpriced) and
+    ``chosen_by`` (``value_per_dollar``, ``exploration`` when the bonus decided,
+    ``only_option``, or ``rule:<reason>`` for a stop), the price and its parts, the
+    expected passes, and every alternative with its score. It never sees the
+    session, the repository or file contents.
+    """
+
+    name, revision = "jev", "1"
+    KINDS = ("evaluate", "crossover", "mutate", "migrate")  # tie order: a verdict, recombination, a model call, a fetch
+    MIN_PRICE = 1e-6  # one micro-dollar, economic.DOLLAR_PLACES
+
+    def __init__(self, *, generations: int, seeds: Sequence[str] = (), prices: Mapping[str, float] | None = None,
+                 prior: tuple[float, float] = (1.0, 1.0), explore: float = 0.1, floor: float = 1.0,
+                 stop_when_passing: bool = True):
+        prices = dict(prices or {})
+        if (type(generations) is not int or generations < 1 or len(prior) != 2
+                or any(not is_money(x) or x <= 0 for x in prior) or not is_money(explore) or not is_money(floor)
+                or any(k not in self.KINDS or not is_money(v) for k, v in prices.items())):
+            raise Rejected("invalid_provider", "jev: generations >= 1, a positive Beta prior, explore and floor >= 0, "
+                                               "and prices as non-negative dollars per action kind")
+        self.generations, self.seeds, self.prices = generations, tuple(seeds), {k: float(v) for k, v in prices.items()}
+        self.prior, self.explore, self.floor = (float(prior[0]), float(prior[1])), float(explore), float(floor)
+        self.stop_when_passing = stop_when_passing
+        self.reset()
+
+    def reset(self) -> None:
+        self._generation = 0
+        self._seeds = list(self.seeds)
+        self._crossed: set[frozenset] = set()
+        self._mutated: dict[str, int] = {}
+        self._last_audit: dict | None = None
+
+    def _estimate(self, kind: str, s: Situation, priced: bool, shadow: float) -> dict:
+        stats = s.history.get(kind, OperatorStats())
+        a, b = self.prior
+        value = (stats.passed + a) / (stats.attempted + a + b)
+        evaluations = (stats.evaluated + 1.0) / (stats.attempted + 1.0)  # prior: one evaluation per attempt
+        expected_dollars = None
+        if priced:
+            expected_dollars = round((self.prices.get(kind, 0.0) + (stats.dollars or 0.0)) / (stats.attempted + 1.0), 6)
+        price = max((expected_dollars or 0.0) + evaluations * shadow, self.MIN_PRICE)
+        bonus = self.explore / ((1 + s.decisions) * (1 + stats.attempted))
+        return {"action": kind, "expected_value": round(value, 6), "expected_dollars": expected_dollars,
+                "expected_evaluations": round(evaluations, 6), "price": round(price, 6),
+                "exploit": round(value / price, 6), "score": round((value + bonus) / price, 6)}
+
+    def _pair(self, s: Situation) -> tuple[int, int] | None:
+        """The two best distinct individuals not yet crossed, as slots, or None."""
+        best = None
+        for i in range(len(s.population)):
+            for j in range(i + 1, len(s.population)):
+                a, b = s.population[i], s.population[j]
+                if a.id == b.id or frozenset((a.id, b.id)) in self._crossed:
+                    continue
+                key = (a.score, b.score) if a.score >= b.score else (b.score, a.score)
+                if best is None or key > best[0]:
+                    best = (key, (i, j))
+        return None if best is None else best[1]
+
+    def _slot(self, s: Situation) -> int:
+        top = max(p.score for p in s.population)
+        return min((i for i, p in enumerate(s.population) if p.score == top),
+                   key=lambda i: (self._mutated.get(s.population[i].id, 0), i))
+
+    def _options(self, s: Situation) -> tuple[list[tuple[Action, dict]], dict]:
+        priced = getattr(s.remaining, "max_dollars", None) is not None
+        remaining = s.remaining.max_dollars if priced else float(s.remaining.max_evaluations)
+        shadow = remaining / max(s.remaining.max_evaluations, 1) if priced else 1.0
+        budget = {"unit": "dollars" if priced else "evaluations", "remaining": round(remaining, 6), "shadow": round(shadow, 6)}
+        g, found = self._generation, []
+        if self._seeds:
+            found.append((Evaluate(self._seeds[0], g), self._estimate("evaluate", s, priced, shadow)))
+        pair = self._pair(s)
+        if pair is not None:
+            i, j = pair
+            found.append((Crossover(s.population[i].id, s.population[j].id, (i, j), g + 1),
+                          self._estimate("crossover", s, priced, shadow)))
+        if not s.mutator_exhausted:
+            if len(s.population) < s.capacity:
+                found.append((Mutate("base", None, g), self._estimate("mutate", s, priced, shadow)))
+            else:
+                slot = self._slot(s)
+                found.append((Mutate(s.population[slot].id, slot, g + 1), self._estimate("mutate", s, priced, shadow)))
+        if s.exchange and s.population:
+            found.append((Migrate(g + 1), self._estimate("migrate", s, priced, shadow)))
+        return found, budget
+
+    def _stop(self, reason: str, generation: int, best: dict | None = None, **extra) -> Stop:
+        self._last_audit = {"expected_value": best["expected_value"] if best else None,
+                            "expected_dollars": best["expected_dollars"] if best else None,
+                            "chosen_by": f"rule:{reason}", **extra}
+        return Stop(reason, generation)
+
+    def decide(self, s: Situation) -> Action:
+        g = self._generation
+        if self.stop_when_passing and any(p.passed for p in s.population):
+            return self._stop("passing", g)
+        if not s.room:
+            return self._stop("budget", g)
+        options, budget = self._options(s)
+        if not options:
+            return self._stop("empty", g)
+        best = max(options, key=lambda o: o[1]["score"])  # the first of equal scores wins: KINDS order
+        action, estimate = best
+        expected_passes = round(estimate["expected_value"] * budget["remaining"] / estimate["price"], 6)
+        alternatives = [dict(o[1]) for o in options]
+        if expected_passes < self.floor:
+            return self._stop("budget", g, estimate, expected_passes=expected_passes, floor=self.floor,
+                              budget=budget, alternatives=alternatives)
+        if action.generation > g and g >= self.generations:
+            return self._stop("generations", g + 1, estimate, budget=budget, alternatives=alternatives)
+        if len(options) == 1:
+            chosen_by = "only_option"
+        elif max(options, key=lambda o: o[1]["exploit"]) is best:
+            chosen_by = "value_per_dollar"
+        else:
+            chosen_by = "exploration"
+        if isinstance(action, Evaluate):
+            self._seeds.pop(0)
+        elif isinstance(action, Crossover):
+            self._crossed.add(frozenset((action.a, action.b)))
+        elif isinstance(action, Mutate) and action.slot is not None:
+            self._mutated[action.parent] = self._mutated.get(action.parent, 0) + 1
+        self._generation = action.generation
+        self._last_audit = {"expected_value": estimate["expected_value"], "expected_dollars": estimate["expected_dollars"],
+                            "chosen_by": chosen_by, "price": {k: estimate[k] for k in ("price", "expected_evaluations")},
+                            "expected_passes": expected_passes, "budget": budget, "alternatives": alternatives}
+        return action
+
+    def audit(self) -> dict | None:
+        found, self._last_audit = self._last_audit, None
+        return found
+
+
 def _describe(action: Action) -> dict:
     if isinstance(action, Mutate):
         return {"parent": action.parent, "slot": action.slot}
@@ -385,7 +618,8 @@ class EvolutionaryProvider:
 
     def _perform(self, space: SearchSpace, people: list, rng: random.Random, action: Action) -> dict:
         """Execute one action with the mechanics above and apply the replacement rule. Draws nothing itself."""
-        before = space.remaining().max_evaluations
+        left = space.remaining()
+        before, before_dollars = left.max_evaluations, getattr(left, "max_dollars", None)
         child, produced, improved, passed = None, False, False, False
         if isinstance(action, Evaluate):
             judged = self._judge(space, action.candidate)
@@ -421,21 +655,42 @@ class EvolutionaryProvider:
             snapshot, entries = list(people), len(self.trace)
             self._migration(space, people, action.generation)
             produced, improved = len(self.trace) > entries, people != snapshot
-        evaluated = before - space.remaining().max_evaluations
-        self._count(action.kind, produced, evaluated, improved, passed)
-        return {"candidate": child[0] if child else None, "score": list(child[1]) if child else None,
-                "improved": improved, "evaluated": evaluated}
+        left = space.remaining()
+        evaluated = before - left.max_evaluations
+        # Dollars the host attributed while this action ran: what ``remaining().max_dollars`` lost. None without
+        # a dollar bound; floored at zero, so spend past the bound is not seen (the host stops the search then).
+        spent = None if before_dollars is None else max(0.0, round(before_dollars - left.max_dollars, 6))
+        self._count(action.kind, produced, evaluated, improved, passed, spent)
+        outcome = {"candidate": child[0] if child else None, "score": list(child[1]) if child else None,
+                   "improved": improved, "evaluated": evaluated}
+        if spent is not None:
+            outcome["dollars"] = spent  # only a priced host's trace mentions spend, as its records do
+        return outcome
 
-    def _count(self, kind: str, produced: bool, evaluated: int, improved: bool, passed: bool) -> None:
+    def _count(self, kind: str, produced: bool, evaluated: int, improved: bool, passed: bool,
+               dollars: float | None = None) -> None:
         stats = self._stats[kind]
+        spent = stats.dollars if dollars is None else round((stats.dollars or 0.0) + dollars, 6)
         self._stats[kind] = dataclasses.replace(
             stats, attempted=stats.attempted + 1, produced=stats.produced + produced, evaluated=stats.evaluated + evaluated,
-            improved=stats.improved + improved, passed=stats.passed + passed)
+            improved=stats.improved + improved, passed=stats.passed + passed, dollars=spent)
+
+    _RESERVED = frozenset({"decision", "generation", "policy", "action", "outcome", "parent", "slot", "pair", "slots",
+                           "candidate", "reason"})
+
+    def _audited(self, found) -> dict:
+        """A policy's account of its last decision, merged into the decision entry. It may not shadow the provider's fields."""
+        if found is None:
+            return {}
+        if not isinstance(found, Mapping) or any(not isinstance(k, str) or k in self._RESERVED for k in found):
+            raise Rejected("invalid_policy", f"{self.policy.name}: audit must map non-reserved string keys")
+        return dict(found)
 
     def search(self, space: SearchSpace) -> Sequence[str]:
         rng = random.Random(space.seed)
         people: list[tuple[str, Score, bool]] = []
-        self._stats = {kind: OperatorStats() for kind in ACTION_KINDS if kind != "stop"}
+        priced = getattr(space.remaining(), "max_dollars", None) is not None
+        self._stats = {kind: OperatorStats(dollars=0.0 if priced else None) for kind in ACTION_KINDS if kind != "stop"}
         self._decision = 0
         self.policy.reset()
         generation, ran = 0, True  # generation 0, the initial population, is always recorded
@@ -452,6 +707,9 @@ class EvolutionaryProvider:
             entry = {"decision": self._decision, "generation": generation,
                      "policy": {"name": self.policy.name, "revision": self.policy.revision},
                      "action": action.kind, **_describe(action)}
+            audit = getattr(self.policy, "audit", None)
+            if callable(audit):
+                entry.update(self._audited(audit()))
             if isinstance(action, Stop):
                 if action.reason not in CLEAN_STOPS:
                     self.trace.append({"generation": generation, "population": [p[0] for p in people], "stopped": action.reason})

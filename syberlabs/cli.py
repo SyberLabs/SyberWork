@@ -148,6 +148,9 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--topic", help="what the hosts are working on; hosts with the same topic and base exchange")
     propose.add_argument("--migrate-every", type=int, default=2)
     propose.add_argument("--migrants", type=int, default=1)
+    propose.add_argument("--policy", choices=("fixed", "empirical", "jev"), default="fixed",
+                         help="branch policy for --evolve: fixed (the schedule), empirical (Thompson sampling over this "
+                              "search's rounds) or jev (one action per decision, by expected admission per dollar)")
     propose.add_argument("--message", default="")
     propose.add_argument("--name", help="provider name, recorded as the acting agent platform; "
                                         "default patch for --from-worktree, command otherwise")
@@ -344,11 +347,20 @@ def _run(kit: Kit, args) -> int:
                 if not args.host or not args.topic:
                     raise Rejected("invalid_exchange", "--exchange needs --host and --topic")
                 exchange = kit.exchange(args.exchange, host=args.host, topic=args.topic)
+            policy = None  # FixedPolicy, built by the provider
+            if args.policy == "empirical":
+                from syberlabs.evolve import EmpiricalPolicy
+                policy = EmpiricalPolicy(population=args.population, generations=args.generations,
+                                         crossover_every=args.crossover_every, seeds=args.seeds,
+                                         migrate_every=args.migrate_every if exchange else 0)
+            elif args.policy == "jev":
+                from syberlabs.evolve import JevPolicy
+                policy = JevPolicy(generations=args.generations, seeds=args.seeds)
             provider = EvolutionaryProvider(mutator, population=args.population, generations=args.generations,
                                             crossover_every=args.crossover_every, seeds=args.seeds,
                                             name=args.name or "command", revision=args.revision, exchange=exchange,
                                             migrate_every=args.migrate_every if exchange else 0,
-                                            migrants=args.migrants)
+                                            migrants=args.migrants, policy=policy)
             found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(split_command(args.provider_command), name=args.name or "command", revision=args.revision,
