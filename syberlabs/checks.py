@@ -12,7 +12,7 @@ or build output, and name order runs it before ``tests``. When it does not
 pass, the checks after it are not started and are recorded ``error`` with the
 tail ``setup_failed``, so a missing dependency tree is one failure, not one per
 check. The frozen ``v0alpha1`` evaluation schema has no ``setup`` field, which
-is why the step is a check by name (``spec/GAPS.md``, 31).
+is why the step is a check by name (``spec/GAPS.md``, 32).
 
 The scrubbed environment keeps the variables package managers use to find
 their caches (``APPDATA``, ``LOCALAPPDATA`` and ``USERPROFILE`` on Windows,

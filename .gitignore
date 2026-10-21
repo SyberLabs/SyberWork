@@ -8,3 +8,6 @@ dist/
 .venv/
 *.sqlite3
 *.sqlite3-*
+# Credentials never enter the repository.
+.env
+.env.*

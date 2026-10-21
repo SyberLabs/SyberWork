@@ -16,7 +16,7 @@ Declare it like any other check in the contract's `evolution.evaluation.checks`,
 }
 ```
 
-The name is the marker. The contract validator accepts no `kind` field on a check yet (`spec/GAPS.md` 28), so a check is a critic when its name is `critic` or starts with `critic.`; `critical` is an ordinary check. Name the critic program by an absolute path in the host's own checkout, not a path inside the candidate: the check runs in a temporary worktree of the candidate, and a candidate that could rewrite its own reviewer would review itself.
+The name is the marker. The contract validator accepts no `kind` field on a check yet (`spec/GAPS.md` 30), so a check is a critic when its name is `critic` or starts with `critic.`; `critical` is an ordinary check. Name the critic program by an absolute path in the host's own checkout, not a path inside the candidate: the check runs in a temporary worktree of the candidate, and a candidate that could rewrite its own reviewer would review itself.
 
 The host runs the command in the candidate's worktree with the usual scrubbed environment and a JSON request on stdin:
 

@@ -3,7 +3,7 @@
 A critic is a check with a schema. The contract declares it like any other check under
 ``evolution.evaluation.checks``; the host treats a check as a critic when its name is ``critic``
 or starts with ``critic.`` (the contract validator accepts no ``kind`` field yet; see
-``spec/GAPS.md`` 28). The host runs the command in the candidate's worktree with a JSON request
+``spec/GAPS.md`` 30). The host runs the command in the candidate's worktree with a JSON request
 on stdin (``request``) and reads a findings document from its stdout (``spec/finding.schema.json``).
 Exit code 0 means the document is the result; any other exit code is a check ``error`` as today.
 
