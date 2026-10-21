@@ -27,7 +27,7 @@ class ProtocolExamples(unittest.TestCase):
 
 
 class AdditiveFields(unittest.TestCase):
-    """2026-10-20: kind on a check, the dollar budget, and the two spend records (GAPS 28 and 30)."""
+    """2026-10-20: kind on a check, the dollar budget, and the two spend records (GAPS 30 and 31)."""
 
     def test_a_priced_critic_bearing_contract_validates(self):
         check(PRICED_CONTRACT, "contract.schema.json")

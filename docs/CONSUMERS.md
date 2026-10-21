@@ -107,4 +107,4 @@ A `Cargo.toml` gets `tests: [<cargo>, "test", "--quiet"]` and a `go.mod` gets `t
 - The kit resolves tools when `init` writes the contract. A toolchain that moves afterwards needs a new contract version; a published version is immutable by design.
 - The check environment is scrubbed, not sandboxed. The project's own commands run with your permissions against candidate code; a `postinstall` script is code.
 - Output over the cap is still `error`, by design: a record that holds the whole of an unbounded log is not a record. Quiet your runner (`vitest run --reporter=dot`, `cargo test --quiet`) if 1 MB is not enough.
-- The setup step is a naming convention, not a schema field (`spec/GAPS.md`, 31). A contract that calls its install step `deps` gets no `setup_failed` gating; the later checks fail on their own.
+- The setup step is a naming convention, not a schema field (`spec/GAPS.md`, 32). A contract that calls its install step `deps` gets no `setup_failed` gating; the later checks fail on their own.
