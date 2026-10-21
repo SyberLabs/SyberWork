@@ -1,6 +1,12 @@
 """Scenario modules record probe failures instead of hiding them."""
 
+import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from benchmarks.scenarios.flaky_bank import SCENARIO
 from benchmarks.scenarios.host import SessionHost
@@ -95,3 +101,60 @@ class ScenarioInfrastructure(unittest.TestCase):
             "chain_valid",
             "complete",
         ])
+
+
+class ScenarioCheck(unittest.TestCase):
+    """benchmarks/run_scenarios.py replays the record as a host check: exit 0, 1 or 2."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+    RUNNER = ROOT / "benchmarks" / "run_scenarios.py"
+    RECORD = ROOT / "benchmarks" / "scenarios" / "expected.json"
+
+    def _run(self, *argv):
+        env = dict(os.environ, PYTHONPATH=str(self.ROOT), PYTHONDONTWRITEBYTECODE="1")
+        return subprocess.run([sys.executable, str(self.RUNNER), *argv], cwd=self.ROOT, env=env,
+                              capture_output=True, text=True, timeout=600)
+
+    def test_the_record_holds_on_this_tree_and_two_runs_agree(self):
+        first = self._run("--json")
+        second = self._run("--json")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(first.stdout, second.stdout)
+        outcome = json.loads(first.stdout)
+        self.assertEqual(outcome["exit_code"], 0)
+        self.assertRegex(outcome["digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual({item["status"] for item in outcome["scenarios"]}, {"held"})
+        self.assertEqual(len(outcome["scenarios"]), 11)
+
+    def test_a_mutated_expectation_exits_one_and_names_the_field(self):
+        record = json.loads(self.RECORD.read_text(encoding="utf-8"))
+        record["scenarios"]["over_limit"]["report"]["payments"] = 1
+        with tempfile.TemporaryDirectory() as folder:
+            mutated = Path(folder) / "expected.json"
+            mutated.write_text(json.dumps(record), encoding="utf-8")
+            result = self._run("--scenario", "over_limit", "--expected", str(mutated))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("divergence: over_limit: report.payments: expected 1, observed 0", result.stdout)
+
+    def test_a_malformed_record_or_scenario_exits_two(self):
+        with tempfile.TemporaryDirectory() as folder:
+            broken = Path(folder) / "expected.json"
+            broken.write_text("{\"scenarios\": []}", encoding="utf-8")
+            result = self._run("--expected", str(broken))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("malformed:", result.stdout)
+        self.assertEqual(self._run("--scenario", "no_such_scenario").returncode, 2)
+        from benchmarks.run_scenarios import Malformed, validate_scenario
+
+        class NoProbes(_NoPlay):
+            def probes(self):
+                return []
+
+        class BadRecord(_NoPlay):
+            expected_failures = ["not_a_probe"]
+
+        with self.assertRaises(Malformed):
+            validate_scenario(NoProbes())
+        with self.assertRaises(Malformed):
+            validate_scenario(BadRecord())
+        validate_scenario(_NoPlay())
