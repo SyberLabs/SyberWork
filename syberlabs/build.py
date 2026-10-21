@@ -19,7 +19,9 @@ publish anything. Reopening a thread rebuilds it from its journal.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -370,17 +372,45 @@ def detect_checks(root: Path) -> dict:
     tests = root / "tests"
     if python and tests.is_dir() and any(tests.glob("test*.py")):
         return {"tests": {"argv": [python, "-m", "unittest", "discover", "-s", "tests", "-q"], "timeout_seconds": 600}}
+
+    def resolve(tool: str, marker: str) -> str | None:
+        # Other toolchains are resolved the same way, now, by absolute path: checks run as argv
+        # without a shell, so a bare ``npm`` cannot start on Windows, where it is ``npm.cmd``. On
+        # Windows the ``.cmd`` and ``.exe`` spellings are tried first, since an older ``shutil.which``
+        # can return the extensionless POSIX launcher that sits beside ``npm.cmd``. An unresolved
+        # tool writes no check at all, with a note, rather than a check that can never start.
+        spellings = (tool + ".cmd", tool + ".exe", tool) if os.name == "nt" else (tool,)
+        for spelling in spellings:
+            found = shutil.which(spelling)
+            if found:
+                return found
+        print(f"note: {marker} found but no {tool} on PATH; no {tool} check written. "
+              "Name one in .syberlabs/contracts/repo-change.v1.json.", file=sys.stderr)
+        return None
+
     package = root / "package.json"
     if package.exists():
         try:
             if "test" in json.loads(package.read_text()).get("scripts", {}):
-                return {"tests": {"argv": ["npm", "test", "--silent"], "timeout_seconds": 600}}
+                npm = resolve("npm", "package.json")
+                if npm:
+                    # A fresh worktree has no node_modules; ``install`` runs first (name order) and
+                    # the checks after it are ``setup_failed`` when it does not pass. ``npm ci``
+                    # needs a lockfile; without one, ``npm install``.
+                    locked = (root / "package-lock.json").exists() or (root / "npm-shrinkwrap.json").exists()
+                    return {"install": {"argv": [npm, "ci" if locked else "install", "--no-audit", "--no-fund"],
+                                        "timeout_seconds": 1200},
+                            "tests": {"argv": [npm, "test", "--silent"], "timeout_seconds": 600}}
         except (ValueError, AttributeError):
             pass
     if (root / "Cargo.toml").exists():
-        return {"tests": {"argv": ["cargo", "test", "--quiet"], "timeout_seconds": 900}}
+        cargo = resolve("cargo", "Cargo.toml")
+        if cargo:
+            return {"tests": {"argv": [cargo, "test", "--quiet"], "timeout_seconds": 900}}
     if (root / "go.mod").exists():
-        return {"tests": {"argv": ["go", "test", "./..."], "timeout_seconds": 900}}
+        go = resolve("go", "go.mod")
+        if go:
+            return {"tests": {"argv": [go, "test", "./..."], "timeout_seconds": 900}}
     if not python:
         # An embedded interpreter can report no executable path. Guessing a bare "python" would bring
         # back the Windows alias failure, so write a check that cannot start until a person names one.

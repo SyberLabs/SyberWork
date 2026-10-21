@@ -400,6 +400,58 @@ class Search(RepoCase):
         self.assertEqual(launched[0][0], PY)
         self.assertEqual(launched[0][1:], ["-m", "unittest", "discover", "-s", "tests", "-q"])
 
+    def test_detected_node_rust_and_go_checks_name_the_tool_by_absolute_path(self):
+        """Checks run as argv without a shell: a bare ``npm`` is ``npm.cmd`` on Windows and cannot start."""
+        from syberlabs import build
+
+        def project(*files):
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            for name, text in files:
+                (Path(folder.name) / name).write_text(text)
+            return Path(folder.name)
+
+        node = project(("package.json", json.dumps({"scripts": {"test": "vitest run"}})))
+        locked = project(("package.json", json.dumps({"scripts": {"test": "vitest run"}})), ("package-lock.json", "{}"))
+        npm_cmd = "C:" + "\\nodejs\\npm.cmd"
+        with patch.object(build.os, "name", "nt"), \
+                patch.object(build.shutil, "which", lambda name: {"npm.cmd": npm_cmd}.get(name)):
+            found = detect_checks(node)
+            self.assertEqual(found["install"]["argv"], [npm_cmd, "install", "--no-audit", "--no-fund"])
+            self.assertEqual(found["tests"]["argv"], [npm_cmd, "test", "--silent"])
+            self.assertEqual(detect_checks(locked)["install"]["argv"][1], "ci")
+        with patch.object(build.os, "name", "posix"), \
+                patch.object(build.shutil, "which", lambda name: {"npm": "/usr/bin/npm"}.get(name)):
+            found = detect_checks(node)
+            self.assertEqual(found["tests"]["argv"], ["/usr/bin/npm", "test", "--silent"])
+            self.assertEqual(sorted(found), ["install", "tests"])
+        with patch.object(build.shutil, "which", lambda name: {"cargo.exe": "/toolchains/cargo.exe", "cargo": "/toolchains/cargo",
+                                                                 "go.exe": "/toolchains/go.exe", "go": "/toolchains/go"}.get(name)):
+            rust = detect_checks(project(("Cargo.toml", "[package]\n")))["tests"]["argv"]
+            go = detect_checks(project(("go.mod", "module x\n")))["tests"]["argv"]
+        self.assertTrue(Path(rust[0]).name.startswith("cargo") and rust[1:] == ["test", "--quiet"], rust)
+        self.assertTrue(Path(go[0]).name.startswith("go") and go[1:] == ["test", "./..."], go)
+        # The real resolver, when the machine has the tool: still an absolute path, never a bare name.
+        real = detect_checks(node)
+        if "install" in real:
+            self.assertTrue(Path(real["tests"]["argv"][0]).is_absolute(), real)
+
+    def test_a_missing_tool_writes_no_check_and_says_so(self):
+        from syberlabs import build
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name)
+        (root / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run"}}))
+        (root / "go.mod").write_text("module x\n")
+        err = io.StringIO()
+        with patch.object(build.shutil, "which", lambda name: None), contextlib.redirect_stderr(err):
+            found = detect_checks(root)
+        self.assertEqual(list(found), ["configure"])
+        self.assertEqual(found["configure"]["argv"][0], PY)
+        self.assertIn("no npm on PATH", err.getvalue())
+        self.assertIn("no go on PATH", err.getvalue())
+        self.assertNotIn("npm", json.dumps(found))
+
     def test_worktree_snapshot_takes_only_attached_sources(self):
         kit = self.kit()
         thread = kit.start("Add a CSV export", paths=["src", "tests"])
