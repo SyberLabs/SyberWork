@@ -391,14 +391,22 @@ class Session:
         only once the claim is older than the executor's ``settle_seconds``,
         pending before that), or anything else (pending). A caller cannot supply
         the outcome.
+        An action that declares no ``effect`` has no executor and no destination:
+        the record is the effect. A claim of such an action that commit left open
+        (the process died between ``effect_started`` and ``effect_succeeded``) is
+        completed here as ``effect_succeeded`` with the same output commit would
+        have written, exactly once; the recovery is visible as a success appended
+        after the claim by reconcile, and the call returns ``recovered``. An action
+        that declares an effect but has no executor bound is still refused.
         No commit can be in flight here: commit holds the same lock for its
         whole claim, write, and outcome.
         """
         row = self._case(case_id)
         history = self.events[case_id]
         proposal = self._proposal(history, proposal_id)
+        action = self.actions.get(proposal["action"]) or {}
         executor = self._executors.get(proposal["action"])
-        if executor is None:
+        if executor is None and action.get("effect"):
             raise Rejected("reconciliation_unavailable", "no executor is bound for this action")
         policy_roles = set(self._policy()["actions"].get(proposal["action"], {}).get("roles", []))
         if not (policy_roles | {"manager"}).intersection(roles):
@@ -409,6 +417,12 @@ class Session:
                 and e["body"]["proposal_id"] == proposal_id for e in history):
             raise Rejected("reconciliation_denied", "no unresolved effect")
         self._contract(row["contract_id"], row["contract_version"])
+        if executor is None:
+            event = self._append(case_id, "effect_succeeded", {
+                "proposal_id": proposal_id, "action": proposal["action"],
+                "output": {"recorded": True, "args": proposal["args"]}, "claim_hash": claim["hash"],
+            })
+            return {"status": "recovered", "reason": "recorded_effect_completed", "event": event}
         try:
             state, proof = executor.status(case_id, proposal["args"], proposal_id)
         except Exception as exc:

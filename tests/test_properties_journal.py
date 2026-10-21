@@ -423,9 +423,9 @@ class JournalProperties(unittest.TestCase):
             finally:
                 driver.close()
 
-    @unittest.expectedFailure
     @SHORT
     @given(st.integers(min_value=0, max_value=20))
+    @example(0)
     def test_recovery_settles_an_interrupted_recorded_effect(self, wait):
         """An action without an executor whose commit dies between effect_started and effect_succeeded
         can never be settled: reconcile refuses (reconciliation_unavailable) and every later proposal of
@@ -445,9 +445,10 @@ class JournalProperties(unittest.TestCase):
                 [claim] = driver.open_claims()
                 self.assertEqual(claim["body"]["action"], "review")
                 outcomes = driver.recover()
-                self.assertIn(outcomes[claim["body"]["proposal_id"]], ("reconciled", "effect_rejected"))
+                self.assertIn(outcomes[claim["body"]["proposal_id"]], ("reconciled", "effect_rejected", "effect_succeeded"))
                 decision = driver.session.propose(driver.case, "review", {}, "alice", ["operator"])["decision"]
-                self.assertEqual(decision["status"], "allowed")
+                # The same state as after an uninterrupted commit: completed once, not poisoned.
+                self.assertEqual(decision["reason"], "action_already_completed")
             finally:
                 driver.close()
 
