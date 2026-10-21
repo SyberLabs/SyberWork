@@ -476,7 +476,7 @@ class Search(RepoCase):
         with patch.object(build.os, "name", "nt"), \
                 patch.object(build.shutil, "which", lambda name: {"npm.cmd": npm_cmd}.get(name)):
             found = detect_checks(node)
-            self.assertEqual(found["install"]["argv"], [npm_cmd, "install", "--no-audit", "--no-fund"])
+            self.assertEqual(found["install"]["argv"], [npm_cmd, "install", "--no-audit", "--no-fund", "--ignore-scripts"])
             self.assertEqual(found["tests"]["argv"], [npm_cmd, "test", "--silent"])
             self.assertEqual(detect_checks(locked)["install"]["argv"][1], "ci")
         with patch.object(build.os, "name", "posix"), \

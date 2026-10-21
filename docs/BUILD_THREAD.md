@@ -140,6 +140,30 @@ An acceptance interrupted after its durable claim shows as an open item, and `sy
 
 `start` is several appends: `case_created`, then the verified `base` observation, then the attached `sources`. A process that dies after the first leaves a thread the journal lists but no later step can use, because every step reads the base. Such a thread is recognisable rather than broken: `syberlabs threads` marks it `[incomplete]`, any attempt to open it (`use`, `status`, `export`, `prune THREAD`) is refused with `thread_incomplete` and names the two ways out, and `syberlabs start` with the same objective, contract and class completes it under the same thread id by appending the missing records (its base is HEAD at completion time; the chain stays valid). A `start` with different inputs creates a new thread as usual and leaves the interrupted one listed; `syberlabs forget THREAD --reason ...` removes it. Only the most recent thread is completed this way, and only while it has no base. A death after the base and before `sources` leaves a thread that opens normally with the contract's default scope; `syberlabs context` or a new `start` is the remedy there.
 
+## Running unattended
+
+`syberlabs run` drives every thread the journal lists through its next safe step, with no person at the terminal. One pass, oldest thread first: an interrupted start is skipped with a note; `recover` settles any interrupted acceptance or publishing effect exactly as `syberlabs recover` would; then at most one step per thread, chosen from the record alone:
+
+| The record says | The runner does |
+| --- | --- |
+| The newest candidate has no evaluation, or its evidence is stale, or a passed evaluation would be within 60 seconds of the contract's `max_age_seconds` | `check` (a re-run, so the kernel never has to refuse `candidate_evidence_stale` on an acceptance the runner could see coming) |
+| The newest candidate is acceptable and the thread was started `--unattended` | `accept` |
+| The newest candidate is acceptable on a thread started without `--unattended` | nothing; the line says `syberlabs accept cN` is a person's step |
+| A candidate is accepted and `--publish` was passed | the first publishing action the contract lists whose prerequisite effect is recorded (push before pull request) |
+| A failed check, an out-of-scope candidate, a thread waiting for approval, an exhausted budget, no candidate | nothing; the line says why |
+
+The runner never proposes: generation is another station's job, and a `run` loop over a thread with no candidate stays idle until someone or something proposes. `--unattended` is a verified host observation on the thread (key `unattended`), not a contract input, because the contract's inputs are the objective and the act class and a new input would be a new contract version; `syberlabs status` shows `mode      unattended` when it is set.
+
+Every step is a kernel operation whose idempotence comes from the journal: a pending proposal is reused, a claimed effect is reconciled rather than repeated, a candidate already evaluated on this tree is not evaluated again. So a runner killed anywhere (a host restart, a `KeyboardInterrupt` between steps, a refusal mid-pass) leaves a valid chain, and the next pass picks up exactly where it stopped; `tests/test_runner.py` kills it at every step boundary and checks that no step repeats. One line per step: `825cb563 check c1 -> acceptable`, `825cb563 accept c1 -> succeeded`, `825cb563 idle c1 -> nothing to do (approval_required)`, then `pass: N steps, M refused`.
+
+```
+syberlabs run --once                 # one pass; exit 0 when nothing was refused, 1 when a step was refused, 2 on an unexpected error
+syberlabs run --interval 60          # a loop, one pass a minute, until Ctrl-C
+syberlabs run --thread 825cb5 --publish
+```
+
+No daemon, no threads, no new dependency: a loop with `time.sleep`, a clean stop on `KeyboardInterrupt`, Windows included. A refused publishing action (a push the remote rejects, a token that is not in the environment) is retried on the next pass, as the kernel allows, and reported each time; a failed check is not retried, because the candidate's tree cannot change.
+
 ## Memory and forgetting
 
 `syberlabs memory` reports what is kept. The thread record (the journal) is kept because it is what proves an accepted change. Context is kept as references only. Candidate refs are removed by `syberlabs prune` for finished threads. There is no project-knowledge store and no personal profile. Bounds: context 24 KB per selection by default, 256 KB per file read, 1 MB per submitted file and 4 MB per candidate, check output capped per contract (`evaluation.max_output_bytes`, 1 MB by default since real test runners print more than the earlier 64 KB; over the cap is an `error`), a 4 KB output tail in the record, and contract budgets on candidates, evaluations, seconds and, when the contract prices usage, dollars.
