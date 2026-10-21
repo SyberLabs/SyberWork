@@ -52,7 +52,9 @@ DEFAULTS = {
     "max_diff_bytes": 1_000_000,
     "max_seconds": 600,
     "max_age_seconds": 3600,
-    "max_output_bytes": 65_536,
+    # The validator's ceiling. Real test runners (vitest writes ~117 KB) overran the old 65,536
+    # default and turned a passing suite into ``error``; a contract may still declare less.
+    "max_output_bytes": 1_048_576,
 }
 
 # Hard ceilings. A contract can set lower limits, never higher ones.

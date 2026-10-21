@@ -90,7 +90,19 @@ def _print_receipt(receipt) -> None:
         print("next: " + receipt.hint)
 
 
+def _survive_unicode() -> None:
+    """Never crash on a console that cannot encode a check's output (cp1252 and a vitest tick, say)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _survive_unicode()
     parser = argparse.ArgumentParser(prog="syberlabs", description="Governed, Git-lineaged changes to this repository.")
     parser.add_argument("--home", default=".syberlabs")
     parser.add_argument("--repo", default=".")
@@ -337,7 +349,12 @@ def _run(kit: Kit, args) -> int:
             print(verdict.summary())
             for result in verdict.checks:
                 if result.state not in ("passed", "not_run") and result.output_tail:
-                    print(f"--- {result.name} output (tail) ---\n{result.output_tail[-1500:]}")
+                    tail = result.output_tail[-1500:]
+                    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+                    # The stream was reconfigured at entry when it could be; a stream that could
+                    # not be is still given text it can encode.
+                    tail = tail.encode(encoding, errors="replace").decode(encoding, errors="replace")
+                    print(f"--- {result.name} output (tail) ---\n{tail}")
         return 0 if verdict.acceptable else 1
     elif args.command == "findings":
         view = thread._view(args.candidate)
