@@ -34,7 +34,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
-from syberlabs import outcome
+from syberlabs import critic, outcome
 from syberlabs.errors import Rejected
 from syberlabs.session import NoWrite
 from syberlabs.targets import guard_request, trusted_origin
@@ -68,21 +68,59 @@ def attribution(thread, view: dict) -> str:
     whose key the contract required. The actor and the approvers are read from the proposal
     that actually promoted this candidate, not from whichever event came last. The act class
     comes from the thread's own inputs, so it is inside the case hash chain; a contract without
-    an ``act_class`` input states no class. Every value is rendered on one line, so an
-    objective or a provider revision cannot add or impersonate a field.
+    an ``act_class`` input states no class.
+
+    ``Reviewed-by`` names the approvers whose actor is not the admitting actor, so it is never
+    the author's own key, and the critic of the promoting evaluation when the host recorded one
+    (``critic.observe``): ``name@revision (critic check <name>: high H, medium M, low L)``, read
+    from the observation and never from the critic's prose. Both can appear; without either it
+    says ``none recorded`` rather than guessing. ``Evidence``
+    is the host's own claim about the accepted tree: ``tested`` when the latest host evaluation of
+    that exact commit and tree passed every check the contract requires, ``implemented``
+    otherwise. The kit cannot know whether a change was measured, deployed, or externally
+    validated, so it never says so. Every value is rendered on one line, so an objective or a
+    provider revision cannot add or impersonate a field.
     """
     proposal_id = view["promotion"]["proposal_id"]
     history = thread.history()
     admitted_by = next((event["body"]["actor"] for event in history
                         if event["kind"] == "proposed" and event["body"]["id"] == proposal_id), None)
-    approvals = [f"{_line(event['body']['actor'])} ({_line(event['body']['role'])})" for event in history
+    approvers = [event["body"] for event in history
                  if event["kind"] == "approved" and event["body"]["proposal_id"] == proposal_id]
+    approvals = [f"{_line(body['actor'])} ({_line(body['role'])})" for body in approvers]
+    reviewers = [f"{_line(body['actor'])} ({_line(body['role'])})" for body in approvers
+                 if body["actor"] != admitted_by]
+    reviewers += [reviewed_by(name, found) for name, found in critic.reviews(history, view)]
     lines = [] if thread.act_class is None else [f"Class: {_line(thread.act_class)}"]
     lines.append(f"Agent-platform: {_line(view['provider']['name'])}@{_line(view['provider']['revision'])}")
     lines.append(f"Admitted-by: {_line(admitted_by) if admitted_by else 'unknown'}")
+    lines.append("Reviewed-by: " + (", ".join(reviewers) if reviewers else "none recorded"))
     if approvals:
         lines.append("Approved-by: " + ", ".join(approvals))
+    lines.append(f"Evidence: {evidence(thread, view)}")
     return "\n".join(lines)
+
+
+def reviewed_by(check: str, found: dict) -> str:
+    """One ``Reviewed-by`` entry from a critic observation. Every part is one line."""
+    reviewer, counts = found["reviewer"], found["counts"]
+    tally = ", ".join(f"{severity} {_line(counts.get(severity, 0))}" for severity in critic.SEVERITIES)
+    return f"{_line(reviewer['name'])}@{_line(reviewer['revision'])} (critic check {_line(check)}: {tally})"
+
+
+def evidence(thread, view: dict) -> str:
+    """``tested`` or ``implemented``, from the host's latest evaluation of the candidate's exact tree.
+
+    The view's checks come from the newest ``candidate_evaluated`` event for the candidate's
+    registered commit and tree (``evolution.latest_evaluation``); promotion under
+    ``candidate.promotable`` needed every required check passed there, so an accepted candidate
+    is ``tested`` unless a later host run on the same tree failed. Nothing here reads free text.
+    """
+    states = {check["name"]: check["state"] for check in view["evaluation"]["checks"]}
+    required = thread.config["evaluation"]["required"] if thread.config else []
+    if required and all(states.get(name) == "passed" for name in required):
+        return "tested"
+    return "implemented"
 
 
 def _bad(detail: str) -> Rejected:

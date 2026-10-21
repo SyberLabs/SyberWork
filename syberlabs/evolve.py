@@ -257,8 +257,13 @@ class EvolutionaryProvider:
 
     @staticmethod
     def _room(space: SearchSpace) -> bool:
+        """Every budget dimension is above zero. ``max_dollars`` is present only on a host that prices usage;
+        None means the contract sets no dollar bound. When the dollars run out this returns False and
+        ``FixedPolicy`` answers ``Stop("budget")`` as it does for candidates, evaluations and seconds."""
         left = space.remaining()
-        return left.max_candidates > 0 and left.max_evaluations > 0 and left.max_seconds > 0
+        max_dollars = getattr(left, "max_dollars", None)
+        return (left.max_candidates > 0 and left.max_evaluations > 0 and left.max_seconds > 0
+                and (max_dollars is None or max_dollars > 0))
 
     def _judge(self, space: SearchSpace, candidate: str) -> tuple[str, Score, bool]:
         found = space.evaluate(candidate)

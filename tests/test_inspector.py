@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from syberlabs.inspector import make_inspector
-from tests.test_build_thread import GOOD, RepoCase
+from tests.test_build_thread import GOOD, RepoCase, died_after_case_created
 
 BROWSER_CHECK = Path(__file__).with_name("inspector_browser.mjs")
 
@@ -67,6 +67,25 @@ class Inspector(RepoCase):
         self.assertTrue(headers["Content-Type"].startswith("text/plain"))
         self.assertEqual(json.loads(self.request(f"/api/threads/{self.thread.id}/events")[2])[0]["kind"], "case_created")
         self.assertEqual(self.request("/api/threads/ffffffff")[0], 404)
+
+    def test_an_interrupted_start_is_listed_with_its_remedy_and_refused_alone(self):
+        partial = died_after_case_created(self.kit_, "Rename the report module")
+        status, _, body = self.request("/api/threads")
+        self.assertEqual(status, 200, body)
+        rows = {row["id"]: row for row in json.loads(body)}
+        self.assertEqual(set(rows), {self.thread.id, partial})
+        self.assertEqual((rows[self.thread.id]["state"], rows[self.thread.id]["candidates"]), ("started", 2))
+        row = rows[partial]
+        self.assertEqual((row["state"], row["status"], row["accepted"], row["candidates"], row["chain_valid"]),
+                         ("incomplete", "incomplete", None, 0, True))
+        self.assertEqual(row["remedy"], "start again with the same objective, or forget")
+        self.assertEqual(row["objective"], "Rename the report module")
+        status, _, body = self.request(f"/api/threads/{partial}")
+        self.assertEqual(status, 409)
+        refused = json.loads(body)
+        self.assertEqual(refused["error"], "thread_incomplete")
+        self.assertIn("forget", refused["detail"])
+        self.assertEqual(self.request(f"/api/threads/{partial}/events")[0], 409)
 
     def test_static_assets_are_locked_down(self):
         status, headers, body = self.request("/", token=None)

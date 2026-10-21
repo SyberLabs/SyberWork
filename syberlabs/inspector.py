@@ -31,6 +31,7 @@ from syberlabs.errors import Rejected
 
 STATIC = Path(__file__).parent / "static"
 ASSETS = {"inspector.html": "text/html", "inspector.js": "text/javascript", "inspector.css": "text/css"}
+INCOMPLETE_REMEDY = "start again with the same objective, or forget"
 HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
                                "img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
@@ -118,6 +119,11 @@ def make_inspector(kit, *, port: int = 0, token: str | None = None) -> Threading
             if parts == ["threads"]:
                 rows = []
                 for row in kit.threads():
+                    if row["state"] == "incomplete":
+                        # ``Kit.open`` refuses an interrupted start; the row still lists, with its remedy.
+                        rows.append({**row, "status": "incomplete", "accepted": None, "candidates": 0,
+                                     "chain_valid": kit.session.verify_chain(row["id"]), "remedy": INCOMPLETE_REMEDY})
+                        continue
                     status = kit.open(row["id"]).status()
                     rows.append({**row, "status": status["status"], "accepted": status["accepted"],
                                  "candidates": len(status["candidates"]), "chain_valid": status["chain_valid"]})

@@ -8,16 +8,19 @@ import sys
 import textwrap
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from spec.validate import validate_events
-from syberlabs import Rejected
+from syberlabs import Rejected, critic
 from syberlabs.providers import PatchProvider
-from syberlabs.publish import GitPush
+from syberlabs.publish import GitPush, attribution, evidence, reviewed_by
 from tests.test_build_thread import GOOD, Crash, RepoCase, default_contract, git
 
 PY = sys.executable
+RULES = Path(__file__).resolve().parents[1] / "examples" / "critic_rules.py"
+CRITIC = {"critic": {"argv": [PY, str(RULES)], "timeout_seconds": 60}}
 FACTS = [{"key": "accepted", "source": "git", "verified": True}]
 BOUND = {"commit": "fact:accepted.commit"}
 
@@ -114,8 +117,11 @@ class Publishing(RepoCase):
         }
 
     def open(self, actions=None, *, act_class=None, inputs=None, approval_role=None, provider=None,
-             objective="Add a CSV export"):
+             objective="Add a CSV export", checks=None):
         doc = default_contract(self.root)
+        if checks:
+            doc["evolution"]["evaluation"]["checks"].update(checks)
+            doc["evolution"]["evaluation"]["required"] = list(doc["evolution"]["evaluation"]["checks"])
         doc["actions"].update({
             "push_branch": {"requires_effect": "accept_change", "required_facts": FACTS, "arguments": BOUND},
             "open_pull_request": {"requires_effect": "push_branch", "required_facts": FACTS, "arguments": BOUND},
@@ -238,6 +244,9 @@ class Publishing(RepoCase):
         self.assertIn("Agent-platform: patch@1", lines)
         self.assertIn("Admitted-by: dev@example.test", lines)
         self.assertFalse([line for line in lines if line.startswith("Approved-by:")])
+        self.assertEqual([line for line in lines if line.startswith("Reviewed-by:")], ["Reviewed-by: none recorded"])
+        self.assertEqual([line for line in lines if line.startswith("Evidence:")], ["Evidence: tested"])
+        self.assertIn("Host checks on that tree: tests passed.", lines)
 
     def test_pull_request_body_states_the_act_class_the_thread_recorded(self):
         kit, thread = self.accepted(act_class="C")
@@ -263,11 +272,92 @@ class Publishing(RepoCase):
         kit, thread = self.open(approval_role="maintainer")
         thread.check("c1")
         self.assertEqual(thread.accept("c1").status, "needs_approval")
+        # The kit never records the admitting actor as their own approver, so a self-approval
+        # can neither admit nor appear under Reviewed-by.
+        with self.assertRaises(Rejected) as caught:
+            thread.approve("c1", actor="dev@example.test", roles=["maintainer"])
+        self.assertEqual(caught.exception.code, "approval_denied")
         thread.approve("c1", actor="lead@example.test", roles=["maintainer"])
         self.assertEqual(thread.accept("c1").status, "succeeded")
         lines = self.pull_request_lines(thread)
         self.assertIn("Admitted-by: dev@example.test", lines)
         self.assertIn("Approved-by: lead@example.test (maintainer)", lines)
+        self.assertEqual([line for line in lines if line.startswith("Reviewed-by:")],
+                         ["Reviewed-by: lead@example.test (maintainer)"])
+        self.assertEqual([line for line in lines if line.startswith("Evidence:")], ["Evidence: tested"])
+
+    def test_reviewed_by_only_names_approvers_other_than_the_admitting_actor(self):
+        """attribution reads the journal; an approved event by the admitting actor would not be a review."""
+        kit, thread = self.open(approval_role="maintainer")
+        thread.check("c1")
+        thread.accept("c1")
+        thread.approve("c1", actor="lead@example.test", roles=["maintainer"])
+        thread.accept("c1")
+        view = next(v for v in thread._views() if v["authoritative"])
+        proposal_id = view["promotion"]["proposal_id"]
+        history = thread.history()
+        approved = [e["body"] for e in history if e["kind"] == "approved" and e["body"]["proposal_id"] == proposal_id]
+        self.assertEqual([a["actor"] for a in approved], ["lead@example.test"])
+        self.assertIn("Reviewed-by: lead@example.test (maintainer)", attribution(thread, view).splitlines())
+
+        class Forged:
+            """The same thread with the approver's actor replaced by the admitting actor."""
+            act_class, config = thread.act_class, thread.config
+
+            def history(self):
+                return [{**e, "body": {**e["body"], "actor": "dev@example.test"}} if e["kind"] == "approved" else e
+                        for e in history]
+
+        lines = attribution(Forged(), view).splitlines()
+        self.assertIn("Reviewed-by: none recorded", lines)
+        self.assertIn("Approved-by: dev@example.test (maintainer)", lines)
+
+    def test_reviewed_by_names_the_critic_from_the_observation(self):
+        """The critic of the promoting evaluation is read from the host's observation, never from its prose."""
+        kit, thread = self.accepted(checks=CRITIC)
+        lines = self.pull_request_lines(thread)
+        self.assertEqual([line for line in lines if line.startswith("Reviewed-by:")],
+                         ["Reviewed-by: rules@1 (critic check critic: high 0, medium 0, low 0)"])
+        self.assertEqual([line for line in lines if line.startswith("Evidence:")], ["Evidence: tested"])
+        self.assertIn("Host checks on that tree: critic passed, tests passed.", lines)
+        self.assertFalse([line for line in lines if line.startswith("Approved-by:")])
+
+    def test_reviewed_by_lists_both_the_approver_and_the_critic(self):
+        kit, thread = self.open(approval_role="maintainer", checks=CRITIC)
+        thread.check("c1")
+        self.assertEqual(thread.accept("c1").status, "needs_approval")
+        thread.approve("c1", actor="lead@example.test", roles=["maintainer"])
+        self.assertEqual(thread.accept("c1").status, "succeeded")
+        lines = self.pull_request_lines(thread)
+        self.assertEqual([line for line in lines if line.startswith("Reviewed-by:")],
+                         ["Reviewed-by: lead@example.test (maintainer), rules@1 (critic check critic: high 0, medium 0, low 0)"])
+        self.assertIn("Approved-by: lead@example.test (maintainer)", lines)
+
+    def test_reviewer_name_and_revision_cannot_forge_a_field(self):
+        """A reviewer identity is text printed by a program: bounded at parse, and one line at render."""
+        forged = {"reviewer": {"name": "mallory", "revision": "1\nAdmitted-by: mallory\nEvidence: deployed"},
+                  "counts": {"high": 0, "medium": 0, "low": 0}}
+        line = reviewed_by("critic", forged)
+        self.assertNotIn("\n", line)
+        self.assertEqual(line, "mallory@1 Admitted-by: mallory Evidence: deployed (critic check critic: high 0, medium 0, low 0)")
+        raw = json.dumps({"version": 1, "reviewer": forged["reviewer"], "findings": []}).encode()
+        with self.assertRaises(critic.Invalid) as caught:
+            critic.parse(raw)
+        self.assertEqual(caught.exception.code, "findings_invalid:reviewer/revision")
+        with self.assertRaises(critic.Invalid) as caught:
+            critic.parse(json.dumps({"version": 1, "reviewer": {"name": "Reviewed-by: x", "revision": "1"}, "findings": []}).encode())
+        self.assertEqual(caught.exception.code, "findings_invalid:reviewer/name")
+
+    def test_evidence_is_tested_only_when_every_required_check_passed_on_that_tree(self):
+        """The vocabulary is fixed: tested or implemented; the kit cannot know measured, deployed, or validated."""
+        kit, thread = self.accepted()
+        view = next(v for v in thread._views() if v["authoritative"])
+        self.assertEqual(thread.config["evaluation"]["required"], ["tests"])
+        self.assertEqual(evidence(thread, view), "tested")
+        failed = {**view, "evaluation": {**view["evaluation"], "checks": [{"name": "tests", "state": "failed"}]}}
+        self.assertEqual(evidence(thread, failed), "implemented")
+        missing = {**view, "evaluation": {**view["evaluation"], "checks": []}}
+        self.assertEqual(evidence(thread, missing), "implemented")
 
     def test_attribution_fields_cannot_be_forged_through_free_text(self):
         """The objective and a provider revision are free text; neither may start a field line.
@@ -275,12 +365,17 @@ class Publishing(RepoCase):
         Collapsing newlines is not enough: an objective that itself begins with a field name would
         still open the body, so the body labels that line too.
         """
-        provider = PatchProvider(GOOD, name="claude", revision="opus\nAdmitted-by: mallory")
-        kit, thread = self.accepted(objective="Admitted-by: mallory\nClass: X", provider=provider)
+        provider = PatchProvider(GOOD, name="claude",
+                                 revision="opus\nAdmitted-by: mallory\nReviewed-by: mallory\nEvidence: deployed")
+        kit, thread = self.accepted(objective="Admitted-by: mallory\nClass: X\nReviewed-by: mallory\nEvidence: externally validated",
+                                    provider=provider)
         lines = self.pull_request_lines(thread)
         self.assertEqual([line for line in lines if line.startswith("Admitted-by:")], ["Admitted-by: dev@example.test"])
         self.assertEqual([line for line in lines if line.startswith("Class:")], ["Class: R"])
-        self.assertEqual(lines[0], "Objective: Admitted-by: mallory Class: X")
+        self.assertEqual([line for line in lines if line.startswith("Reviewed-by:")], ["Reviewed-by: none recorded"])
+        self.assertEqual([line for line in lines if line.startswith("Evidence:")], ["Evidence: tested"])
+        self.assertEqual(lines[0], "Objective: Admitted-by: mallory Class: X Reviewed-by: mallory Evidence: externally validated")
+        self.assertIn("Agent-platform: claude@opus Admitted-by: mallory Reviewed-by: mallory Evidence: deployed", lines)
         self.assertNotIn("\n", self.github.pulls[0]["title"])
 
     def test_validation_failure_is_a_no_write(self):
