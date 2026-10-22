@@ -9,7 +9,21 @@ Arms, each run through the same Build Thread so every candidate is host-evaluate
 - ``single``: one patch from one model call (the baseline);
 - ``best_of_k``: up to K independent patches, stopping at the first that passes;
 - ``repair``: up to K calls, each given the previous candidate and its failing check output;
-- ``evolve``: the EvoGit-style provider with a model mutator capped at K calls (crossover costs no call).
+- ``evolve``: the EvoGit-style provider with a model mutator capped at K calls (crossover costs no call),
+  branching by ``FixedPolicy`` revision 2 (the first passing seed or child from ``base`` ends the search);
+- ``evolve_empirical``: the same provider, mutator, population, generations and K, branching by
+  ``EmpiricalPolicy`` (the fixed schedule with the round kind learned by Thompson sampling);
+- ``evolve_jev``: the same, branching by ``JevPolicy`` (each action bought by expected admission per
+  dollar; its price prior comes from the contract's ``budget.prices`` when present).
+
+The three ``evolve*`` arms differ in the branch policy and in nothing else, so a
+difference between them is policy against policy, not "fill the population first"
+against "stop at the first pass". Every row of an ``evolve*`` arm records ``policy``
+(name and revision, from the provider's trace). The fixture contract is priced for
+the run (``budget.prices`` from the table below plus a nominal rate for the simulated
+model, and ``budget.max_dollars``), so the host observes spend; a row's
+``host_dollars`` is that observation. For the simulated model it is a token count in
+dollar units at the nominal rate, not money, and the row's ``dollars`` stays null.
 
 Every arm stops at its first passing candidate, so "calls" is cost to first solve,
 capped at K. A solve is a candidate whose host evaluation passed every required
@@ -24,6 +38,9 @@ Each row names the served model (``usage.model``, or ``simulated``) and carries
 ``PREFIX-journals/<fixture>-<arm>-<seed>.json``, and the row's ``journal`` holds
 that path relative to the rows file, so a branching decision or a call that
 produced no candidate can be read back after the temporary worktree is gone.
+``--profile NAME`` names a per-operator success profile of the simulated adapter
+(``SIM_PROFILE``; ``benchmarks/simulated_model.py``) and is recorded in each row as
+``profile``; it changes nothing for a real adapter.
 """
 
 from __future__ import annotations
@@ -44,15 +61,42 @@ if str(ROOT) not in sys.path:
 from benchmarks.fixtures import FIXTURES, contract  # noqa: E402
 from examples.evolve import git  # noqa: E402
 from syberlabs import Kit, Rejected  # noqa: E402
-from syberlabs.evolve import CommandMutator, EvolutionaryProvider  # noqa: E402
+from benchmarks.simulated_model import PROFILES  # noqa: E402
+from syberlabs.evolve import CommandMutator, EmpiricalPolicy, EvolutionaryProvider, JevPolicy  # noqa: E402
 from syberlabs.providers import model_usage, run_json, split_command  # noqa: E402
 
 SIMULATED = f"{sys.executable} {ROOT / 'benchmarks' / 'simulated_model.py'}"
-ARMS = ("single", "best_of_k", "repair", "evolve")
+ARMS = ("single", "best_of_k", "repair", "evolve", "evolve_empirical", "evolve_jev")
+EVOLVE_ARMS = {"evolve": "fixed", "evolve_empirical": "empirical", "evolve_jev": "jev"}
 # Dollars per million tokens: input, output. Cache reads bill at 0.1x input, cache writes at 1.25x.
 PRICES = {"claude-opus-5": (5.0, 25.0), "claude-opus-5-5": (4.0, 20.0), "claude-opus-4-8": (5.0, 25.0),
           "claude-sonnet-5": (2.0, 10.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-4-5": (1.0, 5.0),
           "claude-haiku-5-5": (0.10, 0.50), "claude-fable-5-1": (10.0, 50.0)}
+# The simulated model's nominal rate (the Sonnet 5.5 tier), so the host can price its "tokens" too; not money.
+SIMULATED_PRICE = (2.0, 10.0)
+MAX_DOLLARS = 50.0  # the contract's bound per run; far above K calls at any rate in the table, so it stops nothing
+NOMINAL_CALL = (2000, 500)  # tokens in, out: the prior worth one attempt that Jev starts a mutation's price from
+
+
+def price_table() -> dict:
+    """``PRICES`` and the simulated rate as the contract's ``budget.prices``, cache rates as ``dollars`` bills them."""
+    return {model: {"input_per_million": rate[0], "output_per_million": rate[1],
+                    "cache_read_per_million": rate[0] * 0.1, "cache_creation_per_million": rate[0] * 1.25}
+            for model, rate in {**PRICES, "simulated": SIMULATED_PRICE}.items()}
+
+
+def jev_prices(doc: dict) -> dict | None:
+    """Jev's price prior per action kind from the contract's ``budget.prices``, or None when it prices nothing.
+
+    A mutation is one nominal call at the mean of the table's rates (the host's observation of the
+    first call replaces it); a crossover and an evaluation make no model call.
+    """
+    table = doc.get("evolution", {}).get("budget", {}).get("prices")
+    if not table:
+        return None
+    calls = [(NOMINAL_CALL[0] * rates["input_per_million"] + NOMINAL_CALL[1] * rates["output_per_million"]) / 1e6
+             for rates in table.values()]
+    return {"mutate": round(statistics.mean(calls), 6), "crossover": 0.0, "evaluate": 0.0}
 
 
 def dollars(usage: list[dict]) -> float | None:
@@ -111,8 +155,15 @@ class Patches:
 
 
 def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Path,
-        journals: Path | None = None) -> dict:
-    """One run. ``journals`` is a directory to export the thread's journal into, or None to keep nothing."""
+        journals: Path | None = None, profile: str | None = None) -> dict:
+    """One run. ``journals`` is a directory to export the thread's journal into, or None to keep nothing.
+    ``profile`` names a simulated profile (``SIM_PROFILE`` for the adapter) or clears it."""
+    if profile is not None and profile not in PROFILES:
+        raise ValueError(f"profile must be one of {sorted(PROFILES)}")
+    if profile is None:
+        os.environ.pop("SIM_PROFILE", None)
+    else:
+        os.environ["SIM_PROFILE"] = profile
     root = folder / f"{fixture}-{arm}-{seed}"
     (root / "src").mkdir(parents=True)
     for path, text in FIXTURES[fixture]["files"].items():
@@ -127,17 +178,28 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
     home = root / ".syberlabs"
     (home / "contracts").mkdir(parents=True)
     doc = contract(fixture)
+    doc["evolution"]["budget"] = {**doc["evolution"]["budget"], "prices": price_table(), "max_dollars": MAX_DOLLARS}
     (home / "contracts" / f"{doc['id']}.v1.json").write_text(json.dumps(doc))
     os.environ["SYBERLABS_FIXTURE"] = fixture
     argv = split_command(adapter)
     kit = Kit.local(home, root, actor="bench")
     thread = kit.start(FIXTURES[fixture]["objective"], f"{doc['id']}.v1", paths=["src"])
     started = time.monotonic()
-    if arm == "evolve":
+    policy = None
+    if arm in EVOLVE_ARMS:
         mutator = CommandMutator(argv, name="model", max_calls=calls, cwd=root)
-        provider = EvolutionaryProvider(mutator, population=min(4, calls), generations=200, crossover_every=3)
+        shape = {"population": min(4, calls), "generations": 200, "crossover_every": 3}
+        if EVOLVE_ARMS[arm] == "fixed":
+            provider = EvolutionaryProvider(mutator, **shape, stop_on_first_pass=True)
+        elif EVOLVE_ARMS[arm] == "empirical":
+            provider = EvolutionaryProvider(mutator, **shape,
+                                            policy=EmpiricalPolicy(**shape, stop_on_first_pass=True, salt=seed))
+        else:
+            provider = EvolutionaryProvider(mutator, **shape,
+                                            policy=JevPolicy(generations=shape["generations"], prices=jev_prices(doc)))
         thread.propose(provider, seed=seed)
         used, usage = mutator.calls, mutator.usage
+        policy = next((dict(e["policy"]) for e in provider.trace if "decision" in e), None)
     else:
         provider = Patches(argv, 1 if arm == "single" else calls, arm == "repair", seed)
         provider.argv = argv
@@ -160,12 +222,15 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
     kit.close()
     simulated = any(u.get("simulated") for u in usage)
     served = sorted({u.get("model") for u in usage if u.get("model")})
+    finished = next((e["body"] for e in reversed(events) if e["kind"] == "search_finished"), None)
+    spend = (finished or {}).get("spend") or {}
     return {"fixture": fixture, "arm": arm, "seed": seed, "solved": solved, "calls": used,
             "model": "simulated" if simulated else ("+".join(served) if served else None),
             "input_tokens": sum(u.get("input_tokens", 0) for u in usage),
             "output_tokens": sum(u.get("output_tokens", 0) for u in usage),
             "dollars": None if simulated else dollars(usage),
-            "simulated": simulated,
+            "host_dollars": spend.get("dollars"),
+            "simulated": simulated, "policy": policy, "profile": profile,
             "provider_error": next((e["body"]["error"] for e in events if e["kind"] == "search_finished" and str(e["body"].get("error") or "").startswith("provider_")), None),
             "candidates": sum(1 for e in events if e["kind"] == "candidate_registered"),
             "evaluations": sum(1 for e in events if e["kind"] == "candidate_evaluated"), "seconds": round(seconds, 2),
@@ -174,24 +239,30 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
 
 def summarize(rows: list[dict], calls: int) -> str:
     simulated = any(r["simulated"] for r in rows)
+    profiles = sorted({r.get("profile") for r in rows if r.get("profile")})
     lines = [f"{'SIMULATED MODEL: these numbers describe the harness, not a model. ' if simulated else ''}"
-             f"Budget K = {calls} model calls per run; every arm stops at its first passing candidate.",
-             "fixture     arm         solved  calls(med)  tokens in/out (mean)   evaluations(med)  $ (mean)  "
-             "model                 provider_error"]
+             f"Budget K = {calls} model calls per run; every arm stops at its first passing candidate."
+             f"{(' Simulated profile: ' + ', '.join(profiles) + '.') if profiles else ''}",
+             "fixture     arm               solved  calls(med)  tokens in/out (mean)   evaluations(med)  $ (mean)  "
+             "host$ (mean)  model                 policy        provider_error"]
     for fixture in dict.fromkeys(r["fixture"] for r in rows):
         for arm in ARMS:
             group = [r for r in rows if r["fixture"] == fixture and r["arm"] == arm]
             if not group:
                 continue
             cost = [r["dollars"] for r in group if r["dollars"] is not None]
+            host = [r["host_dollars"] for r in group if r.get("host_dollars") is not None]
             models = sorted({r.get("model") or "-" for r in group})
+            policies = sorted({f"{r['policy']['name']}/{r['policy']['revision']}" for r in group if r.get("policy")})
             errors = [r["provider_error"] for r in group if r.get("provider_error")]
-            lines.append(f"{fixture:11} {arm:11} {sum(r['solved'] for r in group):>2}/{len(group):<4} "
+            lines.append(f"{fixture:11} {arm:17} {sum(r['solved'] for r in group):>2}/{len(group):<4} "
                          f"{statistics.median(r['calls'] for r in group):>9} "
                          f"{statistics.mean(r['input_tokens'] for r in group):>10.0f}/{statistics.mean(r['output_tokens'] for r in group):<9.0f} "
                          f"{statistics.median(r['evaluations'] for r in group):>14} "
                          f"{('%.4f' % statistics.mean(cost)) if cost and len(cost) == len(group) else 'n/a':>10}  "
+                         f"{('%.4f' % statistics.mean(host)) if host and len(host) == len(group) else 'n/a':>12}  "
                          f"{'+'.join(models):21} "
+                         f"{('+'.join(policies) if policies else '-'):13} "
                          f"{(str(len(errors)) + '/' + str(len(group)) + ' ' + ','.join(sorted(set(errors)))) if errors else 'none':}")
     return "\n".join(lines)
 
@@ -204,6 +275,8 @@ def main() -> None:
     parser.add_argument("--fixtures", nargs="+", default=list(FIXTURES))
     parser.add_argument("--arms", nargs="+", default=list(ARMS))
     parser.add_argument("--write", help="write the JSON rows and the summary to this path prefix")
+    parser.add_argument("--profile", choices=sorted(PROFILES),
+                        help="a per-operator success profile of the simulated adapter (SIM_PROFILE); nothing for a real one")
     options = parser.parse_args()
     rows = []
     journals = Path(options.write + "-journals") if options.write else None
@@ -211,7 +284,8 @@ def main() -> None:
         for fixture in options.fixtures:
             for arm in options.arms:
                 for seed in range(1, options.repeats + 1):
-                    rows.append(run(fixture, arm, options.adapter, options.calls, seed, Path(folder), journals))
+                    rows.append(run(fixture, arm, options.adapter, options.calls, seed, Path(folder), journals,
+                                    options.profile))
     report = summarize(rows, options.calls)
     print(report)
     if options.write:
