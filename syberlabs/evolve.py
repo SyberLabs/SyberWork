@@ -61,7 +61,7 @@ from typing import Protocol
 
 from syberlabs.economic import is_money
 from syberlabs.errors import Rejected
-from syberlabs.providers import model_usage, run_json
+from syberlabs.providers import model_usage, refuse, run_json
 from syberlabs.search import (ACTION_KINDS, Action, BranchPolicy, Crossover, Evaluate, Individual, Migrate, Mutate,
                               OperatorStats, Score, SearchSpace, Situation, Stop)
 
@@ -100,13 +100,16 @@ class CommandMutator:
                  cwd: str | Path | None = None, max_bytes: int = 65_536, max_calls: int | None = None):
         self.argv, self.name, self.timeout, self.cwd, self.max_bytes = list(argv), name, timeout, cwd, max_bytes
         self.max_calls, self.calls, self.usage, self.last_usage = max_calls, 0, [], None
+        # Why the last call produced no edit: ``unparsable`` (no ``changes`` object), ``no_change`` (an empty one), or
+        # None (the call was not made, or it produced an edit). The provider records it against the search.
+        self.last_reason: str | None = None
 
     @property
     def exhausted(self) -> bool:
         return self.max_calls is not None and self.calls >= self.max_calls
 
     def __call__(self, space: SearchSpace, parent: str, rng: random.Random) -> Mapping[str, str | None] | None:
-        self.last_usage = None
+        self.last_usage = self.last_reason = None
         if self.exhausted:
             return None
         paths = list(dict.fromkeys([*(item["path"] for item in space.context),
@@ -131,8 +134,12 @@ class CommandMutator:
             self.usage.append(self.last_usage)
         changes = response.get("changes") if isinstance(response, dict) else None
         if not isinstance(changes, dict):
+            self.last_reason = "unparsable"
             return None
-        return {k: v for k, v in changes.items() if isinstance(k, str) and (v is None or isinstance(v, str))}
+        found = {k: v for k, v in changes.items() if isinstance(k, str) and (v is None or isinstance(v, str))}
+        if not found:
+            self.last_reason = "no_change"
+        return found
 
 
 def mutation_feedback(space: SearchSpace, parent: str) -> dict | None:
@@ -576,14 +583,21 @@ class EvolutionaryProvider:
         return candidate, found.score(), found.passed
 
     def _child(self, space, changes, parents, operator, generation) -> tuple[str, Score, bool] | None:
-        if not changes or not self._room(space):
+        # A proposal discarded here is recorded by the space (``refuse``), one record each: an empty edit as
+        # ``no_change``, one the budget has no room for as ``limit``. The host records its own refusals itself
+        # when ``submit`` raises them; this provider only goes on.
+        if not changes:
+            refuse(space, "no_change", operator, parents, usage=self._usage(operator))
+            return None
+        if not self._room(space):
+            refuse(space, "limit", operator, parents, usage=self._usage(operator))
             return None
         try:
             made = space.submit(changes, parents=[p for p in parents if p != "base"], operator=operator,
                                 message=f"{operator} g{generation}",
                                 signal=self._signal(operator, generation))
         except Rejected as exc:
-            if exc.code in ("no_change", "invalid_change", "duplicate"):
+            if exc.code in ("no_change", "invalid_change", "duplicate", "zero_usage"):
                 return None
             raise
         if not made.in_scope or not self._room(space):
@@ -600,8 +614,23 @@ class EvolutionaryProvider:
                 found["model_usage"] = usage
         return found
 
+    def _usage(self, operator: str) -> dict | None:
+        return getattr(self.mutate, "last_usage", None) if operator == "mutation" else None
+
     def _mutation(self, space, parent, rng, generation):
-        return self._child(space, self.mutate(space, parent, rng), [parent], "mutation", generation)
+        try:
+            changes = self.mutate(space, parent, rng)
+        except Rejected as exc:
+            if exc.code.startswith("provider_"):
+                refuse(space, "provider_error", "mutation", [parent])  # the call failed; the search ends with its code
+            raise
+        if not changes:
+            reason = getattr(self.mutate, "last_reason", "no_change")
+            if reason is None:
+                return None  # the mutator made no call (exhausted): there was no proposal to refuse
+            refuse(space, reason, "mutation", [parent], usage=self._usage("mutation"))
+            return None
+        return self._child(space, changes, [parent], "mutation", generation)
 
     def _crossover(self, space, a: str, b: str, rng, generation):
         ancestor = space.merge_base(a, b)
@@ -774,6 +803,10 @@ class EvolutionaryProvider:
                     self.trace.append({"generation": generation, "population": [p[0] for p in people], "stopped": action.reason})
                 elif ran:
                     self.trace.append({"generation": generation, "population": [p[0] for p in people]})
+                # The proposals this search refused, counted by reason, as ``search_finished.refused`` would carry
+                # them if that frozen record could grow: the entry before the stop decision carries them instead,
+                # so the stop decision stays the last entry and keeps its shape. {} on a space that keeps no count.
+                self.trace.append({"generation": generation, "refused": dict(getattr(space, "refused", None) or {})})
                 self.trace.append(entry)
                 break
             self.trace.append(entry)
