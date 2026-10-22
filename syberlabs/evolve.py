@@ -20,6 +20,9 @@ What differs, on purpose, in SyberLabs:
   score the provider computes or a model's opinion of a diff. A child is
   evaluated even when both of its parents passed: lineage is provenance,
   not evidence of superiority.
+- The base tree is evaluated once, before the population is filled, so the
+  first mutations have the host's results to go on and not only a text. It
+  costs one evaluation and no model call; the base is not an individual.
 - Every individual is a provisional candidate on a non-authoritative ref.
   Selection here only decides what the search keeps exploring and what it
   recommends. Promotion is a person's decision through admission.
@@ -81,7 +84,8 @@ class CommandMutator:
     """Mutation by an external program, typically a model adapter.
 
     Request (stdin): ``{protocol, objective, scope, parent, files: {path: text}, context, seed}``,
-    plus ``feedback`` when the parent is a candidate the host has evaluated. ``scope`` is the
+    plus ``feedback`` when the host has evaluated the parent: a candidate it judged, or ``base``
+    once the search evaluated the base tree. ``scope`` is the
     evolution scope's paths, the same list the search protocol's request carries
     (``providers.CommandProvider``), so an adapter that tells its model where it may write is
     told the same thing under both protocols. ``feedback`` is ``mutation_feedback(space,
@@ -139,14 +143,18 @@ def mutation_feedback(space: SearchSpace, parent: str) -> dict | None:
     "checks": [{name, state, exit_code, duration_ms, output_tail}, ...]}``, the check results
     exactly as the host recorded them in ``candidate_evaluated`` (each ``output_tail`` already
     within the record's bound). ``files`` is left out because the mutate request's own
-    ``files`` already carries the parent's texts. None when ``parent`` is ``"base"`` (the host
-    evaluates candidates, never the base tree) or when the host has not evaluated the parent,
-    so a reader can tell "no evaluation" from "an evaluation that passed". Pure: it reads the
-    space and runs nothing.
+    ``files`` already carries the parent's texts. For ``"base"`` the checks are the space's
+    ``base_evaluation``, the host's evaluation of the base tree that ``EvolutionaryProvider``
+    asks for before the fill; None on a space that has none (the budget had no room for it, or
+    the space does not offer one). None when the host has not evaluated a candidate parent, so
+    a reader can tell "no evaluation" from "an evaluation that passed". Pure: it reads the space
+    and runs nothing.
     """
     if parent == "base":
-        return None
-    checks = space.candidate(parent).checks
+        found = getattr(space, "base_evaluation", None)
+        checks = found.checks if found is not None else ()
+    else:
+        checks = space.candidate(parent).checks
     if not checks:
         return None
     return {"candidate": parent, "checks": [dataclasses.asdict(check) for check in checks]}
@@ -534,6 +542,25 @@ class EvolutionaryProvider:
 
     # Budget: stop cleanly before the host has to refuse.
 
+    def _base(self, space: SearchSpace) -> None:
+        """Evaluate the base tree once, before the fill, so a mutation of ``base`` has feedback and not only a parent.
+
+        An ordinary host evaluation (``space.evaluate("base")``): one evaluation of the budget, no model call,
+        recorded by the host as its records allow. Skipped, and said so in the trace, when the budget has no
+        room; a host that already holds a fresh evaluation of this base (a restart of the search on the same
+        thread) answers from its record and the trace shows ``evaluated: 0``. The result is not an individual:
+        the population, the branch policies, their ``Situation`` and the selection rule never see it.
+        """
+        entry: dict = {"generation": 0, "base": {}}
+        if not self._room(space):
+            entry["base"]["skipped"] = "budget"
+        else:
+            before = space.remaining().max_evaluations
+            found = space.evaluate("base")
+            entry["base"].update(score=list(found.score()), passed=found.passed,
+                                 evaluated=before - space.remaining().max_evaluations)
+        self.trace.append(entry)
+
     @staticmethod
     def _room(space: SearchSpace) -> bool:
         """Every budget dimension is above zero. ``max_dollars`` is present only on a host that prices usage;
@@ -724,6 +751,7 @@ class EvolutionaryProvider:
         self._stats = {kind: OperatorStats(dollars=0.0 if priced else None) for kind in ACTION_KINDS if kind != "stop"}
         self._decision = 0
         self.policy.reset()
+        self._base(space)
         generation, ran = 0, True  # generation 0, the initial population, is always recorded
         while True:
             action = self.policy.decide(self._situation(space, people, generation, rng))

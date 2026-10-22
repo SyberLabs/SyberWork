@@ -100,6 +100,25 @@ class Adapter(unittest.TestCase):
                 self.assertEqual(adapter.build_prompt({**request, "feedback": feedback}, self.root), plain)
         self.assertEqual(adapter.failing_checks(None), "")
 
+    def test_a_mutation_of_base_with_the_base_evaluation_as_feedback_is_directed(self):
+        """The fill's requests name ``base`` as parent and, since the host evaluates the base tree first
+        (base-evaluation, 2026-10-22), carry its checks; the adapter directs them exactly as a mutation of a failing child."""
+        request = {"protocol": "syberlabs.mutate/v0alpha1", "objective": "x", "scope": ["src"], "parent": "base", "seed": 4,
+                   "files": {"src/a.py": "A"}}
+        feedback = {"candidate": "base", "checks": [
+            {"name": "tests", "state": "failed", "exit_code": 1, "duration_ms": 12, "output_tail": "E  assert 1 == 2"},
+            {"name": "lint", "state": "passed", "exit_code": 0, "duration_ms": 3, "output_tail": "ok"}]}
+        plain = adapter.build_prompt(request, self.root)
+        fed = adapter.build_prompt({**request, "feedback": feedback}, self.root)
+        self.assertIn("Candidate: base. Vary your approach; seed 4.", plain)
+        self.assertIn("This candidate did not pass the host's checks. Fix it. Failing checks:\n--- tests (failed)\nE  assert 1 == 2", fed)
+        self.assertIn("Make one focused change toward the objective that fixes them, as a mutation of this candidate. "
+                      "Candidate: base; seed 4.", fed)
+        self.assertNotIn("Vary your approach", fed)
+        self.assertNotIn("--- lint", fed)
+        child = adapter.build_prompt({**request, "parent": "c3", "feedback": {**feedback, "candidate": "c3"}}, self.root)
+        self.assertEqual(fed.replace("Candidate: base", "Candidate: c3"), child, "the same wording as for a child")
+
     def test_responses_follow_each_protocol_and_report_usage(self):
         parsed = {"message": "csv", "rationale": "reuse rows()",
                   "files": [{"path": "src/export.py", "content": "x", "delete": False},

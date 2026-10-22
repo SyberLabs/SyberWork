@@ -60,6 +60,7 @@ PUBLISH_EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
 # an acceptable candidate only on such a thread. It is an observation, not a case input, because
 # the contract inputs are objective and act_class and a new input would be a contract change.
 UNATTENDED = "unattended"
+BASE_EVALUATION = "base_evaluation"  # observed: the host's checks on the thread's base tree, versioned by the base commit
 # The runner re-runs a check whose evidence would have less than this many seconds of life left
 # at accept time (bounded by half the contract's max_age_seconds), rather than trip the kernel's
 # candidate_evidence_stale refusal on an acceptance it could see coming.
@@ -222,6 +223,7 @@ class GitSearchSpace:
         self._deadline = self._started + budget.max_seconds
         self.submitted: list[str] = []
         self.evaluations = 0
+        self.base_evaluation: Evaluation | None = None  # set by ``evaluate("base")``; read by ``evolve.mutation_feedback``
         self._commits = {view["id"]: view["commit"] for view in thread._views()}
         # The host's spend ledger. ``observed`` is every usage that crossed ``providers.run_json`` in this
         # search; ``_pending`` the part not yet attributed to a candidate; ``dollars`` the priced part that
@@ -354,12 +356,17 @@ class GitSearchSpace:
         return found
 
     def evaluate(self, candidate: str) -> Evaluation:
+        """Run the checks on a candidate, or on the base tree for ``"base"``. A fresh record of this base on the
+        thread (``Thread._base_evaluation``) is answered without running anything and costs no evaluation."""
         self._time()
         self._afford(pending=True)
-        if self.evaluations >= self.budget.max_evaluations:
+        reused = candidate == "base" and self._thread._base_evaluation() is not None
+        if not reused and self.evaluations >= self.budget.max_evaluations:
             raise SearchStopped("budget_exhausted")
-        found, ran = self._thread._evaluate(candidate)
+        found, ran = self._thread._evaluate_base() if candidate == "base" else self._thread._evaluate(candidate)
         self.evaluations += ran
+        if candidate == "base":
+            self.base_evaluation = found
         return found
 
     def remaining(self) -> Budget:
@@ -999,6 +1006,40 @@ class Thread:
         results = tuple(CheckResult(c["name"], c["state"], c["exit_code"], c["duration_ms"], c["output_tail"])
                         for c in body["checks"])
         return Evaluation(candidate, results, required), 1
+
+    def _base_evaluation(self) -> dict | None:
+        """The newest ``base_evaluation`` observation for this thread's base, when it is younger than the contract's
+        ``max_age_seconds`` (the freshness rule a candidate's evaluation is held to); else None."""
+        max_age = self.config["evaluation"]["max_age_seconds"]
+        for event in reversed(self._events()):
+            body = event["body"]
+            if (event["kind"] == "observed" and body["key"] == BASE_EVALUATION and body["source"] == HOST
+                    and body.get("verified") and body["version"] == self.base):
+                return body["value"] if time.time() - as_seconds(event["at"]) <= max_age else None
+        return None
+
+    def _evaluate_base(self) -> tuple[Evaluation, int]:
+        """The contract's checks on the base tree, run as they are on a candidate (a detached worktree of the base
+        commit, a scrubbed environment, every declared check), recorded as the verified host observation
+        ``base_evaluation`` with the base commit as its version. The record kind is ``observed``, not
+        ``candidate_evaluated``: the base is not a registered candidate, ``evaluation_record`` refuses one that is
+        not, and the frozen check-record shape stays what it is. A fresh record (``_base_evaluation``) is returned
+        with ``0`` evaluations consumed; otherwise the checks run and ``1`` is consumed. Critic documents are not
+        observed for the base: its diff against itself is empty, so a critic's finding there is about nothing."""
+        required = tuple(self.config["evaluation"]["required"])
+        body, ran = self._base_evaluation(), 0
+        if body is None:
+            repo = self.kit.repo
+            view = {"id": "base", "commit": self.base, "tree": repo.tree(self.base), "base": self.base, "parents": [],
+                    "operator": "base", "provider": {"name": HOST, "revision": "base"}, "changed_paths": [], "note": ""}
+            context = {"objective": self.objective, "scope": self.config["scope"],
+                       "acceptance": self.kit.session.contracts[self.contract]["acceptance"]}
+            body = runner.evaluate(self.kit.repo, view, self.config["evaluation"], context=context)
+            self.kit.session.observe(self.id, BASE_EVALUATION, body, HOST, self.base, HOST, verified=True)
+            ran = 1
+        results = tuple(CheckResult(c["name"], c["state"], c["exit_code"], c["duration_ms"], c["output_tail"])
+                        for c in body["checks"])
+        return Evaluation("base", results, required), ran
 
     def check(self, candidate: str, *, rerun: bool = False, run: bool = True, actor: str | None = None,
               roles: Sequence[str] | None = None) -> Verdict:
