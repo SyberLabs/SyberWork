@@ -80,8 +80,11 @@ class Mutator(Protocol):
 class CommandMutator:
     """Mutation by an external program, typically a model adapter.
 
-    Request (stdin): ``{protocol, objective, parent, files: {path: text}, context, seed}``.
-    Response (stdout): ``{"changes": {path: text or null}}``.
+    Request (stdin): ``{protocol, objective, scope, parent, files: {path: text}, context, seed}``.
+    ``scope`` is the evolution scope's paths, the same list the search protocol's request
+    carries (``providers.CommandProvider``), so an adapter that tells its model where it may
+    write is told the same thing under both protocols. Response (stdout):
+    ``{"changes": {path: text or null}}``.
     """
 
     PROTOCOL = "syberlabs.mutate/v0alpha1"
@@ -109,8 +112,8 @@ class CommandMutator:
             files[path] = text
             spent += len(text)
         self.calls += 1
-        response = run_json(self.argv, {"protocol": self.PROTOCOL, "objective": space.objective, "parent": parent,
-                                        "files": files, "context": [dict(item) for item in space.context],
+        response = run_json(self.argv, {"protocol": self.PROTOCOL, "objective": space.objective, "scope": list(space.scope),
+                                        "parent": parent, "files": files, "context": [dict(item) for item in space.context],
                                         "seed": rng.randrange(2**31)}, timeout=self.timeout, cwd=self.cwd)
         self.last_usage = model_usage(response)
         if self.last_usage:

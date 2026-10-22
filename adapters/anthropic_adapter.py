@@ -57,7 +57,8 @@ SCHEMA = {
 SYSTEM = (
     "You change a software repository to meet an objective. You propose; a separate host runs the project's "
     "checks and a person decides whether to accept. Return complete new contents for each file you change, "
-    "only for files in the stated scope. Keep the change as small as the objective allows. Do not weaken tests "
+    "only for files in the stated scope (when no scope is stated, the files shown in the request). Keep the change "
+    "as small as the objective allows. Do not weaken tests "
     "or checks to make them pass. Set delete true (with empty content) only to remove a file. The rationale is "
     "one or two sentences a reviewer can check against the diff."
 )
@@ -102,7 +103,10 @@ def build_prompt(request: dict, cwd: Path) -> str:
             task = "Propose one patch that meets the objective."
     else:
         raise ValueError(f"unknown protocol {protocol!r}")
-    parts = [f"Objective: {request.get('objective')}", f"Mutable scope: {', '.join(request.get('scope', []))}", task]
+    scope = [path for path in request.get("scope") or [] if isinstance(path, str)]
+    # Never state an empty scope: a model told to write only inside "" writes nothing (E3, 2026-10-22).
+    parts = [f"Objective: {request.get('objective')}",
+             f"Mutable scope: {', '.join(scope) if scope else 'the files shown below'}", task]
     for path, text in files.items():
         parts.append(f"<file path={json.dumps(path)}>\n{text}\n</file>")
     return "\n\n".join(parts)
