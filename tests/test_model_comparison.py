@@ -66,6 +66,40 @@ class Adapter(unittest.TestCase):
                 self.assertNotIn("the files shown below", prompt)
         self.assertIn("when no scope is stated, the files shown in the request", adapter.SYSTEM)
 
+    def test_a_mutate_request_with_failing_feedback_asks_to_fix_the_failing_checks(self):
+        """With the parent's failing checks a mutation has a direction; without them, or when every check passed, the
+        wording is the blind re-sample it was. The failing block is the one the repair branch quotes, bounded alike."""
+        request = {"protocol": "syberlabs.mutate/v0alpha1", "objective": "x", "scope": ["src"], "parent": "c3", "seed": 9,
+                   "files": {"src/a.py": "A"}}
+        tail = "".join(f"line {n}\n" for n in range(400))  # longer than the 2000-character bound
+        failing = {"candidate": "c3", "checks": [
+            {"name": "tests", "state": "failed", "exit_code": 1, "duration_ms": 12, "output_tail": tail},
+            {"name": "lint", "state": "passed", "exit_code": 0, "duration_ms": 3, "output_tail": "ok"}]}
+        plain = adapter.build_prompt(request, self.root)
+        fed = adapter.build_prompt({**request, "feedback": failing}, self.root)
+        self.assertIn("Vary your approach; seed 9", plain)
+        self.assertNotIn("did not pass", plain)
+        self.assertIn("This candidate did not pass the host's checks. Fix it. Failing checks:\n--- tests (failed)\n", fed)
+        self.assertIn("Make one focused change toward the objective that fixes them, as a mutation of this candidate. "
+                      "Candidate: c3; seed 9.", fed)
+        self.assertNotIn("Vary your approach", fed)
+        self.assertNotIn("--- lint", fed, "a check that passed is not quoted")
+        self.assertIn(tail[-2000:], fed)
+        self.assertNotIn(tail[:200], fed, "an output tail is quoted to its last 2000 characters, as repair quotes it")
+        self.assertIn('<file path="src/a.py">\nA\n</file>', fed, "the request's own files are shown")
+        self.assertIn("Mutable scope: src", fed)
+        block = adapter.failing_checks(failing)
+        self.assertTrue(block.startswith("--- tests (failed)\n") and block.endswith(tail[-2000:]))
+        repair = adapter.build_prompt({"protocol": "syberlabs.search/v0alpha1", "objective": "x", "scope": ["src"],
+                                       "feedback": {**failing, "files": {"src/a.py": "A"}}}, self.root)
+        for prompt in (repair, fed):
+            self.assertIn("did not pass the host's checks. Fix it. Failing checks:\n" + block, prompt)
+        passed = {"candidate": "c3", "checks": [{"name": "tests", "state": "passed", "output_tail": ""}]}
+        for feedback in (passed, {"candidate": "c3", "checks": []}, None):
+            with self.subTest(feedback=feedback):
+                self.assertEqual(adapter.build_prompt({**request, "feedback": feedback}, self.root), plain)
+        self.assertEqual(adapter.failing_checks(None), "")
+
     def test_responses_follow_each_protocol_and_report_usage(self):
         parsed = {"message": "csv", "rationale": "reuse rows()",
                   "files": [{"path": "src/export.py", "content": "x", "delete": False},
@@ -385,6 +419,26 @@ class SimulatedProfiles(unittest.TestCase):
                                        "context": [], "files": {"src/pricing.py": text}}, Path(folder))["changes"]["src/pricing.py"]
         for slot in FIXTURES["pricing"]["slots"]:
             self.assertNotEqual(simulated.current(found, slot), simulated.current(text, slot), slot["function"])
+
+    def test_feedback_in_a_mutate_request_changes_nothing_simulated(self):
+        """The stand-in never reads ``feedback``: the same seed gives the same child with and without it, under every profile."""
+        text = FIXTURES["pricing"]["files"]["src/pricing.py"]
+        os.environ["SYBERLABS_FIXTURE"] = "pricing"
+        self.addCleanup(os.environ.pop, "SIM_PROFILE", None)
+        feedback = {"candidate": "c1", "checks": [{"name": "discount", "state": "failed", "exit_code": 1, "duration_ms": 2,
+                                                   "output_tail": "AssertionError"}]}
+        with tempfile.TemporaryDirectory() as folder:
+            for profile in (None, *sorted(simulated.PROFILES)):
+                if profile is None:
+                    os.environ.pop("SIM_PROFILE", None)
+                else:
+                    os.environ["SIM_PROFILE"] = profile
+                for seed in range(1, 6):
+                    request = {"protocol": "syberlabs.mutate/v0alpha1", "seed": seed, "parent": "c1", "objective": "x",
+                               "context": [], "files": {"src/pricing.py": text}}
+                    with self.subTest(profile=profile, seed=seed):
+                        self.assertEqual(simulated.respond({**request, "feedback": feedback}, Path(folder))["changes"],
+                                         simulated.respond(request, Path(folder))["changes"])
 
     def test_no_profile_keeps_the_single_slot_reroll(self):
         rows = self.mutate(None, "base")

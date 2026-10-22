@@ -1,5 +1,6 @@
 """The EvoGit-style provider behind SearchProvider. SyberWork keeps authority."""
 
+import dataclasses
 import json
 import random
 import sys
@@ -12,7 +13,7 @@ from examples.evolve import PRICING, RuleMutator, contract, git, make_repository
 from spec.validate import validate_events
 from syberlabs import Kit, Rejected
 from syberlabs.canonical import canonical
-from syberlabs.evolve import CommandMutator, EvolutionaryProvider, FixedPolicy, resolve_conflicts
+from syberlabs.evolve import CommandMutator, EvolutionaryProvider, FixedPolicy, mutation_feedback, resolve_conflicts
 from syberlabs.providers import USAGE_FIELDS, CommandProvider
 from syberlabs.search import ACTION_KINDS, BranchPolicy, Mutate, Score
 
@@ -156,6 +157,53 @@ class Evolution(unittest.TestCase):
         self.assertEqual(search["scope"], ["src"], "the evolution scope's paths (`src/` in the contract), as the host cleans them")
         self.assertEqual(mutate["scope"], search["scope"])
         self.assertEqual(set(mutate), {"protocol", "objective", "scope", "parent", "files", "context", "seed"})
+
+    def test_the_mutate_request_carries_the_parents_recorded_checks_as_feedback(self):
+        """A mutation of an evaluated candidate carries the host's check results for it, the object the repair arm
+        puts on a search request; a mutation of base carries none (the host evaluates candidates, never the base tree)."""
+        script, log = self.root.parent / "fixer.py", self.root.parent / "requests.jsonl"
+        script.write_text(textwrap.dedent(f"""\
+            import json, sys
+            request = json.load(sys.stdin)
+            with open({str(log)!r}, "a") as handle:
+                handle.write(json.dumps(request) + "\\n")
+            text = request["files"]["src/pricing.py"]
+            fixes = {json.dumps(FIXED)}
+            for rule, broken in (("discount", "return total"), ("tax", "return amount"), ("shipping", "return 0")):
+                if "    " + broken + "\\n" in text:
+                    text = text.replace("    " + broken + "\\n", "    " + fixes[rule] + "\\n", 1)
+                    break
+            print(json.dumps({{"changes": {{"src/pricing.py": text}}}}))
+            """))
+        kit = self.kit()
+        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
+        mutator = CommandMutator([sys.executable, str(script)], name="fixture-model")
+        # One rule fixed per call: the fill's children from base fail, the mutations of them in later generations
+        # carry their parents' recorded results, and the third generation passes.
+        found = thread.propose(EvolutionaryProvider(mutator, population=2, generations=3, crossover_every=10))
+        self.assertTrue(any(c.evaluation == "passed" for c in found))
+        requests = [json.loads(line) for line in log.read_text().splitlines()]
+        from_base = [r for r in requests if r["parent"] == "base"]
+        from_children = [r for r in requests if r["parent"] != "base"]
+        self.assertTrue(from_base and from_children, [r["parent"] for r in requests])
+        by_id = {c.id: c for c in thread.candidates()}
+        for request in from_base:
+            self.assertEqual(set(request), {"protocol", "objective", "scope", "parent", "files", "context", "seed"})
+        for request in from_children:
+            self.assertEqual(set(request), {"protocol", "objective", "scope", "parent", "files", "context", "seed", "feedback"})
+            parent = by_id[request["parent"]]
+            self.assertNotEqual(parent.checks, (), "only an evaluated parent carries feedback")
+            self.assertEqual(request["feedback"], {"candidate": parent.id,
+                                                   "checks": [dataclasses.asdict(check) for check in parent.checks]})
+            self.assertEqual(request["feedback"]["checks"], [check.__dict__ for check in parent.checks],
+                             "the repair arm's shape (benchmarks/model_vs_patch.py: Patches.search), on the same candidate")
+            self.assertEqual([c["state"] for c in request["feedback"]["checks"]], [c.state for c in parent.checks])
+            for check in request["feedback"]["checks"]:
+                self.assertEqual(set(check), {"name", "state", "exit_code", "duration_ms", "output_tail"})
+                self.assertLessEqual(len(check["output_tail"]), 4096, "the record's bound, MAX_TAIL_CHARS")
+        self.assertTrue(any(c["state"] != "passed" for r in from_children for c in r["feedback"]["checks"]),
+                        "a mutation of a failing parent saw the failure")
+        self.assertIsNone(mutation_feedback(None, "base"), "base is answered without reading the space")
 
     def test_an_empty_proposal_from_the_mutator_is_counted_and_registers_nothing(self):
         """``{"changes": {}}`` is a call that produced no child: the search goes on, no candidate, no crash."""

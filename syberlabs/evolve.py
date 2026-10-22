@@ -80,11 +80,14 @@ class Mutator(Protocol):
 class CommandMutator:
     """Mutation by an external program, typically a model adapter.
 
-    Request (stdin): ``{protocol, objective, scope, parent, files: {path: text}, context, seed}``.
-    ``scope`` is the evolution scope's paths, the same list the search protocol's request
-    carries (``providers.CommandProvider``), so an adapter that tells its model where it may
-    write is told the same thing under both protocols. Response (stdout):
-    ``{"changes": {path: text or null}}``.
+    Request (stdin): ``{protocol, objective, scope, parent, files: {path: text}, context, seed}``,
+    plus ``feedback`` when the parent is a candidate the host has evaluated. ``scope`` is the
+    evolution scope's paths, the same list the search protocol's request carries
+    (``providers.CommandProvider``), so an adapter that tells its model where it may write is
+    told the same thing under both protocols. ``feedback`` is ``mutation_feedback(space,
+    parent)``: the host's recorded check results for the parent, in the shape the repair arm
+    sends under the search protocol, so a mutation has a direction and not only a parent.
+    Response (stdout): ``{"changes": {path: text or null}}``.
     """
 
     PROTOCOL = "syberlabs.mutate/v0alpha1"
@@ -112,9 +115,13 @@ class CommandMutator:
             files[path] = text
             spent += len(text)
         self.calls += 1
-        response = run_json(self.argv, {"protocol": self.PROTOCOL, "objective": space.objective, "scope": list(space.scope),
-                                        "parent": parent, "files": files, "context": [dict(item) for item in space.context],
-                                        "seed": rng.randrange(2**31)}, timeout=self.timeout, cwd=self.cwd)
+        request = {"protocol": self.PROTOCOL, "objective": space.objective, "scope": list(space.scope),
+                   "parent": parent, "files": files, "context": [dict(item) for item in space.context],
+                   "seed": rng.randrange(2**31)}
+        feedback = mutation_feedback(space, parent)
+        if feedback is not None:
+            request["feedback"] = feedback
+        response = run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
         self.last_usage = model_usage(response)
         if self.last_usage:
             self.usage.append(self.last_usage)
@@ -122,6 +129,27 @@ class CommandMutator:
         if not isinstance(changes, dict):
             return None
         return {k: v for k, v in changes.items() if isinstance(k, str) and (v is None or isinstance(v, str))}
+
+
+def mutation_feedback(space: SearchSpace, parent: str) -> dict | None:
+    """The host's evaluation of ``parent`` as a mutate request's ``feedback``, or None.
+
+    The same object the repair arm puts on a search request after a failed attempt
+    (``benchmarks/model_vs_patch.py``, ``Patches.search``): ``{"candidate": parent,
+    "checks": [{name, state, exit_code, duration_ms, output_tail}, ...]}``, the check results
+    exactly as the host recorded them in ``candidate_evaluated`` (each ``output_tail`` already
+    within the record's bound). ``files`` is left out because the mutate request's own
+    ``files`` already carries the parent's texts. None when ``parent`` is ``"base"`` (the host
+    evaluates candidates, never the base tree) or when the host has not evaluated the parent,
+    so a reader can tell "no evaluation" from "an evaluation that passed". Pure: it reads the
+    space and runs nothing.
+    """
+    if parent == "base":
+        return None
+    checks = space.candidate(parent).checks
+    if not checks:
+        return None
+    return {"candidate": parent, "checks": [dataclasses.asdict(check) for check in checks]}
 
 
 def resolve_conflicts(text: str, rng: random.Random, accept_ours: float) -> str:
