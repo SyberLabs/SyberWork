@@ -30,7 +30,7 @@ from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.gitspace import Repo
-from syberlabs.providers import CommandProvider, PatchProvider, split_command
+from syberlabs.providers import CommandProvider, PatchProvider, RepairProvider, split_command
 
 
 def _kit(args) -> Kit:
@@ -138,6 +138,12 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--command", dest="provider_command", help="external provider command (JSON on stdin and stdout)")
     source.add_argument("--evolve", metavar="MUTATOR_COMMAND",
                         help="EvoGit-style search; the command mutates one candidate (JSON on stdin and stdout)")
+    source.add_argument("--repair", metavar="ADAPTER_COMMAND",
+                        help="repair loop, the default proposer path: the command proposes one patch under the search "
+                             "protocol, then is asked again with the host's check results and the failed candidate's "
+                             "files until a candidate passes or the budget stops it")
+    propose.add_argument("--max-calls", type=int,
+                         help="for --repair: the most adapter calls in this search (default: the search's candidate budget)")
     propose.add_argument("--population", type=int, default=4)
     propose.add_argument("--generations", type=int, default=6)
     propose.add_argument("--crossover-every", type=int, default=3)
@@ -153,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
                               "search's rounds) or jev (one action per decision, by expected admission per dollar)")
     propose.add_argument("--message", default="")
     propose.add_argument("--name", help="provider name, recorded as the acting agent platform; "
-                                        "default patch for --from-worktree, command otherwise")
+                                        "default patch for --from-worktree, repair for --repair, command otherwise")
     propose.add_argument("--revision", default="1")
     check = commands.add_parser("check", help="run the contract's checks and ask admission")
     check.add_argument("candidate")
@@ -361,6 +367,10 @@ def _run(kit: Kit, args) -> int:
                                             name=args.name or "command", revision=args.revision, exchange=exchange,
                                             migrate_every=args.migrate_every if exchange else 0,
                                             migrants=args.migrants, policy=policy)
+            found = thread.propose(provider, seed=args.seed)
+        elif args.repair:
+            provider = RepairProvider(split_command(args.repair), name=args.name or "repair", revision=args.revision,
+                                      cwd=kit.repo.root, max_calls=args.max_calls)
             found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(split_command(args.provider_command), name=args.name or "command", revision=args.revision,

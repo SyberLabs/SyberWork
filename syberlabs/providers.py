@@ -6,6 +6,10 @@
 - ``CommandProvider`` runs an external program with a JSON request on stdin
   and reads JSON candidates from stdout. This is the model seam: an adapter
   for any model provider can be a command, and SyberLabs imports no model SDK.
+- ``RepairProvider`` runs the same command in a loop: one proposal, then, while
+  the host's evaluation of the last candidate did not pass, another request that
+  carries that candidate's check results and file texts as ``feedback``. It is
+  the factory's default proposer path (owner decision of 2026-10-23).
 
 ``run_json`` is also where the host observes spend. Inside ``metered(meter)``
 every call asks the meter's ``permit()`` before the command runs and hands the
@@ -20,6 +24,7 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import random
 import shlex
 import subprocess
 import tempfile
@@ -199,3 +204,168 @@ def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Pat
         usage = model_usage(parsed)
         meter.observe({**usage, "host_observed": True} if usage else None)
     return parsed
+
+
+def repair_feedback(space: SearchSpace, candidate: str) -> dict | None:
+    """The host's evaluation of ``candidate`` and its current file texts as a search request's ``feedback``, or None.
+
+    ``{"candidate": id, "files": {path: text}, "checks": [{name, state, exit_code, duration_ms, output_tail}, ...]}``:
+    the object the repair arm of ``benchmarks/model_vs_patch.py`` (``Patches.search``) puts on its next request after
+    a failed attempt and ``adapters/anthropic_adapter.py: build_prompt`` reads under the search protocol. ``checks``
+    is ``syberlabs.evolve.mutation_feedback``'s: the check results exactly as the host recorded them in
+    ``candidate_evaluated``. ``files`` is the text of every path the candidate changed against the base, read from the
+    candidate's tree; a deleted or unreadable path is left out. None when the host has not evaluated the candidate,
+    so a reader can tell "no evaluation" from "an evaluation that passed". Pure: it reads the space and runs nothing.
+    """
+    from syberlabs.evolve import mutation_feedback  # evolve imports this module; the shared check shape lives there
+
+    found = mutation_feedback(space, candidate)
+    if found is None:
+        return None
+    files = {}
+    for path in space.candidate(candidate).changed_paths:
+        text = space.read(candidate, path)
+        if text is not None:
+            files[path] = text
+    return {"candidate": found["candidate"], "files": files, "checks": found["checks"]}
+
+
+class RepairProvider:
+    """One proposal, then repairs directed by the host's check results, until one passes or the budget stops it.
+
+    The repair loop of ``benchmarks/model_vs_patch.py`` (``Patches.search``) as a kernel provider, and the factory's
+    default proposer path since the owner's decision of 2026-10-23 (E3 v3 and v4, Claude Sonnet 5.5, K = 6 and 12:
+    it beat every evolve arm on solves and on parts per dollar at every budget tested, and ``single`` on solves).
+
+    Each call runs ``argv`` under the search protocol with the request ``CommandProvider`` sends (``protocol``,
+    ``objective``, ``base``, ``scope``, ``budget``, ``context``, ``files``) plus ``seed``, and, once a candidate has
+    been evaluated and did not pass, ``feedback`` = ``repair_feedback(space, candidate)``: that candidate's recorded
+    check results and its current file texts. The answer is the search protocol's; one candidate is taken per call
+    (the first item; the rest are refused ``limit``), registered with the usage the adapter declared, and evaluated
+    by the host at once. The loop ends on the first candidate that passes (``passing``), after ``max_calls`` calls
+    (``calls``; the default is the search's candidate budget, ``evolution.budget.max_candidates`` less the thread's
+    candidates), or when the budget has no room for another call or evaluation (``budget``: candidates, evaluations,
+    seconds, and dollars under a priced contract), a clean stop with the same meaning as the evolutionary provider's
+    ``Stop("budget")``; the host writes ``stopped: "budget_exhausted"`` when the dollars ran out, and ``budget.search``
+    and ``budget.promotion`` judge the candidates as they do for every provider. The recommendation is the passing
+    candidate, else the best partial by ``Evaluation.score`` (an unevaluated candidate scores ``(0, 0)``; one outside
+    the contract's scope is registered but never recommended and never a parent).
+
+    Every proposal leaves a record: the host refuses an unchanged tree, a duplicate, an unreadable edit or a
+    zero-usage answer itself (``proposal_refused``) and the loop goes on with the same parent; this provider refuses
+    an answer with no ``candidates`` list (``unparsable``), an empty one (``no_change``), a malformed first item
+    (``unparsable``) and the items after the first (``limit``), and goes on; a command that fails is ``provider_error``
+    and ends the search with its code, as for ``CommandProvider``. ``trace`` holds one entry per call,
+    ``{call, parent, feedback, outcome, candidate, score}`` (``outcome``: ``passed``, ``failed``, ``out_of_scope``,
+    ``unevaluated``, ``refused:<reason>`` or ``provider_error``), then ``{stopped, calls, refused}``.
+    """
+
+    operators = ("patch",)
+
+    def __init__(self, argv: Sequence[str], *, name: str = "repair", revision: str = "1", timeout: int = 300,
+                 cwd: str | Path | None = None, max_calls: int | None = None):
+        if not argv or any(not isinstance(arg, str) for arg in argv):
+            raise Rejected("invalid_provider", "argv must be a non-empty list of strings")
+        if max_calls is not None and (type(max_calls) is not int or max_calls < 1):
+            raise Rejected("invalid_provider", "max_calls must be a positive integer, or None for the candidate budget")
+        self.argv, self.name, self.revision, self.timeout, self.cwd = list(argv), name, revision, timeout, cwd
+        self.max_calls = max_calls
+        self.calls, self.usage = 0, []
+        self.trace: list[dict] = []
+
+    @staticmethod
+    def _room(space: SearchSpace) -> bool:
+        """Every budget dimension is above zero, dollars included on a priced host, and nothing pending is over."""
+        left = space.remaining()
+        max_dollars = getattr(left, "max_dollars", None)
+        return (left.max_candidates > 0 and left.max_evaluations > 0 and left.max_seconds > 0
+                and (max_dollars is None or max_dollars > 0) and not getattr(space, "over_budget", False))
+
+    def _request(self, space: SearchSpace, rng: random.Random, previous: str | None) -> dict:
+        budget = space.remaining()
+        request = {
+            "protocol": PROTOCOL, "objective": space.objective, "base": space.base, "scope": list(space.scope),
+            "budget": {"max_candidates": budget.max_candidates, "max_seconds": budget.max_seconds},
+            "context": [dict(item) for item in space.context],
+            "files": space.files()[:2000],
+            "seed": rng.randrange(2**31),
+        }
+        feedback = repair_feedback(space, previous) if previous is not None else None
+        if feedback is not None:
+            request["feedback"] = feedback
+        return request
+
+    @staticmethod
+    def _parsed(item) -> bool:
+        return (isinstance(item, dict) and isinstance(item.get("changes"), dict)
+                and all(isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in item["changes"].items()))
+
+    def search(self, space: SearchSpace) -> Sequence[str]:
+        rng = random.Random(space.seed)
+        limit = space.budget.max_candidates if self.max_calls is None else self.max_calls
+        self.trace = []
+        previous: str | None = None  # the last evaluated candidate: the parent of the next repair
+        best: tuple[str, tuple[int, int]] | None = None
+        stopped, made_calls = "calls", 0
+        for call in range(1, limit + 1):
+            if not self._room(space):
+                stopped = "budget"
+                break
+            request = self._request(space, rng, previous)
+            parents = [previous] if previous is not None else []
+            entry = {"call": call, "parent": previous or "base", "feedback": "feedback" in request,
+                     "outcome": None, "candidate": None, "score": None}
+            self.trace.append(entry)
+            self.calls, made_calls = self.calls + 1, made_calls + 1
+            try:
+                response = run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
+            except Rejected as exc:
+                if exc.code.startswith("provider_"):
+                    refuse(space, "provider_error", "patch", parents or ["base"])
+                    entry["outcome"] = "provider_error"
+                raise
+            usage = model_usage(response)
+            if usage:
+                self.usage.append(usage)
+            items = response.get("candidates") if isinstance(response, dict) else None
+            if not isinstance(items, list) or (items and not self._parsed(items[0])):
+                refuse(space, "unparsable", "patch", parents or ["base"], usage=usage)
+                entry["outcome"] = "refused:unparsable"
+                continue
+            if not items:
+                refuse(space, "no_change", "patch", parents or ["base"], usage=usage)
+                entry["outcome"] = "refused:no_change"
+                continue
+            for _ in items[1:]:
+                refuse(space, "limit", "patch", parents or ["base"], usage=usage)  # one candidate per call: never submitted
+            item = items[0]
+            message = item.get("message") if isinstance(item.get("message"), str) else ""
+            signal = item.get("signal") if isinstance(item.get("signal"), dict) else None
+            if usage:
+                signal = {**(signal or {}), "model_usage": usage}
+            try:
+                made = space.submit(item["changes"], parents=parents, operator="patch", message=message[:500], signal=signal)
+            except Rejected as exc:
+                if exc.code in ("no_change", "invalid_change", "duplicate", "zero_usage"):
+                    entry["outcome"] = "refused:" + ("unparsable" if exc.code == "invalid_change" else exc.code)
+                    continue  # the host recorded the refusal; the next call repairs the same parent
+                raise
+            entry["candidate"] = made.id
+            if not made.in_scope:
+                entry["outcome"], entry["score"] = "out_of_scope", [0, 0]
+                continue
+            if not self._room(space):
+                entry["outcome"], entry["score"] = "unevaluated", [0, 0]
+                best, stopped = best or (made.id, (0, 0)), "budget"
+                break
+            found = space.evaluate(made.id)
+            score = found.score()
+            entry["outcome"], entry["score"] = ("passed" if found.passed else "failed"), list(score)
+            if best is None or score > best[1]:
+                best = (made.id, score)
+            if found.passed:
+                stopped = "passing"
+                break
+            previous = made.id
+        self.trace.append({"stopped": stopped, "calls": made_calls, "refused": dict(getattr(space, "refused", None) or {})})
+        return [best[0]] if best else []
