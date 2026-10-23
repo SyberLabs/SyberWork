@@ -176,6 +176,72 @@ class Runner(unittest.TestCase):
             self.assertTrue({"APPDATA", "LOCALAPPDATA", "USERPROFILE"}.isdisjoint(env))
         self.assertTrue({"AWS_SECRET_ACCESS_KEY", "NODE_AUTH_TOKEN", "SSH_AUTH_SOCK"}.isdisjoint(env))
 
+    def test_the_operator_allow_list_reaches_a_critic_check_and_no_other(self):
+        """``SYBERLABS_CHECK_ENV`` names what a critic may see; a set name passes, an unset one does not."""
+        listed = "ANTHROPIC_API_KEY, SYBERLABS_CRITIC_MODEL,SYBERLABS_CRITIC_EFFORT,HOME,PATH,SYBERLABS_CHECK_ENV,,"
+        fake = {"PATH": "p", "HOME": "/real/home", "ANTHROPIC_API_KEY": "sk-test-not-a-key",
+                "SYBERLABS_CRITIC_MODEL": "claude-x", "SYBERLABS_CHECK_ENV": listed, "AWS_SECRET_ACCESS_KEY": "no"}
+        with patch.dict(os.environ, fake, clear=True):
+            base = runner._environment(Path("/tmp/home"), "c1")
+            seen = {name: runner._passthrough(name, base) for name in ("critic", "critic.model", "tests", "critical", "setup")}
+        self.assertEqual(seen["critic.model"], {"ANTHROPIC_API_KEY": "sk-test-not-a-key", "SYBERLABS_CRITIC_MODEL": "claude-x"})
+        self.assertEqual(seen["critic"], seen["critic.model"])
+        self.assertEqual((seen["tests"], seen["critical"], seen["setup"]), ({}, {}, {}))
+        # the base environment is untouched, and a listed name cannot replace a scrubbed value
+        self.assertNotIn("ANTHROPIC_API_KEY", base)
+        self.assertEqual({**base, **seen["critic"]}["HOME"], str(Path("/tmp/home")))
+        self.assertNotIn("SYBERLABS_CHECK_ENV", {**base, **seen["critic"]})
+
+    def test_without_the_allow_list_a_critic_sees_the_scrubbed_environment_only(self):
+        for fake in ({"PATH": "p", "ANTHROPIC_API_KEY": "sk-test-not-a-key"},
+                     {"PATH": "p", "ANTHROPIC_API_KEY": "sk-test-not-a-key", "SYBERLABS_CHECK_ENV": ""},
+                     {"PATH": "p", "ANTHROPIC_API_KEY": "sk-test-not-a-key", "SYBERLABS_CHECK_ENV": " , "}):
+            with patch.dict(os.environ, fake, clear=True):
+                base = runner._environment(Path("/tmp/home"), "c1")
+                self.assertEqual(runner._passthrough("critic.model", base), {}, fake)
+            self.assertNotIn("ANTHROPIC_API_KEY", base)
+
+
+class CredentialPassthrough(Fixture):
+    """Through the host: a critic check sees an allow-listed variable, ``tests`` does not, the record never does."""
+
+    SECRET = "sk-test-not-a-real-key-7f3a"
+    PROBE = textwrap.dedent("""\
+        import json, os, sys
+        name = "ANTHROPIC_" + "API_KEY"   # spelled apart so the name is not in this program's text either
+        open(sys.argv[1], "w").write(os.environ.get(name, "<unset>") + "|" + os.environ.get("SYBERLABS_CRITIC_EFFORT", "<unset>"))
+        if sys.argv[2] == "critic":
+            json.load(sys.stdin)
+            print(json.dumps({"version": 1, "reviewer": {"name": "probe", "revision": "1"}, "findings": [], "summary": "probed"}))
+        """)
+
+    def test_a_critic_sees_the_credential_and_tests_does_not_and_nothing_is_recorded(self):
+        self.commit()
+        outside = self.root.parent
+        probe = outside / "probe.py"          # named by an absolute path outside the scope, as docs/CRITIC.md requires
+        probe.write_text(self.PROBE)
+        critic_saw, tests_saw = outside / "critic_saw.txt", outside / "tests_saw.txt"
+        checks = {"critic.probe": {"argv": [PY, str(probe), str(critic_saw), "critic"]},
+                  "tests": {"argv": [PY, str(probe), str(tests_saw), "tests"]}}
+        listed = {"SYBERLABS_CHECK_ENV": "ANTHROPIC_API_KEY,SYBERLABS_CRITIC_EFFORT", "ANTHROPIC_API_KEY": self.SECRET}
+        with patch.dict(os.environ, listed):
+            os.environ.pop("SYBERLABS_CRITIC_EFFORT", None)
+            verdict = self.verdict(self.contract(checks))
+        self.assertEqual([(c.name, c.state) for c in verdict.checks], [("critic.probe", "passed"), ("tests", "passed")],
+                         [c.output_tail for c in verdict.checks])
+        self.assertTrue(verdict.acceptable)
+        self.assertEqual(critic_saw.read_text(), self.SECRET + "|<unset>")   # listed and set: passed; listed and unset: not
+        self.assertEqual(tests_saw.read_text(), "<unset>|<unset>")
+        for check in verdict.checks:
+            self.assertNotIn(self.SECRET, check.output_tail)
+        recorded = [path for path in (self.root / ".syberlabs").rglob("*") if path.is_file()]
+        self.assertTrue(recorded)
+        for path in recorded:
+            data = path.read_bytes()
+            self.assertNotIn(self.SECRET.encode(), data, path)
+            self.assertNotIn(b"ANTHROPIC_API_KEY", data, path)
+            self.assertNotIn(b"SYBERLABS_CHECK_ENV", data, path)
+
 
 class Console(Fixture):
     def test_a_check_tail_with_a_tick_prints_on_a_cp1252_console(self):
