@@ -15,7 +15,9 @@ two protocols the kit uses:
   in the same shape, so a mutation of a failing parent is asked to fix it.
 
 The response carries ``usage`` (tokens and the model that served the call) so
-the host can account cost. The model only proposes: whatever it returns is a
+the host can account cost, and ``tool_usage`` (``web_search``, ``web_fetch``) when
+the SDK reports server tool use for the call (``usage.server_tool_use``); this
+adapter offers the model no tools, so the counts it passes through are the SDK's. The model only proposes: whatever it returns is a
 provisional candidate that the host scopes, evaluates, and a person accepts.
 
 This file is outside the ``syberlabs`` package, which has no dependencies. It
@@ -144,6 +146,15 @@ def usage_of(response) -> dict:
             "model": response.model, "stop_reason": response.stop_reason}
 
 
+def tools_of(response) -> dict | None:
+    """The SDK's server tool counts for the call (``usage.server_tool_use``), or None when it reports none."""
+    used = getattr(response.usage, "server_tool_use", None)
+    if used is None:
+        return None
+    return {"web_search": getattr(used, "web_search_requests", None) or 0,
+            "web_fetch": getattr(used, "web_fetch_requests", None) or 0}
+
+
 def call_model(prompt: str) -> tuple[dict | None, dict]:
     import anthropic  # imported here so the pure helpers above work without the SDK
 
@@ -159,6 +170,9 @@ def call_model(prompt: str) -> tuple[dict | None, dict]:
         messages=[{"role": "user", "content": prompt}],
     )
     usage = usage_of(response)
+    tools = tools_of(response)
+    if tools is not None:
+        usage["tool_usage"] = tools  # carried to respond, which puts it beside usage
     if response.stop_reason != "end_turn":
         return None, usage  # refusal (after fallbacks) or truncation: no patch
     text = next((block.text for block in response.content if block.type == "text"), "")
@@ -167,14 +181,16 @@ def call_model(prompt: str) -> tuple[dict | None, dict]:
 
 def respond(request: dict, cwd: Path, call=call_model) -> dict:
     parsed, usage = call(build_prompt(request, cwd))
+    tools = usage.pop("tool_usage", None) if isinstance(usage, dict) else None
+    extra = {"tool_usage": tools} if tools is not None else {}
     changes = to_changes(parsed) if parsed else {}
     if request.get("protocol") == "syberlabs.mutate/v0alpha1":
-        return {"changes": changes, "usage": usage}
+        return {"changes": changes, "usage": usage, **extra}
     if not changes:
-        return {"candidates": [], "recommended": [], "usage": usage}
+        return {"candidates": [], "recommended": [], "usage": usage, **extra}
     return {"candidates": [{"changes": changes, "message": parsed.get("message", "")[:500],
                             "signal": {"rationale": parsed.get("rationale", "")[:1000]}}],
-            "recommended": [0], "usage": usage}
+            "recommended": [0], "usage": usage, **extra}
 
 
 if __name__ == "__main__":

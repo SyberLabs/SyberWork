@@ -19,6 +19,13 @@ comment:
   SHA-256 of the full stdout bytes, which is the same digest the evaluation record keeps for
   that check, so the observation and the check result name the same bytes.
 
+A critic that called a model may declare the call's ``usage`` in its document (the adapter protocol's shape:
+tokens, ``model``, ``stop_reason``, ``simulated``). The check record's fields are frozen
+(``spec/candidate.schema.json``, ``evolution.evaluation_record``), so the host records the reduced usage as a
+second verified observation beside the critic's, key ``critic_usage``, same source and version
+(``observe``). It is the critic's declaration, not a host measurement; ``syberlabs.metrics`` counts it as a turn
+and leaves it out of the host-observed cost.
+
 Admission (``critic.no_high_finding``) and attribution (``Reviewed-by``) read the observation
 through ``observation``; nothing reads the critic's free text to decide anything. The host
 cannot see which program a provider ran, so independence is checked on the recorded
@@ -35,8 +42,10 @@ import re
 from typing import Any
 
 from syberlabs.canonical import canonical
+from syberlabs.providers import model_usage
 
 KEY = "critic"
+USAGE_KEY = "critic_usage"         # observed: the usage a critic's document declared, beside its critic observation
 HOST = "syberlabs.host"            # the same actor name build.HOST uses; critic may not import build
 VERSION = 1
 SEVERITIES = ("high", "medium", "low")
@@ -139,11 +148,18 @@ def parse(raw: bytes) -> dict:
             found["acceptance_ref"] = _text(item["acceptance_ref"], where + "/acceptance_ref", max_length=128)
         cleaned.append(found)
     summary = _text(document.get("summary"), "summary", required=False, max_length=4000)
-    unknown = set(document) - {"version", "reviewer", "findings", "summary"}
+    unknown = set(document) - {"version", "reviewer", "findings", "summary", "usage"}
     if unknown:
         raise Invalid(sorted(unknown)[0])
-    return {"version": VERSION, "reviewer": {"name": reviewer["name"], "revision": reviewer["revision"]},
-            "findings": cleaned, "summary": summary}
+    parsed = {"version": VERSION, "reviewer": {"name": reviewer["name"], "revision": reviewer["revision"]},
+              "findings": cleaned, "summary": summary}
+    if "usage" in document:
+        if not isinstance(document["usage"], dict):
+            raise Invalid("usage")
+        usage = model_usage(document)  # reduced to the known fields, as the adapter protocol's usage is
+        if usage:
+            parsed["usage"] = usage
+    return parsed
 
 
 def counts(document: dict) -> dict:
@@ -185,7 +201,8 @@ def observe(session, thread_id: str, body: dict, documents: list) -> list[dict]:
     ``body`` is the evaluation record the host just stored and ``documents`` the list
     ``checks.evaluate`` filled: ``(check name, stdout bytes, parsed document)``. Only a document
     whose check passed and whose bytes match the recorded digest is observed; the record and the
-    observation then name the same bytes.
+    observation then name the same bytes. A document that declared ``usage`` gets a second observation,
+    key ``critic_usage``, value ``{candidate, check, usage}``, under the same source and version.
     """
     results = {item["name"]: item for item in body["checks"]}
     events = []
@@ -195,6 +212,10 @@ def observe(session, thread_id: str, body: dict, documents: list) -> list[dict]:
             continue
         found = value(body["candidate"], name, document, raw)
         events.append(session.observe(thread_id, KEY, found, "check:" + name, result["output_digest"], HOST, verified=True))
+        if document.get("usage"):
+            events.append(session.observe(thread_id, USAGE_KEY, {"candidate": body["candidate"], "check": name,
+                                                                 "usage": dict(document["usage"])},
+                                          "check:" + name, result["output_digest"], HOST, verified=True))
     return events
 
 

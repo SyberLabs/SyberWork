@@ -17,6 +17,11 @@ adapter's reported ``usage`` to ``observe()`` afterwards, stamped
 ``host_observed``. The Build Thread installs its ledger there, so only usage
 that crossed this boundary is ever priced; a ``model_usage`` a provider writes
 into a candidate's ``signal`` is the provider's declaration and is not.
+
+An adapter's response may also carry ``tool_usage`` beside ``usage``: ``{web_search: n, web_fetch: n, githits: n,
+other: {name: n}}``, the lookups the call made. ``tool_usage`` reduces it (integer counts, at most 16 other names
+of at most 64 characters) and the command providers copy it into the candidate's ``signal.tool_usage``; an adapter
+that declares none leaves it absent, so ``syberlabs.metrics`` reports the lookups as unknown, not as zero.
 """
 
 from __future__ import annotations
@@ -119,7 +124,7 @@ class CommandProvider:
         }
         self.calls += 1
         response = run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
-        usage = model_usage(response)
+        usage, tools = model_usage(response), tool_usage(response)
         if usage:
             self.usage.append(usage)
         if not isinstance(response, dict) or not isinstance(response.get("candidates"), list):
@@ -134,9 +139,7 @@ class CommandProvider:
                 refuse(space, "unparsable", "patch", ["base"], usage=usage)
                 raise Rejected("provider_shape", "each candidate needs changes: {path: text or null}")
             message = item.get("message") if isinstance(item.get("message"), str) else ""
-            signal = item.get("signal") if isinstance(item.get("signal"), dict) else None
-            if usage:
-                signal = {**(signal or {}), "model_usage": usage}
+            signal = with_usage(item.get("signal"), usage, tools)
             submitted.append(space.submit(item["changes"], operator="patch", message=message[:500], signal=signal).id)
         chosen = response.get("recommended", [])
         if not isinstance(chosen, list):
@@ -145,6 +148,9 @@ class CommandProvider:
 
 
 USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+TOOL_FIELDS = ("web_search", "web_fetch", "githits")
+MAX_TOOL_NAMES = 16
+MAX_TOOL_COUNT = 1_000_000
 
 
 def model_usage(response) -> dict | None:
@@ -159,6 +165,39 @@ def model_usage(response) -> dict | None:
     if usage.get("simulated") is True:
         found["simulated"] = True
     return found or None
+
+
+def tool_usage(response) -> dict | None:
+    """The adapter's declared lookups for one call, bounded: integer counts, at most 16 ``other`` names of at most
+    64 characters (sorted, the rest dropped). None when the response declares none. A claim, not a measurement."""
+    tools = response.get("tool_usage") if isinstance(response, dict) else None
+    if not isinstance(tools, dict):
+        return None
+
+    def count(value) -> bool:
+        return type(value) is int and 0 <= value <= MAX_TOOL_COUNT
+
+    found = {key: tools[key] for key in TOOL_FIELDS if count(tools.get(key))}
+    other = tools.get("other")
+    if isinstance(other, dict):
+        names = sorted((k, v) for k, v in other.items() if isinstance(k, str) and 0 < len(k) <= 64 and k.isprintable()
+                       and count(v))
+        if names:
+            found["other"] = dict(names[:MAX_TOOL_NAMES])
+    return found or None
+
+
+def with_usage(signal, usage: dict | None, tools: dict | None) -> dict | None:
+    """A candidate's ``signal``: the item's own object, with the call's declared ``model_usage`` and ``tool_usage``.
+
+    The two keys are the call's, not the item's: an item's own ``tool_usage`` is dropped, so only a bounded
+    declaration from the response reaches the record, and absent stays absent."""
+    found = {k: v for k, v in signal.items() if k != "tool_usage"} if isinstance(signal, dict) else {}
+    if usage:
+        found["model_usage"] = usage
+    if tools:
+        found["tool_usage"] = tools
+    return found or (None if not isinstance(signal, dict) else found)
 
 
 def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Path | None = None):
@@ -324,7 +363,7 @@ class RepairProvider:
                     refuse(space, "provider_error", "patch", parents or ["base"])
                     entry["outcome"] = "provider_error"
                 raise
-            usage = model_usage(response)
+            usage, tools = model_usage(response), tool_usage(response)
             if usage:
                 self.usage.append(usage)
             items = response.get("candidates") if isinstance(response, dict) else None
@@ -340,9 +379,7 @@ class RepairProvider:
                 refuse(space, "limit", "patch", parents or ["base"], usage=usage)  # one candidate per call: never submitted
             item = items[0]
             message = item.get("message") if isinstance(item.get("message"), str) else ""
-            signal = item.get("signal") if isinstance(item.get("signal"), dict) else None
-            if usage:
-                signal = {**(signal or {}), "model_usage": usage}
+            signal = with_usage(item.get("signal"), usage, tools)
             try:
                 made = space.submit(item["changes"], parents=parents, operator="patch", message=message[:500], signal=signal)
             except Rejected as exc:

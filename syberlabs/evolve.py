@@ -61,7 +61,7 @@ from typing import Protocol
 
 from syberlabs.economic import is_money
 from syberlabs.errors import Rejected
-from syberlabs.providers import model_usage, refuse, run_json
+from syberlabs.providers import model_usage, refuse, run_json, tool_usage
 from syberlabs.search import (ACTION_KINDS, Action, BranchPolicy, Crossover, Evaluate, Individual, Migrate, Mutate,
                               OperatorStats, Score, SearchSpace, Situation, Stop)
 
@@ -91,7 +91,8 @@ class CommandMutator:
     told the same thing under both protocols. ``feedback`` is ``mutation_feedback(space,
     parent)``: the host's recorded check results for the parent, in the shape the repair arm
     sends under the search protocol, so a mutation has a direction and not only a parent.
-    Response (stdout): ``{"changes": {path: text or null}}``.
+    Response (stdout): ``{"changes": {path: text or null}}``, optionally with ``usage`` and ``tool_usage``
+    (``providers.tool_usage``), which the provider copies into the child's ``signal``.
     """
 
     PROTOCOL = "syberlabs.mutate/v0alpha1"
@@ -100,6 +101,7 @@ class CommandMutator:
                  cwd: str | Path | None = None, max_bytes: int = 65_536, max_calls: int | None = None):
         self.argv, self.name, self.timeout, self.cwd, self.max_bytes = list(argv), name, timeout, cwd, max_bytes
         self.max_calls, self.calls, self.usage, self.last_usage = max_calls, 0, [], None
+        self.last_tools = None  # the last call's declared ``tool_usage`` (providers.tool_usage), copied into the child's signal
         # Why the last call produced no edit: ``unparsable`` (no ``changes`` object), ``no_change`` (an empty one), or
         # None (the call was not made, or it produced an edit). The provider records it against the search.
         self.last_reason: str | None = None
@@ -109,7 +111,7 @@ class CommandMutator:
         return self.max_calls is not None and self.calls >= self.max_calls
 
     def __call__(self, space: SearchSpace, parent: str, rng: random.Random) -> Mapping[str, str | None] | None:
-        self.last_usage = self.last_reason = None
+        self.last_usage = self.last_reason = self.last_tools = None
         if self.exhausted:
             return None
         paths = list(dict.fromkeys([*(item["path"] for item in space.context),
@@ -129,7 +131,7 @@ class CommandMutator:
         if feedback is not None:
             request["feedback"] = feedback
         response = run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
-        self.last_usage = model_usage(response)
+        self.last_usage, self.last_tools = model_usage(response), tool_usage(response)
         if self.last_usage:
             self.usage.append(self.last_usage)
         changes = response.get("changes") if isinstance(response, dict) else None
@@ -612,6 +614,9 @@ class EvolutionaryProvider:
             usage = getattr(self.mutate, "last_usage", None)
             if usage:
                 found["model_usage"] = usage
+            tools = getattr(self.mutate, "last_tools", None)
+            if tools:
+                found["tool_usage"] = tools
         return found
 
     def _usage(self, operator: str) -> dict | None:
