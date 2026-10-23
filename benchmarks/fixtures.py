@@ -20,6 +20,16 @@ the fix, and each check pins a convention this program's own history pinned
 files) that the visible files do not determine. A check's assertion message
 names the expectation, so an arm that reads check output can converge where a
 one-call patch has to guess. Their slots, like v2's, hold no correct variant.
+
+``V4`` names four more, built after the v3 runs of 2026-10-22 showed ``repair``
+closing every v3 fixture in one or two calls: each is three to five files and
+six to eight independently checked parts that live in different files under
+different conventions; the objective states each area's symptom, never the
+fix; the parts are separable (the reference fix of one part touches a region no
+other part's fix touches, so a child that fixed some parts and a child that
+fixed others recombine into one that passes both); and a failing check names
+its part first, so a directed mutation of a partial child can target what is
+left. Their slots, like v2's and v3's, hold no correct variant.
 """
 
 from __future__ import annotations
@@ -717,8 +727,611 @@ V3 = {
     },
 }
 
+# ---- v4: multipart fixtures, several files and six to eight separable parts each ----------------
+
+# (a) The merge chains of 2026-10-20 and 2026-10-22 (the owner's chain script): one landing touched
+# the GAPS closure notes, a packets table, a test docstring and a module constant, each in its own
+# convention (merge order in the table and the constant, numeric order in the docstring, 7-character
+# ids, the italic dated closure note with "closed." or "closed in part."). The log is the data.
+LANDING_LOG = """# Merge chain of 2026-10-22, bottom-up; one line per step, in the order the steps ran.
+[02:14:07] #70 syberlabs/17f5d831 merged 5e1c9a0b2f7d4c6e8a1b3d5f7e9c0a2b4d6f8e1a (closes gap 3)
+[02:31:52] #63 syberlabs/d9a1cc66 merged 9b7d2e4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b
+[02:49:10] #65 syberlabs/b2e9bf61 merged c3a5e7f9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a2 (narrows gap 4)
+[03:05:44] #64 syberlabs/afc19144 merged 1f3e5d7c9b1a3f5e7d9c1b3a5f7e9d1c3b5a7f9e
+[03:22:19] #66 syberlabs/522ca1aa STOP: not clean (expected head 7a9c1e3b)
+"""
+
+LANDING_GAPS = """# Known gaps
+
+Each entry names one thing the kit does not do. A closed entry keeps its number and gains a dated note.
+
+1. **The chain is per thread.** A journal's hash chain covers one thread's events, not the store.
+
+2. **A refusal is not an event.** The kernel returns a refusal code; nothing is appended.
+    *2026-10-19, closed.* Refusals are recorded as observations (#57).
+
+3. **A flaky test is a timing patch.** Two tests patch time.sleep process-wide.
+
+4. **A credential reaches a check through the contract.** The contract names the variable and the value.
+
+5. **A fixture's difficulty is claimed against a model.** The stand-in cannot fail it by construction.
+"""
+
+LANDING_STATUS = """# Packets
+
+| PR | branch | state | commit |
+| --- | --- | --- | --- |
+| #59 | syberlabs/5e3688b2 | superseded | - |
+| #61 | syberlabs/e19f606b | merged | e19c74b |
+| #63 | syberlabs/d9a1cc66 | open | - |
+| #64 | syberlabs/afc19144 | open | - |
+| #65 | syberlabs/b2e9bf61 | open | - |
+| #66 | syberlabs/522ca1aa | open | - |
+| #70 | syberlabs/17f5d831 | open | - |
+
+Chain head: main at e19c74b (2026-10-21).
+"""
+
+LANDING_TEST = '''"""The landing record of the chain of 2026-10-21: #61 merged, #59 superseded."""
+
+import unittest
+
+
+class Landing(unittest.TestCase):
+    def test_shapes(self):
+        self.assertEqual(len("#66"), 3)
+        self.assertEqual("e19c74b"[:2], "e1")
+'''
+
+LANDING_RELEASE = '''"""What the last chain landed, for the release note."""
+
+# The chain's date and what it landed, in the order it landed them.
+CHAIN = "2026-10-21"
+LANDED = (61,)
+
+# The commit main was at when the chain stopped.
+HEAD = "e19c74b"
+
+
+def note():
+    return f"chain {CHAIN}: {len(LANDED)} landed, head {HEAD}"
+'''
+
+LANDING_ROWS = ["| #59 | syberlabs/5e3688b2 | superseded | - |", "| #61 | syberlabs/e19f606b | merged | e19c74b |",
+                "| #70 | syberlabs/17f5d831 | merged | 5e1c9a0 |", "| #63 | syberlabs/d9a1cc66 | merged | 9b7d2e4 |",
+                "| #65 | syberlabs/b2e9bf61 | merged | c3a5e7f |", "| #64 | syberlabs/afc19144 | merged | 1f3e5d7 |",
+                "| #66 | syberlabs/522ca1aa | open | - |"]
+
+# (b) syberlabs/dsse.py, syberlabs/certificate.py and spec/GAPS.md entries 26 and 28: the envelope's
+# pre-authentication encoding and fields, the in-toto statement and its one subject, the unwrap codes,
+# the identity block whose issuer names the seed variable and never its value, the target ref the
+# acceptance moves, and the three verify layers that stop at the first failure.
+CERT_ENVELOPE = '''"""A one-signature DSSE envelope over payload bytes, keyed by a shared secret in this toy."""
+
+import hashlib
+import hmac
+
+
+def pae(payload_type, payload):
+    return payload_type.encode("ascii") + b"." + payload
+
+
+def sign(payload_type, payload, key):
+    return {"payloadType": payload_type, "payload": payload.hex(),
+            "signatures": [{"sig": hmac.new(key, pae(payload_type, payload), hashlib.sha256).hexdigest()}]}
+'''
+
+CERT_STATEMENT = '''"""The statement around a certificate payload, and the way back to the payload."""
+
+STATEMENT_TYPE = "https://in-toto.io/Statement/v0.1"
+PREDICATE_TYPE = "sdk.syberlabs.space/certificate"
+
+
+class Fail(Exception):
+    def __init__(self, code, note=""):
+        super().__init__(code)
+        self.code, self.note = code, note
+
+
+def wrap(payload):
+    return {"_type": STATEMENT_TYPE, "predicateType": PREDICATE_TYPE, "predicate": payload,
+            "subject": subject(payload), "version": 1}
+
+
+def subject(payload):
+    return {"name": payload["thread"], "sha1": payload["result"]["commit"]}
+
+
+def unwrap(statement):
+    if statement.get("_type") != STATEMENT_TYPE or statement.get("predicateType") != PREDICATE_TYPE:
+        raise Fail("invalid_statement")
+    return statement["predicate"]
+'''
+
+CERT_PAYLOAD = '''"""The certificate payload: its identity block, the issuer, and the ref it certifies."""
+
+import os
+
+PROTOCOL = "sdk.syberlabs.space/certificate/v0alpha1"
+PAYLOAD_TYPE = "application/vnd.syberlabs.admission-certificate+json"
+
+
+def identity(seed_env):
+    return {"protocol": PROTOCOL, "payload_type": PAYLOAD_TYPE, "version": "0",
+            "issuer": {"tool": "syberlabs.certificate", "seed": os.environ.get(seed_env, ""), "signing": "ed25519"}}
+
+
+def target_ref(thread):
+    return "syberlabs/" + thread
+
+
+def build(thread, candidate, commit, tree, seed_env="SYBERLABS_CERTIFICATE_SEED"):
+    return {**identity(seed_env), "thread": thread, "result": {"candidate": candidate, "commit": commit, "tree": tree},
+            "admission": {"target_ref": target_ref(thread)}}
+'''
+
+CERT_LAYERS = '''"""Run verify's layers and report what each found."""
+
+LAYERS = ("signature", "repository", "journal")
+
+
+def run_layers(signature, repository=None, journal=None):
+    states, reason = [], None
+    for layer in (repository, journal, signature):
+        if layer is None:
+            states.append("skipped")
+            continue
+        code = layer()
+        states.append("ok" if code is None else code)
+        if code is not None:
+            reason = code
+    return {"passed": reason is None, "reason": reason, "states": tuple(states)}
+'''
+
+CERT_PAYLOAD_VECTOR = {"thread": "8525ff4c-0cf2-4bb0-a556-e2f7029342e1",
+                       "result": {"candidate": "c1", "commit": "8dae2e4a00d0d3617d569f6084623616ca2ae3ee",
+                                  "tree": "62933f98490b7a2e1c4d5f6a7b8c9d0e1f2a3b4c"},
+                       "admission": {"target_ref": "refs/heads/syberlabs/8525ff4c"}}
+
+# (c) syberwork/core.py Work.metric and syberwork/server.py (spec/GAPS.md 29), syberlabs/inspector.py
+# (entry 33's incomplete rows) and syberlabs/dashboard.py TONE: the counters' rules, the reading's
+# version and ETag, the listing that survives an interrupted thread, the refusal status codes, and the
+# dashboard's colour of each state.
+CELL_COUNTERS = '''"""Counters a cell reports about itself, counted from its recorded events. Read only."""
+
+METRIC_KEYS = ("cases_open", "proposals_admitted_total", "proposals_denied_total",
+               "effects_settled_applied_total", "effects_settled_not_applied_total", "effects_pending")
+
+
+def cases_open(cases):
+    """``cases`` maps a case id to its events; a case's acceptance is the action accept_change."""
+    return sum(1 for events in cases.values() if not any(e["kind"] == "case_cancelled" for e in events))
+
+
+def proposals(events):
+    decided = [e["body"]["status"] for e in events if e["kind"] == "decision"]
+    return {"proposals_admitted_total": sum(1 for s in decided if s != "denied"),
+            "proposals_denied_total": sum(1 for s in decided if s == "denied")}
+
+
+def effects(events):
+    claimed = {e["body"]["proposal_id"] for e in events if e["kind"] == "effect_started"}
+    applied = {e["body"]["proposal_id"] for e in events if e["kind"] == "effect_succeeded"}
+    rejected = {e["body"]["proposal_id"] for e in events if e["kind"] == "effect_rejected"}
+    return {"effects_settled_applied_total": len(applied), "effects_settled_not_applied_total": len(rejected),
+            "effects_pending": len(claimed) - len(applied)}
+'''
+
+CELL_READING = '''"""One metric as a reading: its value, when it was read, a version, and the headers that carry it."""
+
+import hashlib
+
+
+def version(key, value, observed_at):
+    return hashlib.sha256(f"{key}={value}".encode()).hexdigest()[:12]
+
+
+def document(key, value, observed_at):
+    return {"key": key, "value": value, "observed_at": observed_at, "version": version(key, value, observed_at)}
+
+
+def headers(doc):
+    return {"ETag": "W/" + doc["version"], "Content-Type": "application/json", "Cache-Control": "no-store"}
+'''
+
+CELL_ROWS = '''"""Thread rows for the inspector's listing, and the status a refusal is answered with."""
+
+
+class Refused(Exception):
+    def __init__(self, code, detail=""):
+        super().__init__(code)
+        self.code, self.detail = code, detail
+
+
+def listing(threads, open_thread, chain_valid):
+    """``threads`` are the kit's rows (id, state); ``open_thread(id)`` is the thread's status or raises Refused."""
+    rows = []
+    for row in threads:
+        status = open_thread(row["id"])
+        rows.append({**row, "status": status["status"], "accepted": status["accepted"],
+                     "candidates": len(status["candidates"]), "chain_valid": status["chain_valid"]})
+    return rows
+
+
+def response(exc):
+    return 500, {"error": "internal_error"}
+'''
+
+CELL_TONE = '''"""The dashboard's colour for a state: ok, bad, wait or mute; an unknown state is plain text."""
+
+import html
+
+TONE = {"passed": "ok", "applied": "ok", "promoted": "ok", "complete": "ok", "admitted": "ok",
+        "failed": "bad", "timed_out": "bad", "error": "bad", "needs_approval": "bad", "not_applied": "bad",
+        "pending": "wait", "denied": "wait", "unresolved": "wait", "stale": "wait", "provisional": "wait",
+        "none": "mute", "not_run": "mute", "in_progress": "mute", "cancelled": "mute"}
+
+
+def tone(state):
+    key = str(state or "")
+    return f'<span class="{TONE.get(key, "mute")}">{html.escape(key)}</span>'
+'''
+
+TONE_EXPECTED = {"passed": "ok", "applied": "ok", "promoted": "ok", "complete": "ok", "admitted": "ok",
+                 "failed": "bad", "timed_out": "bad", "error": "bad", "denied": "bad", "not_applied": "bad",
+                 "pending": "wait", "needs_approval": "wait", "unresolved": "wait", "stale": "wait", "in_progress": "wait",
+                 "none": "mute", "not_run": "mute", "provisional": "mute", "cancelled": "mute"}
+
+# (d) The Build Thread's stations and what each records: syberlabs/build.py status rows, checks.py
+# evaluate (sorted order, the setup gate of entry 32), search.py Evaluation.score, evolution.py's
+# promotion states, publish.py's destinations and certificate.summary's line.
+STATION_REGISTER = '''"""The propose station: the row a registered candidate shows in status."""
+
+
+def row(candidate, provider):
+    return {"id": candidate["id"], "provider": provider["name"], "files": len(candidate["changed_paths"]),
+            "in_scope": not candidate["scope_violations"]}
+'''
+
+STATION_EVALUATE = '''"""The check station: run a contract's checks in a worktree and record each one."""
+
+import hashlib
+
+SETUP_NAMES = ("setup", "install")
+
+
+def ordered(checks):
+    """The order the checks run in."""
+    return list(checks)
+
+
+def evaluate(checks, run):
+    """``checks`` maps names to specs; ``run(name)`` returns the record of one check."""
+    results = []
+    for name in ordered(checks):
+        results.append(run(name))
+    return results
+
+
+def score(results, required):
+    return sum(1 for r in results if r["state"] == "passed")
+'''
+
+STATION_PROMOTE = '''"""The accept station: a candidate's promotion state and whether it may be accepted."""
+
+RANK = {"denied": 0, "not_applied": 1, "admitted": 2, "needs_approval": 2, "unresolved": 3, "promoted": 4}
+
+
+def promotion(decision, outcomes):
+    """``decision`` is the admission status or None; ``outcomes`` are the effect event kinds of the proposal."""
+    if decision == "allowed":
+        return "admitted"
+    if decision == "denied":
+        return "denied"
+    return "provisional"
+
+
+def acceptable(decision, current):
+    return decision == "allowed"
+'''
+
+STATION_PUBLISH = '''"""The publish station: what an executor says about where it wrote."""
+
+
+def push_output(remote, ref, commit):
+    return {"remote": remote, "ref": ref, "commit": commit}
+
+
+def pull_request_output(repository, number, url):
+    return {"repository": repository, "number": number, "url": url}
+
+
+def line(output):
+    return " ".join(str(v) for v in output.values())
+'''
+
+STATION_SUMMARY = '''"""The certify station: the one line certify prints."""
+
+
+def summary(payload):
+    result = payload["result"]
+    return f"certified {result['candidate']} of thread {payload['thread']}: result {result['commit']}"
+'''
+
+STATION_PAYLOAD = {"thread": "afc19144-275c-45c6-9a49-ff9f24e7bdf3", "act_class": "R",
+                   "result": {"candidate": "c1", "commit": "f9674877cf37e09b87e75f1d5f2ca5a296f8ea51",
+                              "tree": "62933f9849d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5"},
+                   "contract": {"id": "repo-change", "version": 4},
+                   "evaluation": {"checks": [{"name": "tests", "state": "passed"}, {"name": "critic.rules", "state": "passed"},
+                                             {"name": "scenarios", "state": "passed"}, {"name": "conformance", "state": "passed"}]},
+                   "chain": {"head": "9a4f4d1123aa55bb66cc77dd88ee99ff00112233445566778899aabbccddeeff", "count": 14}}
+STATION_SUMMARY_LINE = ("certified c1 of thread afc19144: result f9674877cf (tree 62933f9849) on repo-change.v4, class R; "
+                        "checks conformance passed, critic.rules passed, scenarios passed, tests passed; chain head 9a4f4d1123 at 14 events")
+
+
+def _read(path: str) -> str:
+    return f"open({path!r}, encoding='utf-8').read()"
+
+
+V4 = {
+    "stack_landing": {
+        "files": {"src/chain.log": LANDING_LOG, "src/gaps.md": LANDING_GAPS, "src/status.md": LANDING_STATUS,
+                  "src/test_landing.py": LANDING_TEST, "src/release.py": LANDING_RELEASE},
+        "objective": ("The merge chain recorded in src/chain.log landed and the other records under src were not brought up "
+                      "to date: src/gaps.md does not say which entries the landed pull requests closed or narrowed; the table "
+                      "in src/status.md still shows those pull requests as open, in the order before the chain, and its chain "
+                      "head line is the old head; the docstring of src/test_landing.py still describes the previous chain; and "
+                      "src/release.py still names the previous chain, what it landed and its head. Bring each record into "
+                      "agreement with the log in that record's own convention; test data, entry numbers, entry titles, the "
+                      "rows of earlier chains and the log itself must not change"),
+        "checks": {
+            "closed_entry": _script("release", "import re\ntext = " + _read("src/gaps.md") + "\n"
+                                               "entries = re.split(r'\\n(?=\\d+\\. \\*\\*)', text)\n"
+                                               "third = next((e for e in entries if e.startswith('3. **')), '')\n"
+                                               "assert '\\n    *2026-10-22, closed.* ' in third and '#70' in third, 'closed_entry: entry 3 was closed by #70 on 2026-10-22 and must gain, on its own line indented four spaces, the note *2026-10-22, closed.* followed by a sentence naming #70, the form entry 2 already uses; got entry 3 as %r' % third\n"
+                                               "assert third.startswith('3. **A flaky test is a timing patch.** Two tests patch time.sleep process-wide.\\n'), 'closed_entry: the title and text of entry 3 must stay as they were; got %r' % third\n"
+                                               "assert re.findall(r'^(\\d+)\\. ', text, re.M) == ['1', '2', '3', '4', '5'], 'closed_entry: entries keep their numbers 1 to 5; got %r' % re.findall(r'^(\\d+)\\. ', text, re.M)\n"),
+            "narrowed_entry": _script("release", "import re\ntext = " + _read("src/gaps.md") + "\n"
+                                                 "entries = re.split(r'\\n(?=\\d+\\. \\*\\*)', text)\n"
+                                                 "fourth = next((e for e in entries if e.startswith('4. **')), '')\n"
+                                                 "assert '\\n    *2026-10-22, closed in part.* ' in fourth and '#65' in fourth, 'narrowed_entry: entry 4 was narrowed, not closed, by #65 on 2026-10-22: it must gain, on its own line indented four spaces, the note *2026-10-22, closed in part.* followed by a sentence naming #65 (a narrowed entry is closed in part, in the dated italic form entry 2 uses); got entry 4 as %r' % fourth\n"
+                                                 "assert fourth.startswith('4. **A credential reaches a check through the contract.** The contract names the variable and the value.\\n'), 'narrowed_entry: the title and text of entry 4 must stay as they were; got %r' % fourth\n"
+                                                 "fifth = next((e for e in entries if e.startswith('5. **')), '')\n"
+                                                 "assert fifth.strip() == '5. **A fixture\\'s difficulty is claimed against a model.** The stand-in cannot fail it by construction.', 'narrowed_entry: entry 5 was not touched by the chain (#66 did not land) and must stay exactly as it was; got %r' % fifth\n"),
+            "table_rows": _script("release", "text = " + _read("src/status.md") + "\n"
+                                             "rows = [l for l in text.splitlines() if l.startswith('| #')]\n"
+                                             f"expected = {LANDING_ROWS!r}\n"
+                                             "assert rows == expected, 'table_rows: the packets table must list the two earlier rows unchanged, then the four pull requests the chain merged as merged with the 7-character id of their merge commit, in the order the chain merged them (the log order, not the number order), then #66 still open; expected rows %r, got %r' % (expected, rows)\n"),
+            "head_line": _script("release", "text = " + _read("src/status.md") + "\n"
+                                            "assert 'Chain head: main at 1f3e5d7 (2026-10-22).' in text, 'head_line: the chain head line must read exactly Chain head: main at 1f3e5d7 (2026-10-22). (the 7-character id of the last merge the chain made, and the chain date); got %r' % [l for l in text.splitlines() if l.startswith('Chain head')]\n"
+                                            "assert 'e19c74b (2026-10-21)' not in text, 'head_line: the old chain head line must not remain'\n"),
+            "test_doc": _script("release", "import unittest, test_landing\ndoc = test_landing.__doc__ or ''\n"
+                                           "assert doc == 'The landing record of the chain of 2026-10-22: #63, #64, #65 and #70 merged, #66 not landed.', 'test_doc: the module docstring must read exactly: The landing record of the chain of 2026-10-22: #63, #64, #65 and #70 merged, #66 not landed. (the merged pull requests in ascending number order, then the one that did not land); got %r' % doc\n"
+                                           "src = " + _read("src/test_landing.py") + "\n"
+                                           "for phrase in ['len(\"#66\"), 3', '\"e19c74b\"[:2], \"e1\"']:\n"
+                                           "    assert phrase in src, 'test_doc: %r is test data, not a record of the chain, and must stay; got %r' % (phrase, src)\n"
+                                           "assert unittest.main(module=test_landing, argv=['x'], exit=False).result.wasSuccessful(), 'test_doc: test_landing must still pass'\n"),
+            "landed_order": _script("release", "assert release.CHAIN == '2026-10-22', 'landed_order: release.CHAIN must be the date of the chain in the log, 2026-10-22; got %r' % release.CHAIN\n"
+                                               "assert release.LANDED == (70, 63, 65, 64), 'landed_order: release.LANDED must be the tuple of the pull request numbers the chain merged, as integers, in the order the chain merged them (70, 63, 65, 64); got %r' % (release.LANDED,)\n"),
+            "head_constant": _script("release", "assert release.HEAD == '1f3e5d7', 'head_constant: release.HEAD must be the 7-character id of the last merge commit the chain made, 1f3e5d7; got %r' % release.HEAD\n"
+                                                "assert callable(release.note) and '1f3e5d7' in release.note(), 'head_constant: note() must still exist and name the head; got %r' % release.note()\n"),
+        },
+        "slots": [
+            {"path": "src/release.py", "function": "note", "check": "head_constant",
+             "variants": ["return f\"chain {CHAIN}: {len(LANDED)} landed, head {HEAD}\"", "return HEAD", "return CHAIN", "return str(LANDED)"],
+             "correct": []},
+        ],
+    },
+    "certificate_layers": {
+        "files": {"src/envelope.py": CERT_ENVELOPE, "src/statement.py": CERT_STATEMENT, "src/payload.py": CERT_PAYLOAD,
+                  "src/layers.py": CERT_LAYERS},
+        "objective": ("The toy certificate pipeline under src does not interoperate with the DSSE and in-toto tools the "
+                      "receipts are checked with: a generic DSSE verifier rejects every envelope src/envelope.py signs, "
+                      "because neither its pre-authentication encoding nor its field encoding is the standard's; what "
+                      "src/statement.py wraps is not an in-toto Statement v1, its subject is not the certified ref with "
+                      "its commit and tree, and unwrap answers every defect with one code instead of saying which of the "
+                      "statement's type, predicate type or subject is wrong; src/payload.py's identity block does not carry "
+                      "the issuer fields the certificate specification names and puts the signing seed's value where the "
+                      "verifier expects the variable's name, and its target ref is not the branch a thread's acceptance "
+                      "moves; and src/layers.py runs the three layers in the wrong order, does not stop at the first failure, "
+                      "and records a skipped layer as a word. Make each module behave as the specification does; keep every "
+                      "signature"),
+        "checks": {
+            "pae": _script("envelope", "got = envelope.pae('application/vnd.in-toto+json', b'{}')\n"
+                                       "expected = b'DSSEv1 28 application/vnd.in-toto+json 2 {}'\n"
+                                       "assert got == expected, 'pae: the DSSE pre-authentication encoding is DSSEv1, a space, the type length in ASCII decimal, a space, the type, a space, the payload length in ASCII decimal, a space, the payload; expected %r, got %r' % (expected, got)\n"
+                                       "assert envelope.pae('t', b'') == b'DSSEv1 1 t 0 ', 'pae: an empty payload encodes as DSSEv1 1 t 0 followed by a space; got %r' % envelope.pae('t', b'')\n"),
+            "envelope_fields": _script("envelope", "import base64, hashlib, hmac\n"
+                                                   "def b64(text):\n    try:\n        return base64.standard_b64decode(text)\n    except Exception:\n        return None\n"
+                                                   "env = envelope.sign('t', b'{\"a\":1}', b'k')\n"
+                                                   "assert set(env) == {'payloadType', 'payload', 'signatures'} and env['payloadType'] == 't', 'envelope_fields: an envelope has exactly payloadType, payload and signatures; got %r' % env\n"
+                                                   "assert b64(env['payload']) == b'{\"a\":1}', 'envelope_fields: payload is the standard base64 of the payload bytes; got %r' % env['payload']\n"
+                                                   "sigs = env['signatures']\n"
+                                                   "assert isinstance(sigs, list) and len(sigs) == 1 and set(sigs[0]) == {'keyid', 'sig'}, 'envelope_fields: signatures is a list of one object with exactly keyid and sig; got %r' % sigs\n"
+                                                   "assert sigs[0]['keyid'] == b'k'.hex(), 'envelope_fields: keyid is the key, hex-encoded; got %r' % sigs[0]['keyid']\n"
+                                                   "want = hmac.new(b'k', envelope.pae('t', b'{\"a\":1}'), hashlib.sha256).digest()\n"
+                                                   "assert b64(sigs[0]['sig']) == want, 'envelope_fields: sig is the standard base64 of the HMAC-SHA256 of the pre-authentication encoding under the key; got %r' % sigs[0]['sig']\n"),
+            "statement_shape": _script("statement", f"payload = {CERT_PAYLOAD_VECTOR!r}\n"
+                                                    "st = statement.wrap(payload)\n"
+                                                    "assert st.get('_type') == 'https://in-toto.io/Statement/v1', 'statement_shape: _type must be https://in-toto.io/Statement/v1 (an in-toto Statement v1); got %r' % st.get('_type')\n"
+                                                    "assert set(st) == {'_type', 'subject', 'predicateType', 'predicate'}, 'statement_shape: a statement has exactly the four fields _type, subject, predicateType and predicate; got %r' % sorted(st)\n"
+                                                    "assert st['predicateType'] == 'https://sdk.syberlabs.space/certificate/v0alpha1', 'statement_shape: predicateType must be https://sdk.syberlabs.space/certificate/v0alpha1; got %r' % st['predicateType']\n"
+                                                    "assert st['predicate'] is payload, 'statement_shape: the predicate is the payload object itself, unchanged, so its canonical bytes inside the statement are the bytes the bare form signs; got %r' % (st['predicate'],)\n"),
+            "subject": _script("statement", f"payload = {CERT_PAYLOAD_VECTOR!r}\n"
+                                            "got = statement.subject(payload)\n"
+                                            "expected = [{'name': 'refs/heads/syberlabs/8525ff4c', 'digest': {'gitCommit': payload['result']['commit'], 'gitTree': payload['result']['tree']}}]\n"
+                                            "assert got == expected, 'subject: exactly one subject, named by the certified target ref (admission.target_ref), whose digest carries the result commit as gitCommit and the result tree as gitTree; expected %r, got %r' % (expected, got)\n"),
+            "unwrap_codes": _script("statement", f"payload = {CERT_PAYLOAD_VECTOR!r}\n"
+                                                 "def good():\n    return {'_type': statement.STATEMENT_TYPE, 'subject': statement.subject(payload), 'predicateType': statement.PREDICATE_TYPE, 'predicate': payload}\n"
+                                                 "assert statement.unwrap(good()) is payload, 'unwrap_codes: unwrap returns the predicate of a statement whose type, predicate type and subject are right'\n"
+                                                 "def code(st):\n    try:\n        statement.unwrap(st)\n    except statement.Fail as exc:\n        return exc.code\n    return None\n"
+                                                 "bad_type = good(); bad_type['_type'] = 'https://in-toto.io/Statement/v0.1'\n"
+                                                 "assert code(bad_type) == 'statement_type_mismatch', 'unwrap_codes: a wrong _type is refused with Fail(\"statement_type_mismatch\"); got %r' % code(bad_type)\n"
+                                                 "bad_pred = good(); bad_pred['predicateType'] = 'x'\n"
+                                                 "assert code(bad_pred) == 'predicate_type_mismatch', 'unwrap_codes: a wrong predicateType is refused with Fail(\"predicate_type_mismatch\"); got %r' % code(bad_pred)\n"
+                                                 "bad_subject = good(); bad_subject['subject'] = []\n"
+                                                 "assert code(bad_subject) == 'subject_mismatch', 'unwrap_codes: a subject that is not subject(predicate) is refused with Fail(\"subject_mismatch\"), compared with the predicate, not with Git; got %r' % code(bad_subject)\n"
+                                                 "both = good(); both['_type'] = 'x'; both['subject'] = []\n"
+                                                 "assert code(both) == 'statement_type_mismatch', 'unwrap_codes: the type is checked before the predicate type, and both before the subject; got %r' % code(both)\n"),
+            "identity": _script("payload", "import json, os\nos.environ['DEMO_SEED'] = 'secret-seed-value-7f3a'\n"
+                                           "got = payload.identity('DEMO_SEED')\n"
+                                           "expected = {'protocol': 'sdk.syberlabs.space/certificate/v0alpha1', 'payload_type': 'application/vnd.syberlabs.admission-certificate+json', 'version': 0, 'issuer': {'tool': 'syberlabs.certificate/0', 'host': 'syberlabs.host', 'seed_env': 'DEMO_SEED', 'signing': 'in-process'}}\n"
+                                           "assert 'secret-seed-value-7f3a' not in json.dumps(got), 'identity: the seed value must never appear in the payload; the issuer records the name of the variable under seed_env'\n"
+                                           "assert got == expected, 'identity: the identity block is protocol, payload_type, version 0 (an integer) and issuer {tool syberlabs.certificate/0, host syberlabs.host, seed_env <the variable name>, signing in-process}; expected %r, got %r' % (expected, got)\n"),
+            "target_ref": _script("payload", "got = payload.target_ref('8525ff4c-0cf2-4bb0-a556-e2f7029342e1')\n"
+                                             "assert got == 'refs/heads/syberlabs/8525ff4c', 'target_ref: the certified ref is the branch the acceptance moves, refs/heads/syberlabs/ followed by the first 8 characters of the thread id; expected %r, got %r' % ('refs/heads/syberlabs/8525ff4c', got)\n"),
+            "layer_order": _script("layers", "called = []\n"
+                                             "def ok(name):\n    def layer():\n        called.append(name)\n    return layer\n"
+                                             "def fail(name, code):\n    def layer():\n        called.append(name)\n        return code\n    return layer\n"
+                                             "r = layers.run_layers(ok('s'), ok('r'), ok('j'))\n"
+                                             "assert (r['passed'], r['reason'], r['states'], called) == (True, None, ('ok', 'ok', 'ok'), ['s', 'r', 'j']), 'layer_order: the layers run in the order signature, repository, journal and each ok layer records the state ok; got %r after calls %r' % (r, called)\n"
+                                             "called.clear(); r = layers.run_layers(ok('s'), fail('r', 'tree_mismatch'), fail('j', 'chain_head_mismatch'))\n"
+                                             "assert (r['passed'], r['reason'], r['states'], called) == (False, 'tree_mismatch', ('ok', 'tree_mismatch', None), ['s', 'r']), 'layer_order: the first failing layer stops the run: its code is the reason and the state of its layer, and the layers after it do not run and record None; got %r after calls %r' % (r, called)\n"
+                                             "called.clear(); r = layers.run_layers(ok('s'), None, ok('j'))\n"
+                                             "assert (r['passed'], r['reason'], r['states'], called) == (True, None, ('ok', None, 'ok'), ['s', 'j']), 'layer_order: a layer given as None is skipped and recorded None, and the layers after it still run; got %r after calls %r' % (r, called)\n"
+                                             "called.clear(); r = layers.run_layers(fail('s', 'signature_invalid'), ok('r'), ok('j'))\n"
+                                             "assert (r['passed'], r['reason'], r['states'], called) == (False, 'signature_invalid', ('signature_invalid', None, None), ['s']), 'layer_order: a failing signature layer ends the run before the repository and journal layers; got %r after calls %r' % (r, called)\n"),
+        },
+        "slots": [
+            {"path": "src/payload.py", "function": "target_ref", "check": "target_ref",
+             "variants": ["return \"syberlabs/\" + thread", "return thread", "return \"refs/heads/\" + thread", "return \"refs/heads/syberlabs/\" + thread"],
+             "correct": []},
+        ],
+    },
+    "cell_metrics": {
+        "files": {"src/counters.py": CELL_COUNTERS, "src/reading.py": CELL_READING, "src/rows.py": CELL_ROWS, "src/tone.py": CELL_TONE},
+        "objective": ("The cell's self-metrics and the inspector's listing under src disagree with the operator service and "
+                      "the dashboard: src/counters.py counts a completed case as open, a proposal that still needs approval "
+                      "as admitted, and a verified reconciliation as pending; src/reading.py gives two reads of the same value "
+                      "the same version and sends a weak ETag; src/rows.py cannot list a journal that holds an interrupted "
+                      "thread and answers every refusal with 500; and src/tone.py colours a pending approval as a failure, a "
+                      "denial as waiting and a provisional candidate as waiting, and gives an unknown state a colour. Make each "
+                      "module agree with the service's and the dashboard's rules; keep every signature"),
+        "checks": {
+            "cases_open": _script("counters", "cancelled = [{'kind': 'case_created', 'body': {}}, {'kind': 'case_cancelled', 'body': {}}]\n"
+                                              "complete = [{'kind': 'case_created', 'body': {}}, {'kind': 'effect_succeeded', 'body': {'action': 'accept_change'}}]\n"
+                                              "other = [{'kind': 'case_created', 'body': {}}, {'kind': 'effect_succeeded', 'body': {'action': 'push_branch'}}]\n"
+                                              "fresh = [{'kind': 'case_created', 'body': {}}]\n"
+                                              "got = counters.cases_open({'a': cancelled, 'b': complete, 'c': other, 'd': fresh})\n"
+                                              "assert got == 2, 'cases_open: a case is open when it is neither cancelled (a case_cancelled event) nor complete (its acceptance clause passed: an effect_succeeded for the action accept_change); of a cancelled, a complete, one with another effect and a fresh case, 2 are open; got %r' % got\n"),
+            "proposals": _script("counters", "events = [{'kind': 'decision', 'body': {'status': s}} for s in ['allowed', 'needs_approval', 'denied', 'allowed', 'needs_approval']]\n"
+                                             "got = counters.proposals(events)\n"
+                                             "assert got == {'proposals_admitted_total': 2, 'proposals_denied_total': 1}, 'proposals: the counters count decision events by status, allowed as admitted and denied as denied; needs_approval is neither; expected 2 admitted and 1 denied, got %r' % got\n"),
+            "effects": _script("counters", "def ev(kind, pid, **body):\n    return {'kind': kind, 'body': {'proposal_id': pid, **body}}\n"
+                                           "events = [ev('effect_started', 'p1'), ev('effect_succeeded', 'p1'),\n"
+                                           "          ev('effect_started', 'p2'), ev('effect_rejected', 'p2'),\n"
+                                           "          ev('effect_started', 'p3'), ev('reconciled', 'p3', success=True, proof={'verified': True, 'external_id': 'x', 'response_digest': 'd'}),\n"
+                                           "          ev('effect_started', 'p4'), ev('reconciled', 'p4', success=True, proof={'verified': False}),\n"
+                                           "          ev('effect_started', 'p5')]\n"
+                                           "got = counters.effects(events)\n"
+                                           "expected = {'effects_settled_applied_total': 2, 'effects_settled_not_applied_total': 1, 'effects_pending': 2}\n"
+                                           "assert got == expected, 'effects: every claimed effect (effect_started) is in exactly one of applied (effect_succeeded, or a reconciled whose success is true and whose proof is verified with an external_id and a response_digest), not applied (effect_rejected) or pending (everything else, including an unverified reconciliation); expected %r, got %r' % (expected, got)\n"),
+            "version": _script("reading", "import hashlib, json\n"
+                                          "got = reading.version('cases_open', 3, 1792651912.25)\n"
+                                          "expected = hashlib.sha256(json.dumps({'key': 'cases_open', 'value': 3, 'observed_at': 1792651912.25}, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()\n"
+                                          "assert got == expected, 'version: the version is the full SHA-256 hex digest of the canonical JSON (sorted keys, separators \",\" and \":\", non-ASCII unescaped) of {key, value, observed_at}, so a repeated read of the same value carries a new version; expected %r, got %r' % (expected, got)\n"
+                                          "assert reading.version('cases_open', 3, 1792651912.25) != reading.version('cases_open', 3, 1792651913.0), 'version: two reads at different times must differ'\n"),
+            "etag": _script("reading", "doc = {'key': 'cases_open', 'value': 3, 'observed_at': 1.0, 'version': 'abc123'}\n"
+                                       "got = reading.headers(doc)\n"
+                                       "assert got.get('ETag') == '\"abc123\"', 'etag: the ETag is the version in double quotes, a strong validator, so an intervention that prefers the ETag header records the quoted form; got %r' % got.get('ETag')\n"
+                                       "assert got.get('X-Record-Version') == 'abc123', 'etag: the version is also sent unquoted as X-Record-Version; got %r' % got.get('X-Record-Version')\n"
+                                       "assert got.get('Cache-Control') == 'no-store' and got.get('Content-Type') == 'application/json', 'etag: Content-Type application/json and Cache-Control no-store stay; got %r' % got\n"),
+            "incomplete_row": _script("rows", "threads = [{'id': 'aaaa1111-x', 'state': 'open'}, {'id': 'bbbb2222-x', 'state': 'incomplete'}]\n"
+                                              "opened = []\n"
+                                              "def open_thread(tid):\n    opened.append(tid)\n    if tid == 'bbbb2222-x':\n        raise rows.Refused('thread_incomplete', 'start was interrupted')\n    return {'status': 'complete', 'accepted': 'c1', 'candidates': ['c1', 'c2'], 'chain_valid': True}\n"
+                                              "try:\n    got = rows.listing(threads, open_thread, lambda tid: tid == 'aaaa1111-x')\nexcept Exception as exc:\n    got = ('raised', repr(exc))\n"
+                                              "expected = [{'id': 'aaaa1111-x', 'state': 'open', 'status': 'complete', 'accepted': 'c1', 'candidates': 2, 'chain_valid': True},\n"
+                                              "            {'id': 'bbbb2222-x', 'state': 'incomplete', 'status': 'incomplete', 'accepted': None, 'candidates': 0, 'chain_valid': False, 'remedy': 'start again with the same objective, or forget'}]\n"
+                                              "assert got == expected and opened == ['aaaa1111-x'], 'incomplete_row: a thread whose state is incomplete is not opened; its row carries status incomplete, accepted None, candidates 0, chain_valid from chain_valid(id) and the remedy \"start again with the same objective, or forget\"; the other rows are unchanged; expected %r, got %r (opened %r)' % (expected, got, opened)\n"),
+            "refusal_status": _script("rows", "got = rows.response(rows.Refused('thread_incomplete', 'start was interrupted'))\n"
+                                              "assert got == (409, {'error': 'thread_incomplete', 'detail': 'start was interrupted'}), 'refusal_status: a refusal is answered with its code and detail as {error, detail}, status 409; got %r' % (got,)\n"
+                                              "got = rows.response(rows.Refused('unknown_thread', 'zzz'))\n"
+                                              "assert got == (404, {'error': 'unknown_thread', 'detail': 'zzz'}), 'refusal_status: a refusal whose code starts with unknown is 404; got %r' % (got,)\n"
+                                              "got = rows.response(ValueError('boom'))\n"
+                                              "assert got == (500, {'error': 'internal_error'}), 'refusal_status: any other exception is 500 {error: internal_error} with no detail; got %r' % (got,)\n"),
+            "tone": _script("tone", f"expected = {TONE_EXPECTED!r}\n"
+                                    "assert tone.TONE == expected, 'tone: the dashboard colours passed, applied, promoted, complete and admitted ok; failed, timed_out, error, denied and not_applied bad; pending, needs_approval, unresolved, stale and in_progress wait; none, not_run, provisional and cancelled mute; expected %r, got %r' % (expected, tone.TONE)\n"
+                                    "assert tone.tone('needs_approval') == '<span class=\"wait\">needs_approval</span>', 'tone: a known state is a span of its colour; got %r' % tone.tone('needs_approval')\n"
+                                    "assert tone.tone('<odd>') == '&lt;odd&gt;' and tone.tone(None) == '', 'tone: an unknown state is escaped plain text with no span, and None is empty; got %r and %r' % (tone.tone('<odd>'), tone.tone(None))\n"),
+        },
+        "slots": [
+            {"path": "src/reading.py", "function": "version", "check": "version",
+             "variants": ["return hashlib.sha256(f\"{key}={value}\".encode()).hexdigest()[:12]", "return hashlib.sha256(f\"{key}={value}@{observed_at}\".encode()).hexdigest()",
+                          "return str(observed_at)", "return hashlib.sha256(repr((key, value, observed_at)).encode()).hexdigest()"],
+             "correct": []},
+        ],
+    },
+    "thread_stations": {
+        "files": {"src/register.py": STATION_REGISTER, "src/evaluate.py": STATION_EVALUATE, "src/promote.py": STATION_PROMOTE,
+                  "src/publish.py": STATION_PUBLISH, "src/summary.py": STATION_SUMMARY},
+        "objective": ("The five station records under src disagree with what the Build Thread records: src/register.py's "
+                      "candidate row names the provider without its revision and calls a candidate in scope when it only "
+                      "broke a size limit; src/evaluate.py runs the checks in the order the contract happened to list them, "
+                      "keeps running checks after the setup step failed and records nothing about why they did not run, and "
+                      "scores a candidate by counting passes with no regard to which checks were required; src/promote.py's "
+                      "promotion state ignores what happened at the destination and its acceptability ignores stale evidence; "
+                      "src/publish.py reports a destination in a shape no receipt has quoted; and src/summary.py's certify "
+                      "line is not the line the receipts quote. Make each station record what the kit records; keep every "
+                      "signature"),
+        "checks": {
+            "registered": _script("register", "c = {'id': 'c1', 'changed_paths': ('a', 'b', 'c'), 'scope_violations': (), 'limit_violations': ('max_diff_bytes',)}\n"
+                                              "got = register.row(c, {'name': 'claude', 'revision': 'fable-5.1'})\n"
+                                              "expected = {'id': 'c1', 'provider': 'claude@fable-5.1', 'files': 3, 'in_scope': False}\n"
+                                              "assert got == expected, 'registered: the row names the provider as name@revision and is in scope only when the candidate has neither scope violations nor limit violations; expected %r, got %r' % (expected, got)\n"
+                                              "ok = register.row({**c, 'limit_violations': ()}, {'name': 'patch', 'revision': '1'})\n"
+                                              "assert ok == {'id': 'c1', 'provider': 'patch@1', 'files': 3, 'in_scope': True}, 'registered: a candidate with no violations is in scope; got %r' % ok\n"),
+            "check_order": _script("evaluate", "ran = []\n"
+                                               "def run(name):\n    ran.append(name)\n    return {'name': name, 'state': 'passed'}\n"
+                                               "got = evaluate.evaluate({'tests': {}, 'critic.rules': {}, 'scenarios': {}, 'conformance': {}}, run)\n"
+                                               "assert ran == ['conformance', 'critic.rules', 'scenarios', 'tests'] and [r['name'] for r in got] == ran, 'check_order: checks run and are recorded in sorted name order, whatever order the contract lists them in; expected conformance, critic.rules, scenarios, tests, got %r' % ran\n"),
+            "setup_gate": _script("evaluate", "import hashlib\nran = []\n"
+                                              "def run(name):\n    ran.append(name)\n    return {'name': name, 'state': 'failed' if name == 'setup' else 'passed', 'exit_code': 1 if name == 'setup' else 0, 'duration_ms': 5, 'output_digest': 'x', 'output_tail': 'npm ERR!' if name == 'setup' else ''}\n"
+                                              "got = evaluate.evaluate({'setup': {}, 'tests': {}, 'typecheck': {}}, run)\n"
+                                              "gated = {'state': 'error', 'exit_code': None, 'duration_ms': 0, 'output_digest': hashlib.sha256(b'').hexdigest(), 'output_tail': 'setup_failed'}\n"
+                                              "expected = [run('setup'), {'name': 'tests', **gated}, {'name': 'typecheck', **gated}]\n"
+                                              "ran.clear()\n"
+                                              "assert got == expected, 'setup_gate: when a check named setup or install does not pass, the checks after it are not started and each is recorded with state error, exit_code None, duration_ms 0, output_digest the SHA-256 of zero bytes and output_tail setup_failed; expected %r, got %r' % (expected, got)\n"
+                                              "evaluate.evaluate({'setup': {}, 'tests': {}}, run)\n"
+                                              "assert ran == ['setup'], 'setup_gate: the gated checks must not be run at all; ran %r' % ran\n"),
+            "score": _script("evaluate", "results = [{'name': 'a', 'state': 'passed'}, {'name': 'b', 'state': 'failed'}, {'name': 'c', 'state': 'passed'}]\n"
+                                         "got = evaluate.score(results, ['a', 'b', 'd'])\n"
+                                         "assert got == (1, 2), 'score: the score is the pair (required checks passed, all checks passed), where a required check that did not run is not a pass; expected (1, 2), got %r' % (got,)\n"
+                                         "assert evaluate.score([], ['a']) == (0, 0), 'score: no results is (0, 0); got %r' % (evaluate.score([], ['a']),)\n"),
+            "promotion_state": _script("promote", "cases = [(None, [], 'provisional'), ('allowed', [], 'admitted'), ('needs_approval', [], 'needs_approval'), ('denied', [], 'denied'),\n"
+                                                  "         ('allowed', ['effect_started', 'effect_succeeded'], 'promoted'), ('allowed', ['effect_started', 'reconciled'], 'promoted'),\n"
+                                                  "         ('allowed', ['effect_started', 'effect_rejected'], 'not_applied'), ('allowed', ['effect_started'], 'unresolved'), ('allowed', ['effect_unknown'], 'unresolved')]\n"
+                                                  "for decision, outcomes, want in cases:\n"
+                                                  "    got = promote.promotion(decision, outcomes)\n"
+                                                  "    assert got == want, 'promotion_state: an outcome at the destination outranks the decision: effect_succeeded or a reconciled outcome is promoted, effect_rejected is not_applied, any other effect event is unresolved; with no effect the decision gives admitted (allowed), needs_approval or denied, and no decision is provisional; for decision %r and outcomes %r expected %r, got %r' % (decision, outcomes, want, got)\n"
+                                                  "assert promote.RANK == {'denied': 0, 'not_applied': 1, 'admitted': 2, 'needs_approval': 2, 'unresolved': 3, 'promoted': 4}, 'promotion_state: RANK must not change'\n"),
+            "acceptable": _script("promote", "for decision, current, want in [('allowed', True, True), ('needs_approval', True, True), ('denied', True, False), ('allowed', False, False), ('needs_approval', False, False), (None, True, False)]:\n"
+                                             "    got = promote.acceptable(decision, current)\n"
+                                             "    assert got is want, 'acceptable: a candidate is acceptable when its decision is allowed or needs_approval and its evidence is current (a stale evaluation is never acceptable); for %r, current=%r expected %r, got %r' % (decision, current, want, got)\n"),
+            "publish_lines": _script("publish", "sha = 'c0e3e89b08168a0c3c5ba2e88339bd9ea73dff69'\n"
+                                                "push = publish.push_output('origin', 'refs/heads/syberlabs/9986c840', sha)\n"
+                                                "assert push == {'destination': 'git:origin:refs/heads/syberlabs/9986c840', 'external_id': sha}, 'publish_lines: a push reports destination git:<remote>:<ref> and external_id the commit; got %r' % push\n"
+                                                "pr = publish.pull_request_output('SyberLabs/SyberWork', 74, 'https://github.com/SyberLabs/SyberWork/pull/74')\n"
+                                                "assert pr == {'destination': 'github:SyberLabs/SyberWork', 'external_id': '74', 'url': 'https://github.com/SyberLabs/SyberWork/pull/74'}, 'publish_lines: a pull request reports destination github:<repository>, external_id the number as a string, and url; got %r' % pr\n"
+                                                "assert publish.line(push) == 'git:origin:refs/heads/syberlabs/9986c840: ' + sha, 'publish_lines: the line is the destination, a colon, a space, the external id; got %r' % publish.line(push)\n"
+                                                "assert publish.line(pr) == 'github:SyberLabs/SyberWork: 74 https://github.com/SyberLabs/SyberWork/pull/74', 'publish_lines: with a url the line continues with a space and the url; got %r' % publish.line(pr)\n"),
+            "certify_summary": _script("summary", f"payload = {STATION_PAYLOAD!r}\n"
+                                                  f"expected = {STATION_SUMMARY_LINE!r}\n"
+                                                  "got = summary.summary(payload)\n"
+                                                  "assert got == expected, 'certify_summary: the certify line is: certified <candidate> of thread <first 8 of thread>: result <first 10 of commit> (tree <first 10 of tree>) on <contract id>.v<version>, class <act_class>; checks <name state, ... in name order>; chain head <first 10 of head> at <count> events; expected %r, got %r' % (expected, got)\n"
+                                                  "noclass = summary.summary({**payload, 'act_class': None})\n"
+                                                  "assert ', class ' not in noclass and noclass.startswith('certified c1 of thread afc19144: result f9674877cf (tree 62933f9849) on repo-change.v4; checks'), 'certify_summary: without an act class the class clause is omitted; got %r' % noclass\n"),
+        },
+        "slots": [
+            {"path": "src/summary.py", "function": "summary", "check": "certify_summary",
+             "variants": ["result = payload[\"result\"]", "result = payload", "result = payload[\"chain\"]", "result = payload[\"contract\"]"],
+             "correct": []},
+        ],
+    },
+}
+
 FIXTURES.update(V2)
 FIXTURES.update(V3)
+FIXTURES.update(V4)
 
 
 def contract(name: str) -> dict:

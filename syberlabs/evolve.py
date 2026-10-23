@@ -20,6 +20,9 @@ What differs, on purpose, in SyberLabs:
   score the provider computes or a model's opinion of a diff. A child is
   evaluated even when both of its parents passed: lineage is provenance,
   not evidence of superiority.
+- The base tree is evaluated once, before the population is filled, so the
+  first mutations have the host's results to go on and not only a text. It
+  costs one evaluation and no model call; the base is not an individual.
 - Every individual is a provisional candidate on a non-authoritative ref.
   Selection here only decides what the search keeps exploring and what it
   recommends. Promotion is a person's decision through admission.
@@ -58,7 +61,7 @@ from typing import Protocol
 
 from syberlabs.economic import is_money
 from syberlabs.errors import Rejected
-from syberlabs.providers import model_usage, run_json
+from syberlabs.providers import model_usage, refuse, run_json
 from syberlabs.search import (ACTION_KINDS, Action, BranchPolicy, Crossover, Evaluate, Individual, Migrate, Mutate,
                               OperatorStats, Score, SearchSpace, Situation, Stop)
 
@@ -80,11 +83,15 @@ class Mutator(Protocol):
 class CommandMutator:
     """Mutation by an external program, typically a model adapter.
 
-    Request (stdin): ``{protocol, objective, scope, parent, files: {path: text}, context, seed}``.
-    ``scope`` is the evolution scope's paths, the same list the search protocol's request
-    carries (``providers.CommandProvider``), so an adapter that tells its model where it may
-    write is told the same thing under both protocols. Response (stdout):
-    ``{"changes": {path: text or null}}``.
+    Request (stdin): ``{protocol, objective, scope, parent, files: {path: text}, context, seed}``,
+    plus ``feedback`` when the host has evaluated the parent: a candidate it judged, or ``base``
+    once the search evaluated the base tree. ``scope`` is the
+    evolution scope's paths, the same list the search protocol's request carries
+    (``providers.CommandProvider``), so an adapter that tells its model where it may write is
+    told the same thing under both protocols. ``feedback`` is ``mutation_feedback(space,
+    parent)``: the host's recorded check results for the parent, in the shape the repair arm
+    sends under the search protocol, so a mutation has a direction and not only a parent.
+    Response (stdout): ``{"changes": {path: text or null}}``.
     """
 
     PROTOCOL = "syberlabs.mutate/v0alpha1"
@@ -93,13 +100,16 @@ class CommandMutator:
                  cwd: str | Path | None = None, max_bytes: int = 65_536, max_calls: int | None = None):
         self.argv, self.name, self.timeout, self.cwd, self.max_bytes = list(argv), name, timeout, cwd, max_bytes
         self.max_calls, self.calls, self.usage, self.last_usage = max_calls, 0, [], None
+        # Why the last call produced no edit: ``unparsable`` (no ``changes`` object), ``no_change`` (an empty one), or
+        # None (the call was not made, or it produced an edit). The provider records it against the search.
+        self.last_reason: str | None = None
 
     @property
     def exhausted(self) -> bool:
         return self.max_calls is not None and self.calls >= self.max_calls
 
     def __call__(self, space: SearchSpace, parent: str, rng: random.Random) -> Mapping[str, str | None] | None:
-        self.last_usage = None
+        self.last_usage = self.last_reason = None
         if self.exhausted:
             return None
         paths = list(dict.fromkeys([*(item["path"] for item in space.context),
@@ -112,16 +122,49 @@ class CommandMutator:
             files[path] = text
             spent += len(text)
         self.calls += 1
-        response = run_json(self.argv, {"protocol": self.PROTOCOL, "objective": space.objective, "scope": list(space.scope),
-                                        "parent": parent, "files": files, "context": [dict(item) for item in space.context],
-                                        "seed": rng.randrange(2**31)}, timeout=self.timeout, cwd=self.cwd)
+        request = {"protocol": self.PROTOCOL, "objective": space.objective, "scope": list(space.scope),
+                   "parent": parent, "files": files, "context": [dict(item) for item in space.context],
+                   "seed": rng.randrange(2**31)}
+        feedback = mutation_feedback(space, parent)
+        if feedback is not None:
+            request["feedback"] = feedback
+        response = run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
         self.last_usage = model_usage(response)
         if self.last_usage:
             self.usage.append(self.last_usage)
         changes = response.get("changes") if isinstance(response, dict) else None
         if not isinstance(changes, dict):
+            self.last_reason = "unparsable"
             return None
-        return {k: v for k, v in changes.items() if isinstance(k, str) and (v is None or isinstance(v, str))}
+        found = {k: v for k, v in changes.items() if isinstance(k, str) and (v is None or isinstance(v, str))}
+        if not found:
+            self.last_reason = "no_change"
+        return found
+
+
+def mutation_feedback(space: SearchSpace, parent: str) -> dict | None:
+    """The host's evaluation of ``parent`` as a mutate request's ``feedback``, or None.
+
+    The same object the repair arm puts on a search request after a failed attempt
+    (``benchmarks/model_vs_patch.py``, ``Patches.search``): ``{"candidate": parent,
+    "checks": [{name, state, exit_code, duration_ms, output_tail}, ...]}``, the check results
+    exactly as the host recorded them in ``candidate_evaluated`` (each ``output_tail`` already
+    within the record's bound). ``files`` is left out because the mutate request's own
+    ``files`` already carries the parent's texts. For ``"base"`` the checks are the space's
+    ``base_evaluation``, the host's evaluation of the base tree that ``EvolutionaryProvider``
+    asks for before the fill; None on a space that has none (the budget had no room for it, or
+    the space does not offer one). None when the host has not evaluated a candidate parent, so
+    a reader can tell "no evaluation" from "an evaluation that passed". Pure: it reads the space
+    and runs nothing.
+    """
+    if parent == "base":
+        found = getattr(space, "base_evaluation", None)
+        checks = found.checks if found is not None else ()
+    else:
+        checks = space.candidate(parent).checks
+    if not checks:
+        return None
+    return {"candidate": parent, "checks": [dataclasses.asdict(check) for check in checks]}
 
 
 def resolve_conflicts(text: str, rng: random.Random, accept_ours: float) -> str:
@@ -506,6 +549,25 @@ class EvolutionaryProvider:
 
     # Budget: stop cleanly before the host has to refuse.
 
+    def _base(self, space: SearchSpace) -> None:
+        """Evaluate the base tree once, before the fill, so a mutation of ``base`` has feedback and not only a parent.
+
+        An ordinary host evaluation (``space.evaluate("base")``): one evaluation of the budget, no model call,
+        recorded by the host as its records allow. Skipped, and said so in the trace, when the budget has no
+        room; a host that already holds a fresh evaluation of this base (a restart of the search on the same
+        thread) answers from its record and the trace shows ``evaluated: 0``. The result is not an individual:
+        the population, the branch policies, their ``Situation`` and the selection rule never see it.
+        """
+        entry: dict = {"generation": 0, "base": {}}
+        if not self._room(space):
+            entry["base"]["skipped"] = "budget"
+        else:
+            before = space.remaining().max_evaluations
+            found = space.evaluate("base")
+            entry["base"].update(score=list(found.score()), passed=found.passed,
+                                 evaluated=before - space.remaining().max_evaluations)
+        self.trace.append(entry)
+
     @staticmethod
     def _room(space: SearchSpace) -> bool:
         """Every budget dimension is above zero. ``max_dollars`` is present only on a host that prices usage;
@@ -521,14 +583,21 @@ class EvolutionaryProvider:
         return candidate, found.score(), found.passed
 
     def _child(self, space, changes, parents, operator, generation) -> tuple[str, Score, bool] | None:
-        if not changes or not self._room(space):
+        # A proposal discarded here is recorded by the space (``refuse``), one record each: an empty edit as
+        # ``no_change``, one the budget has no room for as ``limit``. The host records its own refusals itself
+        # when ``submit`` raises them; this provider only goes on.
+        if not changes:
+            refuse(space, "no_change", operator, parents, usage=self._usage(operator))
+            return None
+        if not self._room(space):
+            refuse(space, "limit", operator, parents, usage=self._usage(operator))
             return None
         try:
             made = space.submit(changes, parents=[p for p in parents if p != "base"], operator=operator,
                                 message=f"{operator} g{generation}",
                                 signal=self._signal(operator, generation))
         except Rejected as exc:
-            if exc.code in ("no_change", "invalid_change", "duplicate"):
+            if exc.code in ("no_change", "invalid_change", "duplicate", "zero_usage"):
                 return None
             raise
         if not made.in_scope or not self._room(space):
@@ -545,8 +614,23 @@ class EvolutionaryProvider:
                 found["model_usage"] = usage
         return found
 
+    def _usage(self, operator: str) -> dict | None:
+        return getattr(self.mutate, "last_usage", None) if operator == "mutation" else None
+
     def _mutation(self, space, parent, rng, generation):
-        return self._child(space, self.mutate(space, parent, rng), [parent], "mutation", generation)
+        try:
+            changes = self.mutate(space, parent, rng)
+        except Rejected as exc:
+            if exc.code.startswith("provider_"):
+                refuse(space, "provider_error", "mutation", [parent])  # the call failed; the search ends with its code
+            raise
+        if not changes:
+            reason = getattr(self.mutate, "last_reason", "no_change")
+            if reason is None:
+                return None  # the mutator made no call (exhausted): there was no proposal to refuse
+            refuse(space, reason, "mutation", [parent], usage=self._usage("mutation"))
+            return None
+        return self._child(space, changes, [parent], "mutation", generation)
 
     def _crossover(self, space, a: str, b: str, rng, generation):
         ancestor = space.merge_base(a, b)
@@ -696,6 +780,7 @@ class EvolutionaryProvider:
         self._stats = {kind: OperatorStats(dollars=0.0 if priced else None) for kind in ACTION_KINDS if kind != "stop"}
         self._decision = 0
         self.policy.reset()
+        self._base(space)
         generation, ran = 0, True  # generation 0, the initial population, is always recorded
         while True:
             action = self.policy.decide(self._situation(space, people, generation, rng))
@@ -718,6 +803,10 @@ class EvolutionaryProvider:
                     self.trace.append({"generation": generation, "population": [p[0] for p in people], "stopped": action.reason})
                 elif ran:
                     self.trace.append({"generation": generation, "population": [p[0] for p in people]})
+                # The proposals this search refused, counted by reason, as ``search_finished.refused`` would carry
+                # them if that frozen record could grow: the entry before the stop decision carries them instead,
+                # so the stop decision stays the last entry and keeps its shape. {} on a space that keeps no count.
+                self.trace.append({"generation": generation, "refused": dict(getattr(space, "refused", None) or {})})
                 self.trace.append(entry)
                 break
             self.trace.append(entry)
