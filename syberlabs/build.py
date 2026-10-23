@@ -1519,15 +1519,20 @@ class Runner:
     def _settle(self) -> None:
         """Once per pass, when an installed pull-request action's token is in the environment: the settlement
         poll (``syberlabs.settle``) records merges, closes and reviews of the pull requests threads opened. It
-        is not a step: it proposes nothing, and a failed poll records nothing and is reported on stderr."""
+        is not a step: it proposes nothing, and a failed poll records nothing and is reported on stderr. It never
+        changes the pass: an unexpected error of any kind is one stderr line (``settle: <Type>: <message>``, no
+        token) and the pass's steps and exit code are what they were."""
         from syberlabs import settle
-        if not settle.tokens_available(self.kit):
-            return
-        for found in settle.settle(self.kit, thread=self.only):
-            if found.error:
-                print(found.line, file=sys.stderr)
-            else:
-                self.log(found.line)
+        try:
+            if not settle.tokens_available(self.kit):
+                return
+            for found in settle.settle(self.kit, thread=self.only):
+                if found.error:
+                    print(found.line, file=sys.stderr)
+                else:
+                    self.log(found.line)
+        except Exception as exc:
+            print(settle.describe(exc, self.kit), file=sys.stderr)
 
     def _emit(self, step: Step) -> Step:
         self.log(step.line)

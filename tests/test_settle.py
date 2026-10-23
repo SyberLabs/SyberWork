@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import threading
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -35,6 +36,7 @@ class FakeGitHub:
 
     def __init__(self, bare):
         self.bare, self.pulls, self.reviews, self.mode, self.requests = bare, {}, {}, "ok", []
+        self.raw = None             # (status, headers, body bytes) served for a pull request read, when set
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -62,6 +64,14 @@ class FakeGitHub:
                 number = int(one.group(1))
                 if number not in owner.pulls:
                     return self.reply(404, {"message": "Not Found"})
+                if owner.raw is not None and not one.group(2):
+                    status, headers, raw = owner.raw
+                    self.send_response(status)
+                    for name, value in headers.items():
+                        self.send_header(name, value)
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    return self.wfile.write(raw)
                 if one.group(2):
                     page = int(parse_qs(url.query).get("page", ["1"])[0])
                     return self.reply(200, owner.reviews.get(number, []) if page == 1 else [])
@@ -134,6 +144,13 @@ class SettleCase(RepoCase):
         opened = thread.publish("open_pull_request")
         self.assertEqual(opened.status, "succeeded")
         return kit, thread, int(opened.external_id)
+
+    def run_cli(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli(["--repo", str(self.root), "--home", str(self.root / ".syberlabs"),
+                        "--actor", "dev@example.test", *args])
+        return code, out.getvalue(), err.getvalue()
 
     def facts(self, thread, key):
         return [e for e in thread.history() if e["kind"] == "observed" and e["body"]["key"] == key]
@@ -240,13 +257,6 @@ class Poll(SettleCase):
 
 
 class Entry(SettleCase):
-    def run_cli(self, *args):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli(["--repo", str(self.root), "--home", str(self.root / ".syberlabs"),
-                        "--actor", "dev@example.test", *args])
-        return code, out.getvalue(), err.getvalue()
-
     def test_settle_from_the_terminal_and_metrics_check_judges_the_delivered_item(self):
         kit, thread, number = self.published()
         code, out, err = self.run_cli("settle")
@@ -291,6 +301,117 @@ class Entry(SettleCase):
         self.assertEqual(len(self.facts(thread, "pr_merged")), 1)
         self.assertNotIn(TOKEN, "\n".join(lines))
         self.assertSound(thread, "runner settled")
+
+
+class Hardened(SettleCase):
+    """What GitHub answers is untrusted: a malformed, redirected or oversized answer records nothing and never
+    changes what ``syberlabs run`` does."""
+
+    def settled_thread(self):
+        kit, thread, number = self.published()
+        self.github.merge(number, self.at(thread, 60))
+        self.github.review(number, 31, "APPROVED", "bob", self.at(thread, 30))
+        return kit, thread, number
+
+    def assert_refused(self, kit, thread, why, before):
+        [found] = settle.settle(kit)
+        self.assertEqual((found.state, found.recorded), ("unknown", []), why)
+        self.assertIsNotNone(found.error, why)
+        self.assertEqual(len(thread.history()), before, why + ": nothing recorded")
+        self.assertIsNone(self.item(kit, thread).delivered.value, why)
+
+    def baseline(self, kit, thread):
+        """What a pass does with the settlement poll off (no token): the outcome every guarded pass must match."""
+        os.environ.pop(TOKEN_ENV)
+        try:
+            code, out, _err = self.run_cli("run", "--once", "--thread", thread.id[:8])
+            steps = list(Runner(kit, log=lambda line: None).once())
+        finally:
+            os.environ[TOKEN_ENV] = TOKEN
+        return code, out, steps
+
+    def test_malformed_answers_record_nothing_and_leave_run_unchanged(self):
+        kit, thread, number = self.settled_thread()
+        before = len(thread.history())
+        base_code, base_out, base_steps = self.baseline(kit, thread)
+        good = self.github.pulls[number]
+        review = self.github.reviews[number][0]
+        shapes = {
+            "head is a list": lambda: good.update({"head": ["x"]}),
+            "head is a string": lambda: good.update({"head": "x"}),
+            "head.ref is a number": lambda: good.update({"head": {"ref": 5}}),
+            "number is true": lambda: good.update({"number": True}),
+            "number is a string": lambda: good.update({"number": str(number)}),
+            "merged is 1": lambda: good.update({"merged": 1}),
+            "merged_at is an int": lambda: good.update({"merged_at": 1700000000}),
+            "merge_commit_sha is a number": lambda: good.update({"merge_commit_sha": 7}),
+            "merged_by is a string": lambda: good.update({"merged_by": "carol"}),
+            "state is a list": lambda: good.update({"state": ["closed"]}),
+            "review user is a string": lambda: review.update({"user": "bob"}),
+            "review user is a list": lambda: review.update({"user": ["bob"]}),
+            "review state is a number": lambda: review.update({"state": 5}),
+            "review id is true": lambda: review.update({"id": True}),
+        }
+        saved, saved_review = json.loads(json.dumps(good)), json.loads(json.dumps(review))
+        for why, break_it in shapes.items():
+            with self.subTest(why):
+                good.clear(), good.update(json.loads(json.dumps(saved)))
+                review.clear(), review.update(json.loads(json.dumps(saved_review)))
+                break_it()
+                self.assert_refused(kit, thread, why, before)
+                code, out, err = self.run_cli("run", "--once", "--thread", thread.id[:8])
+                self.assertEqual((code, out), (base_code, base_out), why + ": run's outcome is unchanged")
+                self.assertIn("nothing recorded", err, why)
+                self.assertNotIn("Traceback", err, why)
+                steps = list(Runner(kit, log=lambda line: None).once())
+                self.assertEqual(steps, base_steps, why + ": the steps are unchanged")
+                self.assertNotIn(TOKEN, out + err)
+        good.clear(), good.update(saved)
+        review.clear(), review.update(saved_review)
+        [found] = settle.settle(kit)
+        self.assertEqual(found.state, "merged", "the same thread settles once the answer is well formed")
+        self.assertSound(thread, "after malformed answers")
+
+    def test_a_redirect_and_an_oversized_body_are_refused(self):
+        kit, thread, number = self.settled_thread()
+        before = len(thread.history())
+        self.github.raw = (302, {"Location": f"/repos/acme/shop/pulls/{number}"}, b"")
+        self.assert_refused(kit, thread, "redirect", before)
+        self.assertEqual(settle.settle(kit)[0].error, "GitHub answered 302")
+        self.github.raw = (301, {"Location": "http://127.0.0.1:1/elsewhere"}, b"{}")
+        self.assertEqual(settle.settle(kit)[0].error, "GitHub answered 301")
+        pad = b" " * (settle.MAX_BYTES + 1)
+        self.github.raw = (200, {}, json.dumps(self.github.pulls[number]).encode() + pad)
+        self.assert_refused(kit, thread, "oversize", before)
+        self.assertEqual(settle.settle(kit)[0].error, "response too large")
+        self.github.raw = (200, {}, b"[" * 200000)
+        self.assertEqual(settle.settle(kit)[0].error, "unreadable response", "deep nesting is unreadable, not a crash")
+        self.github.raw = None
+        self.assertEqual(settle.settle(kit)[0].state, "merged")
+
+    def test_an_unexpected_error_in_the_pass_never_changes_run(self):
+        kit, thread, number = self.settled_thread()
+        base_code, base_out, base_steps = self.baseline(kit, thread)
+        boom = KeyError(f"api {TOKEN}\nsecond line")
+        with mock.patch.object(settle, "settle", side_effect=boom):
+            code, out, err = self.run_cli("run", "--once", "--thread", thread.id[:8])
+            self.assertEqual((code, out), (base_code, base_out))
+            self.assertEqual(err.count("\n"), 1, "one line on stderr")
+            self.assertTrue(err.startswith("settle: KeyError: "), err)
+            self.assertNotIn(TOKEN, err)
+            self.assertNotIn("Traceback", err)
+            steps = list(Runner(kit, log=lambda line: None).once())
+            self.assertEqual(steps, base_steps)
+            code, out, err = self.run_cli("settle")
+            self.assertEqual((code, out), (1, ""))
+            self.assertTrue(err.startswith("settle: KeyError: ") and err.count("\n") == 1, err)
+            self.assertNotIn(TOKEN, err)
+        with mock.patch.object(settle, "tokens_available", side_effect=RuntimeError("journal")):
+            code, out, err = self.run_cli("run", "--once", "--thread", thread.id[:8])
+            self.assertEqual((code, out, err), (base_code, base_out, "settle: RuntimeError: journal\n"))
+        stored = b"".join(path.read_bytes() for path in (self.root / ".syberlabs").rglob("*") if path.is_file())
+        self.assertNotIn(TOKEN.encode(), stored, "the token is never written")
+        self.assertSound(thread, "after an unexpected error")
 
 
 if __name__ == "__main__":

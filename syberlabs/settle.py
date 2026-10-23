@@ -24,15 +24,19 @@ is added:
   review, ``state`` in GitHub's words lowercased (``approved``, ``changes_requested``, ``commented``,
   ``dismissed``), the shape ``syberlabs.metrics`` reads.
 
-What GitHub answers is untrusted input: the pull request must carry the number asked for and the thread's
-branch as its head, and every recorded field is checked (a login, a 40-hex commit, an ISO 8601 time), or
-nothing is recorded for that pull request. A non-200 answer, a network failure, an unreadable body or a
+What GitHub answers is untrusted input: the pull request must carry the number asked for (an integer, not
+``true``) and the thread's branch as its head, every value read from the answer is checked by type before it is
+used (``head`` an object, ``ref`` a string, ``merged`` a boolean, ``user`` an object or null), and every
+recorded field is checked (a login, a 40-hex commit, an ISO 8601 time), or nothing is recorded for that pull
+request: any shape error is a ``PollFailed``, never another exception. A non-200 answer, a redirect, an
+oversized body, a network failure, an unreadable body or a
 missing token records nothing and is reported (``Settled.error``); an unknown stays unknown. The token is
 read from the environment for the request and is never written, printed or put in an error.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -109,7 +113,7 @@ def published(kit, case_id: str, events: list[dict] | None = None) -> list[Publi
             continue
         doc = kit.session.actions.get(body.get("action")) or {}
         external = str((output or {}).get("external_id") or "") if isinstance(output, dict) else ""
-        if doc.get("effect") != EFFECT or not external.isdigit():
+        if doc.get("effect") != EFFECT or not (external.isascii() and external.isdigit()):
             continue
         number = int(external)
         found[number] = Published(case_id, number, body["action"], doc["api"].rstrip("/"), doc["repository"],
@@ -122,6 +126,22 @@ def tokens_available(kit, environ: Mapping[str, str] | None = None) -> bool:
     environ = os.environ if environ is None else environ
     return any(doc.get("effect") == EFFECT and environ.get(doc.get("token_env") or "")
                for doc in kit.session.actions.values())
+
+
+def describe(exc: BaseException, kit, environ: Mapping[str, str] | None = None) -> str:
+    """One stderr line for an unexpected error in a pass: ``settle: <Type>: <message>``, with the value of every
+    installed action's token variable removed, on one line and bounded. Used where a pass must not raise."""
+    environ = os.environ if environ is None else environ
+    message = " ".join(str(exc).split())
+    try:
+        names = {doc.get("token_env") for doc in kit.session.actions.values() if isinstance(doc, dict)}
+    except Exception:
+        names = set()
+    for name in sorted(n for n in names if isinstance(n, str)):
+        token = environ.get(name)
+        if token:
+            message = message.replace(token, "***")
+    return f"settle: {type(exc).__name__}: {message[:300]}"
 
 
 def _get(target: Published, token: str, path: str, timeout: float):
@@ -143,21 +163,33 @@ def _get(target: Published, token: str, path: str, timeout: float):
     except (urllib.error.URLError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
         raise PollFailed(f"network failure ({type(reason).__name__})") from None
+    except http.client.HTTPException as exc:
+        raise PollFailed(f"network failure ({type(exc).__name__})") from None
     if len(raw) > MAX_BYTES:
         raise PollFailed("response too large")
     try:
         return json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise PollFailed("unreadable response") from None
 
 
 def _login(user) -> str | None:
-    login = user.get("login") if isinstance(user, dict) else None
-    if login is None:
+    """The login of a user object; None for a null user (a deleted account). Anything else is a shape error."""
+    if user is None:
         return None
+    login = user.get("login") if isinstance(user, dict) else None
     if not isinstance(login, str) or not _LOGIN.match(login):
         raise PollFailed("unexpected login in the response")
     return login
+
+
+def _int(value) -> bool:
+    return type(value) is int
+
+
+def _optional_time(value) -> str | None:
+    """A time GitHub may leave null; a present one is checked like any other."""
+    return None if value is None else _time(value)
 
 
 def _time(value) -> str:
@@ -181,9 +213,11 @@ def _reviews(target: Published, token: str, timeout: float) -> list[dict]:
 
 def _review_value(target: Published, review) -> dict | None:
     """``pr_review`` for one submitted review; None for a pending one (not submitted, not GitHub's record yet)."""
-    if not isinstance(review, dict) or type(review.get("id")) is not int or review["id"] <= 0:
+    if not isinstance(review, dict) or not _int(review.get("id")) or review["id"] <= 0:
         raise PollFailed("unexpected review in the response")
-    state = str(review.get("state") or "").lower()
+    if not isinstance(review.get("state"), str):
+        raise PollFailed("unexpected review state in the response")
+    state = review["state"].lower()
     if state == "pending":
         return None
     if state not in REVIEW_STATES:
@@ -209,17 +243,23 @@ def poll(kit, target: Published, *, environ: Mapping[str, str] | None = None,
         return Settled(target.thread, target.number, "unknown", error=f"${target.token_env} is not set")
     try:
         pull = _get(target, token, f"/repos/{target.repository}/pulls/{target.number}", timeout)
-        if not isinstance(pull, dict) or pull.get("number") != target.number:
+        if not isinstance(pull, dict) or not _int(pull.get("number")) or pull["number"] != target.number:
             raise PollFailed("the response is not the pull request asked for")
-        if (pull.get("head") or {}).get("ref") != target.branch:
+        head = pull.get("head")
+        if not isinstance(head, dict) or not isinstance(head.get("ref"), str):
+            raise PollFailed("unexpected head in the response")
+        if head["ref"] != target.branch:
             raise PollFailed(f"the pull request's head is not {target.branch}")
+        if type(pull.get("merged")) not in (bool, type(None)) or not isinstance(pull.get("state"), str):
+            raise PollFailed("unexpected pull request state in the response")
+        merged_at = _optional_time(pull.get("merged_at"))
         reviews = [v for v in (_review_value(target, r) for r in _reviews(target, token, timeout)) if v is not None]
         merged = closed = None
-        if pull.get("merged") is True or pull.get("merged_at"):
+        if pull.get("merged") is True or merged_at:
             commit = pull.get("merge_commit_sha")
             if not isinstance(commit, str) or not _SHA.match(commit):
                 raise PollFailed("unexpected merge commit in the response")
-            merged = {"number": target.number, "merged_at": _time(pull.get("merged_at")), "merge_commit": commit,
+            merged = {"number": target.number, "merged_at": _time(merged_at), "merge_commit": commit,
                       "merged_by": _login(pull.get("merged_by"))}
         elif pull.get("state") == "closed":
             closed = {"number": target.number, "closed_at": _time(pull.get("closed_at"))}

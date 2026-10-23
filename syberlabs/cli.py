@@ -338,7 +338,13 @@ def _metrics(args, kit: Kit | None) -> int:
 def _settle(kit: Kit, args) -> int:
     """``syberlabs settle``: one settlement pass. Exit 0 when every pull request was read, 1 when one was not."""
     from syberlabs import settle
-    found = settle.settle(kit, thread=args.settle_thread or args.thread)
+    try:
+        found = settle.settle(kit, thread=args.settle_thread or args.thread)
+    except Rejected:
+        raise
+    except Exception as exc:
+        print(settle.describe(exc, kit), file=sys.stderr)
+        return 1
     for item in found:
         print(item.line, file=sys.stderr if item.error else sys.stdout)
     if not found:
