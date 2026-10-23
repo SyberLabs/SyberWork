@@ -1,10 +1,13 @@
 """``syberlabs run``: every open thread's next safe step, from the journal, idempotent across restarts."""
 
 import contextlib
+import inspect
 import io
 import json
+import re
 import subprocess
 import time
+import types
 import unittest
 from unittest.mock import patch
 
@@ -225,6 +228,22 @@ class Restarts(RunnerCase):
         self.assertFalse(any(s.taken for s in runner.once()), "nothing left")
 
 
+def _interrupt(seconds):
+    raise KeyboardInterrupt
+
+
+def _time_seen_by_build(**names):
+    """A ``time`` for ``syberlabs.build`` alone: the real module's functions, with ``names`` replaced.
+
+    Patching ``sleep`` through ``build.time`` patches the ``time`` module itself, process-wide, and on
+    POSIX ``subprocess.Popen.wait`` polls with ``time.sleep``, so a ``KeyboardInterrupt`` placed there was
+    raised inside a git call instead of the run loop (Linux 3.12 CI, 2026-10-22). Every ``time.<name>``
+    that build.py calls is provided, so a use this test does not reach still resolves.
+    """
+    used = set(re.findall(r"(?<![\w.])time\.(\w+)\(", inspect.getsource(build)))
+    return types.SimpleNamespace(**{name: getattr(time, name) for name in used} | names)
+
+
 class Terminal(RunnerCase):
     def run_cli(self, *args):
         out, err = io.StringIO(), io.StringIO()
@@ -283,7 +302,7 @@ class Terminal(RunnerCase):
     def test_a_loop_stops_cleanly_on_interrupt_and_an_unexpected_error_exits_two(self):
         self.assertEqual(self.run_cli("init")[0], 0)
         self.run_cli("start", "Add a CSV export", "--paths", "src", "tests")
-        with patch.object(build.time, "sleep", side_effect=KeyboardInterrupt):
+        with patch.object(build, "time", _time_seen_by_build(sleep=_interrupt)):
             code, out, _ = self.run_cli("run", "--interval", "0")
         self.assertEqual(code, 0)
         self.assertIn("nothing left to do", out)
