@@ -145,14 +145,23 @@ class FixedPolicy:
     the generations are used up, there is no room, an individual passes (with
     ``stop_when_passing``) or the population is empty, and inside a crossover round
     when the mutator is exhausted and recombination improved nothing.
+
+    Revision ``"2"`` (``stop_on_first_pass=True``) adds one rule before the fill is
+    complete: the host already judges every seed and every child from ``base`` the
+    moment it is made, so with ``stop_when_passing`` the first one that passes ends
+    the search at generation 0 instead of after the population is full. Revision
+    ``"1"`` (``stop_on_first_pass=False``, the default) is the loop as it was, in
+    which the passing check runs only at the top of a generation.
     """
 
     name, revision = "fixed", "1"
 
     def __init__(self, *, population: int, generations: int, crossover_every: int, seeds: Sequence[str] = (),
-                 stop_when_passing: bool = True, migrate_every: int = 0):
+                 stop_when_passing: bool = True, migrate_every: int = 0, stop_on_first_pass: bool = False):
         self.population, self.generations, self.crossover_every = population, generations, crossover_every
         self.seeds, self.stop_when_passing, self.migrate_every = tuple(seeds)[:population], stop_when_passing, migrate_every
+        self.stop_on_first_pass = stop_on_first_pass
+        self.revision = "2" if stop_on_first_pass else "1"
         self.reset()
 
     def reset(self) -> None:
@@ -171,6 +180,9 @@ class FixedPolicy:
         while True:
             if self._pending:
                 return self._pending.pop(0)
+            if (self._phase in ("seeds", "fill") and self.stop_on_first_pass and self.stop_when_passing
+                    and any(p.passed for p in s.population)):
+                return Stop("passing", 0)  # revision 2: a passing seed or first child ends the search before the fill
             if self._phase == "seeds":
                 while self._seed_index < len(self.seeds):
                     seed = self.seeds[self._seed_index]
@@ -232,7 +244,8 @@ class EvolutionaryProvider:
     def __init__(self, mutate: Mutator | Callable, *, population: int = 4, generations: int = 6,
                  crossover_every: int = 3, accept_ours: float = 0.5, seeds: Sequence[str] = (),
                  stop_when_passing: bool = True, name: str = "evolutionary", revision: str = "1",
-                 exchange=None, migrate_every: int = 0, migrants: int = 1, policy: BranchPolicy | None = None):
+                 exchange=None, migrate_every: int = 0, migrants: int = 1, policy: BranchPolicy | None = None,
+                 stop_on_first_pass: bool = False):
         if population < 2 or generations < 1 or crossover_every < 1 or not 0 <= accept_ours <= 1:
             raise Rejected("invalid_provider", "population >= 2, generations >= 1, crossover_every >= 1, 0 <= accept_ours <= 1")
         if exchange is not None and (migrate_every < 1 or migrants < 1):
@@ -242,10 +255,12 @@ class EvolutionaryProvider:
         self.mutate, self.population, self.generations = mutate, population, generations
         self.crossover_every, self.accept_ours, self.seeds = crossover_every, accept_ours, tuple(seeds)
         self.stop_when_passing, self.name, self.revision = stop_when_passing, name, revision
+        self.stop_on_first_pass = stop_on_first_pass  # read by the default FixedPolicy only; a given policy keeps its own rule
         self.trace: list[dict] = []
         self.policy = policy if policy is not None else FixedPolicy(
             population=population, generations=generations, crossover_every=crossover_every, seeds=self.seeds,
-            stop_when_passing=stop_when_passing, migrate_every=migrate_every if exchange is not None else 0)
+            stop_when_passing=stop_when_passing, migrate_every=migrate_every if exchange is not None else 0,
+            stop_on_first_pass=stop_on_first_pass)
         if (not isinstance(self.policy, BranchPolicy) or not isinstance(self.policy.name, str)
                 or not _NAME.match(self.policy.name) or not isinstance(self.policy.revision, str)
                 or not 0 < len(self.policy.revision) <= 128):

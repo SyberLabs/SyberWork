@@ -321,15 +321,24 @@ class BranchPolicySeam(unittest.TestCase):
             seed, options = case[0], dict(zip(OPTIONS, case[1:]))
             with self.subTest(seed=seed):
                 _kit, thread = self.fixture(f"main-{seed}")
-                provider = EvolutionaryProvider(RuleMutator(), **options)
+                provider = EvolutionaryProvider(RuleMutator(), **options, stop_on_first_pass=False)
                 thread.propose(provider, seed=seed)
                 self.assertEqual(outcome(thread, provider), want)
+                self.assertEqual(provider.policy.revision, "1")
+        # Revision 2 differs only when a seed or a fill child passes; no fill child does in the recordings.
+        case = (3, 4, 50, 3, True)
+        _kit, thread = self.fixture("main-3-rev2")
+        provider = EvolutionaryProvider(RuleMutator(), **dict(zip(OPTIONS, case[1:])), stop_on_first_pass=True)
+        thread.propose(provider, seed=case[0])
+        self.assertEqual(outcome(thread, provider), EXPECTED[case])
+        self.assertEqual(provider.policy.revision, "2")
 
     def test_fixed_policy_matches_the_legacy_loop_side_by_side(self):
         for case, want in EXPECTED.items():
             seed, options = case[0], dict(zip(OPTIONS, case[1:]))
             with self.subTest(seed=seed):
-                legacy, policy = self.side_by_side(f"recorded-{seed}", seed, lambda cls: cls(RuleMutator(), **options))
+                legacy, policy = self.side_by_side(f"recorded-{seed}", seed,
+                                                   lambda cls: cls(RuleMutator(), **options, stop_on_first_pass=False))
                 self.assertEqual(legacy, policy)
                 self.assertEqual(legacy, want, "the verbatim copy itself matches the recording from main")
         script = self.folder / "model.py"
@@ -346,23 +355,68 @@ class BranchPolicySeam(unittest.TestCase):
 
         with self.subTest(case="exhausted"):  # three calls: the fill, one passing child, one no_change; then crossover finds nothing
             legacy, policy = self.side_by_side(
-                "exhausted", 5, lambda cls: cls(model(3), population=2, generations=8, seeds=["c1"], stop_when_passing=False),
-                discount_and_tax)
+                "exhausted", 5, lambda cls: cls(model(3), population=2, generations=8, seeds=["c1"], stop_when_passing=False,
+                                                stop_on_first_pass=False), discount_and_tax)
             self.assertEqual(legacy, policy)
             self.assertEqual(legacy["trace"][-1].get("stopped"), "exhausted", "the case drives the exhausted stop")
             self.assertEqual(len(legacy["trace"][-1]["population"]), 2)
         with self.subTest(case="exhausted-one-slot"):  # the one call duplicates the seed: a crossover round with no pair
             legacy, policy = self.side_by_side(
-                "lone", 6, lambda cls: cls(model(1), population=2, generations=3, seeds=["c1"], stop_when_passing=False), shipping)
+                "lone", 6, lambda cls: cls(model(1), population=2, generations=3, seeds=["c1"], stop_when_passing=False,
+                                           stop_on_first_pass=False), shipping)
             self.assertEqual(legacy, policy)
             self.assertEqual([(e["generation"], e["population"], e.get("stopped")) for e in legacy["trace"]],
                              [(0, ["c1"], None), (1, ["c1"], "exhausted")])
         with self.subTest(case="empty-rounds"):  # a mutator that never produces: every round is a crossover over one slot
             legacy, policy = self.side_by_side(
                 "idle", 1, lambda cls: cls(lambda space, parent, rng: None, population=2, generations=3, crossover_every=1,
-                                           seeds=["c1"], stop_when_passing=False), shipping)
+                                           seeds=["c1"], stop_when_passing=False, stop_on_first_pass=False), shipping)
             self.assertEqual(legacy, policy)
             self.assertEqual([e["generation"] for e in legacy["trace"]], [0, 1, 2, 3])
+
+    def test_a_passing_first_child_ends_the_search_under_revision_2(self):
+        """Revision 2 stops the moment a seed or a child from base passes; revision 1 fills the population first."""
+        class Solver:
+            name = "solver"
+
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, space, parent, rng):
+                self.calls += 1  # a distinct passing tree each call, so no child is refused as a duplicate
+                return {"src/pricing.py": fix(PRICING, "discount", "tax", "shipping") + f"# {self.calls}\n"}
+
+        def search(name, **options):
+            _kit, thread = self.fixture(name)
+            if options.pop("seeded", False):
+                thread.propose(changes={"src/pricing.py": fix(PRICING, "discount", "tax", "shipping")})
+                options["seeds"] = ["c1"]
+            mutator = Solver()
+            provider = EvolutionaryProvider(mutator, population=4, generations=6, crossover_every=3, **options)
+            found = thread.propose(provider, seed=7)
+            finished = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
+            stop = provider.trace[-1]
+            return mutator.calls, finished["evaluations"], finished["stopped"], finished["recommended"], stop, found
+
+        calls, evaluations, stopped, recommended, stop, found = search("first-child-rev2", stop_on_first_pass=True)
+        self.assertEqual((calls, evaluations, stopped, recommended), (1, 1, "completed", ["c1"]))
+        self.assertEqual(stop, {"decision": 2, "generation": 0, "policy": {"name": "fixed", "revision": "2"},
+                                "action": "stop", "reason": "passing"})
+        self.assertEqual(found[0].signal["policy"], {"name": "fixed", "revision": "2", "decision": 1})
+
+        calls, evaluations, stopped, recommended, stop, _found = search("first-child-rev1", stop_on_first_pass=False)
+        self.assertEqual((calls, evaluations, stopped, recommended), (4, 4, "completed", ["c1", "c2", "c3", "c4"]))
+        self.assertEqual((stop["generation"], stop["reason"], stop["policy"]["revision"]), (1, "passing", "1"))
+
+        calls, evaluations, stopped, recommended, stop, found = search("seed-rev2", seeded=True, stop_on_first_pass=True)
+        # The host records a recommendation only among the candidates this search submitted; a seed registers nothing.
+        self.assertEqual((calls, evaluations, stopped, recommended, found), (0, 1, "completed", [], []))
+        self.assertEqual((stop["decision"], stop["generation"], stop["reason"]), (2, 0, "passing"))
+
+        calls, evaluations, stopped, recommended, stop, _found = search("seed-rev1", seeded=True, stop_on_first_pass=False)
+        self.assertEqual((calls, evaluations, stopped), (3, 4, "completed"))
+        self.assertEqual((stop["generation"], stop["reason"]), (1, "passing"))
+        self.assertEqual(EvolutionaryProvider(Solver()).policy.revision, "1", "the default is the legacy rule")
 
     def test_every_decision_is_recorded_and_the_situation_counts_outcomes(self):
         class Watching(FixedPolicy):
