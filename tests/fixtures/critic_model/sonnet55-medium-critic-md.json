@@ -1,0 +1,47 @@
+{
+  "container": null,
+  "content": [
+    {
+      "text": "{\"findings\":[{\"severity\":\"high\",\"file\":\"docs/CRITIC.md\",\"line\":null,\"claim\":\"The docs promise `tests/test_critic_model.py` and a recorded call in `tests/fixtures/critic_model/` (with a measured `usage`), but the change adds neither. The replay mode has no test and no fixture, and the 'measured number' claim has nothing behind it. The objective asks for a replayable offline mode for tests.\",\"falsifier\":\"`tests/test_critic_model.py` and `tests/fixtures/critic_model/` exist in the candidate tree, and the fixture holds a recorded response with a `usage` field.\",\"acceptance_ref\":\"accepted\"},{\"severity\":\"medium\",\"file\":\"examples/critic_model.py\",\"line\":59,\"claim\":\"The reviewer revision is built from the module-level MODEL and EFFORT, which are read from the environment at import time. The docs say the identity is `<model>@<effort>@1`, but under the host's scrubbed environment (documented as passing no `SYBERLABS_*` variable) it is always the defaults. In replay mode the identity can therefore differ from the model that actually produced the recorded response, and normalize ignores the served model.\",\"falsifier\":\"A replay run with SYBERLABS_CRITIC_MODEL unset, of a response recorded with another model, shows `reviewer.revision` as the default model name and not the recorded one.\",\"acceptance_ref\":null},{\"severity\":\"medium\",\"file\":\"examples/critic_model.py\",\"line\":207,\"claim\":\"The stop_reason check accepts only `end_turn`, and replayed responses go through `_namespace`, which turns dicts into SimpleNamespace. A fallback-served or `stop_sequence` response, or a recorded response without a `usage` object, would crash `review` with an uncaught AttributeError (traceback, exit 1) and not the documented exit 2 with one line. `usage_of` reads `response.usage` with no guard.\",\"falsifier\":\"Replaying a JSON file with no `usage` key produces a traceback and exit code 1, not a one-line stderr message and exit code 2.\",\"acceptance_ref\":null},{\"severity\":\"low\",\"file\":\"examples/critic_model.py\",\"line\":233,\"claim\":\"The summary is truncated with `[:MAX_SUMMARY - len(suffix)]`. If the suffix were longer than the cap, the index would go negative and the slice would be wrong. Separately, `findings` that name a file outside the changed paths are only noted and not dropped.\",\"falsifier\":\"A finding for a file outside `changed_paths` still appears in the output document.\",\"acceptance_ref\":null}],\"summary\":\"The critic adapter looks sound, but the docs reference a test file and a recorded fixture that the change does not add, so the replay claim is unverified. There are also some edge-case error-handling gaps.\"}",
+      "type": "text"
+    }
+  ],
+  "diagnostics": null,
+  "id": "msg_011CgF7nE3fYkvTKnjUFMYge",
+  "model": "claude-sonnet-5-5",
+  "role": "assistant",
+  "stop_details": null,
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "type": "message",
+  "usage": {
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "inference_geo": "global",
+    "input_tokens": 9705,
+    "iterations": [
+      {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "input_tokens": 9705,
+        "model": null,
+        "output_tokens": 937,
+        "type": "message"
+      }
+    ],
+    "output_tokens": 937,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "service_tier": "standard",
+    "speed": "standard"
+  }
+}
