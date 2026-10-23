@@ -105,8 +105,6 @@ def respond(request: dict, cwd: Path) -> dict:
         body = {"changes": mutate_with_profile(fixture, dict(request.get("files") or {}), cwd, rng, PROFILES[profile],
                                                request.get("parent") == "base")}
     elif request["protocol"] == "syberlabs.mutate/v0alpha1":
-        # ``feedback`` (the parent's check results, since 2026-10-22) is ignored on purpose, under every
-        # profile: the stand-in rolls one slot, it does not read; nothing simulated is about a model.
         files = dict(request.get("files") or {})
         slot = rng.choice(fixture["slots"])
         text = files.get(slot["path"]) or (cwd / slot["path"]).read_text()

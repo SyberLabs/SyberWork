@@ -40,6 +40,10 @@ from syberlabs.session import NoWrite
 
 EXAMPLES = int(os.environ.get("SYBERLABS_PROPERTY_EXAMPLES", "150"))
 MAX_OPERATIONS = 60
+# The profile keeps the deadline off for every Hypothesis test in this process, decorated or not;
+# PROPERTY inherits from it.
+settings.register_profile("syberlabs", deadline=None)
+settings.load_profile("syberlabs")
 PROPERTY = settings(
     max_examples=EXAMPLES,
     deadline=None,

@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from spec.validate import validate_events
-from syberlabs.events import verify_events
 from syberlabs import Rejected
 from syberlabs import checks as runner
 from syberlabs.build import GitRefEffect, Kit, default_contract, detect_checks
@@ -389,106 +388,6 @@ class Search(RepoCase):
         with self.assertRaises(Rejected):
             thread.propose(FunctionProvider(lambda s: [s.submit({"src/x.py": "x"}, operator="mutation").id],
                                             name="sneaky", revision="1", operators=("mutation",)))
-
-    def test_every_proposal_the_host_refuses_leaves_one_record(self):
-        """The host's own refusals (an unchanged tree, a duplicate, an unparsable edit, the candidate budget) are each
-        one verified ``proposal_refused`` observation versioned by the search; registration is otherwise unchanged."""
-        kit = self.kit(self.contract(**{"evolution.budget": {"max_candidates": 2, "max_evaluations": 2}}))
-        thread = kit.start("Add a CSV export")
-        base_report = (self.root / "src" / "report.py").read_text()
-        seen = []
-
-        def tries(space):
-            with self.assertRaises(Rejected) as caught:  # the refusal API refuses a word outside the closed set, unrecorded
-                space.refuse("bored", operator="patch")
-            self.assertEqual(caught.exception.code, "invalid_refusal")
-            attempts = [({"src/report.py": base_report}, "no_change"), (GOOD, None), (GOOD, "duplicate"),
-                        ({}, "invalid_change"), ({"src/other.py": "x = 1\n"}, None), ({"src/third.py": "y = 2\n"}, "stopped")]
-            for changes, expected in attempts:
-                try:
-                    space.submit(changes, operator="patch", signal={"model_usage": {"input_tokens": 5, "output_tokens": 7, "model": "m"}})
-                    seen.append(None)
-                except Rejected as exc:
-                    seen.append(exc.code)
-                except Exception as exc:  # SearchStopped is the host's; the provider sees it end the search
-                    seen.append("stopped")
-                    raise
-
-        found = thread.propose(FunctionProvider(tries, name="tries", revision="1"))
-        self.assertEqual(seen, ["no_change", None, "duplicate", "invalid_change", None, "stopped"])
-        self.assertEqual([c.id for c in found], ["c1", "c2"])
-        events = thread.history()
-        self.assertEqual(validate_events(events, "refused"), [])
-        self.assertTrue(verify_events(events))
-        records = [e for e in events if e["kind"] == "observed" and e["body"]["key"] == "proposal_refused"]
-        self.assertEqual([r["body"]["value"]["reason"] for r in records], ["no_change", "duplicate", "unparsable", "limit"])
-        for record in records:
-            body = record["body"]
-            self.assertEqual((body["source"], body["version"], body["verified"], body["actor"]), ("syberlabs.host", "s1", True, "syberlabs.host"))
-            value = body["value"]
-            self.assertEqual((value["search"], value["operator"], value["parents"]), ("s1", "patch", ["base"]))
-            self.assertEqual(value["model_usage"], {"input_tokens": 5, "output_tokens": 7, "model": "m"}, "declared, reduced, kept as a claim")
-            self.assertIsNone(value["spend"], "no prices, no spend record")
-        by_reason = {r["body"]["value"]["reason"]: r["body"]["value"] for r in records}
-        self.assertEqual(by_reason["no_change"]["diff"]["bytes"], 0)
-        self.assertGreater(by_reason["duplicate"]["diff"]["bytes"], 0, "the duplicate parsed: its diff is named")
-        registered = next(e["body"] for e in events if e["kind"] == "candidate_registered" and e["body"]["id"] == "c1")
-        self.assertEqual(by_reason["duplicate"]["diff"], {"digest": registered["diff"]["digest"], "bytes": registered["diff"]["bytes"]},
-                         "a duplicate of c1 from base has c1's diff against base")
-        self.assertIsNone(by_reason["unparsable"]["diff"], "nothing parsed")
-        self.assertIsNone(by_reason["limit"]["diff"], "the host did not commit a proposal it had no room for")
-        self.assertNotIn("import csv", json.dumps(records), "no file content in any record")
-        search = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
-        self.assertEqual((search["stopped"], search["candidates"]), ("budget_exhausted", ["c1", "c2"]))
-        self.assertEqual(set(search), {"id", "stopped", "candidates", "recommended", "evaluations", "elapsed_ms", "error", "actor"})
-
-    def test_a_migrant_outside_the_base_is_refused_out_of_scope(self):
-        kit = self.kit(self.contract(**{"evolution.operators": ["patch", "migration"]}))
-        thread = kit.start("Add a CSV export")
-        tree = git(self.root, "rev-parse", "HEAD^{tree}")
-        stranger = git(self.root, "commit-tree", tree, "-m", "a root of its own")  # in the repository, not of this base
-        codes = []
-
-        def migrate(space):
-            for commit in (stranger, "f" * 40):
-                try:
-                    space.migrate(commit, origin={"host": "elsewhere", "candidate": "c9"})
-                except Rejected as exc:
-                    codes.append(exc.code)
-
-        thread.propose(FunctionProvider(migrate, name="migrator", revision="1", operators=("migration",)))
-        self.assertEqual(codes, ["migration_base_mismatch", "migration_unavailable"])
-        records = [e["body"]["value"] for e in thread.history() if e["kind"] == "observed" and e["body"]["key"] == "proposal_refused"]
-        self.assertEqual([(r["reason"], r["operator"], r["parents"], r["diff"]) for r in records],
-                         [("out_of_scope", "migration", [], None), ("provider_error", "migration", [], None)])
-        self.assertEqual(validate_events(thread.history(), "migrant"), [])
-
-    def test_command_provider_records_what_it_drops_itself(self):
-        script = self.root.parent / "many.py"
-        script.write_text(textwrap.dedent(f'''\
-            import json, sys
-            json.load(sys.stdin)
-            items = [{{"changes": {{"src/v{{}}.py".format(n): "n = {{}}\\n".format(n)}}}} for n in range(4)]
-            if "broken" in sys.argv:
-                items[1] = {{"changes": "not an object"}}
-            print(json.dumps({{"candidates": items, "recommended": [0], "usage": {{"input_tokens": 9, "output_tokens": 9, "model": "m"}}}}))
-            '''))
-        kit = self.kit(self.contract(**{"evolution.budget": {"max_candidates": 3, "max_evaluations": 3}}))
-        thread = kit.start("Add a CSV export")
-        found = thread.propose(CommandProvider([PY, str(script)], name="many"))
-        self.assertEqual([c.id for c in found], ["c1", "c2", "c3"])
-        records = [e["body"]["value"] for e in thread.history() if e["kind"] == "observed" and e["body"]["key"] == "proposal_refused"]
-        self.assertEqual([(r["reason"], r["operator"], r["parents"], r["model_usage"]) for r in records],
-                         [("limit", "patch", ["base"], {"input_tokens": 9, "output_tokens": 9, "model": "m"})],
-                         "the fourth candidate was beyond the search's budget and never submitted")
-        other = kit.start("Add a CSV export")
-        other.propose(CommandProvider([PY, str(script), "broken"], name="many"))
-        events = other.history()
-        search = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
-        self.assertEqual((search["stopped"], search["error"], search["candidates"]), ("error", "provider_shape", ["c1"]))
-        later = [e["body"]["value"]["reason"] for e in events if e["kind"] == "observed" and e["body"]["key"] == "proposal_refused"]
-        self.assertEqual(later, ["unparsable"], "the first item registered, the second was unparsable and ended the search")
-        self.assertEqual(validate_events(events, "command"), [])
 
     def test_command_provider_is_the_model_seam(self):
         script = self.root.parent / "adapter.py"

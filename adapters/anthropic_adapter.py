@@ -10,9 +10,7 @@ two protocols the kit uses:
 - ``syberlabs.search/v0alpha1`` (CommandProvider): propose one patch; an
   optional ``feedback`` object carries a parent candidate's files and failing
   check output for iterative repair;
-- ``syberlabs.mutate/v0alpha1`` (CommandMutator): rewrite part of one parent; an
-  optional ``feedback`` object carries the host's check results for that parent
-  in the same shape, so a mutation of a failing parent is asked to fix it.
+- ``syberlabs.mutate/v0alpha1`` (CommandMutator): rewrite part of one parent.
 
 The response carries ``usage`` (tokens and the model that served the call) so
 the host can account cost. The model only proposes: whatever it returns is a
@@ -86,34 +84,20 @@ def _files(request: dict, cwd: Path) -> dict[str, str]:
     return found
 
 
-def failing_checks(feedback: dict | None) -> str:
-    """The checks in a ``feedback`` object that did not pass, one block each, the last 2000 characters of
-    each output tail. Empty when there is no feedback or every check passed. Both protocols quote this."""
-    return "\n".join(f"--- {c['name']} ({c['state']})\n{c.get('output_tail', '')[-2000:]}"
-                     for c in (feedback or {}).get("checks", []) if c.get("state") != "passed")
-
-
 def build_prompt(request: dict, cwd: Path) -> str:
     """The user turn for either protocol. Pure, so it can be tested without the SDK."""
     protocol = request.get("protocol")
     if protocol == "syberlabs.mutate/v0alpha1":
         files = request.get("files", {})
-        failing = failing_checks(request.get("feedback"))
-        if failing:
-            # The parent's failing checks give the mutation a direction (E3 v3, 2026-10-22: repair converged in
-            # two calls on what the evolve arms never solved, because only repair saw the host's results).
-            task = ("This candidate did not pass the host's checks. Fix it. Failing checks:\n" + failing
-                    + "\n\nMake one focused change toward the objective that fixes them, as a mutation of this "
-                    f"candidate. Candidate: {request.get('parent')}; seed {request.get('seed')}.")
-        else:
-            task = ("Make one focused change toward the objective, as a mutation of this candidate. "
-                    f"Candidate: {request.get('parent')}. Vary your approach; seed {request.get('seed')}.")
+        task = ("Make one focused change toward the objective, as a mutation of this candidate. "
+                f"Candidate: {request.get('parent')}. Vary your approach; seed {request.get('seed')}.")
     elif protocol == "syberlabs.search/v0alpha1":
         feedback = request.get("feedback")
         if feedback:
             files = feedback.get("files", {})
-            task = ("The previous attempt below did not pass the host's checks. Fix it. Failing checks:\n"
-                    + failing_checks(feedback))
+            failing = "\n".join(f"--- {c['name']} ({c['state']})\n{c.get('output_tail', '')[-2000:]}"
+                                for c in feedback.get("checks", []) if c.get("state") != "passed")
+            task = ("The previous attempt below did not pass the host's checks. Fix it. Failing checks:\n" + failing)
         else:
             files = _files(request, cwd)
             task = "Propose one patch that meets the objective."

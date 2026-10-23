@@ -38,9 +38,9 @@ from syberlabs.evolution import clean_path, in_scope, latest_evaluation, priced,
 from syberlabs.gitspace import CANDIDATE_REFS, MAX_FILE_BYTES, GitError, Repo
 from syberlabs.journal import Journal
 from syberlabs import retention
-from syberlabs.providers import PatchProvider, metered, model_usage
+from syberlabs.providers import PatchProvider, metered
 from syberlabs.retrieval import Excerpt, context_digest, select
-from syberlabs.search import REFUSAL_REASONS, Budget, Candidate, CheckResult, Evaluation, MergeResult, SearchProvider
+from syberlabs.search import Budget, Candidate, CheckResult, Evaluation, MergeResult, SearchProvider
 from syberlabs.session import NoWrite, Session
 
 HOST = "syberlabs.host"
@@ -60,39 +60,6 @@ PUBLISH_EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
 # an acceptable candidate only on such a thread. It is an observation, not a case input, because
 # the contract inputs are objective and act_class and a new input would be a contract change.
 UNATTENDED = "unattended"
-BASE_EVALUATION = "base_evaluation"  # observed: the host's checks on the thread's base tree, versioned by the base commit
-PROPOSAL_REFUSED = "proposal_refused"  # observed: a proposal discarded before candidate_registered, versioned by the search id
-# The host's own refusal codes, as the closed reason set names them. Any other code ends the search and is not a refusal.
-_REFUSAL_CODES = {"no_change": "no_change", "duplicate": "duplicate", "invalid_change": "unparsable", "zero_usage": "zero_usage",
-                  "already_imported": "duplicate", "migration_base_mismatch": "out_of_scope",
-                  "migration_unavailable": "provider_error"}
-_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-
-
-def zero_usage(usage: Any) -> bool:
-    """A declared ``model_usage`` that names a model and zero tokens of every kind, and is not simulated.
-
-    Such a call bought nothing from a metered model: the proposal it carries is refused (``zero_usage``), not
-    registered. A simulated adapter's usage (``simulated: true``) is exempt; the contract has no field that marks a
-    provider unmetered (the ``v0alpha1`` evolution schema is frozen), so the simulated flag is the only exemption.
-    """
-    if not isinstance(usage, Mapping) or not isinstance(usage.get("model"), str) or usage.get("simulated") is True:
-        return False
-    tokens = [usage.get("input_tokens"), usage.get("output_tokens")]
-    cached = [usage.get("cache_read_input_tokens"), usage.get("cache_creation_input_tokens")]
-    return (all(type(n) is int and n == 0 for n in tokens)
-            and all(n is None or (type(n) is int and n == 0) for n in cached))
-
-
-def _refused(code: str, detail: str, repo, parent: str, commit: str) -> Rejected:
-    """A host refusal of a proposal that parsed and was committed: the exception carries the diff's digest and size,
-    against the tree the proposal edited, so the refusal record can name the proposal without its content."""
-    exc = Rejected(code, detail)
-    _, size, sha = repo.diff(parent, commit, max_bytes=0)
-    exc.diff = {"digest": sha, "bytes": size}
-    return exc
-
-
 # The runner re-runs a check whose evidence would have less than this many seconds of life left
 # at accept time (bounded by half the contract's max_age_seconds), rather than trip the kernel's
 # candidate_evidence_stale refusal on an acceptance it could see coming.
@@ -245,9 +212,8 @@ class GitSearchSpace:
     """The ``SearchSpace`` a provider sees. Reads stay in the read scope; every write is a candidate."""
 
     def __init__(self, thread: "Thread", provider: SearchProvider, budget: Budget, excerpts: list[Excerpt], seed: int,
-                 prior_dollars: float = 0.0, search_id: str = "s0"):
-        self._thread, self._provider, self.search_id = thread, provider, search_id
-        self.refused: dict[str, int] = {}  # proposals discarded before registration in this search, counted by reason
+                 prior_dollars: float = 0.0):
+        self._thread, self._provider = thread, provider
         self.objective, self.base = thread.objective, thread.base
         self.scope = tuple(thread.read_scope()["paths"])
         self.budget, self.seed = budget, seed
@@ -256,7 +222,6 @@ class GitSearchSpace:
         self._deadline = self._started + budget.max_seconds
         self.submitted: list[str] = []
         self.evaluations = 0
-        self.base_evaluation: Evaluation | None = None  # set by ``evaluate("base")``; read by ``evolve.mutation_feedback``
         self._commits = {view["id"]: view["commit"] for view in thread._views()}
         # The host's spend ledger. ``observed`` is every usage that crossed ``providers.run_json`` in this
         # search; ``_pending`` the part not yet attributed to a candidate; ``dollars`` the priced part that
@@ -360,93 +325,41 @@ class GitSearchSpace:
         text, conflicts = self._thread.kit.repo.merge_text(base, ours, theirs)
         return MergeResult(text, conflicts)
 
-    def refuse(self, reason: str, *, operator: str, parents: Sequence[str] = (), diff: Mapping[str, Any] | None = None,
-               usage: Mapping[str, Any] | None = None) -> None:
-        """Record one discarded proposal as the verified host observation ``proposal_refused``.
-
-        The event kind enumeration and the ``search_finished`` shape are frozen (``spec/event.schema.json``,
-        ``spec/candidate.schema.json``, the golden traces), so the record is an ``observed`` event: key
-        ``proposal_refused``, source ``syberlabs.host``, version this search's id, value ``{search, operator,
-        parents, reason, diff, model_usage, spend}``. ``diff`` is the digest and size of the proposal's diff
-        against the tree it edited, when it parsed; ``model_usage`` the declared usage reduced to its known
-        fields; ``spend`` the host's spend observation at that moment (pending host-observed usage, seconds),
-        under a priced contract. The pending usage stays attributed to the next registration, as before.
-        The count by reason is ``refused``; the evolutionary provider copies it into the trace entry before its stop.
-        """
-        if reason not in REFUSAL_REASONS:
-            raise Rejected("invalid_refusal", "reason must be one of " + ", ".join(REFUSAL_REASONS))
-        if not isinstance(operator, str) or not _NAME.match(operator):
-            raise Rejected("invalid_refusal", "operator must be a short lowercase name")
-        parents = list(parents)
-        if len(parents) > 8 or any(not isinstance(p, str) or not _ID.match(p) for p in parents):
-            raise Rejected("invalid_refusal", "parents must be at most 8 candidate ids")
-        value: dict[str, Any] = {"search": self.search_id, "operator": operator, "parents": parents, "reason": reason,
-                                 "diff": None, "model_usage": model_usage({"usage": usage}), "spend": self._candidate_spend()}
-        if diff is not None:
-            if (not isinstance(diff, Mapping) or not isinstance(diff.get("digest"), str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", diff["digest"]) or type(diff.get("bytes")) is not int or diff["bytes"] < 0):
-                raise Rejected("invalid_refusal", "diff must be {digest: sha256 hex, bytes: count}")
-            value["diff"] = {"digest": diff["digest"], "bytes": diff["bytes"]}
-        self.refused[reason] = self.refused.get(reason, 0) + 1
-        self._thread.kit.session.observe(self._thread.id, PROPOSAL_REFUSED, value, HOST, self.search_id, HOST, verified=True)
-
-    def _admit(self, operator: str, parents: Sequence[str], usage) -> None:
-        """The host's limits on one more registration; a proposal they stop is refused with reason ``limit``."""
-        try:
-            self._time()
-            # Attributed spend only: the call that crossed the dollar line still gets its candidate recorded,
-            # with that spend on it; the next registration is refused.
-            self._afford(pending=False)
-            if len(self.submitted) >= self.budget.max_candidates:
-                raise SearchStopped("budget_exhausted")
-        except SearchStopped:
-            self.refuse("limit", operator=operator, parents=parents, usage=usage)
-            raise
-
     def submit(self, changes: Mapping[str, str | None], *, parents: Sequence[str] = (), operator: str,
                message: str = "", signal: Mapping[str, Any] | None = None) -> Candidate:
+        self._time()
+        # Attributed spend only: the call that crossed the dollar line still gets its candidate recorded,
+        # with that spend on it; the next registration is refused.
+        self._afford(pending=False)
+        if len(self.submitted) >= self.budget.max_candidates:
+            raise SearchStopped("budget_exhausted")
         if operator not in self._provider.operators:
             raise Rejected("operator_not_permitted", f"{self._provider.name} did not declare {operator!r}")
-        usage = signal.get("model_usage") if isinstance(signal, Mapping) else None
-        self._admit(operator, list(parents) or ["base"], usage)
-        try:
-            found = self._thread._submit(changes, parents, operator, message, signal, self._provider, self.submitted,
-                                         spend=self._candidate_spend())
-        except Rejected as exc:
-            if exc.code in _REFUSAL_CODES:  # a proposal without parents edited the base: say so
-                self.refuse(_REFUSAL_CODES[exc.code], operator=operator, parents=list(parents) or ["base"],
-                            diff=getattr(exc, "diff", None), usage=usage)
-            raise
+        found = self._thread._submit(changes, parents, operator, message, signal, self._provider, self.submitted,
+                                     spend=self._candidate_spend())
         self._settle()
         self._commits[found.id] = found.commit
         return found
 
     def migrate(self, commit: str, *, origin: Mapping[str, str]) -> Candidate:
+        self._time()
+        self._afford(pending=False)
+        if len(self.submitted) >= self.budget.max_candidates:
+            raise SearchStopped("budget_exhausted")
         if "migration" not in self._provider.operators:
             raise Rejected("operator_not_permitted", f"{self._provider.name} did not declare 'migration'")
-        self._admit("migration", (), None)
-        try:
-            found = self._thread._migrate(commit, origin, self._provider, self.submitted, spend=self._candidate_spend())
-        except Rejected as exc:
-            if exc.code in _REFUSAL_CODES:
-                self.refuse(_REFUSAL_CODES[exc.code], operator="migration")
-            raise
+        found = self._thread._migrate(commit, origin, self._provider, self.submitted, spend=self._candidate_spend())
         self._settle()
         self._commits[found.id] = found.commit
         return found
 
     def evaluate(self, candidate: str) -> Evaluation:
-        """Run the checks on a candidate, or on the base tree for ``"base"``. A fresh record of this base on the
-        thread (``Thread._base_evaluation``) is answered without running anything and costs no evaluation."""
         self._time()
         self._afford(pending=True)
-        reused = candidate == "base" and self._thread._base_evaluation() is not None
-        if not reused and self.evaluations >= self.budget.max_evaluations:
+        if self.evaluations >= self.budget.max_evaluations:
             raise SearchStopped("budget_exhausted")
-        found, ran = self._thread._evaluate_base() if candidate == "base" else self._thread._evaluate(candidate)
+        found, ran = self._thread._evaluate(candidate)
         self.evaluations += ran
-        if candidate == "base":
-            self.base_evaluation = found
         return found
 
     def remaining(self) -> Budget:
@@ -941,7 +854,7 @@ class Thread:
                        "max_seconds": budget.max_seconds},
             "base": self.base, "context_digest": context_digest(excerpts)}, HOST)
         prior = spend_total(self._events())["dollars"] if priced(self.config) else 0.0
-        space = GitSearchSpace(self, provider, budget, excerpts, seed, prior_dollars=prior, search_id=search_id)
+        space = GitSearchSpace(self, provider, budget, excerpts, seed, prior_dollars=prior)
         started, stopped, error, recommended = time.monotonic(), "completed", None, []
         try:
             with metered(space):
@@ -999,13 +912,10 @@ class Thread:
         commit = repo.commit(parent_commits, encoded, body)
         tree = repo.tree(commit)
         if len(parent_commits) == 1 and tree == repo.tree(parent_commits[0]):
-            raise _refused("no_change", "the edit leaves its parent's tree unchanged", repo, parent_commits[0], commit)
+            raise Rejected("no_change", "the edit leaves its parent's tree unchanged")
         duplicate = next((v["id"] for v in views.values() if v["tree"] == tree), None)
         if duplicate is not None:
-            raise _refused("duplicate", f"the result is identical to {duplicate}", repo, parent_commits[0], commit)
-        if zero_usage(signal.get("model_usage") if isinstance(signal, Mapping) else None):
-            raise _refused("zero_usage", "the proposal declares a model and zero input and output tokens; a call that "
-                                         "bought nothing registers nothing", repo, parent_commits[0], commit)
+            raise Rejected("duplicate", f"the result is identical to {duplicate}")
         return self._register(cid, commit, tree, list(parents), operator, provider, message, signal, None, submitted, spend)
 
     def _register(self, cid, commit, tree, parents, operator, provider, message, signal, origin, submitted, spend=None) -> Candidate:
@@ -1089,40 +999,6 @@ class Thread:
         results = tuple(CheckResult(c["name"], c["state"], c["exit_code"], c["duration_ms"], c["output_tail"])
                         for c in body["checks"])
         return Evaluation(candidate, results, required), 1
-
-    def _base_evaluation(self) -> dict | None:
-        """The newest ``base_evaluation`` observation for this thread's base, when it is younger than the contract's
-        ``max_age_seconds`` (the freshness rule a candidate's evaluation is held to); else None."""
-        max_age = self.config["evaluation"]["max_age_seconds"]
-        for event in reversed(self._events()):
-            body = event["body"]
-            if (event["kind"] == "observed" and body["key"] == BASE_EVALUATION and body["source"] == HOST
-                    and body.get("verified") and body["version"] == self.base):
-                return body["value"] if time.time() - as_seconds(event["at"]) <= max_age else None
-        return None
-
-    def _evaluate_base(self) -> tuple[Evaluation, int]:
-        """The contract's checks on the base tree, run as they are on a candidate (a detached worktree of the base
-        commit, a scrubbed environment, every declared check), recorded as the verified host observation
-        ``base_evaluation`` with the base commit as its version. The record kind is ``observed``, not
-        ``candidate_evaluated``: the base is not a registered candidate, ``evaluation_record`` refuses one that is
-        not, and the frozen check-record shape stays what it is. A fresh record (``_base_evaluation``) is returned
-        with ``0`` evaluations consumed; otherwise the checks run and ``1`` is consumed. Critic documents are not
-        observed for the base: its diff against itself is empty, so a critic's finding there is about nothing."""
-        required = tuple(self.config["evaluation"]["required"])
-        body, ran = self._base_evaluation(), 0
-        if body is None:
-            repo = self.kit.repo
-            view = {"id": "base", "commit": self.base, "tree": repo.tree(self.base), "base": self.base, "parents": [],
-                    "operator": "base", "provider": {"name": HOST, "revision": "base"}, "changed_paths": [], "note": ""}
-            context = {"objective": self.objective, "scope": self.config["scope"],
-                       "acceptance": self.kit.session.contracts[self.contract]["acceptance"]}
-            body = runner.evaluate(self.kit.repo, view, self.config["evaluation"], context=context)
-            self.kit.session.observe(self.id, BASE_EVALUATION, body, HOST, self.base, HOST, verified=True)
-            ran = 1
-        results = tuple(CheckResult(c["name"], c["state"], c["exit_code"], c["duration_ms"], c["output_tail"])
-                        for c in body["checks"])
-        return Evaluation("base", results, required), ran
 
     def check(self, candidate: str, *, rerun: bool = False, run: bool = True, actor: str | None = None,
               roles: Sequence[str] | None = None) -> Verdict:

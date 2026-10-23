@@ -1,6 +1,5 @@
 """The EvoGit-style provider behind SearchProvider. SyberWork keeps authority."""
 
-import dataclasses
 import json
 import random
 import sys
@@ -13,8 +12,7 @@ from examples.evolve import PRICING, RuleMutator, contract, git, make_repository
 from spec.validate import validate_events
 from syberlabs import Kit, Rejected
 from syberlabs.canonical import canonical
-from syberlabs.events import verify_events
-from syberlabs.evolve import CommandMutator, EvolutionaryProvider, FixedPolicy, mutation_feedback, resolve_conflicts
+from syberlabs.evolve import CommandMutator, EvolutionaryProvider, FixedPolicy, resolve_conflicts
 from syberlabs.providers import USAGE_FIELDS, CommandProvider
 from syberlabs.search import ACTION_KINDS, BranchPolicy, Mutate, Score
 
@@ -32,19 +30,6 @@ def fix(text, *rules):
         lines[at + 1] = f"    {FIXED[rule]}\n"
         text = "".join(lines)
     return text
-
-
-def refusals(events, search=None):
-    """The ``proposal_refused`` observations of a history, in order; the bodies of the whole record."""
-    return [e["body"] for e in events if e["kind"] == "observed" and e["body"]["key"] == "proposal_refused"
-            and (search is None or e["body"]["version"] == search)]
-
-
-def refused_count(provider):
-    """The count by reason the provider writes in the entry before its stop decision."""
-    self_check = provider.trace[-1]
-    assert self_check.get("action") == "stop", self_check
-    return provider.trace[-2]["refused"]
 
 
 class Evolution(unittest.TestCase):
@@ -118,18 +103,8 @@ class Evolution(unittest.TestCase):
         self.assertLessEqual(len(found), 5)
         self.assertLessEqual(search["evaluations"], 5)
         self.assertEqual(search["stopped"], "completed")
-        self.assertEqual((len(found), search["evaluations"]), (4, 5), "the base took one evaluation; the fill stopped at four")
-        # The thread's budget counts candidate evaluations (spec/GAPS.md 45), so one evaluation is left to a second
-        # search: it reuses the base record and makes one child, the fifth candidate, which fills max_candidates, so
-        # no evaluation is bought for it (as for any child that leaves no room). Then five candidates refuse a third.
-        again = EvolutionaryProvider(RuleMutator(), population=4, generations=50)
-        more = thread.propose(again, seed=4)
-        self.assertEqual(again.trace[0]["base"]["evaluated"], 0)
-        self.assertEqual([c.evaluation for c in more], ["none"])
-        self.assertEqual(sum(1 for e in thread.history() if e["kind"] == "candidate_evaluated"), 4)
-        with self.assertRaises(Rejected) as caught:
+        with self.assertRaises(Rejected):
             thread.propose(EvolutionaryProvider(RuleMutator()))
-        self.assertEqual(caught.exception.code, "budget_exhausted")
 
     def test_out_of_scope_mutations_are_recorded_not_run(self):
         kit = self.kit()
@@ -142,10 +117,6 @@ class Evolution(unittest.TestCase):
         self.assertTrue(found)
         self.assertTrue(all(c.scope_violations == ("setup.py",) for c in found))
         self.assertFalse(any(e["kind"] == "candidate_evaluated" for e in thread.history()))
-        # An out-of-scope proposal is registered with its violations, so the attempt is visible as a candidate;
-        # it is not a refusal (the host refuses ``out_of_scope`` only what it cannot register at all: a migrant
-        # outside this thread's base, ``tests/test_build_thread.py``).
-        self.assertEqual([r["value"]["reason"] for r in refusals(thread.history()) if r["value"]["reason"] == "out_of_scope"], [])
 
     def test_command_mutator_is_the_model_seam(self):
         script = self.root.parent / "model.py"
@@ -184,160 +155,7 @@ class Evolution(unittest.TestCase):
         self.assertEqual(mutate["protocol"], "syberlabs.mutate/v0alpha1")
         self.assertEqual(search["scope"], ["src"], "the evolution scope's paths (`src/` in the contract), as the host cleans them")
         self.assertEqual(mutate["scope"], search["scope"])
-        self.assertEqual(set(mutate), {"protocol", "objective", "scope", "parent", "files", "context", "seed", "feedback"},
-                         "the one call mutates base, which the search evaluated first (base-evaluation, 2026-10-22)")
-
-    def test_the_mutate_request_carries_the_parents_recorded_checks_as_feedback(self):
-        """A mutation of an evaluated candidate carries the host's check results for it, the object the repair arm
-        puts on a search request; a mutation of base carries the host's evaluation of the base tree, which the search
-        asks for first, in the same shape. That evaluation is the search's first event, costs one evaluation of the
-        budget, registers nothing, and is recorded as a verified host observation (the base is not a candidate)."""
-        script, log = self.root.parent / "fixer.py", self.root.parent / "requests.jsonl"
-        script.write_text(textwrap.dedent(f"""\
-            import json, sys
-            request = json.load(sys.stdin)
-            with open({str(log)!r}, "a") as handle:
-                handle.write(json.dumps(request) + "\\n")
-            text = request["files"]["src/pricing.py"]
-            fixes = {json.dumps(FIXED)}
-            for rule, broken in (("discount", "return total"), ("tax", "return amount"), ("shipping", "return 0")):
-                if "    " + broken + "\\n" in text:
-                    text = text.replace("    " + broken + "\\n", "    " + fixes[rule] + "\\n", 1)
-                    break
-            print(json.dumps({{"changes": {{"src/pricing.py": text}}}}))
-            """))
-        kit = self.kit()
-        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
-        mutator = CommandMutator([sys.executable, str(script)], name="fixture-model")
-        # One rule fixed per call: the fill's children from base fail, the mutations of them in later generations
-        # carry their parents' recorded results, and the third generation passes.
-        provider = EvolutionaryProvider(mutator, population=2, generations=3, crossover_every=10)
-        found = thread.propose(provider)
-        self.assertTrue(any(c.evaluation == "passed" for c in found))
-        requests = [json.loads(line) for line in log.read_text().splitlines()]
-        from_base = [r for r in requests if r["parent"] == "base"]
-        from_children = [r for r in requests if r["parent"] != "base"]
-        self.assertTrue(from_base and from_children, [r["parent"] for r in requests])
-        events = thread.history()
-        started = next(i for i, e in enumerate(events) if e["kind"] == "search_started")
-        first = events[started + 1]
-        self.assertEqual((first["kind"], first["body"]["key"], first["body"]["source"], first["body"]["verified"],
-                          first["body"]["version"]), ("observed", "base_evaluation", "syberlabs.host", True, thread.base),
-                         "the first event of the search is the host's evaluation of the base tree, a verified observation")
-        record = first["body"]["value"]
-        self.assertEqual((record["candidate"], record["commit"], record["tree"], record["evaluator"]),
-                         ("base", thread.base, kit.repo.tree(thread.base), "syberlabs.checks/1"))
-        self.assertEqual([c["name"] for c in record["checks"]], ["discount", "shipping", "tax"], "every declared check, as the runner orders them")
-        self.assertEqual([c["state"] for c in record["checks"]], ["failed"] * 3, "the fixture's base fails every rule")
-        for check in record["checks"]:
-            self.assertEqual(set(check), {"name", "state", "exit_code", "duration_ms", "output_digest", "output_tail"},
-                             "the evaluator's record, the shape candidate_evaluated carries")
-        self.assertEqual(sum(1 for e in events if e["kind"] == "observed" and e["body"]["key"] == "base_evaluation"), 1)
-        self.assertEqual(sum(1 for e in events if e["kind"] == "candidate_registered"), len(found), "the base evaluation registers nothing")
-        self.assertFalse(any(e["kind"] == "candidate_evaluated" and e["body"]["candidate"] == "base" for e in events))
-        finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
-        self.assertEqual(finished["evaluations"], sum(1 for e in events if e["kind"] == "candidate_evaluated") + 1,
-                         "the base evaluation costs one evaluation of the search's budget")
-        self.assertEqual(provider.trace[0], {"generation": 0, "base": {"score": [0, 0], "passed": False, "evaluated": 1}})
-        base_feedback = {"candidate": "base", "checks": [{k: c[k] for k in ("name", "state", "exit_code", "duration_ms", "output_tail")}
-                                                         for c in record["checks"]]}
-        by_id = {c.id: c for c in thread.candidates()}
-        for request in from_base:
-            self.assertEqual(set(request), {"protocol", "objective", "scope", "parent", "files", "context", "seed", "feedback"})
-            self.assertEqual(request["feedback"], base_feedback, "every fill request carries the base's checks, in a candidate's shape")
-        for request in from_children:
-            self.assertEqual(set(request), {"protocol", "objective", "scope", "parent", "files", "context", "seed", "feedback"})
-            parent = by_id[request["parent"]]
-            self.assertNotEqual(parent.checks, (), "only an evaluated parent carries feedback")
-            self.assertEqual(request["feedback"], {"candidate": parent.id,
-                                                   "checks": [dataclasses.asdict(check) for check in parent.checks]})
-            self.assertEqual(request["feedback"]["checks"], [check.__dict__ for check in parent.checks],
-                             "the repair arm's shape (benchmarks/model_vs_patch.py: Patches.search), on the same candidate")
-            self.assertEqual([c["state"] for c in request["feedback"]["checks"]], [c.state for c in parent.checks])
-            for check in request["feedback"]["checks"]:
-                self.assertEqual(set(check), {"name", "state", "exit_code", "duration_ms", "output_tail"})
-                self.assertLessEqual(len(check["output_tail"]), 4096, "the record's bound, MAX_TAIL_CHARS")
-        self.assertTrue(any(c["state"] != "passed" for r in from_children for c in r["feedback"]["checks"]),
-                        "a mutation of a failing parent saw the failure")
-        self.assertIsNone(mutation_feedback(object(), "base"), "a space that holds no base evaluation gives base no feedback")
-        self.assertEqual(validate_events(events, "evolution"), [])
-
-    def test_a_budget_of_one_evaluation_goes_to_the_base_and_the_policy_stops(self):
-        """``max_evaluations`` of 1: the base is evaluated, there is no room for a child, the policy stops on budget,
-        the mutator is never called and nothing is registered. With no room at all the base is not evaluated either."""
-        doc = contract()
-        doc["evolution"]["budget"] = {"max_candidates": 5, "max_evaluations": 1, "max_seconds": 60}
-        kit = self.kit(doc)
-        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
-        parents = []
-
-        def counting(space, parent, rng):
-            parents.append(parent)
-            return {"src/pricing.py": fix(PRICING, "discount")}
-
-        provider = EvolutionaryProvider(counting, population=2, generations=2)
-        found = thread.propose(provider, seed=1)
-        self.assertEqual((found, parents), ([], []))
-        events = thread.history()
-        finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
-        self.assertEqual((finished["stopped"], finished["evaluations"], finished["candidates"]), ("completed", 1, []))
-        self.assertEqual(provider.trace[0]["base"], {"score": [0, 0], "passed": False, "evaluated": 1})
-        self.assertEqual((provider.trace[-1]["action"], provider.trace[-1]["reason"], provider.trace[-1]["generation"]),
-                         ("stop", "budget", 1), "the fixed policy's budget stop, at the top of generation 1 as always")
-        self.assertEqual(sum(1 for e in events if e["kind"] == "observed" and e["body"]["key"] == "base_evaluation"), 1)
-        self.assertEqual(validate_events(events, "evolution"), [])
-        # The thread's budget counts candidate evaluations: one check of a person's patch uses it up, and the next
-        # search starts with no room, so the base is skipped (the record is fresh anyway) and the policy stops at once.
-        [patch] = thread.propose(changes={"src/pricing.py": fix(PRICING, "tax")})
-        thread.check(patch.id)
-        again = EvolutionaryProvider(counting, population=2, generations=2)
-        self.assertEqual(thread.propose(again, seed=1), [])
-        self.assertEqual(again.trace[0], {"generation": 0, "base": {"skipped": "budget"}})
-        self.assertEqual((again.trace[-1]["action"], again.trace[-1]["reason"]), ("stop", "budget"))
-        self.assertEqual(parents, [], "the mutator was never called")
-        self.assertEqual(sum(1 for e in thread.history() if e["kind"] == "observed" and e["body"]["key"] == "base_evaluation"), 1)
-
-    def test_a_second_search_on_the_thread_reuses_the_base_evaluation(self):
-        """A restart (another search on the same thread and base) reads the fresh ``base_evaluation`` record: the checks
-        do not run again, no evaluation is spent on it, and the fill's requests still carry the base's checks."""
-        script, log = self.root.parent / "seeded.py", self.root.parent / "seeded.jsonl"
-        script.write_text(textwrap.dedent(f"""\
-            import json, sys
-            request = json.load(sys.stdin)
-            with open({str(log)!r}, "a") as handle:
-                handle.write(json.dumps(request) + "\\n")
-            text = request["files"]["src/pricing.py"]
-            fixes = {json.dumps(FIXED)}
-            rule, broken = [("discount", "return total"), ("tax", "return amount"), ("shipping", "return 0")][request["seed"] % 3]
-            text = text.replace("    " + broken + "\\n", "    " + fixes[rule] + "\\n", 1) + "# " + str(request["seed"]) + "\\n"
-            print(json.dumps({{"changes": {{"src/pricing.py": text}}}}))
-            """))
-        kit = self.kit()
-        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
-        first = EvolutionaryProvider(CommandMutator([sys.executable, str(script)], name="fixture-model", max_calls=2),
-                                     population=2, generations=1)
-        thread.propose(first, seed=1)
-        second = EvolutionaryProvider(CommandMutator([sys.executable, str(script)], name="fixture-model", max_calls=2),
-                                      population=2, generations=1)
-        thread.propose(second, seed=2)
-        events = thread.history()
-        self.assertEqual(sum(1 for e in events if e["kind"] == "observed" and e["body"]["key"] == "base_evaluation"), 1,
-                         "the checks ran on the base once")
-        self.assertEqual(first.trace[0]["base"], {"score": [0, 0], "passed": False, "evaluated": 1})
-        self.assertEqual(second.trace[0]["base"], {"score": [0, 0], "passed": False, "evaluated": 0}, "reused: nothing spent")
-        starts = [i for i, e in enumerate(events) if e["kind"] == "search_started"]
-        finished = [e["body"] for e in events if e["kind"] == "search_finished"]
-        in_second = sum(1 for e in events[starts[1]:] if e["kind"] == "candidate_evaluated")
-        self.assertEqual(finished[1]["evaluations"], in_second, "the second search's count is its candidate evaluations only")
-        self.assertEqual(finished[0]["evaluations"], sum(1 for e in events[starts[0]:starts[1]] if e["kind"] == "candidate_evaluated") + 1)
-        requests = [json.loads(line) for line in log.read_text().splitlines()]
-        from_base = [r for r in requests if r["parent"] == "base"]
-        self.assertEqual(len(from_base), 4, "two fill calls per search")
-        self.assertEqual(len({json.dumps(r["feedback"], sort_keys=True) for r in from_base}), 1,
-                         "every fill request of both searches carries the one base evaluation")
-        self.assertEqual(from_base[0]["feedback"]["candidate"], "base")
-        self.assertEqual([c["state"] for c in from_base[0]["feedback"]["checks"]], ["failed"] * 3)
-        self.assertEqual(validate_events(events, "evolution"), [])
+        self.assertEqual(set(mutate), {"protocol", "objective", "scope", "parent", "files", "context", "seed"})
 
     def test_an_empty_proposal_from_the_mutator_is_counted_and_registers_nothing(self):
         """``{"changes": {}}`` is a call that produced no child: the search goes on, no candidate, no crash."""
@@ -362,116 +180,7 @@ class Evolution(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "candidate_registered" for e in events))
         finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
         self.assertEqual((finished["stopped"], finished["candidates"]), ("completed", []))
-        # Each of the six empty answers is one refusal in the journal; the two decisions that found the mutator
-        # exhausted made no call and no proposal, so they leave nothing.
-        refused = refusals(events, "s1")
-        self.assertEqual([r["value"]["reason"] for r in refused], ["no_change"] * 6)
-        self.assertTrue(all(r["value"]["diff"] is None and r["value"]["model_usage"] is None for r in refused),
-                        "an empty answer has no diff and this one declared no usage")
-        self.assertEqual(refused_count(provider), {"no_change": 6})
         self.assertEqual(validate_events(events, "evolution"), [])
-
-    def test_an_unchanged_proposal_is_refused_and_recorded_each_time(self):
-        """Three unchanged trees from the mutator are three ``proposal_refused{no_change}`` records with the diff of nothing;
-        the entry before the stop decision counts them, and nothing else about the search changes."""
-        calls = []
-
-        def unchanged_then_fixes(space, parent, rng):
-            calls.append(parent)
-            if len(calls) <= 3:
-                return {"src/pricing.py": space.read(parent, "src/pricing.py")}  # the parent's own text: no change
-            rule = ("discount", "tax", "shipping")[len(calls) % 3]
-            return {"src/pricing.py": fix(PRICING, rule) + f"# attempt {len(calls)}\n"}  # distinct trees after that
-
-        kit = self.kit()
-        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
-        provider = EvolutionaryProvider(unchanged_then_fixes, population=2, generations=1)
-        found = thread.propose(provider, seed=1)
-        events = thread.history()
-        search = [e["body"] for e in events if e["kind"] == "search_started"][-1]["id"]
-        refused = refusals(events, search)
-        self.assertEqual([r["value"]["reason"] for r in refused], ["no_change"] * 3)
-        self.assertTrue(all((r["source"], r["verified"], r["actor"], r["version"]) == ("syberlabs.host", True, "syberlabs.host", search)
-                            for r in refused))
-        empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"  # SHA-256 of an empty diff
-        for record in (r["value"] for r in refused):
-            self.assertEqual(set(record), {"search", "operator", "parents", "reason", "diff", "model_usage", "spend"})
-            self.assertEqual((record["search"], record["operator"], record["parents"]), (search, "mutation", ["base"]))
-            self.assertEqual(record["diff"], {"digest": empty, "bytes": 0})
-            self.assertIsNone(record["model_usage"], "a function mutator declares no usage")
-            self.assertIsNone(record["spend"], "an unpriced contract records no spend, on a refusal as on a candidate")
-            self.assertNotIn("src/pricing.py", json.dumps(record), "no path, no content, no prompt text in the record")
-        self.assertEqual(refused_count(provider), {"no_change": 3})
-        self.assertTrue(found, "the later, changed proposals register as before")
-        finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
-        self.assertEqual(set(finished), {"id", "stopped", "candidates", "recommended", "evaluations", "elapsed_ms", "error", "actor"},
-                         "search_finished is frozen: the count is not on it")
-        self.assertEqual(sorted(finished["candidates"]), sorted(c.id for c in found))
-        self.assertEqual(validate_events(events, "refusals"), [])
-        self.assertTrue(verify_events(events), "the refusals sit in the hash chain like every other record")
-
-    def test_a_zero_usage_proposal_is_refused_unless_simulated(self):
-        """A call that declares a model and zero tokens bought nothing: its proposal is refused as ``zero_usage`` with
-        the declared usage on the record; the simulated adapter's zero usage is exempt and registers."""
-        script = self.root.parent / "free_model.py"
-        script.write_text(textwrap.dedent('''\
-            import json, sys
-            request = json.load(sys.stdin)
-            text = request["files"]["src/pricing.py"]
-            usage = {"input_tokens": 0, "output_tokens": 0, "model": "fixture-model"}
-            if "simulated" in sys.argv:
-                usage["simulated"] = True
-            print(json.dumps({"changes": {"src/pricing.py": text.replace("return 0", "return weight * 5")}, "usage": usage}))
-            '''))
-        kit = self.kit()
-        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
-        mutator = CommandMutator([sys.executable, str(script)], name="free-model", max_calls=2)
-        provider = EvolutionaryProvider(mutator, population=2, generations=1)
-        found = thread.propose(provider, seed=1)
-        self.assertEqual(found, [], "nothing registered: every proposal declared zero usage")
-        self.assertEqual(mutator.calls, 2)
-        refused = refusals(thread.history())
-        self.assertEqual([r["value"]["reason"] for r in refused], ["zero_usage", "zero_usage"])
-        record = refused[0]["value"]
-        self.assertEqual(record["model_usage"], {"input_tokens": 0, "output_tokens": 0, "model": "fixture-model"})
-        self.assertGreater(record["diff"]["bytes"], 0, "the proposal parsed and was a real edit; its diff is named, not kept")
-        self.assertEqual(refused_count(provider), {"zero_usage": 2})
-        self.assertEqual(validate_events(thread.history(), "zero-usage"), [])
-
-        simulated = CommandMutator([sys.executable, str(script), "simulated"], name="simulated-model", max_calls=1)
-        again = EvolutionaryProvider(simulated, population=2, generations=1)
-        found = thread.propose(again, seed=1)
-        self.assertEqual([c.id for c in found], ["c1"], "simulated zero usage is not a purchase that failed")
-        self.assertEqual(found[0].signal["model_usage"]["simulated"], True)
-        self.assertEqual(refusals(thread.history(), "s2"), [])
-
-    def test_an_unparsable_answer_is_refused_as_unparsable_and_a_failed_call_as_provider_error(self):
-        script = self.root.parent / "odd_model.py"
-        script.write_text(textwrap.dedent('''\
-            import json, sys
-            json.load(sys.stdin)
-            if "fail" in sys.argv:
-                sys.exit(3)
-            print(json.dumps({"edits": {"src/pricing.py": "x"}}))
-            '''))
-        kit = self.kit()
-        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
-        mutator = CommandMutator([sys.executable, str(script)], name="odd-model", max_calls=2)
-        provider = EvolutionaryProvider(mutator, population=2, generations=1)
-        self.assertEqual(thread.propose(provider, seed=1), [])
-        self.assertEqual([r["value"]["reason"] for r in refusals(thread.history(), "s1")], ["unparsable", "unparsable"])
-        self.assertEqual(refused_count(provider), {"unparsable": 2})
-
-        failing = CommandMutator([sys.executable, str(script), "fail"], name="failing-model")
-        provider = EvolutionaryProvider(failing, population=2, generations=1)
-        self.assertEqual(thread.propose(provider, seed=1), [])
-        events = thread.history()
-        finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
-        self.assertEqual((finished["stopped"], finished["error"]), ("error", "provider_failed"), "the search ends as before")
-        [record] = refusals(events, "s2")
-        self.assertEqual((record["value"]["reason"], record["value"]["operator"], record["value"]["parents"]),
-                         ("provider_error", "mutation", ["base"]), "and the journal names the call that failed")
-        self.assertEqual(validate_events(events, "unparsable"), [])
 
     def test_evolve_from_the_terminal(self):
         import contextlib
@@ -624,14 +333,8 @@ def outcome(thread, provider):
     search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
     return {"candidates": [(c.id, c.operator, c.parents, c.evaluation, sum(ch.state == "passed" for ch in c.checks))
                            for c in thread.candidates()],
-            "trace": [e for e in provider.trace if "decision" not in e and "base" not in e and "refused" not in e],  # policy, base and refused entries are new
+            "trace": [e for e in provider.trace if "decision" not in e],
             "recommended": search["recommended"], "evaluations": search["evaluations"]}
-
-
-def plus_base(want: dict) -> dict:
-    """The recording from main plus the one evaluation the provider now spends on the base tree before the fill
-    (base-evaluation, 2026-10-22). Candidates, trace and recommendation are unchanged: the base is not an individual."""
-    return {**want, "evaluations": want["evaluations"] + 1}
 
 
 class BranchPolicySeam(unittest.TestCase):
@@ -659,11 +362,7 @@ class BranchPolicySeam(unittest.TestCase):
             provider = build(cls)
             thread.propose(provider, seed=seed)
             results.append(outcome(thread, provider))
-        legacy, policy = results
-        # The seam provider evaluates the base tree once before the fill; the verbatim legacy loop never did. That is
-        # exactly one evaluation, and nothing else may differ.
-        self.assertEqual(policy["evaluations"], legacy["evaluations"] + 1, "the base evaluation, and only it")
-        return legacy, {**policy, "evaluations": legacy["evaluations"]}
+        return results
 
     def test_fixed_policy_reproduces_main(self):
         for case, want in EXPECTED.items():
@@ -672,14 +371,14 @@ class BranchPolicySeam(unittest.TestCase):
                 _kit, thread = self.fixture(f"main-{seed}")
                 provider = EvolutionaryProvider(RuleMutator(), **options, stop_on_first_pass=False)
                 thread.propose(provider, seed=seed)
-                self.assertEqual(outcome(thread, provider), plus_base(want))
+                self.assertEqual(outcome(thread, provider), want)
                 self.assertEqual(provider.policy.revision, "1")
         # Revision 2 differs only when a seed or a fill child passes; no fill child does in the recordings.
         case = (3, 4, 50, 3, True)
         _kit, thread = self.fixture("main-3-rev2")
         provider = EvolutionaryProvider(RuleMutator(), **dict(zip(OPTIONS, case[1:])), stop_on_first_pass=True)
         thread.propose(provider, seed=case[0])
-        self.assertEqual(outcome(thread, provider), plus_base(EXPECTED[case]))
+        self.assertEqual(outcome(thread, provider), EXPECTED[case])
         self.assertEqual(provider.policy.revision, "2")
 
     def test_fixed_policy_matches_the_legacy_loop_side_by_side(self):
@@ -747,24 +446,23 @@ class BranchPolicySeam(unittest.TestCase):
             stop = provider.trace[-1]
             return mutator.calls, finished["evaluations"], finished["stopped"], finished["recommended"], stop, found
 
-        # Evaluations count the base evaluation the search makes first (one each); the decisions are unchanged.
         calls, evaluations, stopped, recommended, stop, found = search("first-child-rev2", stop_on_first_pass=True)
-        self.assertEqual((calls, evaluations, stopped, recommended), (1, 2, "completed", ["c1"]))
+        self.assertEqual((calls, evaluations, stopped, recommended), (1, 1, "completed", ["c1"]))
         self.assertEqual(stop, {"decision": 2, "generation": 0, "policy": {"name": "fixed", "revision": "2"},
                                 "action": "stop", "reason": "passing"})
         self.assertEqual(found[0].signal["policy"], {"name": "fixed", "revision": "2", "decision": 1})
 
         calls, evaluations, stopped, recommended, stop, _found = search("first-child-rev1", stop_on_first_pass=False)
-        self.assertEqual((calls, evaluations, stopped, recommended), (4, 5, "completed", ["c1", "c2", "c3", "c4"]))
+        self.assertEqual((calls, evaluations, stopped, recommended), (4, 4, "completed", ["c1", "c2", "c3", "c4"]))
         self.assertEqual((stop["generation"], stop["reason"], stop["policy"]["revision"]), (1, "passing", "1"))
 
         calls, evaluations, stopped, recommended, stop, found = search("seed-rev2", seeded=True, stop_on_first_pass=True)
         # The host records a recommendation only among the candidates this search submitted; a seed registers nothing.
-        self.assertEqual((calls, evaluations, stopped, recommended, found), (0, 2, "completed", [], []))
+        self.assertEqual((calls, evaluations, stopped, recommended, found), (0, 1, "completed", [], []))
         self.assertEqual((stop["decision"], stop["generation"], stop["reason"]), (2, 0, "passing"))
 
         calls, evaluations, stopped, recommended, stop, _found = search("seed-rev1", seeded=True, stop_on_first_pass=False)
-        self.assertEqual((calls, evaluations, stopped), (3, 5, "completed"))
+        self.assertEqual((calls, evaluations, stopped), (3, 4, "completed"))
         self.assertEqual((stop["generation"], stop["reason"]), (1, "passing"))
         self.assertEqual(EvolutionaryProvider(Solver()).policy.revision, "1", "the default is the legacy rule")
 
@@ -802,18 +500,14 @@ class BranchPolicySeam(unittest.TestCase):
         self.assertEqual(len(stops), 1)
         self.assertIs(provider.trace[-1], stops[0])
         self.assertEqual(stops[0]["reason"], "passing")
-        self.assertEqual([e for e in provider.trace if "decision" not in e and "base" not in e and "refused" not in e],
-                         EXPECTED[(7, 4, 10, 3, True)]["trace"])
-        self.assertEqual(provider.trace[0], {"generation": 0, "base": {"score": [0, 0], "passed": False, "evaluated": 1}},
-                         "the base evaluation is the first trace entry and not a decision")
+        self.assertEqual([e for e in provider.trace if "decision" not in e], EXPECTED[(7, 4, 10, 3, True)]["trace"])
         # The last situation the policy saw sums up the search; it never carries the space or the session.
         last = watching.seen[-1]
         search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
         self.assertEqual(set(last.history), {"mutate", "crossover", "migrate", "evaluate"})
         self.assertEqual(sum(s.attempted for s in last.history.values()), len(decisions) - 1)
         self.assertEqual(sum(s.produced for s in last.history.values()), len(found))
-        self.assertEqual(sum(s.evaluated for s in last.history.values()), search["evaluations"] - 1,
-                         "the policy's history counts the decisions' evaluations; the base evaluation is the other one")
+        self.assertEqual(sum(s.evaluated for s in last.history.values()), search["evaluations"])
         self.assertEqual(sum(s.passed for s in last.history.values()), sum(c.evaluation == "passed" for c in found))
         self.assertEqual((last.decisions, last.capacity, last.exchange, last.mutator_exhausted), (len(decisions) - 1, 4, False, False))
         self.assertEqual([p.id for p in last.population], EXPECTED[(7, 4, 10, 3, True)]["trace"][-1]["population"])
@@ -874,8 +568,7 @@ class BranchPolicySeam(unittest.TestCase):
         self.assertEqual(registered["signal"]["model_usage"]["model"], "fixture-model")
         search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
         self.assertEqual(search["stopped"], "budget_exhausted")
-        self.assertEqual((search["spend"]["dollars"], search["spend"]["evaluations"], search["spend"]["candidates"]), (cost, 1, 1),
-                         "the one evaluation is the base's, made before any model call; none is bought over budget")
+        self.assertEqual((search["spend"]["dollars"], search["spend"]["evaluations"], search["spend"]["candidates"]), (cost, 0, 1))
         self.assertEqual(provider.trace[-1]["action"], "stop")
         self.assertEqual(provider.trace[-1]["reason"], "budget", "the policy saw no dollars left and stopped as it does for counts")
 

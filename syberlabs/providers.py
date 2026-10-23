@@ -59,13 +59,6 @@ def metered(meter):
         _METER.reset(token)
 
 
-def refuse(space, reason: str, operator: str, parents=(), usage=None) -> None:
-    """Ask the space to record a proposal the provider discards itself. A space without ``refuse`` records nothing."""
-    found = getattr(space, "refuse", None)
-    if callable(found):
-        found(reason, operator=operator, parents=list(parents), usage=usage)
-
-
 def split_command(text: str) -> list[str]:
     """Split a command line. On Windows, backslashes in paths are kept."""
     return shlex.split(text, posix=(os.name != "nt"))
@@ -125,13 +118,9 @@ class CommandProvider:
         if not isinstance(response, dict) or not isinstance(response.get("candidates"), list):
             raise Rejected("provider_shape", "the command must print {\"candidates\": [...]}")
         submitted = []
-        for index, item in enumerate(response["candidates"]):
-            if index >= budget.max_candidates:
-                refuse(space, "limit", "patch", ["base"], usage=usage)  # beyond this search's candidate budget: never submitted
-                continue
+        for item in response["candidates"][: budget.max_candidates]:
             if (not isinstance(item, dict) or not isinstance(item.get("changes"), dict)
                     or any(not isinstance(k, str) or not (v is None or isinstance(v, str)) for k, v in item["changes"].items())):
-                refuse(space, "unparsable", "patch", ["base"], usage=usage)
                 raise Rejected("provider_shape", "each candidate needs changes: {path: text or null}")
             message = item.get("message") if isinstance(item.get("message"), str) else ""
             signal = item.get("signal") if isinstance(item.get("signal"), dict) else None

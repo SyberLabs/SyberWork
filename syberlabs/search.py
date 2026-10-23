@@ -107,10 +107,6 @@ class Candidate:
         )
 
 
-# Why the host discarded a provider proposal before ``candidate_registered``. Closed: the host refuses any other word.
-REFUSAL_REASONS = ("no_change", "out_of_scope", "limit", "unparsable", "duplicate", "provider_error", "zero_usage")
-
-
 @dataclass(frozen=True)
 class MergeResult:
     """A three-way text merge. ``conflicts`` counts regions the provider must resolve."""
@@ -161,26 +157,10 @@ class SearchSpace(Protocol):
         """
 
     def evaluate(self, candidate: str) -> Evaluation:
-        """Run the contract's checks on the candidate, or on the base tree for ``"base"``. Counts against the budget.
-
-        The evolutionary provider evaluates ``"base"`` once, before it fills its population, so a mutation
-        of the base has the host's results to go on (``evolve.mutation_feedback``); a space that holds that
-        result exposes it as ``base_evaluation`` (``Evaluation`` or None).
-        """
+        """Run the contract's checks on the candidate. Counts against the budget."""
 
     def remaining(self) -> Budget:
         """Budget left in this search."""
-
-    def refuse(self, reason: str, *, operator: str, parents: Sequence[str] = (), diff: Mapping[str, Any] | None = None,
-               usage: Mapping[str, Any] | None = None) -> None:
-        """Record that a proposal was discarded before it became a candidate.
-
-        The host records its own refusals (``submit`` and ``migrate`` call this before they raise); a
-        provider calls it for a proposal it discards itself, such as an empty or unparsable answer, so
-        that every proposal leaves one record. ``reason`` is one of ``REFUSAL_REASONS``; ``diff`` is
-        ``{digest, bytes}`` when the proposal parsed; ``usage`` is the declared ``model_usage``. Never
-        file content, prompt text or names from the environment.
-        """
 
 
 @runtime_checkable
