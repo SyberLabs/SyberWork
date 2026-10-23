@@ -13,6 +13,7 @@ from examples.evolve import PRICING, RuleMutator, contract, git, make_repository
 from spec.validate import validate_events
 from syberlabs import Kit, Rejected
 from syberlabs.canonical import canonical
+from syberlabs.events import verify_events
 from syberlabs.evolve import CommandMutator, EvolutionaryProvider, FixedPolicy, mutation_feedback, resolve_conflicts
 from syberlabs.providers import USAGE_FIELDS, CommandProvider
 from syberlabs.search import ACTION_KINDS, BranchPolicy, Mutate, Score
@@ -31,6 +32,19 @@ def fix(text, *rules):
         lines[at + 1] = f"    {FIXED[rule]}\n"
         text = "".join(lines)
     return text
+
+
+def refusals(events, search=None):
+    """The ``proposal_refused`` observations of a history, in order; the bodies of the whole record."""
+    return [e["body"] for e in events if e["kind"] == "observed" and e["body"]["key"] == "proposal_refused"
+            and (search is None or e["body"]["version"] == search)]
+
+
+def refused_count(provider):
+    """The count by reason the provider writes in the entry before its stop decision."""
+    self_check = provider.trace[-1]
+    assert self_check.get("action") == "stop", self_check
+    return provider.trace[-2]["refused"]
 
 
 class Evolution(unittest.TestCase):
@@ -128,6 +142,10 @@ class Evolution(unittest.TestCase):
         self.assertTrue(found)
         self.assertTrue(all(c.scope_violations == ("setup.py",) for c in found))
         self.assertFalse(any(e["kind"] == "candidate_evaluated" for e in thread.history()))
+        # An out-of-scope proposal is registered with its violations, so the attempt is visible as a candidate;
+        # it is not a refusal (the host refuses ``out_of_scope`` only what it cannot register at all: a migrant
+        # outside this thread's base, ``tests/test_build_thread.py``).
+        self.assertEqual([r["value"]["reason"] for r in refusals(thread.history()) if r["value"]["reason"] == "out_of_scope"], [])
 
     def test_command_mutator_is_the_model_seam(self):
         script = self.root.parent / "model.py"
@@ -344,7 +362,116 @@ class Evolution(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "candidate_registered" for e in events))
         finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
         self.assertEqual((finished["stopped"], finished["candidates"]), ("completed", []))
+        # Each of the six empty answers is one refusal in the journal; the two decisions that found the mutator
+        # exhausted made no call and no proposal, so they leave nothing.
+        refused = refusals(events, "s1")
+        self.assertEqual([r["value"]["reason"] for r in refused], ["no_change"] * 6)
+        self.assertTrue(all(r["value"]["diff"] is None and r["value"]["model_usage"] is None for r in refused),
+                        "an empty answer has no diff and this one declared no usage")
+        self.assertEqual(refused_count(provider), {"no_change": 6})
         self.assertEqual(validate_events(events, "evolution"), [])
+
+    def test_an_unchanged_proposal_is_refused_and_recorded_each_time(self):
+        """Three unchanged trees from the mutator are three ``proposal_refused{no_change}`` records with the diff of nothing;
+        the entry before the stop decision counts them, and nothing else about the search changes."""
+        calls = []
+
+        def unchanged_then_fixes(space, parent, rng):
+            calls.append(parent)
+            if len(calls) <= 3:
+                return {"src/pricing.py": space.read(parent, "src/pricing.py")}  # the parent's own text: no change
+            rule = ("discount", "tax", "shipping")[len(calls) % 3]
+            return {"src/pricing.py": fix(PRICING, rule) + f"# attempt {len(calls)}\n"}  # distinct trees after that
+
+        kit = self.kit()
+        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
+        provider = EvolutionaryProvider(unchanged_then_fixes, population=2, generations=1)
+        found = thread.propose(provider, seed=1)
+        events = thread.history()
+        search = [e["body"] for e in events if e["kind"] == "search_started"][-1]["id"]
+        refused = refusals(events, search)
+        self.assertEqual([r["value"]["reason"] for r in refused], ["no_change"] * 3)
+        self.assertTrue(all((r["source"], r["verified"], r["actor"], r["version"]) == ("syberlabs.host", True, "syberlabs.host", search)
+                            for r in refused))
+        empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"  # SHA-256 of an empty diff
+        for record in (r["value"] for r in refused):
+            self.assertEqual(set(record), {"search", "operator", "parents", "reason", "diff", "model_usage", "spend"})
+            self.assertEqual((record["search"], record["operator"], record["parents"]), (search, "mutation", ["base"]))
+            self.assertEqual(record["diff"], {"digest": empty, "bytes": 0})
+            self.assertIsNone(record["model_usage"], "a function mutator declares no usage")
+            self.assertIsNone(record["spend"], "an unpriced contract records no spend, on a refusal as on a candidate")
+            self.assertNotIn("src/pricing.py", json.dumps(record), "no path, no content, no prompt text in the record")
+        self.assertEqual(refused_count(provider), {"no_change": 3})
+        self.assertTrue(found, "the later, changed proposals register as before")
+        finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
+        self.assertEqual(set(finished), {"id", "stopped", "candidates", "recommended", "evaluations", "elapsed_ms", "error", "actor"},
+                         "search_finished is frozen: the count is not on it")
+        self.assertEqual(sorted(finished["candidates"]), sorted(c.id for c in found))
+        self.assertEqual(validate_events(events, "refusals"), [])
+        self.assertTrue(verify_events(events), "the refusals sit in the hash chain like every other record")
+
+    def test_a_zero_usage_proposal_is_refused_unless_simulated(self):
+        """A call that declares a model and zero tokens bought nothing: its proposal is refused as ``zero_usage`` with
+        the declared usage on the record; the simulated adapter's zero usage is exempt and registers."""
+        script = self.root.parent / "free_model.py"
+        script.write_text(textwrap.dedent('''\
+            import json, sys
+            request = json.load(sys.stdin)
+            text = request["files"]["src/pricing.py"]
+            usage = {"input_tokens": 0, "output_tokens": 0, "model": "fixture-model"}
+            if "simulated" in sys.argv:
+                usage["simulated"] = True
+            print(json.dumps({"changes": {"src/pricing.py": text.replace("return 0", "return weight * 5")}, "usage": usage}))
+            '''))
+        kit = self.kit()
+        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
+        mutator = CommandMutator([sys.executable, str(script)], name="free-model", max_calls=2)
+        provider = EvolutionaryProvider(mutator, population=2, generations=1)
+        found = thread.propose(provider, seed=1)
+        self.assertEqual(found, [], "nothing registered: every proposal declared zero usage")
+        self.assertEqual(mutator.calls, 2)
+        refused = refusals(thread.history())
+        self.assertEqual([r["value"]["reason"] for r in refused], ["zero_usage", "zero_usage"])
+        record = refused[0]["value"]
+        self.assertEqual(record["model_usage"], {"input_tokens": 0, "output_tokens": 0, "model": "fixture-model"})
+        self.assertGreater(record["diff"]["bytes"], 0, "the proposal parsed and was a real edit; its diff is named, not kept")
+        self.assertEqual(refused_count(provider), {"zero_usage": 2})
+        self.assertEqual(validate_events(thread.history(), "zero-usage"), [])
+
+        simulated = CommandMutator([sys.executable, str(script), "simulated"], name="simulated-model", max_calls=1)
+        again = EvolutionaryProvider(simulated, population=2, generations=1)
+        found = thread.propose(again, seed=1)
+        self.assertEqual([c.id for c in found], ["c1"], "simulated zero usage is not a purchase that failed")
+        self.assertEqual(found[0].signal["model_usage"]["simulated"], True)
+        self.assertEqual(refusals(thread.history(), "s2"), [])
+
+    def test_an_unparsable_answer_is_refused_as_unparsable_and_a_failed_call_as_provider_error(self):
+        script = self.root.parent / "odd_model.py"
+        script.write_text(textwrap.dedent('''\
+            import json, sys
+            json.load(sys.stdin)
+            if "fail" in sys.argv:
+                sys.exit(3)
+            print(json.dumps({"edits": {"src/pricing.py": "x"}}))
+            '''))
+        kit = self.kit()
+        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
+        mutator = CommandMutator([sys.executable, str(script)], name="odd-model", max_calls=2)
+        provider = EvolutionaryProvider(mutator, population=2, generations=1)
+        self.assertEqual(thread.propose(provider, seed=1), [])
+        self.assertEqual([r["value"]["reason"] for r in refusals(thread.history(), "s1")], ["unparsable", "unparsable"])
+        self.assertEqual(refused_count(provider), {"unparsable": 2})
+
+        failing = CommandMutator([sys.executable, str(script), "fail"], name="failing-model")
+        provider = EvolutionaryProvider(failing, population=2, generations=1)
+        self.assertEqual(thread.propose(provider, seed=1), [])
+        events = thread.history()
+        finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
+        self.assertEqual((finished["stopped"], finished["error"]), ("error", "provider_failed"), "the search ends as before")
+        [record] = refusals(events, "s2")
+        self.assertEqual((record["value"]["reason"], record["value"]["operator"], record["value"]["parents"]),
+                         ("provider_error", "mutation", ["base"]), "and the journal names the call that failed")
+        self.assertEqual(validate_events(events, "unparsable"), [])
 
     def test_evolve_from_the_terminal(self):
         import contextlib
@@ -497,7 +624,7 @@ def outcome(thread, provider):
     search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
     return {"candidates": [(c.id, c.operator, c.parents, c.evaluation, sum(ch.state == "passed" for ch in c.checks))
                            for c in thread.candidates()],
-            "trace": [e for e in provider.trace if "decision" not in e and "base" not in e],  # policy and base entries are new
+            "trace": [e for e in provider.trace if "decision" not in e and "base" not in e and "refused" not in e],  # policy, base and refused entries are new
             "recommended": search["recommended"], "evaluations": search["evaluations"]}
 
 
@@ -675,7 +802,8 @@ class BranchPolicySeam(unittest.TestCase):
         self.assertEqual(len(stops), 1)
         self.assertIs(provider.trace[-1], stops[0])
         self.assertEqual(stops[0]["reason"], "passing")
-        self.assertEqual([e for e in provider.trace if "decision" not in e and "base" not in e], EXPECTED[(7, 4, 10, 3, True)]["trace"])
+        self.assertEqual([e for e in provider.trace if "decision" not in e and "base" not in e and "refused" not in e],
+                         EXPECTED[(7, 4, 10, 3, True)]["trace"])
         self.assertEqual(provider.trace[0], {"generation": 0, "base": {"score": [0, 0], "passed": False, "evaluated": 1}},
                          "the base evaluation is the first trace entry and not a decision")
         # The last situation the policy saw sums up the search; it never carries the space or the session.
