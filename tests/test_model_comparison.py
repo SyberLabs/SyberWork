@@ -12,6 +12,8 @@ from pathlib import Path
 from adapters import anthropic_adapter as adapter
 from benchmarks import model_vs_patch as harness
 from benchmarks.fixtures import FIXTURES, V2, V3
+from benchmarks import simulated_model as simulated
+from benchmarks.fixtures import FIXTURES, V2
 from syberlabs.evolve import CommandMutator, EvolutionaryProvider
 from syberlabs.providers import CommandProvider, model_usage
 from tests.test_build_thread import GOOD, RepoCase
@@ -534,6 +536,121 @@ class HarnessV3(unittest.TestCase):
         report = harness.summarize(rows, 6)
         for name in V3:
             self.assertRegex(report, rf"{name}\s+single\s+0/1")
+POLICY_ARMS = ("evolve", "evolve_empirical", "evolve_jev")
+
+
+class SimulatedProfiles(unittest.TestCase):
+    """The simulated adapter's per-operator profiles. Simulated: nothing here is about a model."""
+
+    def mutate(self, profile, parent, text=None):
+        os.environ["SYBERLABS_FIXTURE"] = "pricing"
+        if profile is None:
+            os.environ.pop("SIM_PROFILE", None)
+        else:
+            os.environ["SIM_PROFILE"] = profile
+        self.addCleanup(os.environ.pop, "SIM_PROFILE", None)
+        text = text or FIXTURES["pricing"]["files"]["src/pricing.py"]
+        with tempfile.TemporaryDirectory() as folder:
+            out = {}
+            for seed in range(1, 21):
+                request = {"protocol": "syberlabs.mutate/v0alpha1", "seed": seed, "parent": parent, "objective": "x",
+                           "context": [], "files": {"src/pricing.py": text}}
+                found = simulated.respond(request, Path(folder))["changes"]["src/pricing.py"]
+                out[seed] = [simulated.is_right(found, slot) for slot in FIXTURES["pricing"]["slots"]]
+            return out
+
+    def test_mutation_rare_fixes_one_slot_from_base_and_rarely_from_a_child(self):
+        from_base = self.mutate("mutation_rare", "base")
+        self.assertTrue(all(sum(right) == 1 for right in from_base.values()), from_base)
+        self.assertEqual(len({tuple(r) for r in from_base.values()}), 3, "children from base fix different slots")
+        from_child = self.mutate("mutation_rare", "c1")
+        fixes = sum(sum(right) for right in from_child.values())
+        self.assertTrue(0 < fixes < 10, (fixes, from_child))
+
+    def test_mutation_common_rewrites_every_remaining_slot(self):
+        rows = self.mutate("mutation_common", "c1")
+        self.assertTrue(any(all(right) for right in rows.values()), rows)
+        text = FIXTURES["pricing"]["files"]["src/pricing.py"]
+        os.environ["SIM_PROFILE"] = "mutation_common"
+        with tempfile.TemporaryDirectory() as folder:
+            found = simulated.respond({"protocol": "syberlabs.mutate/v0alpha1", "seed": 3, "parent": "c1", "objective": "x",
+                                       "context": [], "files": {"src/pricing.py": text}}, Path(folder))["changes"]["src/pricing.py"]
+        for slot in FIXTURES["pricing"]["slots"]:
+            self.assertNotEqual(simulated.current(found, slot), simulated.current(text, slot), slot["function"])
+
+    def test_no_profile_keeps_the_single_slot_reroll(self):
+        rows = self.mutate(None, "base")
+        self.assertTrue(all(sum(right) <= 1 for right in rows.values()), rows)
+        self.assertNotIn("SIM_PROFILE", os.environ)
+        with self.assertRaises(ValueError):
+            harness.run("pricing", "single", harness.SIMULATED, 1, 1, Path(tempfile.gettempdir()), profile="no_such_profile")
+
+
+class PolicyArms(unittest.TestCase):
+    """The three evolve arms told apart on the ``mutation_rare`` profile, K = 12, five seeds, through the real harness.
+
+    Simulated, so a statement about the harness and the profile, not about a model: where a
+    crossover combines what two mutations fixed, Jev buys crossovers early and both learning
+    policies reach a passing candidate in fewer model calls than the fixed schedule.
+    """
+
+    CALLS, SEEDS, PROFILE = 12, (1, 2, 3, 4, 5), "mutation_rare"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        cls.journals = Path(cls.folder.name) / "rows-journals"
+        cls.rows = [harness.run("pricing", arm, harness.SIMULATED, cls.CALLS, seed, Path(cls.folder.name), cls.journals, cls.PROFILE)
+                    for arm in POLICY_ARMS for seed in cls.SEEDS]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.folder.cleanup()
+
+    def totals(self, key):
+        return {arm: sum(r[key] for r in self.rows if r["arm"] == arm) for arm in POLICY_ARMS}
+
+    def test_every_row_names_its_policy_and_the_profile_and_stays_within_the_budget(self):
+        expected = {"evolve": ("fixed", "2"), "evolve_empirical": ("empirical", "2"), "evolve_jev": ("jev", "1")}
+        for row in self.rows:
+            self.assertEqual((row["policy"]["name"], row["policy"]["revision"]), expected[row["arm"]], row)
+            self.assertEqual((row["profile"], row["simulated"], row["dollars"], row["model"]), (self.PROFILE, True, None, "simulated"))
+            self.assertLessEqual(row["calls"], self.CALLS)
+            self.assertGreater(row["host_dollars"], 0.0, "the priced contract makes the host observe the simulated usage")
+            exported = json.loads((Path(self.folder.name) / row["journal"]).read_text(encoding="utf-8"))
+            signals = [e["body"]["signal"]["policy"] for e in exported["events"] if e["kind"] == "candidate_registered"]
+            self.assertTrue(signals and all((s["name"], s["revision"]) == expected[row["arm"]] for s in signals), row["arm"])
+            spend = [e["body"]["spend"]["dollars"] for e in exported["events"] if e["kind"] == "candidate_registered"]
+            self.assertTrue(all(d is not None for d in spend), row["arm"])
+
+    def test_jev_needs_fewer_calls_and_fewer_simulated_dollars_than_the_fixed_schedule(self):
+        calls, dollars, solved = self.totals("calls"), self.totals("host_dollars"), self.totals("solved")
+        self.assertLess(calls["evolve_jev"], calls["evolve"], calls)
+        self.assertLess(dollars["evolve_jev"], dollars["evolve"], dollars)
+        self.assertGreaterEqual(solved["evolve_jev"], solved["evolve"], solved)
+
+    def test_empirical_needs_fewer_calls_than_the_fixed_schedule_where_crossover_pays(self):
+        calls = self.totals("calls")
+        self.assertLess(calls["evolve_empirical"], calls["evolve"], calls)
+
+    def test_the_summary_names_the_profile_and_the_policies(self):
+        report = harness.summarize(self.rows, self.CALLS)
+        self.assertIn("Simulated profile: mutation_rare.", report.splitlines()[0])
+        self.assertIn("policy", report.splitlines()[1])
+        for label in ("fixed/2", "empirical/2", "jev/1"):
+            self.assertIn(label, report)
+
+
+class JevPrices(unittest.TestCase):
+    def test_the_prior_comes_from_the_contract_or_is_none(self):
+        doc = harness.contract("pricing")
+        self.assertIsNone(harness.jev_prices(doc))
+        doc["evolution"]["budget"] = {**doc["evolution"]["budget"], "prices": harness.price_table(), "max_dollars": harness.MAX_DOLLARS}
+        prices = harness.jev_prices(doc)
+        self.assertEqual((prices["crossover"], prices["evaluate"]), (0.0, 0.0))
+        self.assertGreater(prices["mutate"], 0.0)
+        self.assertIn("simulated", harness.price_table())
+        self.assertEqual(set(harness.price_table()) - {"simulated"}, set(harness.PRICES))
 
 
 if __name__ == "__main__":

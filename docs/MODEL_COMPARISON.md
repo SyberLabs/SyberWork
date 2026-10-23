@@ -12,6 +12,8 @@ The question: at the same model cost, does searching (independent samples, repai
 | `best_of_k` | up to K | The same as `single`, K independent times |
 | `repair` | up to K | After the first call, the previous candidate's files and the host's failing check output |
 | `evolve` | up to K mutator calls | One parent's files per call. Crossover and selection cost no model call, but do cost evaluations. |
+| `evolve_empirical` | up to K | The same as `evolve`, branching by `EmpiricalPolicy` (see Policies below) |
+| `evolve_jev` | up to K | The same as `evolve`, branching by `JevPolicy` (see Policies below) |
 
 Cost is matched on **model calls** (K). Tokens are reported per arm from the adapter's own usage, and dollars are computed from them with the price table in the script. Evaluations (check runs) are reported separately, because they cost compute, not model spend.
 
@@ -133,6 +135,41 @@ The v2 pilots answered the question v2 was built for, and the answer closes it: 
 | `verify_layers` | `syberlabs/certificate.py: format_report`, the lines every packet receipt quotes | `passing`, `failing`, `skipped` | label left-justified to 10, then `ok` and three spaces, `skipped` and two, or `FAIL code` and two with the trailing space stripped; stop at the first failing layer; `verdict    pass (x and y not checked)`, `verdict    fail: reason` | the right words with single spaces and every layer printed after a failure (`passing`) |
 
 **What is measured, and what is not.** `tests/test_model_comparison.py` (`FixturesV3`) holds a reference fix per fixture under which every check passes, shows that every check fails on the broken source with an assertion message, and shows that each wrong reading above fails its named part with a message containing the expectation; it also re-derives the chain vectors from `syberlabs.events` and the verify lines from `syberlabs.certificate`, so the pinned conventions are the kit's and not the fixture author's. With the simulated adapter, `single` and `repair` at K = 6 solved 0 of 8 runs on 2026-10-21 (the stand-in knows only line swaps). None of this says what a model does: whether Claude Sonnet 5.5 or Haiku 5.5 solves a v3 fixture in one call, and whether `repair` or `evolve` reaches a pass from the checks' output, is what the v3 pilot measures. The honest expectation is that `gaps_renumber`, whose conventions are mostly visible in the files, is the easiest of the four and may still fall single-shot; it is kept because the non-reference numbers are the trap #58 had to step around.
+## Policies: the three `evolve*` arms (simulated, not evidence about a model)
+
+`benchmarks/model_vs_patch.py` has three evolutionary arms that differ in the branch policy of `syberlabs.evolve` and in nothing else: `evolve` (`FixedPolicy` revision 2, the first passing seed or child from `base` ends the search), `evolve_empirical` (`EmpiricalPolicy`, the fixed schedule with the round kind learned by Thompson sampling, salted with the run's seed) and `evolve_jev` (`JevPolicy`, each action bought by expected admission per dollar). All three get the same mutator, population `min(4, K)`, 200 generations and the same K; every row records `policy` (name and revision, from the provider's trace, the same as every child's `signal.policy`). The harness now prices the fixture contract (`budget.prices` from its table plus a nominal Sonnet-tier rate for the simulated model, `budget.max_dollars` 50 per run, far above K calls at any rate), so Jev runs priced, its price prior for a mutation comes from the contract (`jev_prices`), and the host observes every call's spend; the row's `host_dollars` is that observation. For the simulated model it is a token count in dollar units, not money, and the row's `dollars` stays null.
+
+`benchmarks/simulated_model.py` takes a per-operator success profile for the mutate protocol (`SIM_PROFILE`, the harness's `--profile`): `mutation_rare` (a mutation of `base` fixes one slot; a mutation of a child fixes one of its remaining slots one time in five and otherwise rewrites one remaining slot wrong; children fix different slots, so a crossover combines them) and `mutation_common` (a mutation rewrites every remaining slot, each right three times in five; children conflict in every slot, so a crossover combines nothing a mutation would not). A crossover never calls the stand-in, so its success in a profile is structural, not a rolled probability. Without a profile the stand-in behaves exactly as before, draw for draw (checked against the previous version on 300 requests across three fixtures and both protocols).
+
+**The table below is simulated. It is not evidence about a model.** It describes the harness, the three policies and these two profiles. K = 12, seeds 1 to 5, the three v1 fixtures, from `python benchmarks/model_vs_patch.py --profile <name> --arms evolve evolve_empirical evolve_jev --calls 12 --repeats 5 --fixtures pricing slugify intervals` on 2026-10-22; `calls` and `host$` are sums over the five seeds, counted to the first passing candidate and capped at K.
+
+```
+profile          fixture    arm               policy       solved  calls calls(med)    host$  evals
+mutation_rare    pricing    evolve            fixed/2        2/5      60         12   0.0698     45
+mutation_rare    pricing    evolve_empirical  empirical/2    4/5      41          8   0.0473     40
+mutation_rare    pricing    evolve_jev        jev/1          5/5      20          3   0.0230     27
+mutation_rare    slugify    evolve            fixed/2        3/5      60         12   0.0900     52
+mutation_rare    slugify    evolve_empirical  empirical/2    5/5      37          8   0.0551     44
+mutation_rare    slugify    evolve_jev        jev/1          5/5      20          3   0.0296     27
+mutation_rare    intervals  evolve            fixed/2        1/5      60         12   0.1199     21
+mutation_rare    intervals  evolve_empirical  empirical/2    1/5      60         12   0.1199     21
+mutation_rare    intervals  evolve_jev        jev/1          5/5      21          3   0.0421     26
+mutation_common  pricing    evolve            fixed/2        5/5      16          2   0.0193     15
+mutation_common  pricing    evolve_empirical  empirical/2    5/5      16          2   0.0193     15
+mutation_common  pricing    evolve_jev        jev/1          5/5      14          2   0.0169     16
+mutation_common  slugify    evolve            fixed/2        5/5      25          5   0.0384     23
+mutation_common  slugify    evolve_empirical  empirical/2    5/5      25          5   0.0383     24
+mutation_common  slugify    evolve_jev        jev/1          5/5      23          5   0.0354     28
+mutation_common  intervals  evolve            fixed/2        5/5      28          8   0.0576     23
+mutation_common  intervals  evolve_empirical  empirical/2    5/5      28          8   0.0576     26
+mutation_common  intervals  evolve_jev        jev/1          5/5      18          4   0.0368     19
+```
+
+What it shows about the **harness and the policies on these profiles**: on `mutation_rare`, where a crossover combines what two mutations fixed, Jev buys crossovers as soon as two individuals exist and reaches a passing candidate in fewer model calls and fewer simulated dollars than the fixed schedule on every fixture, and Empirical needs fewer calls than the fixed schedule on `pricing` and `slugify` and the same on `intervals` (the artifact below) (`tests/test_model_comparison.py`, `PolicyArms`, asserts exactly these three facts on `pricing` over the five seeds). On `mutation_common`, where mutation alone solves the task, every policy solves every seed, the fixed schedule and Empirical take the same decisions (most seeds are solved inside the fill, before a round kind is chosen), and Jev needs fewer calls than both on each fixture, at the cost of more evaluations on `slugify`. One artifact to read with it: on `intervals`, whose three slots each hold a single correct variant, only three distinct children of `base` exist under `mutation_rare`, so the fixed schedule's fill of four spends its remaining calls on duplicates and never reaches a round; that flatters the learning policies there and is a property of the stand-in (`spec/GAPS.md` 42).
+
+**Measurement procedure and decision rule**, copied from the packet spec (`jev-policy`, "Measurement"): "Run the three `evolve*` arms plus `single` on the v2 fixtures (step 2) at K = 6, one repeat first, Sonnet 5.5 medium. The decision rule for Jev: it is kept as the provider's default if, on the v2 fixtures, `evolve_jev` solves at least as many as `evolve` with at most half the dollars, over the three repeats; otherwise it stays available and not default. Budget line: **$15** of the $50 cap (see the allocation in the review). The run is a named human's act with the key in that shell, or the orchestrator's under the owner's standing "ready for experimentation", stated in the results packet either way."
+
+**Where that run goes.** The v2 set is uninformative at every tier measured on 2026-10-21: `single` solved all four v2 fixtures at Claude Sonnet 5.5 (16 of 16 runs, medium, K = 6, one repeat) and at Claude Haiku 5.5 (8 of 8, two repeats, about $0.003), so a comparison on v2 could only add single-shot failures on tasks every arm solves at its first candidate. The paid Jev-against-fixed comparison therefore goes to a set on which `single` fails, the v3 fixtures (a parallel packet), by the owner's decision; until it is run and reported, `fixed` stays the provider's default and the simulated table above is not evidence for the rule.
 
 ## What would count as evidence
 
