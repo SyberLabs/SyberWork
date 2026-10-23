@@ -6,9 +6,10 @@ import json
 import os
 import tempfile
 import threading
+import types
 import unittest
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from syberlabs import Rejected, Session
 from syberlabs import journal as journal_module
@@ -174,8 +175,12 @@ class Durable(unittest.TestCase):
         fake = FakeMsvcrt(busy=2)
         journal = Journal(self.home)
         self.addCleanup(journal.close)
+        # Only the ``time`` that syberlabs.journal sees is replaced (its one use is the lock's sleep); patching
+        # ``sleep`` through ``journal_module.time`` would patch the ``time`` module for the whole process.
+        sleep = Mock()
         with patch.object(journal_module, "fcntl", None), patch.object(journal_module, "msvcrt", fake), \
-                patch.object(journal_module, "LOCKING", True), patch.object(journal_module.time, "sleep") as sleep:
+                patch.object(journal_module, "LOCKING", True), \
+                patch.object(journal_module, "time", types.SimpleNamespace(sleep=sleep)):
             with journal.locked():
                 with journal.locked():
                     self.assertEqual(fake.calls, [(fake.LK_NBLCK, 1, 0)] * 3)
