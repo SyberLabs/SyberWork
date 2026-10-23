@@ -13,7 +13,7 @@ from spec.validate import validate_events
 from syberlabs import Kit, Rejected
 from syberlabs.canonical import canonical
 from syberlabs.evolve import CommandMutator, EvolutionaryProvider, FixedPolicy, resolve_conflicts
-from syberlabs.providers import USAGE_FIELDS
+from syberlabs.providers import USAGE_FIELDS, CommandProvider
 from syberlabs.search import ACTION_KINDS, BranchPolicy, Mutate, Score
 
 FIXED = {
@@ -133,6 +133,54 @@ class Evolution(unittest.TestCase):
         mutator = CommandMutator([sys.executable, str(script)], name="fixture-model")
         found = thread.propose(EvolutionaryProvider(mutator, population=2, generations=1, seeds=["c1"]))
         self.assertTrue(any(c.evaluation == "passed" and c.signal["mutator"] == "fixture-model" for c in found))
+
+    def test_the_mutate_request_carries_the_scope_the_search_request_carries(self):
+        """Both protocols tell an adapter the same mutable scope; a model told an empty scope writes nothing."""
+        recorder = textwrap.dedent('''\
+            import json, pathlib, sys
+            request = json.load(sys.stdin)
+            pathlib.Path(sys.argv[1]).write_text(json.dumps(request))
+            print(json.dumps({"candidates": []} if request["protocol"] == "syberlabs.search/v0alpha1" else {"changes": {}}))
+            ''')
+        script = self.root.parent / "recorder.py"
+        script.write_text(recorder)
+        search_log, mutate_log = self.root.parent / "search.json", self.root.parent / "mutate.json"
+        kit = self.kit()
+        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
+        thread.propose(CommandProvider([sys.executable, str(script), str(search_log)], name="fixture-model", revision="1"))
+        mutator = CommandMutator([sys.executable, str(script), str(mutate_log)], name="fixture-model", max_calls=1)
+        thread.propose(EvolutionaryProvider(mutator, population=2, generations=1))
+        search, mutate = json.loads(search_log.read_text()), json.loads(mutate_log.read_text())
+        self.assertEqual(search["protocol"], "syberlabs.search/v0alpha1")
+        self.assertEqual(mutate["protocol"], "syberlabs.mutate/v0alpha1")
+        self.assertEqual(search["scope"], ["src"], "the evolution scope's paths (`src/` in the contract), as the host cleans them")
+        self.assertEqual(mutate["scope"], search["scope"])
+        self.assertEqual(set(mutate), {"protocol", "objective", "scope", "parent", "files", "context", "seed"})
+
+    def test_an_empty_proposal_from_the_mutator_is_counted_and_registers_nothing(self):
+        """``{"changes": {}}`` is a call that produced no child: the search goes on, no candidate, no crash."""
+        script = self.root.parent / "silent.py"
+        script.write_text(textwrap.dedent('''\
+            import json, sys
+            json.load(sys.stdin)
+            print(json.dumps({"changes": {}}))
+            '''))
+        kit = self.kit()
+        thread = kit.start("Fix the pricing rules", "pricing-evolution.v1")
+        mutator = CommandMutator([sys.executable, str(script)], name="silent-model", max_calls=6)
+        provider = EvolutionaryProvider(mutator, population=2, generations=2)
+        found = thread.propose(provider)
+        self.assertEqual(found, [])
+        self.assertEqual(mutator.calls, 6, "every call up to the cap was made; none was stopped by an empty answer")
+        mutations = [e for e in provider.trace if e.get("action") == "mutate"]
+        # The fill tries each of the two slots four times: six calls reach the mutator, two find it exhausted.
+        self.assertEqual(len(mutations), 8)
+        self.assertTrue(all(e["outcome"]["candidate"] is None and e["outcome"]["evaluated"] == 0 for e in mutations))
+        events = thread.history()
+        self.assertFalse(any(e["kind"] == "candidate_registered" for e in events))
+        finished = [e["body"] for e in events if e["kind"] == "search_finished"][-1]
+        self.assertEqual((finished["stopped"], finished["candidates"]), ("completed", []))
+        self.assertEqual(validate_events(events, "evolution"), [])
 
     def test_evolve_from_the_terminal(self):
         import contextlib

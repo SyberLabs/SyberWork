@@ -49,6 +49,24 @@ class Adapter(unittest.TestCase):
         with self.assertRaises(ValueError):
             adapter.build_prompt({"protocol": "other"}, self.root)
 
+    def test_an_absent_or_empty_scope_is_never_stated_as_empty(self):
+        """Before 2026-10-22 the mutate request carried no scope and the prompt read ``Mutable scope: `` (nothing);
+        Sonnet 5.5, told to write only inside the stated scope, returned no changes on every evolve call."""
+        for protocol, extra in (("syberlabs.mutate/v0alpha1", {"parent": "c3", "seed": 9, "files": {"src/a.py": "A"}}),
+                                ("syberlabs.search/v0alpha1", {"context": [{"path": "src/report.py"}], "files": ["src/report.py"]})):
+            for request in ({"protocol": protocol, "objective": "x", **extra},
+                            {"protocol": protocol, "objective": "x", "scope": [], **extra},
+                            {"protocol": protocol, "objective": "x", "scope": None, **extra}):
+                with self.subTest(protocol=protocol, scope=request.get("scope", "absent")):
+                    prompt = adapter.build_prompt(request, self.root)
+                    self.assertIn("Mutable scope: the files shown below", prompt)
+                    self.assertNotIn("Mutable scope: \n", prompt)
+            with self.subTest(protocol=protocol, scope="stated"):
+                prompt = adapter.build_prompt({"protocol": protocol, "objective": "x", "scope": ["src/", "docs"], **extra}, self.root)
+                self.assertIn("Mutable scope: src/, docs", prompt)
+                self.assertNotIn("the files shown below", prompt)
+        self.assertIn("when no scope is stated, the files shown in the request", adapter.SYSTEM)
+
     def test_responses_follow_each_protocol_and_report_usage(self):
         parsed = {"message": "csv", "rationale": "reuse rows()",
                   "files": [{"path": "src/export.py", "content": "x", "delete": False},
