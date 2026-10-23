@@ -157,7 +157,12 @@ class SearchSpace(Protocol):
         """
 
     def evaluate(self, candidate: str) -> Evaluation:
-        """Run the contract's checks on the candidate. Counts against the budget."""
+        """Run the contract's checks on the candidate, or on the base tree for ``"base"``. Counts against the budget.
+
+        The evolutionary provider evaluates ``"base"`` once, before it fills its population, so a mutation
+        of the base has the host's results to go on (``evolve.mutation_feedback``); a space that holds that
+        result exposes it as ``base_evaluation`` (``Evaluation`` or None).
+        """
 
     def remaining(self) -> Budget:
         """Budget left in this search."""
