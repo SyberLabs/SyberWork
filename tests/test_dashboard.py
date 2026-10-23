@@ -155,6 +155,25 @@ class Dashboard(Journaled):
         self.assertIn("unreadable (journal_corrupt)", dashboard.render_html(model))
 
 
+class WorkItems(Journaled):
+    def test_the_nine_columns_are_on_the_page_with_unknown_shown_as_unknown(self):
+        before = self.journal_state()
+        model = dashboard.collect(self.kit_)
+        [item] = model["work_items"]
+        self.assertEqual((item["thread"], item["fix_rounds"]["value"], item["delivered"]["value"]), (self.thread.id, 0, False),
+                         "both candidates were registered before either was evaluated: no repair; nothing published")
+        self.assertEqual(item["human_interventions"]["value"], 2, "two accept proposals by a person on an attended thread")
+        self.assertEqual((item["cost"]["value"], item["web_lookups"]["value"]), ("unknown", "unknown"))
+        self.assertEqual(model["work_items_summary"]["items"], 1)
+        page = dashboard.render_html(model)
+        self.assertIn("<h2>Work items</h2>", page)
+        for column in ("cost", "turns", "agent hours", "fix rounds", "web lookups", "GitHits lookups", "delivered",
+                       "review rejections", "human interventions"):
+            self.assertIn(f"<th>{column}</th>", page)
+        self.assertIn('<span class="mute" title="no pr_merged fact">unknown</span>', page)
+        self.assertEqual(self.journal_state(), before, "computing the metrics must not append an event")
+
+
 class Empty(RepoCase):
     def test_an_empty_home_renders_a_page(self):
         kit = self.kit()

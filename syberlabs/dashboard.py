@@ -2,8 +2,9 @@
 
     python -m syberlabs.dashboard --home .syberlabs --out dashboard.html
 
-Threads, candidates, checks, refusals, effects and their settlements, and any
-admission certificates under ``<home>/certificates``, read through the same
+Threads, candidates, checks, refusals, effects and their settlements, the
+per-work-item metrics (``syberlabs.metrics``: nine columns, ``unknown`` shown as
+such), and any admission certificates under ``<home>/certificates``, read through the same
 session read API the terminal commands use (``Kit.open``, ``Thread.status``,
 ``Thread.history``, ``Session.candidates``). Nothing on the page is authored by
 hand and nothing here appends an event or takes a write path. The page has no
@@ -19,6 +20,7 @@ import json
 import time
 from pathlib import Path
 
+from syberlabs import metrics
 from syberlabs.build import Kit
 from syberlabs.clock import stamp
 from syberlabs.errors import Rejected
@@ -135,8 +137,20 @@ def certificates(home: Path) -> list[dict]:
     return rows
 
 
+def work_items(kit: Kit) -> list[metrics.WorkItemMetrics]:
+    """The metrics suite over every readable thread, from the same events the rest of the page reads."""
+    events = []
+    for case_id in kit.journal.thread_ids():
+        try:
+            events += kit.session.history(case_id)
+        except Rejected:
+            continue  # shown as unreadable in the threads table
+    return metrics.work_items(events, dict(kit.session.contracts))
+
+
 def collect(kit: Kit, *, now: float | None = None) -> dict:
     threads = [thread_model(kit, case_id) for case_id in kit.journal.thread_ids()]
+    items = work_items(kit)
     effects = [effect for thread in threads for effect in thread["effects"]]
     refusals = [row for thread in threads for row in thread["refusals"]]
     candidates = [c for thread in threads for c in thread["candidates"]]
@@ -151,6 +165,8 @@ def collect(kit: Kit, *, now: float | None = None) -> dict:
         "effects": effects,
         "refusals": refusals,
         "certificates": certificates(kit.home),
+        "work_items": [item.to_dict() for item in items],
+        "work_items_summary": metrics.summary(items),
         "summary": {
             "threads": {"total": len(threads), **by_state},
             "candidates": {"proposed": len(candidates),
@@ -332,6 +348,37 @@ def _refusals_table(refusals: list[dict]) -> str:
                   rows, "The kernel refused nothing.")
 
 
+def _metric_cell(cell: dict, money: bool = False) -> str:
+    value = cell["value"]
+    if value == metrics.UNKNOWN:
+        return f'<span class="mute" title="{_escape(cell["note"])}">unknown</span>'
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return _escape(f"${value:.4f}" if money else value)
+
+
+def _work_items_table(items: list[dict], summary: dict) -> str:
+    rows = []
+    for item in items:
+        opened = f"#{_escape(item['pull_request'])}" if item["opened"]["value"] is True else "no"
+        rows.append([
+            f"<code>{_escape(item['thread'][:8])}</code>", _escape(item["act_class"] or ""),
+            _escape((item["started_at"] or "")[:16].replace("T", " ")),
+            f"{_metric_cell(item['cost'], money=True)} <span class=\"mute\">{_escape(item['cost_basis'])}</span>",
+            _metric_cell(item["turns"]), _metric_cell(item["agent_time"]), _metric_cell(item["fix_rounds"]),
+            _metric_cell(item["web_lookups"]), _metric_cell(item["githits_lookups"]), opened,
+            _metric_cell(item["delivered"]), _metric_cell(item["review_rejections"]), _metric_cell(item["human_interventions"]),
+        ])
+    rate = summary["delivered_rate"]
+    lead = (f'<p class="mute">{_escape(summary["items"])} items, {_escape(summary["opened"])} opened, '
+            f'{_escape(summary["delivered"]["yes"])} delivered, {_escape(summary["delivered"]["unknown"])} unknown; '
+            f'delivered rate {_escape("unknown" if rate is None else f"{rate:.2f}")}. <em>unknown</em> means the fact is '
+            "not in the record, never zero; each number's events are in <code>syberlabs metrics --json</code>.</p>")
+    return lead + _table(["thread", "class", "started", "cost", "turns", "agent hours", "fix rounds", "web lookups",
+                          "GitHits lookups", "opened", "delivered", "review rejections", "human interventions"],
+                         rows, "No work items.")
+
+
 def _certificates_table(rows: list[dict]) -> str:
     return _table(["file", "thread", "candidate", "issued"], [[
         _escape(row["file"]), f"<code>{_escape(_short(row['thread'], 8))}</code>", _escape(row["candidate"] or ""),
@@ -355,6 +402,10 @@ def render_html(model: dict) -> str:
         "<h2>Threads</h2>", _threads_table(threads),
         "<h2>Candidates by thread</h2>",
         "".join(_thread_details(t) for t in threads) or '<p class="mute">No threads.</p>',
+    ]
+    if model.get("work_items"):
+        parts += ["<h2>Work items</h2>", _work_items_table(model["work_items"], model["work_items_summary"])]
+    parts += [
         "<h2>Effects</h2>", _effects_table(model["effects"]),
         "<h2>Refusals</h2>", _refusals_table(model["refusals"]),
     ]

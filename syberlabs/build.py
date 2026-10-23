@@ -30,7 +30,8 @@ from typing import Any, Mapping, Sequence
 
 from syberlabs import checks as runner
 from syberlabs import critic
-from syberlabs.clock import as_seconds
+from syberlabs import metrics
+from syberlabs.clock import as_seconds, stamp
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.economic import dollars, price_usage
@@ -1279,6 +1280,39 @@ class Thread:
         event = self.kit.session.approve(self.id, proposal_id, actor, list(roles))
         return Receipt("approved", candidate, proposal_id, event["body"]["role"], event=event["hash"],
                        hint=f"The proposer can now run syberlabs accept {candidate}")
+
+    # Facts for the metrics suite (``syberlabs.metrics``, ``docs/METRICS.md``): verified host observations through
+    # the same ``observe`` route as ``unattended`` and ``proposal_refused``; no new event kind.
+
+    @property
+    def runner(self) -> str | None:
+        """The actor recorded as this thread's unattended runner (``unattended.by``), or None."""
+        found = self._latest(UNATTENDED)
+        return found["value"].get("by") if found else None
+
+    def is_person(self, actor: str) -> bool:
+        """An actor whose act on this thread is a human intervention: not the host and not the unattended runner."""
+        return actor != HOST and actor != self.runner
+
+    def record_intervention(self, kind: str, *, by: str, note: str | None = None, proposal: str | None = None) -> dict:
+        """Record that a person acted on this thread: ``observed{key: human_intervention}``, value ``{kind, by, at, note}``
+        (and ``proposal`` for an act on one), versioned by the moment it was written."""
+        now = stamp(time.time())
+        try:
+            value = metrics.intervention_value(kind, by, metrics.utc(now), note, proposal)
+        except ValueError as exc:
+            raise Rejected("invalid_intervention", str(exc)) from None
+        return self.kit.session.observe(self.id, metrics.HUMAN_INTERVENTION, value, HOST, str(now), HOST, verified=True)
+
+    def record_review(self, verdict: str, *, reviewer: str, revision: str, by: str, findings_high: int | None = None,
+                      url: str | None = None) -> dict:
+        """Record a verifier's verdict on one revision: ``observed{key: review}``, versioned by the revision."""
+        try:
+            value = metrics.review_value(verdict, reviewer, revision, by, metrics.utc(stamp(time.time())),
+                                         findings_high, url)
+        except ValueError as exc:
+            raise Rejected("invalid_review", str(exc)) from None
+        return self.kit.session.observe(self.id, metrics.REVIEW, value, HOST, revision, HOST, verified=True)
 
     def recover(self, *, actor: str | None = None, roles: Sequence[str] | None = None) -> list[Receipt]:
         """Settle interrupted acceptances and publishing effects by reading their destinations."""

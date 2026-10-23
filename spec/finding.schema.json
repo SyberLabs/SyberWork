@@ -22,7 +22,20 @@
       "maxItems": 1000,
       "items": {"$ref": "#/$defs/finding"}
     },
-    "summary": {"type": "string", "maxLength": 4000}
+    "summary": {"type": "string", "maxLength": 4000},
+    "usage": {
+      "description": "Optional: the model usage of the critic's own call, in the adapter protocol's shape. The host keeps the known fields and records them as an observed event (key critic_usage, source check:<name>) beside the critic observation; a declaration, not a host measurement.",
+      "type": "object",
+      "properties": {
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "cache_read_input_tokens": {"type": "integer", "minimum": 0},
+        "cache_creation_input_tokens": {"type": "integer", "minimum": 0},
+        "model": {"type": "string", "maxLength": 64},
+        "stop_reason": {"type": "string", "maxLength": 64},
+        "simulated": {"type": "boolean"}
+      }
+    }
   },
   "$defs": {
     "finding": {

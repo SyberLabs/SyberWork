@@ -26,6 +26,7 @@ from syberlabs.evidence import acceptance_results, signer_is_effect_actor, verif
 from syberlabs.evolution import (AUTOMATION_ROLES, candidate_record, candidate_views, evaluation_record, registered,
                                  search_record)
 from syberlabs.jcs import envelope_jcs
+from syberlabs import metrics as work_metrics
 from syberlabs.planner import HttpPlanner, planning_context
 from syberlabs.targets import guard_request, trusted_origin
 from syberlabs.values import at_path
@@ -813,6 +814,19 @@ class Work:
             if key == "effects_settled_not_applied_total":
                 return len(not_applied)
             return len(claimed - applied - not_applied)
+
+    def work_items(self, case_id: str | None = None) -> dict:
+        """Per-work-item metrics (``syberlabs.metrics``, docs/METRICS.md) over every case, or one: read in one
+        transaction and folded by the same pure function the terminal uses. ``unknown`` is a value, never zero."""
+        with self.tx() as db:
+            rows = CaseStore(db).list_all() if case_id is None else [self._case(db, case_id)]
+            events, contracts = [], {}
+            for row in rows:
+                events += self._events(db, row["id"])
+                key = (row["contract_id"], row["contract_version"])
+                contracts[key] = contracts.get(key) or self._contract(db, *key)
+        items = work_metrics.work_items(events, contracts)
+        return {"items": [item.to_dict() for item in items], "summary": work_metrics.summary(items)}
 
     def replay(self, case_id: str, contract_version: int, policy_version: int) -> dict:
         with self.tx() as db:

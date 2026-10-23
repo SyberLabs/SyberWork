@@ -75,7 +75,13 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._static(parts[0], "text/javascript" if parts[0].endswith(".js") else "text/css")
                     return
                 user = self._user()
-                if len(parts) == 2 and parts[0] == "metrics":
+                if len(parts) in (2, 3) and parts[:2] == ["metrics", "work_items"]:
+                    # Per-work-item metrics (docs/METRICS.md): every item, or one thread's, with each number's basis.
+                    try:
+                        self._json(work.work_items(unquote(parts[2]) if len(parts) == 3 else None))
+                    except Rejected as e:
+                        self._json({"error": e.code, "detail": e.detail}, 404 if e.code == "unknown_case" else 409)
+                elif len(parts) == 2 and parts[0] == "metrics":
                     self._metric(unquote(parts[1]))
                 elif parts == ["api", "me"]:
                     profile = {"name": user["name"], "roles": user.get("roles", []), "sources": user.get("sources", [])}

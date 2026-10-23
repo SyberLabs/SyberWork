@@ -12,6 +12,9 @@
     syberlabs certify c1                         # sign what the journal says about the accepted candidate
     syberlabs verify CERT --public KEY --repo .  # check it with the public key; no Kit, no checks, no model
     syberlabs run --once                       # or a loop: every open thread's next safe step
+    syberlabs metrics [--json|--csv] [--check]   # per-work-item metrics, every number from the journal
+    syberlabs note --intervention message --note "asked the agent to split the PR"
+    syberlabs review --record --verdict pass --reviewer NAME --revision COMMIT
 
 The current thread is remembered in ``.syberlabs/current``. Every command
 reads the journal fresh, so a thread can be resumed from any terminal.
@@ -26,6 +29,7 @@ from pathlib import Path
 
 from syberlabs import certificate
 from syberlabs import critic
+from syberlabs import metrics
 from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
@@ -204,6 +208,26 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--repo", dest="verify_repo", nargs="?", const=".", default=None, metavar="PATH",
                         help="also re-derive commits, trees and the diff from this repository, and the certified journal "
                              "prefix under --home when the thread's journal is present (PATH defaults to .)")
+    measure = commands.add_parser("metrics", help="per-work-item metrics computed from the journal (docs/METRICS.md)")
+    measure.add_argument("--thread", dest="metrics_thread", help="only this thread (id or prefix)")
+    measure.add_argument("--since", help="only threads started on or after this date (YYYY-MM-DD or ISO 8601)")
+    shape = measure.add_mutually_exclusive_group()
+    shape.add_argument("--json", action="store_true", help="items with every metric's basis, and the summary")
+    shape.add_argument("--csv", action="store_true")
+    measure.add_argument("--check", action="store_true",
+                         help="exit 1 when a delivered item has an unknown metric (for CI over admitted work)")
+    measure.add_argument("--from-export", dest="exports", nargs="+", metavar="FILE",
+                         help="read thread records written by syberlabs export instead of this home's journal")
+    note = commands.add_parser("note", help="record that a person acted on the thread (a human_intervention fact)")
+    note.add_argument("--intervention", required=True, choices=list(metrics.INTERVENTION_KINDS))
+    note.add_argument("--note", help=f"what was done, at most {metrics.MAX_NOTE} characters; never a secret")
+    review = commands.add_parser("review", help="record an independent verifier's verdict (a review fact), or list them")
+    review.add_argument("--record", action="store_true", help="record a verdict; without it, list the recorded ones")
+    review.add_argument("--verdict", choices=list(metrics.VERDICTS))
+    review.add_argument("--reviewer")
+    review.add_argument("--revision", help="the commit or revision reviewed")
+    review.add_argument("--findings-high", type=int)
+    review.add_argument("--url", help="the verification comment (https)")
     commands.add_parser("memory", help="what is stored, why, and how to remove it")
     inspect = commands.add_parser("inspect", help="read-only local web inspector for threads, lineage, diffs, and history")
     inspect.add_argument("--port", type=int, default=0)
@@ -221,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "verify":
             return _verify(args)  # no Kit: works outside any repository and has none of Kit.local's side effects
+        if args.command == "metrics" and args.exports:
+            return _metrics(args, None)  # exported records only: no Kit, no repository
         kit = _kit(args)
         try:
             return _run(kit, args)
@@ -252,6 +278,63 @@ def _verify(args) -> int:
     for line in certificate.format_report(report):
         print(line)
     return 0 if report.passed else 1
+
+
+def _metrics(args, kit: Kit | None) -> int:
+    """``syberlabs metrics``: fold the journal (or exported records) into work items; print, and check if asked."""
+    events, contracts, seen = [], {}, set()
+    if kit is None:
+        for path in args.exports:
+            try:
+                record = json.loads(Path(path).read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise Rejected("export_unreadable", f"{path}: {type(exc).__name__}") from None
+            found = record.get("events") if isinstance(record, dict) else record
+            if not isinstance(found, list) or not all(
+                    isinstance(e, dict) and {"case_id", "seq", "kind", "body", "hash"} <= set(e) for e in found):
+                raise Rejected("export_unreadable", f"{path}: no journal event list")
+            contract = record.get("contract") if isinstance(record, dict) else None
+            if isinstance(contract, dict) and "id" in contract and "version" in contract:
+                contracts[(contract["id"], contract["version"])] = contract
+            events += found
+    else:
+        for case_id in kit.journal.thread_ids():
+            try:
+                events += kit.session.history(case_id)
+            except Rejected:
+                continue  # an unreadable thread is the dashboard's to show, not a number here
+        contracts = dict(kit.session.contracts)
+    events = [e for e in events if e["hash"] not in seen and not seen.add(e["hash"])]
+    items = metrics.work_items(events, contracts)
+    wanted = args.metrics_thread or args.thread
+    if wanted:
+        items = [item for item in items if item.thread.startswith(wanted)]
+    try:
+        items = metrics.since(items, args.since)
+    except ValueError as exc:
+        raise Rejected("invalid_since", str(exc)) from None
+    found = {**metrics.summary(items), "since": args.since}
+    if args.json:
+        print(json.dumps({"items": [item.to_dict() for item in items], "summary": found}, indent=2))
+    elif args.csv:
+        sys.stdout.write(metrics.to_csv(items))
+    else:
+        print(metrics.table(items))
+        rate = found["delivered_rate"]
+        print(f"{found['items']} items, {found['opened']} opened, delivered {found['delivered']['yes']} "
+              f"(unknown {found['delivered']['unknown']}), rate "
+              + (f"{rate:.2f}" if rate is not None else metrics.UNKNOWN)
+              + "; unknown means the fact is not in the record, never zero")
+    missing = metrics.incomplete(items) if args.check else []
+    for thread, names in missing:
+        print(f"incomplete: {thread[:8]} delivered with unknown {', '.join(names)}", file=sys.stderr)
+    return 1 if missing else 0
+
+
+def _intervened(thread, kit: Kit, kind: str, proposal: str | None = None) -> None:
+    """A thread command run by a person (not the host, not the unattended runner) leaves a human_intervention fact."""
+    if thread.is_person(kit.actor):
+        thread.record_intervention(kind, by=kit.actor, proposal=proposal)
 
 
 def _run(kit: Kit, args) -> int:
@@ -317,6 +400,8 @@ def _run(kit: Kit, args) -> int:
         for change in kit.contract_diff(args.a, args.b):
             print(f"{change['path']}: {json.dumps(change['before'])} -> {json.dumps(change['after'])}")
         return 0
+    if args.command == "metrics":
+        return _metrics(args, kit)
     if args.command == "run":
         if args.interval < 0:
             raise Rejected("invalid_interval", "--interval is seconds, zero or more")
@@ -386,6 +471,8 @@ def _run(kit: Kit, args) -> int:
             print(f"next: syberlabs check {found[-1].id}")
     elif args.command == "check":
         verdict = thread.check(args.candidate, rerun=args.rerun)
+        if args.rerun:
+            _intervened(thread, kit, "override")
         if args.json:
             print(json.dumps({"candidate": verdict.candidate, "acceptable": verdict.acceptable, "status": verdict.status,
                               "reason": verdict.reason, "rule": verdict.rule,
@@ -423,15 +510,38 @@ def _run(kit: Kit, args) -> int:
         sys.stdout.write(thread.diff(args.candidate))
     elif args.command == "accept":
         receipt = thread.accept(args.candidate)
+        if receipt.proposal_id:
+            _intervened(thread, kit, "approve", receipt.proposal_id)
         _print_receipt(receipt)
         return 0 if receipt.status == "succeeded" else 1
     elif args.command == "approve":
         if args.action:
-            _print_receipt(thread.approve_action(args.action, actor=kit.actor, roles=kit.roles))
+            receipt = thread.approve_action(args.action, actor=kit.actor, roles=kit.roles)
         elif args.candidate:
-            _print_receipt(thread.approve(args.candidate, actor=kit.actor, roles=kit.roles))
+            receipt = thread.approve(args.candidate, actor=kit.actor, roles=kit.roles)
         else:
             raise Rejected("nothing_to_approve", "name a candidate or --action")
+        _intervened(thread, kit, "approve", receipt.proposal_id)
+        _print_receipt(receipt)
+    elif args.command == "note":
+        event = thread.record_intervention(args.intervention, by=kit.actor, note=args.note)
+        print(f"recorded human_intervention {args.intervention} by {kit.actor} ({event['hash'][:12]})")
+    elif args.command == "review":
+        if args.record:
+            if not (args.verdict and args.reviewer and args.revision):
+                raise Rejected("invalid_review", "--record needs --verdict, --reviewer and --revision")
+            event = thread.record_review(args.verdict, reviewer=args.reviewer, revision=args.revision, by=kit.actor,
+                                         findings_high=args.findings_high, url=args.url)
+            print(f"recorded review {args.verdict} by {args.reviewer} on {args.revision[:12]} ({event['hash'][:12]})")
+        else:
+            found = [metrics.fact(e, metrics.REVIEW) for e in thread.history()]
+            found = [value for value in found if value is not None]
+            for value in found:
+                print(f"{value['verdict']:4} {value['reviewer']} {value['revision'][:12]} {value['at']}"
+                      + (f" {value['comment_url']}" if value.get("comment_url") else ""))
+            if not found:
+                print("no review recorded; record one with: syberlabs review --record --verdict pass|fail "
+                      "--reviewer NAME --revision COMMIT")
     elif args.command == "publish":
         receipt = thread.publish(args.action)
         _print_receipt(receipt)

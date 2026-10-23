@@ -96,6 +96,10 @@ For a team, set the same `approval_role` on the promotion action and on `evoluti
 
 To land an accepted change on `main`, merge `syberlabs/<thread>` yourself. Setting `promotion.target_ref` to an existing branch makes acceptance a fast-forward from the thread base instead: the branch must still be at the base (otherwise 412, no write), and it must not be checked out (otherwise 409, no write).
 
+## Metrics
+
+`syberlabs metrics` folds every thread's events into one row of nine per-work-item metrics (cost with its basis, turns, agent time, fix rounds, web and GitHits lookups, delivered, review rejections, human interventions), each with the event hashes it came from and `unknown` where the record has no fact; `--json`, `--csv`, `--since`, `--check`, and `--from-export` for records written by `export`. `syberlabs note --intervention KIND` and `syberlabs review --record` write the facts a person's act or a verifier's verdict leave; `accept`, `approve` and `check --rerun` by a person write one automatically. See [METRICS.md](METRICS.md).
+
 ## Inspector
 
 `syberlabs inspect` serves a read-only page on 127.0.0.1 and prints its address. It shows threads, the candidate lineage graph (crossover edges dashed, each node colored by its own check result, the accepted candidate ringed), each candidate's verdict and diff, and the event history. It re-reads the journal on every request. A thread whose start was interrupted (`state: incomplete`) is listed with that state and its remedy (start again with the same objective, or forget) and is not opened, so the listing still renders; asking for that thread alone answers 409 `thread_incomplete`. It cannot change anything: only GET is served, and its verdicts never run checks. The address carries a per-run token in the URL fragment, which the page sends as a header and removes from the address bar. The API refuses requests without the token or with a non-loopback `Host`, which blocks DNS-rebinding pages. The page has a strict Content-Security-Policy and renders every value as text.
