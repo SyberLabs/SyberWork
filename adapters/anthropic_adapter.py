@@ -10,7 +10,9 @@ two protocols the kit uses:
 - ``syberlabs.search/v0alpha1`` (CommandProvider): propose one patch; an
   optional ``feedback`` object carries a parent candidate's files and failing
   check output for iterative repair;
-- ``syberlabs.mutate/v0alpha1`` (CommandMutator): rewrite part of one parent.
+- ``syberlabs.mutate/v0alpha1`` (CommandMutator): rewrite part of one parent; an
+  optional ``feedback`` object carries the host's check results for that parent
+  in the same shape, so a mutation of a failing parent is asked to fix it.
 
 The response carries ``usage`` (tokens and the model that served the call) so
 the host can account cost. The model only proposes: whatever it returns is a
@@ -57,7 +59,8 @@ SCHEMA = {
 SYSTEM = (
     "You change a software repository to meet an objective. You propose; a separate host runs the project's "
     "checks and a person decides whether to accept. Return complete new contents for each file you change, "
-    "only for files in the stated scope. Keep the change as small as the objective allows. Do not weaken tests "
+    "only for files in the stated scope (when no scope is stated, the files shown in the request). Keep the change "
+    "as small as the objective allows. Do not weaken tests "
     "or checks to make them pass. Set delete true (with empty content) only to remove a file. The rationale is "
     "one or two sentences a reviewer can check against the diff."
 )
@@ -83,26 +86,43 @@ def _files(request: dict, cwd: Path) -> dict[str, str]:
     return found
 
 
+def failing_checks(feedback: dict | None) -> str:
+    """The checks in a ``feedback`` object that did not pass, one block each, the last 2000 characters of
+    each output tail. Empty when there is no feedback or every check passed. Both protocols quote this."""
+    return "\n".join(f"--- {c['name']} ({c['state']})\n{c.get('output_tail', '')[-2000:]}"
+                     for c in (feedback or {}).get("checks", []) if c.get("state") != "passed")
+
+
 def build_prompt(request: dict, cwd: Path) -> str:
     """The user turn for either protocol. Pure, so it can be tested without the SDK."""
     protocol = request.get("protocol")
     if protocol == "syberlabs.mutate/v0alpha1":
         files = request.get("files", {})
-        task = ("Make one focused change toward the objective, as a mutation of this candidate. "
-                f"Candidate: {request.get('parent')}. Vary your approach; seed {request.get('seed')}.")
+        failing = failing_checks(request.get("feedback"))
+        if failing:
+            # The parent's failing checks give the mutation a direction (E3 v3, 2026-10-22: repair converged in
+            # two calls on what the evolve arms never solved, because only repair saw the host's results).
+            task = ("This candidate did not pass the host's checks. Fix it. Failing checks:\n" + failing
+                    + "\n\nMake one focused change toward the objective that fixes them, as a mutation of this "
+                    f"candidate. Candidate: {request.get('parent')}; seed {request.get('seed')}.")
+        else:
+            task = ("Make one focused change toward the objective, as a mutation of this candidate. "
+                    f"Candidate: {request.get('parent')}. Vary your approach; seed {request.get('seed')}.")
     elif protocol == "syberlabs.search/v0alpha1":
         feedback = request.get("feedback")
         if feedback:
             files = feedback.get("files", {})
-            failing = "\n".join(f"--- {c['name']} ({c['state']})\n{c.get('output_tail', '')[-2000:]}"
-                                for c in feedback.get("checks", []) if c.get("state") != "passed")
-            task = ("The previous attempt below did not pass the host's checks. Fix it. Failing checks:\n" + failing)
+            task = ("The previous attempt below did not pass the host's checks. Fix it. Failing checks:\n"
+                    + failing_checks(feedback))
         else:
             files = _files(request, cwd)
             task = "Propose one patch that meets the objective."
     else:
         raise ValueError(f"unknown protocol {protocol!r}")
-    parts = [f"Objective: {request.get('objective')}", f"Mutable scope: {', '.join(request.get('scope', []))}", task]
+    scope = [path for path in request.get("scope") or [] if isinstance(path, str)]
+    # Never state an empty scope: a model told to write only inside "" writes nothing (E3, 2026-10-22).
+    parts = [f"Objective: {request.get('objective')}",
+             f"Mutable scope: {', '.join(scope) if scope else 'the files shown below'}", task]
     for path, text in files.items():
         parts.append(f"<file path={json.dumps(path)}>\n{text}\n</file>")
     return "\n\n".join(parts)
