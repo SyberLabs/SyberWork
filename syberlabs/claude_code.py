@@ -22,9 +22,23 @@ What the host records per call, parsed from Claude Code's ``stream-json`` output
   ``WebFetch`` and the server tools ``web_search`` and ``web_fetch``), bounded by ``providers.tool_usage``;
 - ``signal.lane`` and ``signal.cost_basis`` (the credential lane, below) and ``signal.estimated_usd``, Claude Code's
   own ``total_cost_usd``, a client-side estimate that is never billed spend;
+- ``signal.guard``: the query guard's policy for the run, ``{version, max_lines, max_chars}`` (host policy, never
+  contract data);
 - one verified ``observed`` event per GitHits or web lookup, key ``lookup``, value ``{tool, query_digest,
-  query_chars, at, ok}``: the SHA-256 of the query string and its length, never the text. Nothing else from the
-  stream (prompt, tool inputs, tool results, the model's text) enters the journal.
+  query_chars, at, ok, guard}``: the SHA-256 of the query string and its length, never the text, and the query
+  guard's decision. It is written through ``space.observe`` (``SearchSpace.observe``; ``GitSearchSpace`` records it
+  with ``Session.observe``), so a provider built in Python keeps its lookups. Nothing else from the stream
+  (prompt, tool inputs, tool results, the model's text) enters the journal.
+
+The query guard (``syberlabs.query_guard``). Every call runs with ``--settings FILE``, a temporary settings document
+the host writes in its own directory outside the worktree that holds one ``PreToolUse`` hook and nothing else: the
+host's own ``query_guard.py`` by absolute path, matched to ``mcp__githits__*``, ``WebSearch`` and ``WebFetch``. It
+blocks a lookup whose query carries a credential, an email, a URL with credentials, code (more than ``max_lines``
+lines, a fence, more than ``max_chars`` characters) or a line copied from the worktree's tracked files, and writes
+its decision (rule name, never text) beside itself. A blocked lookup is still a lookup: its record has ``ok: false``
+and ``guard: <rule>``; an allowed one ``guard: "pass"``. A lookup the stream shows but the hook never decided on is
+recorded ``guard: "unguarded"`` and stops the search (``provider_guard_inactive``): the guard did not run, so the
+operator must know before another call.
 
 Credential lanes (bring your own credential: SyberLabs never stores, pools or forwards a credential; the operator's
 own Claude Code runs under their own login, or ``--bare`` with their API key). ``api`` (``--bare``, the default
@@ -34,14 +48,25 @@ the bill is the cloud provider's. ``subscription_local`` (an inherited login, th
 ``seat_team_enterprise`` are ``none``: no per-call bill exists, so nothing is priced and the dollar budget does not
 apply (turn, second and token budgets for those lanes are not built: ``spec/GAPS.md``).
 
-Trust. A non-bare ``claude -p`` runs the hooks in the tree's ``.claude/settings.json`` and connects its ``.mcp.json``
-servers with no trust prompt, so this provider refuses to run without ``--bare`` unless the operator declares the
-tree trusted. It also always passes ``--strict-mcp-config`` (only ``--mcp-config`` servers connect) and
-``--setting-sources user`` (no project or local settings from a tree a previous call may have written).
+Environment. On the login lanes (``subscription_local``, ``seat_team_enterprise``) every variable that names an
+Anthropic or cloud credential or routes Claude Code to another endpoint or provider (``LOGIN_LANE_DROPPED_ENV``)
+is removed, so a run recorded as unbilled cannot be billed elsewhere. ``--bare`` with ``ANTHROPIC_BASE_URL`` or a
+third-party switch (``THIRD_PARTY_SWITCHES``) set must be ``--lane provider_3p``; ``api`` is refused.
+
+Trust. A non-bare ``claude -p`` runs the hooks in the tree's ``.claude/settings.json``, connects its ``.mcp.json``
+servers and reads its memory files (``CLAUDE.md``, ``CLAUDE.local.md``) with no trust prompt, so this provider
+refuses to run without ``--bare`` unless the operator declares the tree trusted. It also always passes
+``--strict-mcp-config`` (only ``--mcp-config`` servers connect) and ``--setting-sources user`` (no project or local
+settings from a tree a previous call may have written). Memory files are still read from the working directory, so
+a repair call whose parent candidate changed an instruction file against the thread's base (``CLAUDE.md``,
+``CLAUDE.local.md``, ``AGENTS.md``, ``.mcp.json`` or anything under ``.claude/``, at any depth) is refused
+``instruction_files_changed`` before it runs: a model must not write the next call's instructions. The base's own
+files are the operator's and are allowed.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import importlib.util
 import os
@@ -54,11 +79,13 @@ from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from syberlabs.canonical import canonical
+from syberlabs import query_guard
+from syberlabs.checks import _stop
 from syberlabs.errors import Rejected
 from syberlabs.gitspace import MAX_FILE_BYTES, Repo
-from syberlabs.providers import (RepairProvider, USAGE_FIELDS, current_meter, model_usage, split_command,
+from syberlabs.providers import (RepairProvider, USAGE_FIELDS, current_meter, model_usage, refuse, split_command,
                                  tool_usage)
+from syberlabs.query_guard import query_text
 from syberlabs.search import SearchSpace
 
 LANES = ("api", "subscription_local", "seat_team_enterprise", "provider_3p")
@@ -73,8 +100,50 @@ HARNESS_NOTE = ("Make the change by editing files in the current directory. The 
                 "working tree with git and runs its own checks. Do not commit.")
 # A signing seed has no business in a model's process; a subscription run must not silently bill an API key.
 DROPPED_ENV = ("SYBERLABS_CERTIFICATE_SEED",)
+LOGIN_LANE_DROPPED_ENV = (
+    # Anthropic credentials and endpoints other than the login itself
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_WORKSPACE_ID",
+    "CLAUDE_CODE_CLIENT_CERT", "CLAUDE_CODE_CLIENT_KEY", "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE",
+    # third-party platforms: switches, endpoints, projects, regions, credentials
+    "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CODE_SKIP_*_AUTH",
+    "ANTHROPIC_BEDROCK_*", "ANTHROPIC_VERTEX_*", "ANTHROPIC_FOUNDRY_*", "ANTHROPIC_AWS_*",
+    "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION", "CLOUD_ML_REGION", "VERTEX_REGION_*",
+    "AWS_*", "GOOGLE_*", "GCLOUD_*", "AZURE_*",
+)
+"""What a login lane (``subscription_local``, ``seat_team_enterprise``) never passes to Claude Code: every variable
+Claude Code's environment reference (``code.claude.com/docs/en/env-vars``, read 2026-10-23 for 2.1.309) documents as
+an Anthropic credential or endpoint other than the claude.ai login (``CLAUDE_CODE_OAUTH_TOKEN`` stays: it is the
+login), or as a switch, endpoint, project, region or credential of Bedrock, Vertex (Google Cloud Agent Platform),
+Foundry, Mantle or Claude Platform on AWS, plus the cloud SDKs' own ``AWS_*``, ``GOOGLE_*``, ``GCLOUD_*`` and
+``AZURE_*`` credentials. A trailing ``*`` matches a prefix; a ``*`` inside matches any run of characters. A run
+recorded as unbilled must not be routed to a billed provider."""
+THIRD_PARTY_SWITCHES = ("ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+                        "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                        "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST")
+"""Set (non-empty and not ``0``/``false``/``no``/``off``), any of these sends a ``--bare`` run somewhere other than
+Anthropic's API under the operator's key, so the lane is ``provider_3p`` and ``api`` is refused."""
+INSTRUCTION_NAMES = ("claude.md", "claude.local.md", "agents.md", ".mcp.json")  # compared case-insensitively
+INSTRUCTION_DIRS = (".claude",)
 MAX_STREAM_BYTES = 64 * 1024 * 1024
 MAX_NAMES = 8
+
+
+def _dropped(name: str) -> bool:
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in LOGIN_LANE_DROPPED_ENV)
+
+
+def third_party(env) -> list[str]:
+    """The ``THIRD_PARTY_SWITCHES`` set in ``env``."""
+    return [name for name in THIRD_PARTY_SWITCHES
+            if str(env.get(name, "")).strip().lower() not in ("", "0", "false", "no", "off")]
+
+
+def instruction_file(path: str) -> bool:
+    """A path Claude Code may read as instructions, settings or MCP servers from the working directory."""
+    parts = path.replace("\\", "/").lower().split("/")
+    return parts[-1] in INSTRUCTION_NAMES or any(part in INSTRUCTION_DIRS for part in parts[:-1])
 
 
 def _short(value, limit: int = 64) -> str | None:
@@ -121,16 +190,6 @@ def prompt_builder() -> Callable[[dict, Path], str]:
 def parse_tools(text: str) -> list[str]:
     """``--allowed-tools`` as a list: comma or space separated, as Claude Code accepts it."""
     return [part for part in text.replace(",", " ").split() if part]
-
-
-def query_text(tool_input) -> str:
-    """The query of a lookup: ``query`` (WebSearch, GitHits search), else ``url`` (WebFetch), else the whole input as
-    canonical JSON. Only its digest and length are recorded."""
-    if isinstance(tool_input, dict):
-        for key in ("query", "url"):
-            if isinstance(tool_input.get(key), str):
-                return tool_input[key]
-    return canonical(tool_input if tool_input is not None else {})
 
 
 def is_lookup(name: str) -> bool:
@@ -230,17 +289,26 @@ class Transcript:
                 other[name] = other.get(name, 0) + 1
         return tool_usage({"tool_usage": {**counts, "other": other}})
 
-    def lookups(self) -> list[dict]:
-        """``{tool, query_digest, query_chars, at, ok}`` per GitHits or web lookup, in stream order. ``ok`` is false
-        when the stream carries no successful result for it."""
-        found = []
+    def lookups(self, decisions: Sequence[dict] = ()) -> list[dict]:
+        """``{tool, query_digest, query_chars, at, ok, guard}`` per GitHits or web lookup, in stream order. ``ok`` is
+        false when the stream carries no successful result for it, or the guard blocked it. ``guard`` is the query
+        guard's decision from ``decisions`` (``query_guard.read_decisions``), matched by tool use id, else by tool
+        and query digest in order: ``pass``, a rule name, or ``unguarded`` when the hook recorded no decision."""
+        found, unused = [], list(decisions)
         for key in self.order:
             use = self.uses[key]
             if not is_lookup(use["name"]):
                 continue
             query = query_text(use["input"])
-            found.append({"tool": use["name"][:64], "query_digest": hashlib.sha256(query.encode()).hexdigest(),
-                          "query_chars": len(query), "at": use["at"], "ok": self.results.get(key) is True})
+            digest = hashlib.sha256(query.encode()).hexdigest()
+            match = next((d for d in unused if d.get("tool_use_id") == key), None) or next(
+                (d for d in unused if not d.get("tool_use_id") and d.get("tool") == use["name"]
+                 and d.get("query_digest") == digest), None)
+            if match is not None:
+                unused.remove(match)
+            guard = match["rule"] if match is not None else query_guard.UNGUARDED
+            found.append({"tool": use["name"][:64], "query_digest": digest, "query_chars": len(query), "at": use["at"],
+                          "ok": self.results.get(key) is True and guard == query_guard.PASS, "guard": guard})
         return found
 
     def harness(self) -> dict:
@@ -283,8 +351,10 @@ def run_stream(argv: Sequence[str], prompt: str, *, cwd: Path, env: dict, timeou
     size = [0]
     with tempfile.TemporaryFile() as err:
         try:
+            # Its own session (POSIX) or process group (Windows), so a timeout ends Claude Code and what it started.
             proc = subprocess.Popen(list(argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, cwd=str(cwd),
-                                    env=env, start_new_session=hasattr(os, "setsid"))
+                                    env=env, start_new_session=hasattr(os, "setsid"),
+                                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         except OSError as exc:
             raise Rejected("provider_unavailable", f"could not start {argv[0]!r}: {exc.strerror}") from None
 
@@ -306,8 +376,7 @@ def run_stream(argv: Sequence[str], prompt: str, *, cwd: Path, env: dict, timeou
         deadline = time.monotonic() + timeout
         while proc.poll() is None:
             if time.monotonic() > deadline or size[0] > MAX_STREAM_BYTES:
-                proc.kill()
-                proc.wait()
+                _stop(proc)  # checks._stop: the session on POSIX, the process tree on Windows
                 reader.join(5)
                 raise Rejected("provider_timeout", "Claude Code exceeded its time or output limit")
             time.sleep(0.05)
@@ -315,6 +384,11 @@ def run_stream(argv: Sequence[str], prompt: str, *, cwd: Path, env: dict, timeou
         err.seek(0)
         stderr = err.read(400).decode(errors="replace")
     return proc.returncode, lines, stderr
+
+
+def _third_party_reason(names: list[str]) -> str:
+    return (", ".join(names) + " is set: this --bare run would go to another endpoint or provider, not Anthropic's API "
+            "under your key, so its lane is provider_3p (pass --lane provider_3p) and api is refused")
 
 
 class ClaudeCodeProvider(RepairProvider):
@@ -326,7 +400,7 @@ class ClaudeCodeProvider(RepairProvider):
                  mcp_config: str | Path | None = None, allowed_tools: Sequence[str] | None = None,
                  max_turns: int | None = None, lane: str | None = None, executable: Sequence[str] | None = None,
                  name: str = "claude-code", revision: str = "1", timeout: int = 1800, max_calls: int | None = None,
-                 observe: Callable[[str, dict, str], object] | None = None):
+                 guard_max_lines: int | None = None, guard_max_chars: int | None = None):
         lane = lane or ("api" if bare else "subscription_local")
         if lane not in LANES:
             raise Rejected("invalid_provider", "lane must be one of " + ", ".join(LANES))
@@ -335,32 +409,43 @@ class ClaudeCodeProvider(RepairProvider):
         if not bare and not trusted_tree:
             raise Rejected("untrusted_tree",
                            "refusing to run Claude Code without --bare on a tree not declared trusted: a non-bare "
-                           "`claude -p` runs the project's hooks and connects its .mcp.json servers with no trust "
-                           "prompt. Pass --trusted-tree if you trust this repository and every tree the model will "
-                           "write in it, or use --bare (an API key in the environment)")
+                           "`claude -p` runs the project's hooks, connects its .mcp.json servers and reads its memory "
+                           "files (CLAUDE.md, CLAUDE.local.md) as instructions, with no trust prompt. Pass "
+                           "--trusted-tree if you trust this repository and every tree the model will write in it "
+                           "(a repair whose parent changed an instruction file is refused), or use --bare (an API "
+                           "key in the environment)")
         tools = list(DEFAULT_TOOLS if allowed_tools is None else allowed_tools)
         if not tools or any(not isinstance(t, str) or not t.strip() or "," in t for t in tools):
             raise Rejected("invalid_provider", "allowed tools must be a non-empty list of tool names")
         if max_turns is not None and (type(max_turns) is not int or max_turns < 1):
             raise Rejected("invalid_provider", "max_turns must be a positive integer")
+        if bare and lane == "api" and third_party(os.environ):
+            raise Rejected("invalid_provider", _third_party_reason(third_party(os.environ)))
         if mcp_config is not None:
             mcp_config = Path(mcp_config).resolve()
             if not mcp_config.is_file():
                 raise Rejected("invalid_provider", f"--mcp-config {mcp_config} is not a file")
+        try:
+            guard = query_guard.policy(guard_max_lines, guard_max_chars)
+        except ValueError as exc:
+            raise Rejected("invalid_provider", str(exc)) from None
         claude = list(executable) if executable else claude_executable()
         super().__init__(claude, name=name, revision=revision, timeout=timeout, max_calls=max_calls)
         self.repo = repo if isinstance(repo, Repo) else Repo(repo)
         self.bare, self.trusted_tree, self.lane, self.cost_basis = bare, trusted_tree, lane, LANE_COST[lane]
         self.mcp_config, self.allowed_tools, self.max_turns = mcp_config, tools, max_turns
-        self.observe = observe
+        self.guard = guard  # host policy: {version, max_lines, max_chars}
         self.lookups: list[dict] = []  # every lookup of every call, as recorded (digests, never query text)
 
-    def command(self) -> list[str]:
-        """The argv of every call. Two providers that differ only in ``mcp_config`` differ only in the last two items."""
+    def command(self, settings: str | Path | None = None) -> list[str]:
+        """The argv of a call; ``settings`` is the query guard's temporary settings file (``--settings``). Two
+        providers that differ only in ``mcp_config`` differ only in the last two items."""
         argv = [*self.argv, "-p"] + (["--bare"] if self.bare else [])
         argv += ["--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
                  "--allowedTools", ",".join(self.allowed_tools), "--setting-sources", "user", "--strict-mcp-config",
                  "--no-session-persistence", "--append-system-prompt", HARNESS_NOTE]
+        if settings is not None:
+            argv += ["--settings", str(settings)]
         if self.max_turns is not None:
             argv += ["--max-turns", str(self.max_turns)]
         if self.mcp_config is not None:
@@ -368,40 +453,73 @@ class ClaudeCodeProvider(RepairProvider):
         return argv
 
     def environment(self) -> dict:
-        """The caller's environment, narrowed: no signing seed, and no API key on a lane that is not billed by key."""
+        """The caller's environment, narrowed: no signing seed on any lane; on a login lane nothing in
+        ``LOGIN_LANE_DROPPED_ENV``. A ``--bare`` api run whose environment routes elsewhere is refused here too, in
+        case the environment changed after the provider was built."""
         env = {k: v for k, v in os.environ.items() if k not in DROPPED_ENV}
         if self.lane in ("subscription_local", "seat_team_enterprise"):
-            env.pop("ANTHROPIC_API_KEY", None)
+            env = {k: v for k, v in env.items() if not _dropped(k)}
+        elif self.bare and self.lane == "api" and third_party(env):
+            raise Rejected("provider_lane_mismatch", _third_party_reason(third_party(env)))
         return env
 
+    def _instructions_changed(self, space: SearchSpace, parents: list[str]) -> list[str]:
+        """Instruction files the parent candidate changed against the thread's base (none on a first call)."""
+        if not parents:
+            return []
+        return sorted(p for p in space.candidate(parents[0]).changed_paths if instruction_file(p))
+
     def _call(self, space: SearchSpace, request: dict, parents: list[str]):
+        changed = self._instructions_changed(space, parents)
+        if changed:
+            refuse(space, "instruction_files_changed", "patch", parents)
+            raise Rejected("instruction_files_changed",
+                           f"the parent {parents[0]} changed {len(changed)} instruction file(s) against the base "
+                           "(CLAUDE.md, CLAUDE.local.md, AGENTS.md, .mcp.json or .claude/): Claude Code would read "
+                           "them as the next call's instructions, so no call is made on it")
         meter = current_meter()
         if meter is not None:
             meter.permit()
         commit = space.candidate(parents[0]).commit if parents else space.base
         build_prompt = prompt_builder()
-        with self.repo.worktree(commit) as tree:
-            prompt = build_prompt(request, tree)
-            code, lines, stderr = run_stream(self.command(), prompt, cwd=tree, env=self.environment(),
-                                             timeout=self.timeout)
-            transcript = Transcript(lines)
-            subtype = (transcript.result or {}).get("subtype")
-            if transcript.result is None or (code != 0 and subtype != "error_max_turns"):
-                raise Rejected("provider_failed", f"exit {code}: " + (_short(subtype) or stderr[:300]))
-            changes, skipped = read_changes(tree, commit)
+        guard_dir = Path(tempfile.mkdtemp(prefix="syberlabs-guard-"))  # the host's, outside every worktree
+        try:
+            with self.repo.worktree(commit) as tree:
+                prompt = build_prompt(request, tree)
+                settings = query_guard.prepare(guard_dir, self.guard,
+                                               query_guard.tree_digests(tree, self.repo.files(commit)))
+                code, lines, stderr = run_stream(self.command(settings), prompt, cwd=tree, env=self.environment(),
+                                                 timeout=self.timeout)
+                transcript = Transcript(lines)
+                decisions = query_guard.read_decisions(guard_dir)
+                subtype = (transcript.result or {}).get("subtype")
+                if transcript.result is None or (code != 0 and subtype != "error_max_turns"):
+                    raise Rejected("provider_failed", f"exit {code}: " + (_short(subtype) or stderr[:300]))
+                changes, skipped = read_changes(tree, commit)
+        finally:
+            shutil.rmtree(guard_dir, ignore_errors=True)
         usage, by_model = transcript.usage(), transcript.usage_by_model()
         if meter is not None:
             if self.cost_basis in ("billed", "estimated") and by_model:
                 for model, row in by_model.items():  # each model priced at its own rate
-                    meter.observe({**row, **({"model": model} if model != "unnamed" else {}), "host_observed": True})
+                    meter.measure({**row, **({"model": model} if model != "unnamed" else {}), "host_observed": True})
             else:
-                meter.observe(None)  # a call was made; under this lane it has no per-call bill to price
+                meter.measure(None)  # a call was made; under this lane it has no per-call bill to price
         version = getattr(space, "search_id", "s0")
-        for number, lookup in enumerate(transcript.lookups(), 1):
+        record = getattr(space, "observe", None)
+        found = transcript.lookups(decisions)
+        for number, lookup in enumerate(found, 1):
             self.lookups.append(lookup)
-            if self.observe is not None:
-                self.observe(LOOKUP, lookup, f"{version}.{self.calls}.{number}")
-        signal = {"lane": self.lane, "cost_basis": self.cost_basis, "harness": transcript.harness()}
+            if callable(record):
+                record(LOOKUP, lookup, f"{version}.{self.calls}.{number}")
+        unguarded = sum(1 for lookup in found if lookup["guard"] == query_guard.UNGUARDED)
+        if unguarded:
+            raise Rejected("provider_guard_inactive",
+                           f"{unguarded} lookup(s) ran with no decision from the query guard: the hook passed with "
+                           "--settings did not run (a version, a setting or a mode that skips it); no further call "
+                           "is made. See docs/CLAUDE_CODE.md, the query guard")
+        signal = {"lane": self.lane, "cost_basis": self.cost_basis, "harness": transcript.harness(),
+                  "guard": dict(self.guard)}
         turns = transcript.result.get("num_turns")
         if type(turns) is int and turns >= 0:
             signal["harness_turns"] = turns

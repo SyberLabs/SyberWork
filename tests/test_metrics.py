@@ -153,6 +153,25 @@ class Derivations(unittest.TestCase):
                          "the owner's approval; the runner's own proposals are the agent's")
         self.assertEqual(a.unknown(), [])
 
+    def test_lookups_blocked_counts_guard_rules_and_is_unknown_without_a_decision(self):
+        j = Journal("thread-g")
+        j.add("case_created", {"actor": "agent@example.test", "contract": ["repo-change", 4], "inputs": {}}, at=T0)
+        blocked = j.fact("lookup", {"tool": "mcp__githits__search", "ok": False, "guard": "tree_line"}, version="s1.1.1")
+        j.fact("lookup", {"tool": "mcp__githits__search", "ok": True, "guard": "pass"}, version="s1.1.2")
+        j.fact("lookup", {"tool": "WebSearch", "ok": False, "guard": "unguarded"}, version="s1.1.3")
+        j.add("candidate_registered", {"id": "c1", "operator": "patch", "actor": HOST, "signal": {
+            "model_usage": U[0], "tool_usage": {"web_search": 1, "web_fetch": 0, "githits": 2}}})
+        [item] = metrics.work_items(j.events)
+        self.assertEqual((item.githits_lookups.value, item.web_lookups.value), (2, 1), "attempted, blocked included")
+        self.assertEqual((item.lookups_blocked.value, item.lookups_blocked.basis), (1, (blocked,)), "a rule, not pass or unguarded")
+        self.assertEqual(item.to_dict()["lookups_blocked"]["value"], 1)
+        self.assertEqual(metrics.provenance(item, "lookups_blocked")[0]["kind"], "observed")
+        before = j.fact("lookup", {"tool": "WebSearch", "ok": True}, version="s1.1.4")  # recorded before the guard existed
+        [item] = metrics.work_items(j.events)
+        self.assertEqual((item.lookups_blocked.value, item.lookups_blocked.basis), (None, (before,)))
+        self.assertEqual(self.item_a.lookups_blocked.value, None, "lookups counted, no lookup facts: unknown, not 0")
+        self.assertEqual(self.item_a.to_dict()["lookups_blocked"]["value"], "unknown")
+
     def test_the_cancelled_thread_says_unknown_where_nothing_was_recorded(self):
         b, e = self.item_b, self.eb
         self.assertEqual((b.act_class, b.unattended, b.cancelled, b.pull_request), ("C", False, True, None))

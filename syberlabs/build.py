@@ -39,6 +39,7 @@ from syberlabs.evolution import clean_path, in_scope, latest_evaluation, priced,
 from syberlabs.gitspace import CANDIDATE_REFS, MAX_FILE_BYTES, GitError, Repo
 from syberlabs.journal import Journal
 from syberlabs import retention
+from syberlabs.canonical import canonical
 from syberlabs.providers import PatchProvider, metered, model_usage
 from syberlabs.retrieval import Excerpt, context_digest, select
 from syberlabs.search import REFUSAL_REASONS, Budget, Candidate, CheckResult, Evaluation, MergeResult, SearchProvider
@@ -63,6 +64,8 @@ PUBLISH_EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
 UNATTENDED = "unattended"
 BASE_EVALUATION = "base_evaluation"  # observed: the host's checks on the thread's base tree, versioned by the base commit
 PROPOSAL_REFUSED = "proposal_refused"  # observed: a proposal discarded before candidate_registered, versioned by the search id
+PROVIDER_FACTS = ("lookup",)  # observed keys a provider may write through GitSearchSpace.observe (claude_code.LOOKUP)
+MAX_PROVIDER_FACT_BYTES = 4096
 # The host's own refusal codes, as the closed reason set names them. Any other code ends the search and is not a refusal.
 _REFUSAL_CODES = {"no_change": "no_change", "duplicate": "duplicate", "invalid_change": "unparsable", "zero_usage": "zero_usage",
                   "already_imported": "duplicate", "migration_base_mismatch": "out_of_scope",
@@ -290,7 +293,7 @@ class GitSearchSpace:
         """Before a model command runs: nothing more is bought once the ledger, pending usage included, is over budget."""
         self._afford(pending=True)
 
-    def observe(self, usage: dict | None) -> None:
+    def measure(self, usage: dict | None) -> None:
         """After a model command ran: the adapter's reduced usage, priced under the contract's table."""
         self.calls += 1
         if usage is None:
@@ -390,6 +393,28 @@ class GitSearchSpace:
             value["diff"] = {"digest": diff["digest"], "bytes": diff["bytes"]}
         self.refused[reason] = self.refused.get(reason, 0) + 1
         self._thread.kit.session.observe(self._thread.id, PROPOSAL_REFUSED, value, HOST, self.search_id, HOST, verified=True)
+
+    def observe(self, key: str, value: Mapping[str, Any], version: str) -> dict:
+        """A provider's own measurement as a verified host observation (``SearchSpace.observe``).
+
+        Written through ``Session.observe`` with source and actor ``syberlabs.host``, the route ``proposal_refused``
+        uses, so a provider built in Python keeps its facts without a callback from the CLI. Only the keys in
+        ``PROVIDER_FACTS`` (``lookup``: one GitHits or web tool call of a Claude Code run) may be written; the value
+        is an object of at most ``MAX_PROVIDER_FACT_BYTES`` in canonical JSON; the version is a short name
+        (``<search>.<call>.<n>``). The provider runs in the host's process: this is not a boundary against a
+        hostile provider, it keeps an honest one inside a closed set of keys.
+        """
+        if key not in PROVIDER_FACTS:
+            raise Rejected("invalid_fact", "a provider may record only " + ", ".join(PROVIDER_FACTS))
+        try:
+            size = len(canonical(dict(value)).encode()) if isinstance(value, Mapping) else None
+        except (TypeError, ValueError):
+            size = None
+        if size is None or size > MAX_PROVIDER_FACT_BYTES:
+            raise Rejected("invalid_fact", f"the value must be a JSON object of at most {MAX_PROVIDER_FACT_BYTES} bytes")
+        if not isinstance(version, str) or not _ID.match(version):
+            raise Rejected("invalid_fact", "the version must be a short name")
+        return self._thread.kit.session.observe(self._thread.id, key, dict(value), HOST, version, HOST, verified=True)
 
     def _admit(self, operator: str, parents: Sequence[str], usage) -> None:
         """The host's limits on one more registration; a proposal they stop is refused with reason ``limit``."""

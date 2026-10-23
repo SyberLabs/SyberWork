@@ -16,7 +16,7 @@
 
 ``run_json`` is also where the host observes spend. Inside ``metered(meter)``
 every call asks the meter's ``permit()`` before the command runs and hands the
-adapter's reported ``usage`` to ``observe()`` afterwards, stamped
+adapter's reported ``usage`` to ``measure()`` afterwards, stamped
 ``host_observed``. The Build Thread installs its ledger there, so only usage
 that crossed this boundary is ever priced; a ``model_usage`` a provider writes
 into a candidate's ``signal`` is the provider's declaration and is not.
@@ -56,7 +56,7 @@ def metered(meter):
     """Route every ``run_json`` call in the block through ``meter``.
 
     ``meter.permit()`` runs before each command starts and may raise to refuse
-    the purchase; ``meter.observe(usage)`` runs after each successful call with
+    the purchase; ``meter.measure(usage)`` runs after each successful call with
     the adapter's reduced usage stamped ``host_observed: True``, or None when
     the adapter reported none.
     """
@@ -69,7 +69,7 @@ def metered(meter):
 
 def current_meter():
     """The usage meter of the search running in this context, or None. A provider that buys model calls without
-    ``run_json`` (``syberlabs.claude_code``) asks it ``permit()`` before a call and hands it ``observe(usage)`` after."""
+    ``run_json`` (``syberlabs.claude_code``) asks it ``permit()`` before a call and hands it ``measure(usage)`` after."""
     return _METER.get()
 
 
@@ -250,7 +250,7 @@ def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Pat
         raise Rejected("provider_shape", "the command did not print JSON") from None
     if meter is not None:
         usage = model_usage(parsed)
-        meter.observe({**usage, "host_observed": True} if usage else None)
+        meter.measure({**usage, "host_observed": True} if usage else None)
     return parsed
 
 

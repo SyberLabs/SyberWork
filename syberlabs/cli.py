@@ -31,7 +31,7 @@ from pathlib import Path
 from syberlabs import certificate
 from syberlabs import critic
 from syberlabs import metrics
-from syberlabs.build import ACT_CLASSES, HOST, Kit, hint
+from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.gitspace import Repo
@@ -166,6 +166,12 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--max-turns", type=int, help="for --claude-code: claude --max-turns")
     propose.add_argument("--lane", choices=("api", "subscription_local", "seat_team_enterprise", "provider_3p"),
                          help="for --claude-code: the credential lane (default api with --bare, else subscription_local)")
+    propose.add_argument("--guard-max-lines", type=int, metavar="N",
+                         help="for --claude-code: the query guard blocks a lookup with more than N non-blank lines "
+                              "(default $SYBERLABS_GUARD_MAX_LINES, else 3)")
+    propose.add_argument("--guard-max-chars", type=int, metavar="M",
+                         help="for --claude-code: the query guard blocks a lookup longer than M characters "
+                              "(default $SYBERLABS_GUARD_MAX_CHARS, else 400)")
     propose.add_argument("--population", type=int, default=4)
     propose.add_argument("--generations", type=int, default=6)
     propose.add_argument("--crossover-every", type=int, default=3)
@@ -479,14 +485,13 @@ def _run(kit: Kit, args) -> int:
         elif args.claude_code:
             from syberlabs.claude_code import ClaudeCodeProvider, parse_tools
 
-            def observe(key, value, version, case=thread.id):
-                kit.session.observe(case, key, value, HOST, version, HOST, verified=True)
-
+            # Lookup facts go through the search space (GitSearchSpace.observe), not a callback from here.
             provider = ClaudeCodeProvider(kit.repo, bare=args.bare, trusted_tree=args.trusted_tree,
                                           mcp_config=args.mcp_config, max_turns=args.max_turns, lane=args.lane,
                                           allowed_tools=parse_tools(args.allowed_tools) if args.allowed_tools else None,
                                           name=args.name or "claude-code", revision=args.revision,
-                                          max_calls=args.max_calls, observe=observe)
+                                          max_calls=args.max_calls, guard_max_lines=args.guard_max_lines,
+                                          guard_max_chars=args.guard_max_chars)
             found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(split_command(args.provider_command), name=args.name or "command", revision=args.revision,

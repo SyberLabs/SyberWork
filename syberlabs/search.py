@@ -108,7 +108,8 @@ class Candidate:
 
 
 # Why the host discarded a provider proposal before ``candidate_registered``. Closed: the host refuses any other word.
-REFUSAL_REASONS = ("no_change", "out_of_scope", "limit", "unparsable", "duplicate", "provider_error", "zero_usage")
+REFUSAL_REASONS = ("no_change", "out_of_scope", "limit", "unparsable", "duplicate", "provider_error", "zero_usage",
+                   "instruction_files_changed")
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,16 @@ class SearchSpace(Protocol):
         ``{digest, bytes}`` when the proposal parsed; ``usage`` is the declared ``model_usage``. Never
         file content, prompt text or names from the environment.
         """
+
+    def observe(self, key: str, value: Mapping[str, Any], version: str) -> object:
+        """Record a fact the provider measured in its own process, as a verified host observation.
+
+        The route for what a provider reads from a harness it runs (``syberlabs.claude_code``: one ``lookup`` per
+        GitHits or web tool call, ``{tool, query_digest, query_chars, at, ok, guard}``). The space decides which
+        keys a provider may write and bounds the value; a space that records nothing keeps this default, which
+        does nothing. Never file content, prompt or query text, or names from the environment.
+        """
+        return None
 
 
 @runtime_checkable
