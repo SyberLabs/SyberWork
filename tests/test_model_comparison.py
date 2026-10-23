@@ -1,6 +1,8 @@
-"""The model adapter seam, cost accounting, and the cost-matched comparison harness (simulated model only)."""
+"""The model adapter seam, cost accounting, the cost-matched comparison harness (simulated model only), and the v2 fixtures."""
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -9,6 +11,7 @@ from pathlib import Path
 
 from adapters import anthropic_adapter as adapter
 from benchmarks import model_vs_patch as harness
+from benchmarks.fixtures import FIXTURES, V2
 from syberlabs.evolve import CommandMutator, EvolutionaryProvider
 from syberlabs.providers import CommandProvider, model_usage
 from tests.test_build_thread import GOOD, RepoCase
@@ -116,6 +119,210 @@ class Harness(unittest.TestCase):
         report = harness.summarize(rows, 3)
         self.assertTrue(report.startswith("SIMULATED MODEL"))
         self.assertIn("best_of_k", report)
+
+
+REFERENCE_FIXES = {
+    "crlf_export": {"src/fields.py": '''"""Field report export: render a table and compare it with the committed export."""
+
+
+def render(rows):
+    return "\\n".join(rows)
+
+
+def load(path):
+    with open(path, "rb") as handle:
+        return handle.read().decode("utf-8").replace("\\r\\n", "\\n")
+
+
+def lines(path):
+    return load(path).splitlines()
+
+
+def matches(path, rows):
+    return render(rows) in load(path)
+'''},
+    "oauth_state": {"src/oauth.py": '''"""OAuth connect flow: the state round trip."""
+
+import random
+import string
+
+ALPHABET = string.ascii_lowercase + string.digits
+
+
+def make_state(seed):
+    rng = random.Random(seed)
+    return "".join(rng.choice(ALPHABET) for _ in range(24))
+
+
+def tamper(state):
+    last = "y" if state[-1] == "x" else "x"
+    return state[:-1] + last
+
+
+def finish_connect(expected, returned):
+    return returned == expected
+'''},
+    "settlement": {"src/ledger.py": '''"""Settle a reading against a target, durably, as a settlement record and then a verdict."""
+
+import json
+
+
+def verdict(reading, target):
+    return "moved" if reading >= target else "stayed"
+
+
+def append(path, record):
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\\n")
+
+
+def records(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def settle(path, reading, target, die_between=None):
+    append(path, {"kind": "settlement", "reading": reading, "target": target})
+    if die_between is not None:
+        die_between()
+    append(path, {"kind": "verdict", "verdict": verdict(reading, target)})
+
+
+def recover(path, reading, target):
+    found = records(path)
+    if not found:
+        settle(path, reading, target)
+        return True
+    last = found[-1]
+    if last["kind"] == "settlement":
+        append(path, {"kind": "verdict", "verdict": verdict(last["reading"], last["target"])})
+        return True
+    return False
+'''},
+    "tool_path": {"src/launch.py": '''"""Launch a repository's tool by name from a list of directories."""
+
+import os
+import subprocess
+
+SUFFIXES = ("", ".cmd", ".bat", ".exe")
+
+
+class ToolNotFound(Exception):
+    pass
+
+
+def resolve(name, dirs):
+    for folder in dirs:
+        for suffix in SUFFIXES:
+            candidate = os.path.join(folder, name + suffix)
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+    raise ToolNotFound(name)
+
+
+def run_tool(name, args, dirs):
+    done = subprocess.run([resolve(name, dirs), *args], capture_output=True, text=True,
+                          env={**os.environ, "PATH": os.pathsep.join(dirs)})
+    return done.stdout.strip()
+'''},
+}
+
+
+def materialise(name: str, root: Path, fix: dict | None = None) -> None:
+    for path, text in FIXTURES[name]["files"].items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(text, bytes):
+            target.write_bytes(text)
+        else:
+            target.write_text(text, encoding="utf-8", newline="\n")
+    for path, text in (fix or {}).items():
+        (root / path).write_text(text, encoding="utf-8", newline="\n")
+
+
+def check_states(name: str, root: Path) -> dict:
+    """Run a fixture's check commands in ``root`` the way the kit does: argv, no shell, worktree as cwd."""
+    out = {}
+    for check, spec in FIXTURES[name]["checks"].items():
+        done = subprocess.run(spec["argv"], cwd=root, capture_output=True, text=True, timeout=spec["timeout_seconds"])
+        out[check] = "passed" if done.returncode == 0 else "failed"
+    return out
+
+
+class FixturesV2(unittest.TestCase):
+    """The four fixtures built from this program's own defects (docs/E3_BENCHMARK_PLAN.md, Fixtures v2)."""
+
+    def test_the_four_fixtures_exist_with_three_checks_and_no_correct_slot(self):
+        self.assertEqual(sorted(V2), ["crlf_export", "oauth_state", "settlement", "tool_path"])
+        for name in V2:
+            self.assertEqual(len(FIXTURES[name]["checks"]), 3, name)
+            self.assertEqual(sorted(harness.contract(name)["evolution"]["evaluation"]["required"]), sorted(FIXTURES[name]["checks"]))
+            for slot in FIXTURES[name]["slots"]:
+                self.assertEqual(slot["correct"], [], f"{name}: a v2 slot must hold no correct variant")
+        self.assertIsInstance(FIXTURES["crlf_export"]["files"]["src/export.txt"], bytes)
+        self.assertIn(b"\r\n", FIXTURES["crlf_export"]["files"]["src/export.txt"])
+
+    def test_every_check_fails_on_the_broken_source_and_passes_on_the_reference_fix(self):
+        for name in V2:
+            with tempfile.TemporaryDirectory() as folder:
+                broken, fixed = Path(folder) / "broken", Path(folder) / "fixed"
+                broken.mkdir()
+                fixed.mkdir()
+                materialise(name, broken)
+                materialise(name, fixed, REFERENCE_FIXES[name])
+                before, after = check_states(name, broken), check_states(name, fixed)
+            self.assertEqual(set(before.values()), {"failed"}, (name, before))
+            self.assertEqual(set(after.values()), {"passed"}, (name, after))
+
+    def test_the_flaky_fixture_has_a_seed_where_the_tampered_state_is_the_real_one(self):
+        """One state in 36 ends in "x" (the alphabet is 36 characters), so the no-op tamper is deterministic in the harness."""
+        import random
+        import string
+        alphabet = string.ascii_lowercase + string.digits
+        ending_in_x = [seed for seed in range(1, 201)
+                       if "".join(random.Random(seed).choice(alphabet) for _ in range(24)).endswith("x")]
+        self.assertTrue(ending_in_x, "no seed in 1..200 ends in x; the fixture would not flake")
+
+
+class HarnessV2(unittest.TestCase):
+    def test_single_does_not_solve_the_v2_fixtures_with_the_simulated_model_and_journals_sit_beside_rows(self):
+        with tempfile.TemporaryDirectory() as folder:
+            journals = Path(folder) / "out-journals"
+            rows = [harness.run(name, "single", harness.SIMULATED, 6, 1, Path(folder), journals) for name in V2]
+            for row in rows:
+                self.assertFalse(row["solved"], row)
+                self.assertEqual((row["calls"], row["candidates"], row["model"], row["provider_error"]),
+                                 (1, 1, "simulated", None), row)
+                self.assertEqual(row["journal"], f"out-journals/{row['fixture']}-single-1.json")
+                exported = json.loads((Path(folder) / row["journal"]).read_text(encoding="utf-8"))
+                self.assertTrue(exported["chain_valid"])
+                evaluated = [e for e in exported["events"] if e["kind"] == "candidate_evaluated"]
+                self.assertEqual(len(evaluated), 1)
+                self.assertIn("failed", {c["state"] for c in evaluated[0]["body"]["checks"]}, row["fixture"])
+            without = harness.run("tool_path", "single", harness.SIMULATED, 6, 2, Path(folder) / "none")
+        self.assertIsNone(without["journal"], "no --write, no journal")
+        report = harness.summarize(rows, 6)
+        self.assertIn("simulated", report)
+        self.assertIn("provider_error", report.splitlines()[1])
+        for name in V2:
+            self.assertRegex(report, rf"{name}\s+single\s+0/1")
+
+    def test_rows_name_the_served_model_and_the_summary_shows_provider_errors(self):
+        with tempfile.TemporaryDirectory() as folder:
+            missing = Path(folder) / "missing_adapter.py"
+            row = harness.run("pricing", "single", f"{sys.executable} {missing}", 3, 1, Path(folder))
+        self.assertEqual((row["provider_error"], row["model"], row["candidates"], row["solved"]), ("provider_failed", None, 0, False))
+        served = {**row, "seed": 2, "provider_error": None, "model": "claude-sonnet-5-5", "simulated": False,
+                  "input_tokens": 700, "output_tokens": 300, "dollars": 0.0044, "solved": True, "candidates": 1}
+        report = harness.summarize([row, served], 3)
+        line = next(l for l in report.splitlines() if l.startswith("pricing"))
+        self.assertIn("claude-sonnet-5-5", line)
+        self.assertIn("1/2 provider_failed", line)
+        clean = harness.summarize([served], 3)
+        self.assertIn("none", next(l for l in clean.splitlines() if l.startswith("pricing")))
 
 
 if __name__ == "__main__":
