@@ -1,6 +1,6 @@
 # E3: the comparison benchmark against a real model (plan)
 
-Status: **pilot run 2026-10-21, see `docs/MODEL_COMPARISON.md`** (uninformative by the rule below; the full run was not started). Budget cap: **$50**, with a 30% margin, so the planned worst case must stay under **$38.46**.
+Status: **pilot run 2026-10-21, see `docs/MODEL_COMPARISON.md`** (uninformative by the rule below; the full run was not started). **Fixtures v2 added 2026-10-21, unrun** (section below). Budget cap: **$50**, with a 30% margin, so the planned worst case must stay under **$38.46**.
 
 ## What E3 is
 
@@ -35,6 +35,53 @@ All from `benchmarks/fixtures.py` (`FIXTURES`), run through `benchmarks/model_vs
 | `intervals` | `src/intervals.py` | `sorted`, `overlap`, `nested` |
 
 Arms, all four from `ARMS`: `single` (1 call, the baseline), `best_of_k`, `repair`, `evolve` (each up to K calls). The conformance suite (`conformance/run.py`, 23 golden traces under `conformance/golden/`; `conformance/clean_install.py`) is run **before** the paid run on the revision being measured, as a precondition that the admission path is unchanged; it does not consume model calls. `tests/test_model_comparison.py` must pass on the same revision.
+
+## Fixtures v2 (added 2026-10-21, unrun)
+
+The pilot showed the three fixtures above are solved by Claude Sonnet 5.5 in one call each, so by the rule below they cannot tell the arms apart. `benchmarks/fixtures.py` now also holds `V2`, four fixtures built from defects this program hit, chosen so that a passing change needs a reading of the failure rather than a line swap. Each is a small repository under the same format (files, objective, three required checks run in the fixture worktree as argv without a shell), goes through the same `contract()` (scope `src/`, operators `patch`, `mutation`, `crossover`), and is checked on Windows and POSIX.
+
+| Fixture | File(s) | Required checks | Provenance | What a fix needs |
+| --- | --- | --- | --- | --- |
+| `crlf_export` | `src/fields.py`, `src/export.txt` (CRLF bytes, kept verbatim by a `.gitattributes` rule) | `report`, `lines`, `lf` | Flyspace `fieldHarness.test.ts` (second-consumer packet, 2026-10-18, `docs/CONSUMERS.md`): a report stored with LF read back as CRLF under `core.autocrlf` while the renderer joined with `\n` | normalise line endings in the reader, for CRLF and LF alike, with no empty trailing entry; `report` also checks the export's bytes are unchanged, so editing the data file is not a fix |
+| `oauth_state` | `src/oauth.py` | `rejects_tampered`, `rejects_extended`, `tamper_differs` | Flyspace `oauthConnect.test.ts` (same packet): the "mismatched" state was `state[:-1] + "x"`, one state in N already ends in `x`, so the tampered state equalled the real one and the test failed by chance (1 of 5 runs observed) | a tamper that always differs (alphabet of 36, seed 18 of 1..200 ends in `x`; the checks run 200 fixed seeds, so the flake is deterministic in the harness) and an exact comparison instead of a prefix match |
+| `settlement` | `src/ledger.py` | `between`, `before`, `twice` | the settlement window of #35, closed by #38: settlement and verdict were two appends and the recovery path measured the metric again instead of reading the durable record | recovery reads the recorded reading for the verdict, settles from the input only when nothing is recorded, and is idempotent; the checks inject a death between the two appends |
+| `tool_path` | `src/launch.py` | `suffixed`, `missing`, `launch` | the `npm` / `npm.cmd` finding of #51: a tool launched by bare name that exists on disk only with a platform suffix, which `CreateProcess` cannot start | a resolver that tries the platform suffixes and returns an absolute path, raises when nothing is found, and a launcher that runs the resolved file; the checks run under a scrubbed `PATH` holding one fake tool directory (`syber-tool.cmd`: a batch file on Windows, a shell script elsewhere) |
+
+The optional fifth fixture (an executor-less recovery, #53) was not built in this packet.
+
+**Evidence of difficulty, from the simulated adapter only.** `benchmarks/simulated_model.py` knows a fixture through its `slots` (which line of which function to swap, and which swaps are right). The v2 slots list only wrong surface replacements (`correct: []`), so the stand-in fails them by construction: `tests/test_model_comparison.py` asserts that `single` solves none of the four, and the run of 2026-10-21 over the four fixtures (K = 6, 3 repeats, every arm) solved 0 runs of 48; `tests/test_model_comparison.py` also keeps a reference fix for each fixture, outside the fixture, and asserts every check fails on the broken source and passes on that fix. This says the fixtures are not solvable by a line swap and that the harness scores them; it says nothing about whether a real model solves them in one call. That is the measurement the v2 pilot buys.
+
+**Rows and journals.** Each row now carries `model` (the served model from `usage.model`, or `simulated`), `provider_error` (the `provider_*` code of a failed call, or null) and `journal`. With `--write PREFIX`, every run's thread journal is exported to `PREFIX-journals/<fixture>-<arm>-<seed>.json` (the kit's `export`: events, side channel, status, chain validity), so the per-call reasons the pilot lost with its temporary directory, which candidate a repair started from, a duplicate or `no_change` refusal, a refusal or `max_tokens` stop, can be read back beside the rows. The summary prints the model and the provider-error count per arm.
+
+**Request count and worst case for v2.** Same cap ($50), same 30% margin ($38.46), same K = 6, same arms, same stop rules. Calls:
+
+```
+pilot v2 (4 fixtures × 1 repeat × 19)  =  76 calls
+full  v2 (4 fixtures × 3 repeats × 19) = 228 calls   (pilot included; it is repeat 1)
+```
+
+Per-call ceiling, recomputed because the inputs grew. `count_tokens` is not available offline, so the estimate is from bytes at 4 bytes per token, calibrated against the pilot: the largest v2 `single` prompt is 1,532 bytes of fixture plus a 476-byte system prompt, 502 tokens by the byte estimate; a `repair` prompt with the parent file and three failing checks at the full 4,096-character `output_tail` is about 14,000 bytes, 3,500 tokens by the byte estimate. The pilot reported 654 to 718 input tokens for `single` calls whose byte estimate was 227 to 280 tokens, a factor of 2.6 to 2.9 (the structured-output schema and request framing are counted and are not in the prompt bytes). Taking a factor of 3 over the largest repair estimate and rounding up gives an input ceiling of **12,000 tokens**; output stays at the adapter's `max_tokens`, 16,000.
+
+```
+worst case per call   = 12,000 × $2.00/1M + 16,000 × $10.00/1M = $0.024 + $0.160 = $0.184
+worst case, pilot v2  =  76 × $0.184 = $13.98        <  $38.46  (passes)
+worst case, full v2   = 228 × $0.184 = $41.95        >  $38.46  (does not pass at the ceiling)
+full v2 at 2 repeats  = 152 × $0.184 = $27.97        <  $38.46  (passes)
+expected (1,500 in / 5,000 out per call: $0.053)     ->  pilot ≈ $4.03, full ≈ $12.08
+```
+
+Unlike the v1 pilot, where every arm stopped at its first candidate, the v2 pilot should be expected near its worst case: if `single` does not solve a fixture, `best_of_k`, `repair` and `evolve` will spend most of their K calls on it. The full run at three repeats is therefore started only if the pilot's reported `$ (mean)` × 3 is under $38.46 by the existing rule; if the pilot's per-call tokens sit near the ceiling, the full run is two repeats (152 calls), not a higher cap. The Haiku fallback rule stands (228 × ($0.0012 + $0.008) = $2.10 at Haiku 5.5 list price). No second model, no K > 6, no repeats > 3.
+
+**Pilot command for v2** (the v1 fixtures are left out on purpose; they are already measured):
+
+```sh
+PYTHONPATH=. python benchmarks/model_vs_patch.py \
+    --adapter "python $PWD/adapters/anthropic_adapter.py" --calls 6 --repeats 1 \
+    --fixtures crlf_export oauth_state settlement tool_path \
+    --write benchmarks/results/model-vs-patch-sonnet55-v2-pilot
+```
+
+It writes the rows, the summary and `benchmarks/results/model-vs-patch-sonnet55-v2-pilot-journals/` (sixteen journals). Before committing, check the journals and rows for the absence of the key as the key-handling section requires; they carry prompts' file contents, token counts and `usage.model`, never credentials. The run itself remains a named human's act, with the key present only in the environment of the shell that runs the command; agents do not hold the key and do not run it.
 
 ## Model and prices
 
@@ -83,7 +130,7 @@ Per `MasterMind/docs/CLAIMS_AND_EVIDENCE.md`, a claim that model assistance impr
 
 Written by `--write` to `benchmarks/results/model-vs-patch-sonnet55.{json,txt}` and committed with a short results section appended to `docs/MODEL_COMPARISON.md`:
 
-- per-run rows: fixture, arm, seed, `solved`, `calls`, `input_tokens`, `output_tokens`, `dollars`, `candidates`, `evaluations`, `seconds`;
+- per-run rows: fixture, arm, seed, `solved`, `calls`, `input_tokens`, `output_tokens`, `dollars`, `simulated`, `model`, `provider_error`, `candidates`, `evaluations`, `seconds`, `journal`; and the journals directory beside the rows;
 - **p50 and p95 of `seconds`** per arm (run latency, from the JSON rows; the harness does not time individual calls, so per-call latency is reported as `seconds / calls` and labelled as such);
 - **cost:** total dollars at list price, per arm and overall, beside the actual invoice line for the day;
 - **admission refusals:** per row, `calls − candidates` (calls that produced no registered candidate: refusal, truncation, `no_change`, `invalid_change`), plus any `scope_violations` in `candidate_registered` events;

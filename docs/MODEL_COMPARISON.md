@@ -103,7 +103,15 @@ Totals, summed from the JSON rows: 12 runs, 12 of 12 solved, 26 model calls, 18,
 - the process-death windows #48 drives through `tests/test_properties_journal.py`: a death right after an append, between `propose`'s two appends, and an executor's death before and after the destination write, each of which recovery must settle exactly once;
 - the Windows assumptions `AGENTS.md` forbids and the kit has had to remove: bare interpreter names (#26), `fcntl`-only locking (#34, `msvcrt.locking`), executable resolution for Node, Rust and Go repositories (#51).
 
-Each becomes a fixture by taking the pre-fix tree, the objective from the pull request, and the test that the fix added as the required check. Until such a run exists the comparison between the arms is not measured.
+Four of these are now fixtures (the note below). Each becomes a fixture by taking the pre-fix tree, the objective from the pull request, and the test that the fix added as the required check. Until such a run exists the comparison between the arms is not measured.
+
+## Note of 2026-10-21 (later the same day): fixtures v2 exist and are unrun
+
+`benchmarks/fixtures.py` now holds four more fixtures under `V2`, built from defects this program hit rather than from toy functions: `crlf_export` (the Flyspace `fieldHarness` CRLF comparison), `oauth_state` (the Flyspace `oauthConnect` one-in-N no-op tamper and a prefix comparison), `settlement` (the #35/#38 two-append crash window) and `tool_path` (the #51 bare-name launch under a scrubbed `PATH`). `docs/E3_BENCHMARK_PLAN.md` ("Fixtures v2") names each one's checks, provenance, the pilot command and the recomputed worst case ($13.98 for the 76-call v2 pilot at a 12,000-token input ceiling; the full run at three repeats does not fit the margin at that ceiling and falls back to two).
+
+They are unrun against any model. What exists is harness evidence only: with the simulated adapter, whose slots for these fixtures hold no correct variant, the run of 2026-10-21 (K = 6, 3 repeats, all arms) solved 0 of 48 runs, and `tests/test_model_comparison.py` holds a reference fix per fixture under which every check passes. Whether a real model solves them single-shot is exactly what the v2 pilot measures, and nothing here predicts it.
+
+Two harness changes from the pilot's process findings are in: rows name the served model (`model`, from `usage.model`, or `simulated`) and the summary prints `provider_error` and the model per arm; and with `--write` every run's thread journal is exported beside the rows (`<prefix>-journals/<fixture>-<arm>-<seed>.json`, named in the row's `journal`), so the per-call reasons that the pilot discarded with its temporary directory survive the run.
 
 ## What would count as evidence
 

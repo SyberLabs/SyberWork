@@ -21,6 +21,16 @@ their caches (``APPDATA``, ``LOCALAPPDATA`` and ``USERPROFILE`` on Windows,
 when set), so a candidate does not re-download every package. ``HOME`` is
 still the temporary home.
 
+A critic check may additionally receive the variables the operator names in
+``SYBERLABS_CHECK_ENV`` in the host's own environment (comma-separated, for
+example ``ANTHROPIC_API_KEY,SYBERLABS_CRITIC_MODEL``), each only when it is set.
+The list is host policy and never contract data: the contract cannot name a
+variable and a candidate cannot change the list, because it lives in the
+operator's shell and not in the repository or the journal. A check that is not
+a critic (``tests``, ``setup``) never sees them, the scrubbed values above
+cannot be replaced through the list, and nothing about the pass-through enters
+the evaluation record: no name, no value, no count.
+
 A check whose name is ``critic`` or starts with ``critic.`` is a critic
 (``syberlabs.critic``): it reads a JSON request on stdin, its stdout must be a
 findings document, and the host parses that document, checks that the reviewer
@@ -57,6 +67,9 @@ PASS_ENV = (("PATH", "LANG", "LC_ALL", "SYSTEMROOT", "COMSPEC", "PATHEXT", "WIND
             + (("APPDATA", "LOCALAPPDATA", "USERPROFILE") if WINDOWS else ("XDG_CACHE_HOME",)) + CACHE_ENV)
 # A check with one of these names prepares the worktree; the checks after it depend on it.
 SETUP_NAMES = ("setup", "install")
+# The operator's allow-list of variable names a critic check additionally receives (host policy, read
+# from the host's own environment; never from the contract, the candidate or the journal).
+CHECK_ENV = "SYBERLABS_CHECK_ENV"
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
 
 
@@ -66,6 +79,19 @@ def _environment(home: Path, candidate: str) -> dict:
                 "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", "CI": "1",
                 "SYBERLABS_CANDIDATE": candidate})
     return env
+
+
+def _passthrough(name: str, env: dict) -> dict:
+    """The variables named in ``SYBERLABS_CHECK_ENV`` that a critic check receives on top of ``env``.
+
+    ``{}`` for any check that is not a critic, when the list is unset or empty, and for every listed
+    name that is not set. A name already in ``env`` (``HOME``, ``PATH``, ``SYBERLABS_CANDIDATE``, ...)
+    keeps the scrubbed value, and the list's own name is never passed.
+    """
+    if not critic.is_critic(name):
+        return {}
+    names = dict.fromkeys(item.strip() for item in os.environ.get(CHECK_ENV, "").split(","))
+    return {key: os.environ[key] for key in names if key and key != CHECK_ENV and key not in env and key in os.environ}
 
 
 def _stop(proc: subprocess.Popen) -> None:
@@ -172,7 +198,8 @@ def evaluate(repo: Repo, candidate: dict, evaluation: dict, *, context: dict | N
                     diff = text if size <= critic.MAX_DIFF_BYTES else text + f"\n[diff truncated: {size} bytes total]\n"
                 feed = Path(home) / f"{name}.request.json"
                 feed.write_bytes(json.dumps(critic.request(candidate, results, diff, context)).encode())
-            found = run_check(check["argv"], tree, env, check["timeout_seconds"], evaluation["max_output_bytes"], log, stdin=feed)
+            found = run_check(check["argv"], tree, {**env, **_passthrough(name, env)}, check["timeout_seconds"],
+                              evaluation["max_output_bytes"], log, stdin=feed)
             if critic.is_critic(name):
                 reviewed = _review(log, found, candidate)
                 if reviewed is not None and documents is not None:
