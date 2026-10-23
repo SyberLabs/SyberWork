@@ -209,6 +209,9 @@ class OperatorStats:
     evaluated: int = 0  # evaluations the host ran for them (budget consumed)
     improved: int = 0  # ... whose candidate entered the population or replaced its parent(s)
     passed: int = 0  # ... whose candidate passed every required check
+    dollars: float | None = None  # host-observed dollars those decisions cost, as remaining().max_dollars moved;
+    #   None on a host without a dollar bound. A model call that registers nothing is attributed to the next
+    #   registration, whatever its kind, because that is how the host attributes spend to candidates.
 
 
 @dataclass(frozen=True)
