@@ -6,6 +6,7 @@ run puts two work items through both arms of the repair loop with a stand-in mod
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -34,7 +35,7 @@ def label(item, arm, tags=("needs_lookup",), name=NAME):
 
 def run(case, item, arm, *, calls=1, dollars=None, githits=0, web=0, server="", tags=("needs_lookup",), hours=1.0,
         base=BASE, objective=None, late=False, model="claude-opus-5-5", accepted=True, tools=True, contract=4,
-        extra_label=None):
+        extra_label=None, review=None, review_revision=None):
     """One labelled thread: ``calls`` proposals, the first ``calls - 1`` failing the tests, then acceptance."""
     j = Journal(case)
     e = {"created": j.add("case_created", {"actor": "agent@example.test", "contract": ["repo-change", contract],
@@ -60,12 +61,17 @@ def run(case, item, arm, *, calls=1, dollars=None, githits=0, web=0, server="", 
     spend = {"dollars": dollars if dollars is not None else round(0.01 * calls, 6), "seconds": 1.0, "evaluations": calls,
              "candidates": calls, "host_observed": True, "unknown_models": []}
     j.add("search_finished", {"id": "s1", "actor": "syberlabs.host", "spend": spend})
+    commit = hashlib.sha1(case.encode()).hexdigest()
+    e["commit"] = commit
     if accepted:
         j.add("proposed", {"id": "p1", "action": "accept_change", "actor": "runner@example.test",
-                           "args": {"candidate": f"c{calls}"}})
+                           "args": {"candidate": f"c{calls}", "commit": commit, "base": base}})
         j.add("decision", {"proposal_id": "p1", "status": "allowed", "reason": "allowed"})
         e["accepted"] = j.add("effect_succeeded", {"proposal_id": "p1", "action": "accept_change", "output": {}},
                               at=T0 + int(hours * HOUR))
+    if review is not None:
+        revision = review_revision or commit[:12]
+        e["review"] = j.fact("review", {"verdict": review, "reviewer": "blind", "revision": revision}, version=revision)
     return j.events, e
 
 
@@ -278,6 +284,65 @@ class Checks(unittest.TestCase):
         self.assertEqual(experiment.runs(events, NAME), [], "a malformed label puts the thread in no experiment")
 
 
+class Delivery(unittest.TestCase):
+    """Delivered as the pilot defines it: accepted, and a blind review of the accepted commit passed."""
+
+    def test_reviewed_reads_the_review_of_the_accepted_commit(self):
+        for review, revision, expected in (("pass", None, True), ("fail", None, False), (None, None, None),
+                                           ("pass", "0123456789ab", None)):
+            with self.subTest(review=review, revision=revision):
+                events, e = run("x-off", "X", "off", review=review, review_revision=revision)
+                [found] = experiment.runs(events, NAME)
+                self.assertEqual(found.reviewed.value, expected)
+        events, e = run("x-off", "X", "off", review="pass")
+        [found] = experiment.runs(events, NAME)
+        self.assertEqual(found.reviewed.basis, (e["accepted"], e["review"]))
+        events, _ = run("y-off", "Y", "off", accepted=False)
+        self.assertIs(experiment.runs(events, NAME)[0].reviewed.value, False, "not accepted is not delivered")
+
+    def items(self, reviews):
+        """Two lookup items the treatment makes cheaper, two routine items it makes a little dearer."""
+        events = []
+        for item, tag, off_cost, on_cost in (("L1", "needs_lookup", 0.40, 0.10), ("L2", "needs_lookup", 0.50, 0.20),
+                                             ("R1", "routine", 0.10, 0.12), ("R2", "routine", 0.10, 0.12),
+                                             ("R3", "routine", 0.10, 0.12)):
+            for arm, dollars, githits in (("off", off_cost, 0), ("on", on_cost, 1)):
+                events += run(f"{item}-{arm}", item, arm, dollars=dollars, githits=githits, tags=(tag,),
+                              server="githits:connected" if arm == "on" else "",
+                              review=reviews.get((item, arm), "pass"))[0]
+        return events
+
+    def test_the_rule_counts_deliveries_and_compares_cost_over_items_delivered_in_both(self):
+        found = experiment.report(self.items({}), NAME, delivered_by="review")
+        rule = found["rule"]
+        self.assertEqual((rule["delivered"], rule["pending"], rule["cost_pairs"]), ({"off": 5.0, "on": 5.0}, 0, 5))
+        self.assertEqual(rule["median_cost_difference"], 0.02, "three routine items +0.02, two lookup items -0.30")
+        self.assertEqual((rule["treatment_at_least_as_many"], rule["treatment_cheaper"], rule["met"]), (True, False, False))
+        lookup, routine = found["by_tag"]["needs_lookup"]["rule"], found["by_tag"]["routine"]["rule"]
+        self.assertEqual((lookup["met"], routine["met"]), (True, False),
+                         "the median over a mix of items can go against the treatment where it helped")
+        self.assertEqual(found["metrics"]["reviewed"]["baseline_rate"], 1.0)
+
+    def test_a_pending_review_leaves_the_rule_undecided_and_a_failed_one_counts(self):
+        rule = experiment.report(self.items({("L1", "on"): None}), NAME, delivered_by="review")["rule"]
+        self.assertEqual((rule["pending"], rule["met"]), (1, None), "not yet reviewed is neither pass nor fail")
+        rule = experiment.report(self.items({("L1", "on"): None}), NAME, delivered_by="accept")["rule"]
+        self.assertEqual((rule["pending"], rule["met"]), (0, False), "on acceptance alone nothing is pending")
+        rule = experiment.report(self.items({("R1", "on"): "fail"}), NAME, delivered_by="review")["rule"]
+        self.assertEqual((rule["delivered"], rule["treatment_at_least_as_many"], rule["met"]),
+                         ({"off": 5.0, "on": 4.0}, False, False))
+        reviewed = experiment.report(self.items({("R1", "on"): None}), NAME, delivered_by="review")["metrics"]["reviewed"]
+        self.assertEqual((reviewed["pairs"], reviewed["unknown"]), (4, 1))
+
+    def test_no_item_delivered_in_both_arms_decides_nothing(self):
+        rule = experiment.report(run("x-off", "X", "off", review="fail")[0]
+                                 + run("x-on", "X", "on", githits=1, server="githits:connected", review="pass")[0],
+                                 NAME, delivered_by="review")["rule"]
+        self.assertEqual((rule["cost_pairs"], rule["met"]), (0, None))
+        with self.assertRaises(ValueError):
+            experiment.report([], NAME, delivered_by="merge")
+
+
 class Rendering(unittest.TestCase):
     def test_table_markdown_and_csv(self):
         found = experiment.report(pilot(), NAME)
@@ -329,6 +394,11 @@ class Terminal(unittest.TestCase):
         self.assertEqual(len(text.splitlines()), 5)
         code, text, _ = self.run_cli("--name", NAME, "--server", "none")
         self.assertNotIn("unused", text, "no server named: no use check")
+        code, text, _ = self.run_cli("--name", NAME, "--delivered", "review")
+        self.assertIn("rule (accepted and reviewed = delivered): not decided (3 items' delivery unknown)", text,
+                      "accepted but never reviewed: the rule waits")
+        code, text, _ = self.run_cli("--name", NAME)
+        self.assertIn("rule (accepted = delivered): met", text)
 
     def test_an_unknown_experiment_and_one_arm_twice(self):
         code, text, _ = self.run_cli("--name", "other")

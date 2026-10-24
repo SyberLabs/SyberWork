@@ -1,7 +1,7 @@
 """A/B comparison of work items: two arms of one experiment, paired by item, every number from the journal.
 
     syberlabs experiment label --name githits-pilot --item ITEM-14 --arm on --tag needs_lookup
-    syberlabs experiment report --name githits-pilot [--json | --csv | --markdown] [--from-export FILE ...]
+    syberlabs experiment report --name githits-pilot [--delivered review] [--json | --csv | --markdown]
 
 An experiment runs the same work items through the factory more than once and changes one thing between the runs, its
 arms (the GitHits pilot: the proposer's MCP configuration, ``docs/CLAUDE_CODE.md``). A thread joins an experiment through
@@ -19,6 +19,9 @@ What it adds to the per-item metrics:
   verified reconciliation of it). Both arms of an item can be accepted, while only one arm's pull request can merge, so
   the comparison uses this and reports ``agent_time`` (to merge) per arm, unpaired.
 - ``accepted``: whether that effect is in the record.
+- ``reviewed``: accepted, and a ``review`` fact on the accepted commit passed (unknown until one is recorded).
+- ``delivery_rule``: the treatment delivers at least as many items, and over the items delivered in both arms its median
+  paired cost is lower; read overall and per tag, and undecided while a delivery or a delivered pair's price is unknown.
 - the checks that make a pair comparable, or say why it is not (``CHECKS``).
 
 Statistics, stated plainly. The item is the unit. Each metric is compared over the valid items whose value is known in
@@ -117,13 +120,12 @@ class Run:
     models: tuple[str, ...]
     accepted: metrics.Metric
     time_to_accept: metrics.Metric
+    reviewed: metrics.Metric       # accepted, and a review of the accepted commit passed (unknown while unreviewed)
     work: metrics.WorkItemMetrics
 
     def value(self, name: str) -> metrics.Metric:
-        if name == "time_to_accept":
-            return self.time_to_accept
-        if name == "accepted":
-            return self.accepted
+        if name in ("time_to_accept", "accepted", "reviewed"):
+            return getattr(self, name)
         return self.work.metric(name)
 
 
@@ -172,6 +174,23 @@ def _models(registrations: list[dict]) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def _reviewed(events: list[dict], accept: dict | None, proposals: dict) -> metrics.Metric:
+    """Accepted and passed review: the latest ``review`` fact whose revision is the accepted commit (or a prefix of it, at
+    least 7 characters) decides. Not accepted is False; accepted with no review of that commit is unknown."""
+    if accept is None:
+        return metrics.Metric(False, (), "not accepted")
+    args = (proposals.get(accept["body"].get("proposal_id")) or {}).get("args")
+    commit = args.get("commit") if isinstance(args, dict) and isinstance(args.get("commit"), str) else None
+    found = [(e, v) for e, v in ((e, metrics.fact(e, metrics.REVIEW)) for e in events)
+             if v is not None and v.get("verdict") in metrics.VERDICTS and isinstance(v.get("revision"), str)
+             and commit is not None and len(v["revision"]) >= 7 and commit.startswith(v["revision"])]
+    if not found:
+        return metrics.Metric(None, (accept["hash"],), "accepted; no review of the accepted commit in the record")
+    event, value = found[-1]
+    return metrics.Metric(value["verdict"] == "pass", (accept["hash"], event["hash"]),
+                          f"review {value['verdict']} by {value.get('reviewer')}")
+
+
 def _run(case_id: str, events: list[dict], name: str, work: metrics.WorkItemMetrics, contracts,
          server: str | None) -> Run | None:
     labels = [(e, v) for e, v in ((e, metrics.fact(e, KEY)) for e in events) if _label(v) and v["name"] == name]
@@ -200,13 +219,14 @@ def _run(case_id: str, events: list[dict], name: str, work: metrics.WorkItemMetr
     else:
         time_to_accept = metrics.Metric(None, (created["hash"],) if created else (),
                                         "not accepted" if accept is None else "no case_created")
+    reviewed = _reviewed(events, accept, proposals)
     distinct = {(v["item"], v["arm"], tuple(sorted(v.get("tags", [])))) for _e, v in labels}
     return Run(thread=case_id, item=value["item"], arm=value["arm"], tags=tuple(sorted(set(value.get("tags", [])))),
                label=event["hash"], labelled_late=first is not None and event["seq"] > first,
                relabelled=len(distinct) > 1, base=base,
                objective=inputs.get("objective") if isinstance(inputs.get("objective"), str) else None,
                server=_servers(registrations, server), models=_models(registrations), accepted=accepted,
-               time_to_accept=time_to_accept, work=work)
+               time_to_accept=time_to_accept, reviewed=reviewed, work=work)
 
 
 def runs(events: Iterable[dict], name: str, contracts: Mapping | None = None, server: str | None = SERVER) -> list[Run]:
@@ -331,15 +351,52 @@ def _comparisons(rows: list[dict], baseline: str, treatment: str) -> dict:
             else:
                 pairs.append((b, t))
         out[name] = {**compare(pairs, None if name in NEUTRAL else True), "unknown": unknown, "unit": UNITS[name]}
-    accepted = [(row["values"][baseline]["accepted"], row["values"][treatment]["accepted"]) for row in rows]
-    treatment_only = sum(1 for b, t in accepted if t > b)
-    baseline_only = sum(1 for b, t in accepted if b > t)
-    out["accepted"] = {"pairs": len(accepted), "unit": "share of items accepted",
-                       "baseline_rate": round(statistics.fmean(b for b, _ in accepted), 6) if accepted else None,
-                       "treatment_rate": round(statistics.fmean(t for _, t in accepted), 6) if accepted else None,
-                       "treatment_only": treatment_only, "baseline_only": baseline_only,
-                       "p_value": sign_test(treatment_only, baseline_only)}
+    out["accepted"] = _binary(rows, "accepted", baseline, treatment, "share of items accepted")
+    out["reviewed"] = _binary(rows, "reviewed", baseline, treatment, "share of items accepted and passed review")
     return out
+
+
+def _binary(rows: list[dict], name: str, baseline: str, treatment: str, unit: str) -> dict:
+    """A yes/no outcome per item and arm (a rate when an arm has repeats): each arm's rate over the items known in both,
+    the items where only one arm got it, and the sign test over those. Unknown (for example, not yet reviewed) is
+    counted, never read as no."""
+    pairs = [(row["values"][baseline].get(name), row["values"][treatment].get(name)) for row in rows]
+    known = [(b, t) for b, t in pairs if b is not None and t is not None]
+    treatment_only = sum(1 for b, t in known if t > b)
+    baseline_only = sum(1 for b, t in known if b > t)
+    return {"pairs": len(known), "unknown": len(pairs) - len(known), "unit": unit,
+            "baseline_rate": round(statistics.fmean(b for b, _ in known), 6) if known else None,
+            "treatment_rate": round(statistics.fmean(t for _, t in known), 6) if known else None,
+            "treatment_only": treatment_only, "baseline_only": baseline_only,
+            "p_value": sign_test(treatment_only, baseline_only)}
+
+
+def delivery_rule(rows: list[dict], baseline: str, treatment: str, delivered_by: str) -> dict:
+    """The go/no-go read from the valid items: the treatment delivers at least as many items as the baseline, and over
+    the items delivered in both arms its median paired cost is lower. ``delivered_by`` is ``accept`` (the promotion
+    succeeded) or ``review`` (it succeeded and a review of the accepted commit passed). ``met`` is None while an item's
+    delivery or a delivered pair's cost is unknown, so a pending review never reads as a pass or a fail."""
+    key = "accepted" if delivered_by == "accept" else "reviewed"
+    pairs = [(row["values"][baseline].get(key), row["values"][treatment].get(key)) for row in rows]
+    pending = sum(1 for b, t in pairs if b is None or t is None)
+    known = [(b, t) for b, t in pairs if b is not None and t is not None]
+    delivered = {baseline: round(sum(b for b, _ in known), 6), treatment: round(sum(t for _, t in known), 6)}
+    both = [row for row in rows if row["values"][baseline].get(key) == 1.0 and row["values"][treatment].get(key) == 1.0]
+    costs = [(row["values"][baseline]["cost"], row["values"][treatment]["cost"]) for row in both
+             if "cost_basis_mismatch" not in row["flags"]]
+    priced = [(b, t) for b, t in costs if b is not None and t is not None]
+    median = round(statistics.median(t - b for b, t in priced), 6) if priced else None
+    at_least = delivered[treatment] >= delivered[baseline]
+    cheaper = median is not None and median < 0
+    if pending or len(priced) < len(costs) or not priced:
+        met = None  # a delivery not yet known, a delivered pair without a price, or no item delivered in both arms
+    else:
+        met = at_least and cheaper
+    return {"delivered_by": delivered_by, "delivered": delivered, "pending": pending,
+            "treatment_at_least_as_many": at_least, "cost_pairs": len(priced), "cost_unknown": len(costs) - len(priced),
+            "median_cost_difference": median, "treatment_cheaper": cheaper if median is not None else None, "met": met,
+            "rule": "the treatment delivers at least as many items, and over the items delivered in both arms its "
+                    "median paired cost is lower"}
 
 
 def _per_arm(item_runs: Iterable[Run]) -> dict:
@@ -362,14 +419,17 @@ def _per_arm(item_runs: Iterable[Run]) -> dict:
 
 
 def report(events: Iterable[dict], name: str, contracts: Mapping | None = None, *, baseline: str = BASELINE,
-           treatment: str = TREATMENT, server: str | None = SERVER) -> dict:
+           treatment: str = TREATMENT, server: str | None = SERVER, delivered_by: str = "accept") -> dict:
     """The experiment's items, their checks, and the treatment compared with the baseline. Pure.
 
     ``server`` names the MCP server whose recorded connection must match the arm (``githits`` for the GitHits pilot);
     None skips the arm, contamination and use checks for an experiment that does not turn a server on and off.
+    ``delivered_by`` (``accept`` or ``review``) is what counts as delivered in ``delivery_rule``.
     """
     if baseline == treatment:
         raise ValueError("the baseline and the treatment must be different arms")
+    if delivered_by not in ("accept", "review"):
+        raise ValueError("delivered_by must be accept or review")
     # Threads in start order, then by id, so the rows come out the same whatever order the journal lists threads in.
     found = sorted(runs(events, name, contracts, server),
                    key=lambda r: (r.work.started_at is None, as_seconds(r.work.started_at or 0), r.thread))
@@ -380,7 +440,7 @@ def report(events: Iterable[dict], name: str, contracts: Mapping | None = None, 
     for item, by_arm in items.items():
         flags = _flags(by_arm, baseline, treatment, server)
         everyone = [run for arm in (baseline, treatment) for run in by_arm.get(arm, [])]
-        values = {arm: {metric: _mean(by_arm.get(arm, []), metric) for metric in COMPARED + ("accepted",)}
+        values = {arm: {metric: _mean(by_arm.get(arm, []), metric) for metric in COMPARED + ("accepted", "reviewed")}
                   for arm in (baseline, treatment)}
         rows.append({"item": item, "tags": sorted({tag for run in everyone for tag in run.tags}), "flags": flags,
                      "excluded": [flag for flag in flags if flag in EXCLUDE],
@@ -391,13 +451,15 @@ def report(events: Iterable[dict], name: str, contracts: Mapping | None = None, 
     groups = [(tag, [row for row in valid if tag in row["tags"]]) for tag in tags]
     if tags:
         groups.append(("(untagged)", [row for row in valid if not row["tags"]]))
-    by_tag = {tag: {"items": len(chosen), "metrics": _comparisons(chosen, baseline, treatment)}
+    by_tag = {tag: {"items": len(chosen), "metrics": _comparisons(chosen, baseline, treatment),
+                    "rule": delivery_rule(chosen, baseline, treatment, delivered_by)}
               for tag, chosen in groups if chosen}
     return {
         "experiment": name, "baseline": baseline, "treatment": treatment, "server": server,
         "items": {"labelled": len(rows), "compared": len(valid), "excluded": len(rows) - len(valid)},
         "threads": len(found),
         "metrics": _comparisons(valid, baseline, treatment),
+        "rule": delivery_rule(valid, baseline, treatment, delivered_by),
         "by_tag": by_tag,
         "per_arm": {arm: _per_arm(run for run in found if run.arm == arm) for arm in (baseline, treatment)},
         "checks": {flag: [row["item"] for row in rows if flag in row["flags"]] for flag in CHECKS
@@ -442,15 +504,23 @@ def table(found: dict) -> str:
                      _number(m["mean_difference"], money), _change(m["change"]),
                      "-" if m["wins"] is None else f"{m['wins']}/{m['losses']}/{m['ties']}",
                      "-" if m["p_value"] is None else f"{m['p_value']:.3g}", interval])
-    a = found["metrics"]["accepted"]
-    rows.append(["accepted", str(a["pairs"]), _number(a["baseline_rate"]), _number(a["treatment_rate"]), "-", "-",
-                 f"{a['treatment_only']}/{a['baseline_only']}/-", "-" if a["p_value"] is None else f"{a['p_value']:.3g}",
-                 "-"])
+    for name in ("accepted", "reviewed"):
+        a = found["metrics"][name]
+        if name == "reviewed" and not a["pairs"] and not any(r["values"][base]["reviewed"] is not None
+                                                           or r["values"][treat]["reviewed"] is not None
+                                                           for r in found["rows"]):
+            continue  # no review recorded anywhere: nothing to show
+        pairs = f"{a['pairs']} (+{a['unknown']} unknown)" if a["unknown"] else str(a["pairs"])
+        rows.append([name, pairs, _number(a["baseline_rate"]), _number(a["treatment_rate"]), "-", "-",
+                     f"{a['treatment_only']}/{a['baseline_only']}/-",
+                     "-" if a["p_value"] is None else f"{a['p_value']:.3g}", "-"])
     widths = [max(len(row[n]) for row in rows) for n in range(len(head))]
     lines += ["  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip() for row in rows]
+    lines.append(_rule_line(found))
     for tag, group in found["by_tag"].items():
         lines.append(f"by tag {tag} ({group['items']} items): "
-                     + ", ".join(f"{name} {_shift(group['metrics'][name], name)}" for name in TAG_COLUMNS))
+                     + ", ".join(f"{name} {_shift(group['metrics'][name], name)}" for name in TAG_COLUMNS)
+                     + f"; rule {VERDICT[group['rule']['met']]}")
     for arm in (base, treat):
         p = found["per_arm"][arm]
         lines.append(f"{arm:>5}: {p['threads']} threads, {p['accepted']} accepted, {p['opened']} pull requests opened, "
@@ -462,6 +532,28 @@ def table(found: dict) -> str:
     lines.append("w/l/t: items where the treatment was better, worse, equal. p: exact sign test. "
                  "Unknown is never zero.")
     return "\n".join(lines)
+
+
+VERDICT = {True: "met", False: "not met", None: "not decided"}
+
+
+def _rule_line(found: dict) -> str:
+    r, base, treat = found["rule"], found["baseline"], found["treatment"]
+    verdict = VERDICT[r["met"]]
+    why = []
+    if r["pending"]:
+        why.append(f"{r['pending']} items' delivery unknown")
+    if r["cost_unknown"]:
+        why.append(f"{r['cost_unknown']} delivered pairs without a price")
+    if not why and not r["cost_pairs"]:
+        why.append("no item delivered in both arms")
+    cost = ("-" if r["median_cost_difference"] is None
+            else _number(r["median_cost_difference"], money=True))
+    return (f"rule ({'accepted' if r['delivered_by'] == 'accept' else 'accepted and reviewed'} = delivered): {verdict}"
+            + (f" ({'; '.join(why)})" if why and r["met"] is None else "")
+            + f". Delivered{' so far' if r['pending'] else ''} {_number(r['delivered'][treat])} {treat} vs "
+              f"{_number(r['delivered'][base])} {base}; median paired cost over {r['cost_pairs']} items delivered in "
+              f"both: {cost}")
 
 
 LABELS = {"cost": "Cost", "turns": "Turns", "time_to_accept": "Time to acceptance", "fix_rounds": "Fix rounds",
@@ -494,11 +586,14 @@ def markdown(found: dict) -> str:
     out.append(f"| Accepted | {a['unit']} | {_number(a['baseline_rate'])} | {_number(a['treatment_rate'])} | | "
                f"{a['pairs']} | {'-' if a['p_value'] is None else format(a['p_value'], '.3g')} |")
     if found["by_tag"]:
-        out += ["", f"| Tag | Items | {' | '.join(LABELS[name] for name in TAG_COLUMNS)} |",
-                "| --- | --- |" + " --- |" * len(TAG_COLUMNS)]
+        out += ["", f"| Tag | Items | {' | '.join(LABELS[name] for name in TAG_COLUMNS)} | Rule |",
+                "| --- | --- |" + " --- |" * len(TAG_COLUMNS) + " --- |"]
         for tag, group in found["by_tag"].items():
             out.append(f"| {tag} | {group['items']} | "
-                       + " | ".join(_shift(group["metrics"][name], name) for name in TAG_COLUMNS) + " |")
+                       + " | ".join(_shift(group["metrics"][name], name) for name in TAG_COLUMNS)
+                       + f" | {VERDICT[group['rule']['met']]} |")
+    out.append("")
+    out.append(_rule_line(found)[0].upper() + _rule_line(found)[1:] + ".")
     out.append("")
     out.append(f"{found['items']['compared']} items compared, {found['items']['excluded']} excluded "
                f"({', '.join(f'{k}: {len(v)}' for k, v in found['checks'].items() if k in EXCLUDE) or 'none'}). "

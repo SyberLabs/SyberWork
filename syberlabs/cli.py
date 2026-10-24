@@ -276,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     comparing.add_argument("--treatment", default="on")
     comparing.add_argument("--server", default="githits",
                            help="the MCP server whose recorded connection must match each arm; none to skip that check")
+    comparing.add_argument("--delivered", choices=("accept", "review"), default="accept",
+                           help="what counts as delivered in the rule: the promotion succeeded (accept), or it succeeded "
+                                "and a review of the accepted commit passed (review, the blind-review pilot)")
     layout = comparing.add_mutually_exclusive_group()
     layout.add_argument("--json", action="store_true", help="every item, its checks and values, and the comparisons")
     layout.add_argument("--csv", action="store_true", help="one row per item")
@@ -423,7 +426,7 @@ def _experiment(args, kit: Kit | None) -> int:
     server = None if args.server.lower() == "none" else args.server
     try:
         found = experiment.report(events, args.name, contracts, baseline=args.baseline, treatment=args.treatment,
-                                  server=server)
+                                  server=server, delivered_by=args.delivered)
     except ValueError as exc:
         raise Rejected("invalid_experiment", str(exc)) from None
     if not found["rows"]:

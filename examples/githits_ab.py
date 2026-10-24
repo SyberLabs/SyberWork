@@ -8,7 +8,9 @@ repository: real Build Threads, real host checks, real acceptances, a real journ
   is off, so the host's checks fail and the repair call fixes it; with GitHits on it gets it right first time;
 - on a routine item it is right first time in both arms;
 - on item ``LIB-4`` the treatment's GitHits server "fails to connect", as a misconfigured run would, so the report must
-  refuse to count that item.
+  refuse to count that item;
+- every accepted change gets a blind review (``syberlabs review --record``), and one is turned down, so delivery is
+  "accepted and passed review", as the pilot defines it.
 
 The stand-in declares the usage, lookups and connected MCP servers a real proposer reports (``docs/CLAUDE_CODE.md``):
 those numbers are made up to exercise the report. **They are not results and say nothing about GitHits.** The pilot
@@ -36,6 +38,7 @@ from syberlabs.providers import RepairProvider  # noqa: E402
 
 NAME = "githits-rehearsal"
 RUNNER = "runner@example.test"
+REVIEWER = "reviewer@example.test"
 PRICES = {"stand-in-model": {"input_per_million": 3, "output_per_million": 15}}  # a made-up price for a made-up model
 
 
@@ -236,6 +239,12 @@ def rehearse(folder: Path) -> tuple[list[dict], dict]:
                                        seed=1)
                 receipt = thread.accept(found[-1].id, actor=RUNNER) if found else None
                 state = receipt.status if receipt else "no candidate"
+                if receipt and receipt.status == "succeeded":
+                    # A reviewer who is not told the arm reads the accepted change (recorded as syberlabs review
+                    # --record does). The stand-in reviewer turns down one change, so the rule has a failure to count.
+                    verdict = "fail" if (item, arm) == ("LIB-2", "off") else "pass"
+                    thread.record_review(verdict, reviewer="blind-reviewer", revision=receipt.commit, by=REVIEWER)
+                    state += f", review {verdict}"
                 print(f"{item:10} {arm:3}  {len(found)} candidate(s), acceptance {state}")
         events = [e for case in kit.journal.thread_ids() for e in kit.session.history(case)]
         return events, dict(kit.session.contracts)
@@ -251,10 +260,10 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as folder:
         events, contracts = rehearse(Path(folder))
     items = metrics.work_items(events, contracts)
-    found = experiment.report(events, NAME, contracts)
+    found = experiment.report(events, NAME, contracts, delivered_by="review")
     print("\nPer work item (syberlabs metrics):")
     print(metrics.table(items))
-    print("\nArms compared (syberlabs experiment report):")
+    print("\nArms compared (syberlabs experiment report --delivered review):")
     print(experiment.table(found))
     print("\nAs the write-up prints it (--markdown):")
     print(experiment.markdown(found))

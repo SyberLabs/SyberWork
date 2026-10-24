@@ -3,6 +3,7 @@
 ```bash
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup   # before the first candidate
 syberlabs experiment report --name githits-pilot                    # the arms compared, with every check that applies
+syberlabs experiment report --name githits-pilot --delivered review # delivered = accepted and a blind review passed
 syberlabs experiment report --name githits-pilot --markdown         # the table a write-up prints
 syberlabs experiment report --name githits-pilot --json             # every item, its threads, values and checks
 syberlabs experiment report --name githits-pilot --csv              # one row per item
@@ -26,8 +27,15 @@ Write the label right after `syberlabs start`, before the first candidate. The r
 |---|---|---|
 | `time_to_accept` (hours) | `case_created` to the contract's promotion action (`evolution.promotion.action`, default `accept_change`) succeeding: its `effect_succeeded`, or a verified reconciliation of it | not accepted |
 | `accepted` | that effect is in the record | never |
+| `reviewed` | accepted, and the latest `review` fact whose revision is the accepted commit (or a prefix of it, at least 7 characters) has verdict `pass`; false when it failed or the thread was not accepted | accepted, and no review of the accepted commit is recorded yet |
 
 Both arms of an item can be accepted, but only one arm's pull request can merge. So the arms are compared on `time_to_accept`, and `agent_time` (to merge) and delivery are reported per arm, unpaired.
+
+### The delivery rule
+
+The report also reads one go/no-go off the valid items: **the treatment delivers at least as many items as the baseline, and over the items delivered in both arms its median paired cost is lower.** "Delivered" is `accepted` by default and `reviewed` with `--delivered review`, the pilot's definition (the host's checks passed, and a person who was not told the arm passed the change; record each verdict with `syberlabs review --record`). The rule is undecided, never guessed, while any item's delivery is unknown (a review not yet recorded), while a pair delivered in both arms has no price, or when no item was delivered in both arms.
+
+The rule is read overall and again per tag. They can disagree, and the per-tag reading is the one to pre-register: if GitHits saves a lot on items that need a library lookup and costs a little more on routine ones (it is called and has nothing to add), the median over all items can land on the routine side even though GitHits helped exactly where it should. `examples/githits_ab.py` shows this: its rule is not met overall and met on `needs_lookup`. Name the group the decision rests on before the first run.
 
 The report compares the **treatment** (default `on`) with the **baseline** (default `off`) over the items that have threads in both. For each metric (cost, turns, time to acceptance, fix rounds, web lookups, GitHits lookups, review rejections, human interventions) it gives the number of pairs and of unknowns, the arms' means and medians, the mean and median paired difference, the change in the total, wins, losses and ties, an exact two-sided sign test, and a 95% bootstrap interval for the mean difference. `accepted` gets each arm's rate and the items accepted in one arm only. Every comparison is repeated per tag.
 
@@ -96,9 +104,9 @@ syberlabs run --once
 
 ```bash
 syberlabs settle                                              # merges, for agent time to merge (SyberWork #79)
-syberlabs experiment report --name githits-pilot              # read the checks first
-syberlabs experiment report --name githits-pilot --markdown > pilot.md
-syberlabs experiment report --name githits-pilot --csv > pilot.csv
+syberlabs experiment report --name githits-pilot --delivered review   # read the checks first
+syberlabs experiment report --name githits-pilot --delivered review --markdown > pilot.md
+syberlabs experiment report --name githits-pilot --delivered review --csv > pilot.csv
 ```
 
 What leaves the factory is the report and the CSV. The journal, the prompts and the code stay where they are; the record holds lookups as digests only (`docs/CLAUDE_CODE.md`).
