@@ -276,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     comparing.add_argument("--treatment", default="on")
     comparing.add_argument("--server", default="githits",
                            help="the MCP server whose recorded connection must match each arm; none to skip that check")
+    comparing.add_argument("--items", metavar="FILE",
+                           help="the item list registered before the first run, one 'ITEM-ID [tag ...]' per line: items "
+                                "outside it, or with other tags, are excluded, and listed items that never ran are named")
     comparing.add_argument("--delivered", choices=("accept", "review"), default="accept",
                            help="what counts as delivered in the rule: the promotion succeeded (accept), or it succeeded "
                                 "and a review of the accepted commit passed (review, the blind-review pilot)")
@@ -339,8 +342,9 @@ def _verify(args) -> int:
     return 0 if report.passed else 1
 
 
-def _records(exports, kit: Kit | None) -> tuple[list[dict], dict]:
-    """The events and contracts to fold: exported thread records when there is no Kit, else this home's journal."""
+def _records(exports, kit: Kit | None, verify: bool = False) -> tuple[list[dict], dict]:
+    """The events and contracts to fold: exported thread records when there is no Kit, else this home's journal.
+    ``verify`` refuses an export whose hash chain does not verify, so an edited record is not counted."""
     events, contracts, seen = [], {}, set()
     if kit is None:
         for path in exports:
@@ -352,6 +356,20 @@ def _records(exports, kit: Kit | None) -> tuple[list[dict], dict]:
             if not isinstance(found, list) or not all(
                     isinstance(e, dict) and {"case_id", "seq", "kind", "body", "hash"} <= set(e) for e in found):
                 raise Rejected("export_unreadable", f"{path}: no journal event list")
+            if verify:
+                from syberlabs.events import verify_events
+
+                threads: dict[str, list[dict]] = {}
+                for event in found:
+                    threads.setdefault(event["case_id"], []).append(event)
+                for case_id, chain in threads.items():
+                    try:
+                        valid = verify_events(sorted(chain, key=lambda e: e["seq"]))
+                    except (KeyError, TypeError, ValueError):
+                        valid = False
+                    if not valid:
+                        raise Rejected("export_unverified", f"{path}: the hash chain of thread {str(case_id)[:8]} does "
+                                       "not verify; export it again with syberlabs export")
             contract = record.get("contract") if isinstance(record, dict) else None
             if isinstance(contract, dict) and "id" in contract and "version" in contract:
                 contracts[(contract["id"], contract["version"])] = contract
@@ -422,11 +440,20 @@ def _experiment(args, kit: Kit | None) -> int:
     """``syberlabs experiment report``: the experiment's items, their checks, and the arms compared."""
     from syberlabs import experiment
 
-    events, contracts = _records(args.exports, kit)
+    events, contracts = _records(args.exports, kit, verify=True)
     server = None if args.server.lower() == "none" else args.server
+    registered = None
+    if args.items:
+        try:
+            registered = experiment.parse_items(Path(args.items).read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise Rejected("items_unreadable", f"{args.items}: {exc.strerror or type(exc).__name__}") from None
+        except ValueError as exc:
+            raise Rejected("invalid_items", f"{args.items}: {exc}") from None
     try:
         found = experiment.report(events, args.name, contracts, baseline=args.baseline, treatment=args.treatment,
-                                  server=server, delivered_by=args.delivered)
+                                  server=server, delivered_by=args.delivered, registered=registered,
+                                  forgotten=kit.journal.forgotten() if kit is not None else None)
     except ValueError as exc:
         raise Rejected("invalid_experiment", str(exc)) from None
     if not found["rows"]:
@@ -441,6 +468,9 @@ def _experiment(args, kit: Kit | None) -> int:
         print(experiment.markdown(found))
     else:
         print(experiment.table(found))
+    if not found["items"]["compared"]:
+        print("no item ran in both arms without a check that excludes it, so nothing was compared", file=sys.stderr)
+        return 1
     return 0
 
 
