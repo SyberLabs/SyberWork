@@ -115,18 +115,51 @@ class AttestArtifactClassification(unittest.TestCase):
                     "schema": "attest.receipt/v0",
                     "case_id": case_id,
                     "created_at": "2026-10-24T00:00:00Z",
-                    "doc": {},
-                    "claim": {"status": "proven", "effect_succeeded": True},
-                    "authority": {},
-                    "proposal": {},
-                    "approval": {},
-                    "evidence": {},
+                    "doc": {
+                        "source": "demo/spec.md",
+                        "sha256_before": "before-digest",
+                        "sha256_after": "after-digest",
+                    },
+                    "claim": {
+                        "id": "claim-1",
+                        "kind": "descriptive",
+                        "lines": [1, 1],
+                        "text": "The app displays the updated value.",
+                        "expects_before": "old value",
+                        "expects_after": "new value",
+                    },
+                    "authority": {
+                        "policy": "attest.policy.yaml",
+                        "decision": "doc_repair_allowed",
+                        "rule": "descriptive claims may be repaired",
+                    },
+                    "proposal": {"agent": "worker", "patch_sha256": "patch-digest", "patch": "diff"},
+                    "approval": {"actor": "attest", "proposal_sha256": "patch-digest"},
+                    "evidence": {
+                        "before": {
+                            "status": "failed",
+                            "observed": {"value": "old value"},
+                            "note": "Kane evidence pack before-pack",
+                            "screenshot": None,
+                        },
+                        "after": {
+                            "status": "proven",
+                            "observed": {"value": "new value"},
+                            "note": "Kane evidence pack after-pack",
+                            "screenshot": None,
+                        },
+                    },
                     "handoff": None,
-                    "disposition": "complete",
+                    "disposition": "repaired",
                     "verified": False,
+                    "ticket": {"path": "tickets/case-1.json", "title": "Updated value"},
+                    "app": {"original": "app", "candidate": "candidate", "patch_sha256": "patch-digest"},
+                    "worker": "syberwork-dispatch",
                 }
                 self.assertTrue(classify_attest_artifact(receipt_file["schema"])["observation"])
                 self.assertFalse(receipt_file["verified"])
+                self.assertEqual(receipt_file["evidence"]["after"]["status"], "proven")
+                # Kane proved the app claim; that does not reconcile an external write.
                 self.assertFalse(classify_attest_artifact(receipt_file["schema"])["verified_reconciliation"])
                 observation = work.observe(
                     case_id,
