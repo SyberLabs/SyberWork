@@ -26,8 +26,9 @@ from unittest import mock
 
 from spec.validate import validate_events
 from syberlabs import Rejected, metrics, query_guard
-from syberlabs.claude_code import (BIN_ENV, DEFAULT_TOOLS, LOGIN_LANE_DROPPED_ENV, LOOKUP, ClaudeCodeProvider,
-                                   Transcript, instruction_file, parse_tools, query_text)
+from syberlabs.claude_code import (BIN_ENV, CODE_TOOLS, DEFAULT_TOOLS, LOGIN_LANE_DROPPED_ENV, LOOKUP,
+                                   ClaudeCodeProvider, Transcript, instruction_file, parse_tools, query_text,
+                                   version_tuple)
 from syberlabs.cli import main as cli
 from syberlabs.events import verify_events
 from syberlabs.gitspace import IDENTITY
@@ -39,6 +40,7 @@ BROKEN = {**GOOD, "src/report.py": "def rows():\n    return []\n"}  # tests fail
 GITHITS_QUERY = "zq81 githits query: how does requests retry on 503"
 WEB_QUERY = "zq82 web query: python csv DictWriter newline windows"
 TREE_QUERY = '    return [{"name": "a", "qty": 2}, {"name": "b", "qty": 3}]'  # a line of src/report.py, verbatim
+LONE_QUERY = "zq83 python csv " + chr(0xD800) + " sniff dialect"  # a lone surrogate, as a JSON escape decodes
 POLICY = {"version": "2", "max_lines": 3, "max_chars": 400}
 POLICY_DIGEST = hashlib.sha256(json.dumps(POLICY).encode()).hexdigest()  # of the policy.json the host writes
 PRICES = {"claude-opus-5": {"input_per_million": 15, "output_per_million": 75}}
@@ -673,6 +675,27 @@ class Guard(ClaudeCodeCase):
         self.assertEqual(caught.exception.code, "invalid_provider")
 
 
+    def test_a_query_with_a_lone_surrogate_is_digested_alike_by_hook_and_host_and_journaled(self):
+        """pre-pilot-cleanup, from #84's verification: on 029d27c7e1 ``query_digest`` raised on a lone surrogate (what
+        a JSON escape of U+D800 decodes to), in the hook (which then blocked with no decision) and in the host after
+        the run, which lost the call's lookups. Both now digest with ``query_guard.utf8`` (``surrogatepass``)."""
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        claude = self.stand_in("lone", lookups=[["WebSearch", {"query": LONE_QUERY}]])
+        [candidate] = thread.propose(self.provider(kit, thread, claude, max_calls=1))
+        digest = hashlib.sha256(LONE_QUERY.encode("utf-8", "surrogatepass")).hexdigest()
+        self.assertEqual(query_guard.query_digest({"query": LONE_QUERY}), digest, "the hook's digest")
+        [fact] = self.lookup_facts(thread)
+        self.assertEqual((fact["value"]["tool"], fact["value"]["query_digest"], fact["value"]["query_chars"],
+                          fact["value"]["guard"], fact["value"]["ok"]),
+                         ("WebSearch", digest, len(LONE_QUERY), "pass", True),
+                         "journaled, and matched to the hook's verified decision by the same digest")
+        [run] = self.runs("lone")
+        self.assertEqual([hook.get("passed") for hook in run["hooks"]], [True], "the hook judged it and let it pass")
+        self.assertEqual(candidate.signal["tool_usage"]["web_search"], 1)
+        self.assertEqual(validate_events(thread.history(), "claude-code"), [])
+
+
 class GitHitsAB(ClaudeCodeCase):
     def test_two_arms_differ_only_in_the_mcp_config_flags(self):
         kit = self.kit()
@@ -742,6 +765,68 @@ class Version(ClaudeCodeCase):
         provider = ClaudeCodeProvider(kit.repo, bare=True, executable=self.stand_in("floor", version="2.1.295 (Claude Code)"))
         self.assertEqual(provider.version, "2.1.295")
         self.assertEqual(self.runs("floor"), [], "--version is answered before any call runs")
+
+    def test_only_the_documented_version_form_is_read(self):
+        """pre-pilot-cleanup, from #84's verification: 029d27c7e1 took the first N.N.N anywhere in the output, so a
+        banner line before the version lent its own number (9.9.9 passed a 2.1.294 Claude Code)."""
+        kit = self.kit()
+        for printed in ("Update available: 9.9.9\n2.1.294 (Claude Code)", "Welcome to Claude Code\n2.1.309 (Claude Code)",
+                        "2.1.309 (Claude Code)\nnotice: 3.0.0 is out", "2.1.309", "v2.1.309 (Claude Code)"):
+            with self.assertRaises(Rejected) as caught:
+                ClaudeCodeProvider(kit.repo, bare=True, executable=self.stand_in("banner", version=printed))
+            self.assertEqual(caught.exception.code, "invalid_provider", printed)
+            self.assertIn("could not read Claude Code's version", caught.exception.detail, printed)
+        provider = ClaudeCodeProvider(kit.repo, bare=True, executable=self.stand_in("form", version="2.1.309 (Claude Code)  "))
+        self.assertEqual(provider.version, "2.1.309", "surrounding whitespace is not a second line")
+        self.assertEqual(version_tuple("2.1.295 (Claude Code)\n"), (2, 1, 295))
+        self.assertIsNone(version_tuple("banner\n2.1.295 (Claude Code)"))
+
+
+class CodeToolsWithMcp(ClaudeCodeCase):
+    """pre-pilot-cleanup, the owner-lead decision on #84's open question: the query guard's MAC key is in Claude Code's
+    environment, which every child inherits, the GitHits server process among them, and a code-running tool can read
+    it. So with ``--mcp-config`` naming any MCP server, ``Bash``, ``PowerShell`` (the code-running tools
+    ``--restricted``'s help names) are refused when the provider is built, unless the operator overrides. On
+    029d27c7e1 such a provider was built without a word."""
+
+    def mcp_file(self, name, servers):
+        path = self.root.parent / name
+        path.write_text(json.dumps({"mcpServers": servers}) if servers is not None else "{not json", encoding="utf-8")
+        return path
+
+    def test_a_code_running_tool_beside_an_mcp_server_is_refused_and_says_why(self):
+        kit = self.kit()
+        githits = self.mcp_file("githits.json", {"githits": {"command": "githits-stand-in"}})
+        unreadable = self.mcp_file("broken.json", None)
+        for config, tools in ((githits, ["Read", "Bash"]), (githits, ["Read", "PowerShell"]),
+                              (githits, ["Edit", "Bash(git log *)"]), (githits, ["Read", "bash", "mcp__githits"]),
+                              (unreadable, ["Read", "Bash"])):
+            with self.assertRaises(Rejected) as caught:
+                ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config, allowed_tools=tools)
+            self.assertEqual(caught.exception.code, "invalid_provider", tools)
+            for words in ("decision-signing key", "Claude Code's environment", "every child", "--allow-code-tools-with-mcp"):
+                self.assertIn(words, caught.exception.detail, tools)
+        self.assertEqual(CODE_TOOLS, ("Bash", "PowerShell"))
+        # No server named, or no code-running tool: built as before.
+        for config, tools in ((None, ["Read", "Bash"]), (self.mcp_file("empty.json", {}), ["Read", "Bash"]),
+                              (githits, ["Read", "Edit", "WebFetch", "mcp__githits"])):
+            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config, allowed_tools=tools)
+
+    def test_the_override_builds_it_and_is_recorded_in_signal_guard(self):
+        kit = self.kit()
+        githits = self.mcp_file("githits.json", {"githits": {"command": "githits-stand-in"}})
+        claude = self.stand_in("override")
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        provider = self.provider(kit, thread, claude, bare=True, mcp_config=githits, max_calls=1,
+                                 allowed_tools=["Read", "Edit", "Bash", "mcp__githits"], allow_code_tools_with_mcp=True)
+        [candidate] = thread.propose(provider)
+        self.assertIs(candidate.signal["guard"]["allow_code_tools_with_mcp"], True)
+        self.assertEqual(candidate.signal["guard"]["policy_digest"], POLICY_DIGEST, "policy.json itself is unchanged")
+        [run] = self.runs("override")
+        self.assertEqual(run["argv"][run["argv"].index("--tools") + 1], "Read,Edit,Bash")
+        other = kit.start("Add a CSV export (no override)", paths=["src/", "tests/"])
+        [plain] = other.propose(self.provider(kit, other, claude, bare=True, max_calls=1))
+        self.assertNotIn("allow_code_tools_with_mcp", plain.signal["guard"], "recorded only when the operator overrides")
 
 
 class StreamParsing(unittest.TestCase):
@@ -813,6 +898,27 @@ class CommandLine(ClaudeCodeCase):
                          {**policy, "policy_digest": hashlib.sha256(json.dumps(policy).encode()).hexdigest()})
         lookups = [e["body"]["value"]["guard"] for e in events if e.get("kind") == "observed" and e["body"]["key"] == LOOKUP]
         self.assertEqual(lookups, ["pass", "pass"], "the CLI's lookups reach the journal without a callback")
+
+    def test_the_code_tools_refusal_and_its_override_from_the_terminal(self):
+        self.assertEqual(self.run_cli("init")[0], 0)
+        self.assertEqual(self.run_cli("start", "Add a CSV export for report rows", "--paths", "src", "tests")[0], 0)
+        config = self.root.parent / "githits.json"
+        config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
+        env = {BIN_ENV: " ".join(self.stand_in("cli-code"))}
+        flags = ("propose", "--claude-code", "--trusted-tree", "--max-calls", "1", "--mcp-config", str(config),
+                 "--allowed-tools", "Read,Edit,Bash,mcp__githits")
+        code, _, err = self.run_cli(*flags, env=env)
+        self.assertEqual(code, 2)
+        self.assertIn("invalid_provider", err)
+        self.assertIn("--allow-code-tools-with-mcp", err)
+        self.assertEqual(self.runs("cli-code"), [], "refused before anything ran")
+        code, out, err = self.run_cli(*flags, "--allow-code-tools-with-mcp", env=env)
+        self.assertEqual(code, 0, out + err)
+        exported = self.root.parent / "cli-code-export.json"
+        self.assertEqual(self.run_cli("export", "--out", str(exported))[0], 0)
+        events = json.loads(exported.read_text(encoding="utf-8"))["events"]
+        [registered] = [e["body"] for e in events if e.get("kind") == "candidate_registered"]
+        self.assertIs(registered["signal"]["guard"]["allow_code_tools_with_mcp"], True)
 
 
 if __name__ == "__main__":

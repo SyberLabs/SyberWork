@@ -164,6 +164,10 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--allowed-tools", metavar="LIST",
                          help="for --claude-code: tools allowed without a prompt, comma separated "
                               "(default Read,Edit,Write,Glob,Grep)")
+    propose.add_argument("--allow-code-tools-with-mcp", action="store_true",
+                         help="for --claude-code: allow Bash or PowerShell in --allowed-tools although --mcp-config "
+                              "names an MCP server (refused otherwise: the guard's key is in Claude Code's "
+                              "environment); recorded in signal.guard")
     propose.add_argument("--max-turns", type=int, help="for --claude-code: claude --max-turns")
     propose.add_argument("--lane", choices=("api", "subscription_local", "seat_team_enterprise", "provider_3p"),
                          help="for --claude-code: the credential lane (default api with --bare, else subscription_local)")
@@ -514,7 +518,8 @@ def _run(kit: Kit, args) -> int:
                                           allowed_tools=parse_tools(args.allowed_tools) if args.allowed_tools else None,
                                           name=args.name or "claude-code", revision=args.revision,
                                           max_calls=args.max_calls, guard_max_lines=args.guard_max_lines,
-                                          guard_max_chars=args.guard_max_chars)
+                                          guard_max_chars=args.guard_max_chars,
+                                          allow_code_tools_with_mcp=args.allow_code_tools_with_mcp)
             found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(split_command(args.provider_command), name=args.name or "command", revision=args.revision,

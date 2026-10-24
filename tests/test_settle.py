@@ -351,6 +351,11 @@ class Hardened(SettleCase):
             "review user is a list": lambda: review.update({"user": ["bob"]}),
             "review state is a number": lambda: review.update({"state": 5}),
             "review id is true": lambda: review.update({"id": True}),
+            # pre-pilot-cleanup, from #81's verification: ``re.match`` with ``$`` accepted a trailing newline.
+            "merge sha has a trailing newline": lambda: good.update({"merge_commit_sha": "a" * 40 + "\n"}),
+            "merged_by login has a trailing newline": lambda: good.update({"merged_by": {"login": "carol\n"}}),
+            "review login has a trailing newline": lambda: review.update({"user": {"login": "bob\n"}}),
+            "merged_at has a trailing newline": lambda: good.update({"merged_at": saved["merged_at"] + "\n"}),
         }
         saved, saved_review = json.loads(json.dumps(good)), json.loads(json.dumps(review))
         for why, break_it in shapes.items():

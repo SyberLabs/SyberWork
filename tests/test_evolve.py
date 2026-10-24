@@ -119,7 +119,7 @@ class Evolution(unittest.TestCase):
         self.assertLessEqual(search["evaluations"], 5)
         self.assertEqual(search["stopped"], "completed")
         self.assertEqual((len(found), search["evaluations"]), (4, 5), "the base took one evaluation; the fill stopped at four")
-        # The thread's budget counts candidate evaluations (spec/GAPS.md 45), so one evaluation is left to a second
+        # The thread's budget counts candidate evaluations (spec/GAPS.md 46), so one evaluation is left to a second
         # search: it reuses the base record and makes one child, the fifth candidate, which fills max_candidates, so
         # no evaluation is bought for it (as for any child that leaves no room). Then five candidates refuse a third.
         again = EvolutionaryProvider(RuleMutator(), population=4, generations=50)

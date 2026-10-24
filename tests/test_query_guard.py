@@ -5,6 +5,7 @@ exactly as the settings document names it, write a ``PreToolUse`` input on its s
 code, its output and the decision it leaves beside itself.
 """
 
+import hashlib
 import json
 import os
 import stat
@@ -180,6 +181,19 @@ class Process(unittest.TestCase):
         self.assertFalse(guard.authentic(decision, "other" * 8), "and only the call's key verifies it")
         written = b"".join(p.read_bytes() for p in self.dir.rglob("*") if p.is_file())
         self.assertNotIn(KEY.encode(), written, "the key is in the hook's environment, never in a file beside it")
+
+    def test_a_lone_surrogate_is_judged_and_recorded_under_the_hosts_digest(self):
+        """pre-pilot-cleanup, from #84's verification: on 029d27c7e1 the hook could not digest a query holding a lone
+        surrogate (a JSON escape of U+DC00 decodes to one), so it blocked with guard_error and recorded nothing."""
+        query = "zq84 python csv " + chr(0xDC00) + " sniff dialect"
+        self.assertEqual(guard.query_digest({"query": query}),
+                         hashlib.sha256(query.encode("utf-8", "surrogatepass")).hexdigest())
+        self.assertEqual(guard.utf8("plain text"), b"plain text", "valid text encodes as before")
+        done = self.run_hook(self.call("WebSearch", {"query": query}))
+        self.assertEqual((done.returncode, done.stderr), (0, b""))
+        [decision] = self.decisions()
+        self.assertEqual((decision["rule"], decision["query_digest"]), ("pass", guard.query_digest({"query": query})))
+        self.assertTrue(guard.authentic(decision, KEY))
 
     def test_a_guard_that_cannot_judge_blocks(self):
         done = self.run_hook(b"not json")
