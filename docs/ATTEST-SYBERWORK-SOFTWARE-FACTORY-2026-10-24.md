@@ -64,7 +64,7 @@ The `sdk.syberlabs.space/v0alpha1` event schema enumerates existing event kinds 
 
 ## Kane Factory receipt-to-reconcile loop (priority addendum)
 
-The MVP handoff is **Attest authority gate → `.attest/receipts/<case>.json` (`attest.receipt/v0`) → SyberWork observation bridge (`verified: false`) → destination-verified reconcile**. This is a proposed adapter contract, not a claim that Attest or the bridge already implements it.
+The MVP handoff is **Attest authority gate → `<attest_home>/receipts/<case_id>.json` (`attest.receipt/v0`) → SyberWork observation bridge (`verified: false`) → destination-verified reconcile**. Attest’s `loop._write_receipt` owns the receipt path. This is a proposed adapter contract, not a claim that Attest or the bridge already implements it.
 
 1. **Authority gate first.** Attest evaluates the pinned protected requirements and approved change record. Ambiguous or missing authority stops before repair; a receipt records the authority references and outcome, but never grants SyberWork admission or approval.
 2. **Receipt artifact.** Write one case-scoped JSON receipt with protocol `attest.receipt/v0`, case/contract/policy and repository/application identities, exact input and proposed-output digests, compilation completeness, authority references, Kane run/evidence-pack digests, per-claim results, and proposal identity. The case path component must be a host-issued safe ID; the filename is not a trust boundary. SyberWork validates schema, case binding, and artifact digest on ingestion.
