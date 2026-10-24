@@ -17,6 +17,8 @@
     syberlabs settle [--thread ID]             # record merges, closes and reviews of the pull requests opened
     syberlabs note --intervention message --note "asked the agent to split the PR"
     syberlabs review --record --verdict pass --reviewer NAME --revision COMMIT
+    syberlabs experiment label --name githits-pilot --item ITEM-14 --arm on --tag needs_lookup
+    syberlabs experiment report --name githits-pilot [--json|--csv|--markdown]   # the arms compared, from the journal
 
 The current thread is remembered in ``.syberlabs/current``. Every command
 reads the journal fresh, so a thread can be resumed from any terminal.
@@ -257,6 +259,35 @@ def main(argv: list[str] | None = None) -> int:
     review.add_argument("--revision", help="the commit or revision reviewed")
     review.add_argument("--findings-high", type=int)
     review.add_argument("--url", help="the verification comment (https)")
+    trial = commands.add_parser("experiment", help="label threads into the arms of an experiment and compare the arms, "
+                                                   "from the journal (docs/EXPERIMENTS.md)")
+    steps = trial.add_subparsers(dest="experiment_command", required=True)
+    tagging = steps.add_parser("label", help="put the thread in one arm of an experiment; write it before the first "
+                                             "candidate")
+    tagging.add_argument("--name", required=True, help="the experiment, for example githits-pilot")
+    tagging.add_argument("--item", required=True, help="the work item; its threads in each arm are compared")
+    tagging.add_argument("--arm", required=True, help="the arm this thread ran in, for example off or on")
+    tagging.add_argument("--tag", action="append", default=[], help="a group to report separately, for example "
+                                                                    "needs_lookup or routine (repeatable)")
+    comparing = steps.add_parser("report", help="compare the treatment arm with the baseline over the items that ran in "
+                                                "both")
+    comparing.add_argument("--name", required=True)
+    comparing.add_argument("--baseline", default="off")
+    comparing.add_argument("--treatment", default="on")
+    comparing.add_argument("--server", default="githits",
+                           help="the MCP server whose recorded connection must match each arm; none to skip that check")
+    comparing.add_argument("--items", metavar="FILE",
+                           help="the item list registered before the first run, one 'ITEM-ID [tag ...]' per line: items "
+                                "outside it, or with other tags, are excluded, and listed items that never ran are named")
+    comparing.add_argument("--delivered", choices=("accept", "review"), default="accept",
+                           help="what counts as delivered in the rule: the promotion succeeded (accept), or it succeeded "
+                                "and a review of the accepted commit passed (review, the blind-review pilot)")
+    layout = comparing.add_mutually_exclusive_group()
+    layout.add_argument("--json", action="store_true", help="every item, its checks and values, and the comparisons")
+    layout.add_argument("--csv", action="store_true", help="one row per item")
+    layout.add_argument("--markdown", action="store_true", help="the comparison as a table for a write-up")
+    comparing.add_argument("--from-export", dest="exports", nargs="+", metavar="FILE",
+                           help="read thread records written by syberlabs export instead of this home's journal")
     commands.add_parser("memory", help="what is stored, why, and how to remove it")
     inspect = commands.add_parser("inspect", help="read-only local web inspector for threads, lineage, diffs, and history")
     inspect.add_argument("--port", type=int, default=0)
@@ -276,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
             return _verify(args)  # no Kit: works outside any repository and has none of Kit.local's side effects
         if args.command == "metrics" and args.exports:
             return _metrics(args, None)  # exported records only: no Kit, no repository
+        if args.command == "experiment" and getattr(args, "exports", None):
+            return _experiment(args, None)
         kit = _kit(args)
         try:
             return _run(kit, args)
@@ -309,11 +342,12 @@ def _verify(args) -> int:
     return 0 if report.passed else 1
 
 
-def _metrics(args, kit: Kit | None) -> int:
-    """``syberlabs metrics``: fold the journal (or exported records) into work items; print, and check if asked."""
+def _records(exports, kit: Kit | None, verify: bool = False) -> tuple[list[dict], dict]:
+    """The events and contracts to fold: exported thread records when there is no Kit, else this home's journal.
+    ``verify`` refuses an export whose hash chain does not verify, so an edited record is not counted."""
     events, contracts, seen = [], {}, set()
     if kit is None:
-        for path in args.exports:
+        for path in exports:
             try:
                 record = json.loads(Path(path).read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
@@ -322,6 +356,20 @@ def _metrics(args, kit: Kit | None) -> int:
             if not isinstance(found, list) or not all(
                     isinstance(e, dict) and {"case_id", "seq", "kind", "body", "hash"} <= set(e) for e in found):
                 raise Rejected("export_unreadable", f"{path}: no journal event list")
+            if verify:
+                from syberlabs.events import verify_events
+
+                threads: dict[str, list[dict]] = {}
+                for event in found:
+                    threads.setdefault(event["case_id"], []).append(event)
+                for case_id, chain in threads.items():
+                    try:
+                        valid = verify_events(sorted(chain, key=lambda e: e["seq"]))
+                    except (KeyError, TypeError, ValueError):
+                        valid = False
+                    if not valid:
+                        raise Rejected("export_unverified", f"{path}: the hash chain of thread {str(case_id)[:8]} does "
+                                       "not verify; export it again with syberlabs export")
             contract = record.get("contract") if isinstance(record, dict) else None
             if isinstance(contract, dict) and "id" in contract and "version" in contract:
                 contracts[(contract["id"], contract["version"])] = contract
@@ -333,7 +381,12 @@ def _metrics(args, kit: Kit | None) -> int:
             except Rejected:
                 continue  # an unreadable thread is the dashboard's to show, not a number here
         contracts = dict(kit.session.contracts)
-    events = [e for e in events if e["hash"] not in seen and not seen.add(e["hash"])]
+    return [e for e in events if e["hash"] not in seen and not seen.add(e["hash"])], contracts
+
+
+def _metrics(args, kit: Kit | None) -> int:
+    """``syberlabs metrics``: fold the journal (or exported records) into work items; print, and check if asked."""
+    events, contracts = _records(args.exports, kit)
     items = metrics.work_items(events, contracts)
     wanted = args.metrics_thread or args.thread
     if wanted:
@@ -381,6 +434,44 @@ def _intervened(thread, kit: Kit, kind: str, proposal: str | None = None) -> Non
     """A thread command run by a person (not the host, not the unattended runner) leaves a human_intervention fact."""
     if thread.is_person(kit.actor):
         thread.record_intervention(kind, by=kit.actor, proposal=proposal)
+
+
+def _experiment(args, kit: Kit | None) -> int:
+    """``syberlabs experiment report``: the experiment's items, their checks, and the arms compared."""
+    from syberlabs import experiment
+
+    events, contracts = _records(args.exports, kit, verify=True)
+    server = None if args.server.lower() == "none" else args.server
+    registered = None
+    if args.items:
+        try:
+            registered = experiment.parse_items(Path(args.items).read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise Rejected("items_unreadable", f"{args.items}: {exc.strerror or type(exc).__name__}") from None
+        except ValueError as exc:
+            raise Rejected("invalid_items", f"{args.items}: {exc}") from None
+    try:
+        found = experiment.report(events, args.name, contracts, baseline=args.baseline, treatment=args.treatment,
+                                  server=server, delivered_by=args.delivered, registered=registered,
+                                  forgotten=kit.journal.forgotten() if kit is not None else None)
+    except ValueError as exc:
+        raise Rejected("invalid_experiment", str(exc)) from None
+    if not found["rows"]:
+        print(f"no thread is labelled into experiment {args.name!r}; label one with: "
+              f"syberlabs experiment label --name {args.name} --item ITEM --arm {args.baseline}|{args.treatment}")
+        return 1
+    if args.json:
+        print(json.dumps(found, indent=2))
+    elif args.csv:
+        sys.stdout.write(experiment.to_csv(found))
+    elif args.markdown:
+        print(experiment.markdown(found))
+    else:
+        print(experiment.table(found))
+    if not found["items"]["compared"]:
+        print("no item ran in both arms without a check that excludes it, so nothing was compared", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _run(kit: Kit, args) -> int:
@@ -446,6 +537,8 @@ def _run(kit: Kit, args) -> int:
         for change in kit.contract_diff(args.a, args.b):
             print(f"{change['path']}: {json.dumps(change['before'])} -> {json.dumps(change['after'])}")
         return 0
+    if args.command == "experiment" and args.experiment_command == "report":
+        return _experiment(args, kit)
     if args.command == "metrics":
         return _metrics(args, kit)
     if args.command == "settle":
@@ -601,6 +694,11 @@ def _run(kit: Kit, args) -> int:
             if not found:
                 print("no review recorded; record one with: syberlabs review --record --verdict pass|fail "
                       "--reviewer NAME --revision COMMIT")
+    elif args.command == "experiment":
+        event = thread.record_experiment(args.name, item=args.item, arm=args.arm, by=kit.actor, tags=args.tag)
+        late = any(e["kind"] == "candidate_registered" for e in thread.history())
+        print(f"recorded experiment {args.name}: item {args.item}, arm {args.arm} ({event['hash'][:12]})"
+              + ("; written after this thread's first candidate, so the report marks it labelled_late" if late else ""))
     elif args.command == "publish":
         receipt = thread.publish(args.action)
         _print_receipt(receipt)
