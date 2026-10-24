@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--receipt",
         type=Path,
-        help="path to a .attest/receipts/<case>.json file (attest.receipt/v0)",
+        help="path to an <attest_home>/receipts/<case_id>.json file (attest.receipt/v0)",
     )
     args = parser.parse_args(argv)
     print(json.dumps(run(args.receipt), sort_keys=True))

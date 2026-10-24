@@ -26,7 +26,8 @@ Run from a checkout:
 PYTHONPATH=. python3 examples/attest_factory_slice.py
 
 # Import a receipt from a completed Attest run
-PYTHONPATH=. python3 examples/attest_factory_slice.py --receipt .attest/receipts/CASE_ID.json
+PYTHONPATH=. python3 examples/attest_factory_slice.py --receipt "$ATTEST_HOME/receipts/CASE_ID.json"
+PYTHONPATH=. python3 adapters/attest_observe.py "$ATTEST_HOME/receipts/CASE_ID.json"
 
 PYTHONPATH=. python3 -m unittest discover -s tests -p test_attest_bridge.py -v
 ```
@@ -35,7 +36,7 @@ The receipt-path option reads JSON already written by Attest; it does not start 
 
 ## Scope and limitations
 
-- Receipt files must have a top-level `schema` equal to `attest.receipt/v0`; the bridge preserves their JSON object but does not cryptographically validate receipt provenance or validate other Attest fields.
+- Attest writes receipt files at `<attest_home>/receipts/<case_id>.json`. Receipt files must use schema `attest.receipt/v0`; the bridge preserves their JSON object but does not cryptographically validate receipt provenance or turn the `authority`, `proposal`, `approval`, or `evidence` text into destination proof. Imported observations always have `verified: false`.
 - The adapter is read-only: the caller explicitly appends the returned observation to a case.
 - This change stays within the requested scaffold paths. The current setuptools configuration explicitly lists only `syberlabs` and `syberwork` and packages only `syberlabs/static/*`; the new subpackage and its JSON Schema are therefore source-checkout only until a separate package-configuration change includes them in built wheels.
 - This is an implemented/tested scaffold only—not a measurement, deployment, or externally validated integration. No coverage number is claimed.

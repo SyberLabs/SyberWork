@@ -1,0 +1,39 @@
+{
+  "schema": "attest.receipt/v0",
+  "case_id": "0123456789ab-claim-001-1",
+  "created_at": "2026-10-24T17:00:00-07:00",
+  "doc": {
+    "source": "factory-change.md",
+    "sha256_before": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sha256_after": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  },
+  "claim": {
+    "id": "claim-001",
+    "kind": "edit",
+    "lines": [12],
+    "text": "The fictional change is ready for review.",
+    "expects_before": "draft",
+    "expects_after": "reviewed"
+  },
+  "authority": {
+    "policy": "factory-mvp",
+    "decision": "allow",
+    "rule": "fictional-human-gate"
+  },
+  "proposal": {
+    "agent": "fixture-agent",
+    "patch_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "patch": "fictional patch text"
+  },
+  "approval": {
+    "actor": "fixture-approver",
+    "proposal_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  },
+  "evidence": {
+    "before": {"state": "draft"},
+    "after": {"state": "reviewed"}
+  },
+  "handoff": null,
+  "disposition": "approved",
+  "verified": false
+}

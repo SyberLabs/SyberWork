@@ -53,7 +53,12 @@
     "run_receipt": {
       "allOf": [
         {"$ref": "#/$defs/opaque_record"},
-        {"properties": {"kind": {"const": "run_receipt"}}}
+        {
+          "properties": {
+            "kind": {"const": "run_receipt"},
+            "payload": {"$ref": "#/$defs/attest_receipt_v0"}
+          }
+        }
       ]
     },
     "authority_decision": {
@@ -67,6 +72,58 @@
         {"$ref": "#/$defs/opaque_record"},
         {"properties": {"kind": {"const": "handoff_package"}}}
       ]
+    },
+    "attest_receipt_v0": {
+      "type": "object",
+      "required": [
+        "schema", "case_id", "created_at", "doc", "claim", "authority",
+        "proposal", "approval", "evidence", "handoff", "disposition", "verified"
+      ],
+      "properties": {
+        "schema": {"const": "attest.receipt/v0"},
+        "case_id": {"type": "string", "minLength": 1},
+        "created_at": {"type": "string", "minLength": 1},
+        "doc": {"$ref": "#/$defs/doc"},
+        "claim": {"$ref": "#/$defs/claim"},
+        "authority": {"$ref": "#/$defs/authority"},
+        "proposal": {"$ref": "#/$defs/proposal"},
+        "approval": {"$ref": "#/$defs/approval"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "handoff": {},
+        "disposition": {},
+        "verified": {"const": false}
+      },
+      "additionalProperties": true
+    },
+    "doc": {"$ref": "#/$defs/required_object_doc"},
+    "claim": {"$ref": "#/$defs/required_object_claim"},
+    "authority": {"$ref": "#/$defs/required_object_authority"},
+    "proposal": {"$ref": "#/$defs/required_object_proposal"},
+    "approval": {"$ref": "#/$defs/required_object_approval"},
+    "evidence": {"$ref": "#/$defs/required_object_evidence"},
+    "required_object_doc": {
+      "type": "object", "required": ["source", "sha256_before", "sha256_after"],
+      "properties": {"source": {}, "sha256_before": {}, "sha256_after": {}}, "additionalProperties": true
+    },
+    "required_object_claim": {
+      "type": "object", "required": ["id", "kind", "lines", "text", "expects_before", "expects_after"],
+      "properties": {"id": {}, "kind": {}, "lines": {}, "text": {}, "expects_before": {}, "expects_after": {}}, "additionalProperties": true
+    },
+    "required_object_authority": {
+      "type": "object", "required": ["policy", "decision", "rule"],
+      "properties": {"policy": {}, "decision": {}, "rule": {}}, "additionalProperties": true
+    },
+    "required_object_proposal": {
+      "type": "object", "required": ["agent", "patch_sha256", "patch"],
+      "properties": {"agent": {}, "patch_sha256": {}, "patch": {}}, "additionalProperties": true
+    },
+    "required_object_approval": {
+      "type": "object", "required": ["actor", "proposal_sha256"],
+      "properties": {"actor": {}, "proposal_sha256": {}}, "additionalProperties": true
+    },
+    "required_object_evidence": {
+      "type": "object", "required": ["before", "after"],
+      "properties": {"before": {}, "after": {}}, "additionalProperties": true
     }
   }
 }

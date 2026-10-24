@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from syberlabs.attest_bridge.types import (
+    ATTEST_RECEIPT_SCHEMA,
     AttestRecord,
     AuthorityDecision,
     HandoffPackage,
@@ -15,7 +21,6 @@ from syberlabs.attest_bridge.types import (
 )
 
 _RECORD_TYPES = (RunReceipt, AuthorityDecision, HandoffPackage)
-ATTEST_RECEIPT_SCHEMA = "attest.receipt/v0"
 
 
 def record_to_observation_payload(
@@ -45,7 +50,7 @@ def record_to_observation_payload(
 def receipt_file_to_observation_payload(
     receipt_path: str | Path, *, actor: str
 ) -> dict[str, Any]:
-    """Read an Attest ``attest.receipt/v0`` JSON file as an unverified observation.
+    """Read an Attest ``<attest_home>/receipts/<case_id>.json`` as an unverified observation.
 
     The receipt remains opaque payload data. Its schema tag identifies the
     input format; it is not a signature check, authority grant, or destination
@@ -65,6 +70,20 @@ def receipt_file_to_observation_payload(
     )
 
 
+def main(argv: list[str] | None = None) -> int:
+    """Print the observation JSON for one Attest receipt file."""
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("receipt_path", type=Path, help="<attest_home>/receipts/<case_id>.json")
+    parser.add_argument("--actor", default="attest-importer", help="SyberWork observation actor")
+    args = parser.parse_args(argv)
+    try:
+        observation = receipt_file_to_observation_payload(args.receipt_path, actor=args.actor)
+    except (OSError, TypeError, ValueError) as exc:
+        parser.error(str(exc))
+    print(json.dumps(observation, sort_keys=True))
+    return 0
+
+
 def receipt_json_to_observation_payload(
     receipt_json: Mapping[str, Any], *, source_version: str, actor: str
 ) -> dict[str, Any]:
@@ -76,3 +95,7 @@ def receipt_json_to_observation_payload(
     return record_to_observation_payload(
         RunReceipt(receipt_json), source_version=source_version, actor=actor
     )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

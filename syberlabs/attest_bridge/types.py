@@ -1,8 +1,4 @@
-"""Opaque Attest records represented as ordinary SyberWork observations.
-
-These wrappers define the SyberWork bridge envelope, not Attest's wire schema.
-The source payload is preserved as JSON and never interpreted as authority.
-"""
+"""Opaque Attest records imported into SyberWork as observation data."""
 
 from __future__ import annotations
 
@@ -11,6 +7,30 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Mapping, TypeAlias
 
 JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
+
+ATTEST_RECEIPT_SCHEMA = "attest.receipt/v0"
+_RECEIPT_FIELDS = (
+    "schema",
+    "case_id",
+    "created_at",
+    "doc",
+    "claim",
+    "authority",
+    "proposal",
+    "approval",
+    "evidence",
+    "handoff",
+    "disposition",
+    "verified",
+)
+_RECEIPT_SECTION_FIELDS = {
+    "doc": ("source", "sha256_before", "sha256_after"),
+    "claim": ("id", "kind", "lines", "text", "expects_before", "expects_after"),
+    "authority": ("policy", "decision", "rule"),
+    "proposal": ("agent", "patch_sha256", "patch"),
+    "approval": ("actor", "proposal_sha256"),
+    "evidence": ("before", "after"),
+}
 
 
 def _json_value(value: Any) -> JSONValue:
@@ -33,7 +53,7 @@ def _json_object(value: Mapping[str, Any]) -> dict[str, JSONValue]:
     if not isinstance(value, Mapping):
         raise TypeError("Attest record payload must be a JSON object")
     copied = _json_value(value)
-    if not isinstance(copied, dict):  # keeps the return type and object-only contract explicit
+    if not isinstance(copied, dict):
         raise TypeError("Attest record payload must be a JSON object")
     return copied
 
@@ -56,10 +76,24 @@ class _AttestRecord:
 
 @dataclass(frozen=True)
 class RunReceipt(_AttestRecord):
-    """An Attest run receipt imported as evidence, not a verified effect result."""
+    """Attest receipt/v0 shape, kept opaque and never promoted to verified evidence."""
 
     kind: ClassVar[str] = "run_receipt"
     observation_key: ClassVar[str] = "attest.run_receipt"
+    schema_version: ClassVar[str] = ATTEST_RECEIPT_SCHEMA
+    top_level_fields: ClassVar[tuple[str, ...]] = _RECEIPT_FIELDS
+    section_fields: ClassVar[dict[str, tuple[str, ...]]] = _RECEIPT_SECTION_FIELDS
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        receipt = self.payload
+        # File imports enforce the v0 tag. Keep the JSON mapping opaque here so
+        # callers can preserve partial/historical records without granting them
+        # evidence status; any supplied schema/version claim must still match.
+        if "schema" in receipt and receipt["schema"] != self.schema_version:
+            raise ValueError(f"Attest receipt schema must be {self.schema_version}")
+        if "verified" in receipt and receipt["verified"] is not False:
+            raise ValueError("Attest receipt verified must be false")
 
 
 @dataclass(frozen=True)
@@ -72,7 +106,7 @@ class AuthorityDecision(_AttestRecord):
 
 @dataclass(frozen=True)
 class HandoffPackage(_AttestRecord):
-    """An Attest handoff package recorded as a proposal for a human/workflow."""
+    """An Attest handoff package recorded as proposal context for a human/workflow."""
 
     kind: ClassVar[str] = "handoff_package"
     observation_key: ClassVar[str] = "attest.handoff_package"
