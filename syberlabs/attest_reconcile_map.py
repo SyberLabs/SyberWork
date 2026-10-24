@@ -6,9 +6,15 @@ are never destination proof and this module never licenses reconciliation.
 
 
 _CLASSIFICATIONS = {
+    # The file schema is an identifier, not destination-write authority.
+    "attest.receipt/v0": "observation",
+    "receipt": "observation",
     "RunReceipt": "observation",
+    "run_receipt": "observation",
     "AuthorityDecision": "observation",
+    "authority_decision": "observation",
     "HandoffPackage": "handoff",
+    "handoff_package": "handoff",
 }
 
 
