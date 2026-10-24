@@ -1,0 +1,62 @@
+{
+  "schema": "attest.receipt/v0",
+  "case_id": "a1812ca4f8bd-counter.promise-2",
+  "created_at": "2026-10-24T22:26:56+00:00",
+  "doc": {
+    "source": "demo/counter.md",
+    "sha256_before": "a1812ca4f8bd68df897b1eb86705648e0000b366000000000000000000000000",
+    "sha256_after": null
+  },
+  "claim": {
+    "id": "counter.promise",
+    "kind": "browser",
+    "lines": [10, 10],
+    "text": "increments by one",
+    "expects_before": {"label": "1"},
+    "expects_after": {"label": "2"}
+  },
+  "authority": {
+    "policy": "demo/attest.policy.yaml",
+    "decision": "implementation_required",
+    "rule": "the application must change, not the doc"
+  },
+  "proposal": {
+    "agent": "worker",
+    "patch_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "patch": "diff --git a/app.js b/app.js\n--- a/app.js\n+++ b/app.js\n@@ -1 +1 @@\n-const count = 2;\n+const count = 1;"
+  },
+  "approval": {
+    "actor": "policy:demo/attest.policy.yaml",
+    "proposal_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "evidence": {
+    "before": {
+      "status": "failed",
+      "observed": {"label": "2"},
+      "note": "label showed 2",
+      "screenshot": null
+    },
+    "after": {
+      "status": "proven",
+      "observed": {"label": "1"},
+      "note": "Kane re-checked the candidate application",
+      "screenshot": null
+    }
+  },
+  "handoff": null,
+  "disposition": "implemented",
+  "verified": false,
+  "ticket": {
+    "path": "demo/tickets/a1812ca4f8bd-counter.promise-2.json",
+    "title": "Missing capability: counter increments by one"
+  },
+  "app": {
+    "original": "demo/app",
+    "candidate": "demo/candidate",
+    "patch_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "worker": {
+    "type": "openai",
+    "model": "gpt-5-mini"
+  }
+}
