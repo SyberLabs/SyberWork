@@ -64,6 +64,10 @@ from tests.test_build_thread import GOOD, REPORT, TEST_REPORT, Crash, git
 EXAMPLES = int(os.environ.get("SYBERLABS_JOURNAL_EXAMPLES", "30"))
 THREAD_EXAMPLES = int(os.environ.get("SYBERLABS_THREAD_EXAMPLES", "8"))
 MAX_OPERATIONS = 40
+# The profile keeps the deadline off for every Hypothesis test in this process, decorated or not;
+# the explicit settings below inherit from it.
+settings.register_profile("syberlabs", deadline=None)
+settings.load_profile("syberlabs")
 COMMON = dict(deadline=None, database=None, derandomize=bool(os.environ.get("CI")),
               suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
 PROPERTY = settings(max_examples=EXAMPLES, **COMMON)
@@ -261,17 +265,33 @@ class JournalDriver(kernel.Driver):
         self.reopen()
         self.executor.status_mode = "truth"
         self.clock.now += SETTLE + 1
-        outcomes = {}
-        for claim in self.open_claims():
-            proposal_id = claim["body"]["proposal_id"]
+        pending = [claim["body"]["proposal_id"] for claim in self.open_claims()]
+        outcomes: dict[str, str | None] = {}
+        while True:
             try:
-                self.session.reconcile(self.case, proposal_id, "bob", ["manager"])
-                outcomes[proposal_id] = self.history()[-1]["kind"]
-                self.settlements.append((proposal_id, "truth", outcomes[proposal_id]))
-            except Rejected as exc:
-                outcomes[proposal_id] = None
-                self.refusals.append(("recover", exc.code))
-        return outcomes
+                for proposal_id in pending:
+                    if proposal_id in outcomes:
+                        continue
+                    try:
+                        self.session.reconcile(self.case, proposal_id, "bob", ["manager"])
+                        outcomes[proposal_id] = self.history()[-1]["kind"]
+                        self.settlements.append((proposal_id, "truth", outcomes[proposal_id]))
+                    except Rejected as exc:
+                        outcomes[proposal_id] = None
+                        self.refusals.append(("recover", exc.code))
+                return outcomes
+            except Crash:
+                # The death schedule is still armed: the recovering process died right after its
+                # settlement was appended. That append is durable, so the next process reads the
+                # settlement back instead of reconciling the claim again, then carries on.
+                self.crashes += 1
+                self.reopen()
+                for event in self.history():
+                    proposal_id = event["body"].get("proposal_id")
+                    if proposal_id in pending and proposal_id not in outcomes and (
+                            event["kind"] in TERMINAL or verified_reconciliation(event)):
+                        outcomes[proposal_id] = event["kind"]
+                        self.settlements.append((proposal_id, "truth", event["kind"]))
 
 
 # ---------------------------------------------------------------------------
