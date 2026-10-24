@@ -98,7 +98,7 @@ To land an accepted change on `main`, merge `syberlabs/<thread>` yourself. Setti
 
 ## Metrics
 
-`syberlabs metrics` folds every thread's events into one row of nine per-work-item metrics (cost with its basis, turns, agent time, fix rounds, web and GitHits lookups, delivered, review rejections, human interventions), each with the event hashes it came from and `unknown` where the record has no fact; `--json`, `--csv`, `--since`, `--check`, and `--from-export` for records written by `export`. `syberlabs note --intervention KIND` and `syberlabs review --record` write the facts a person's act or a verifier's verdict leave; `accept`, `approve` and `check --rerun` by a person write one automatically. See [METRICS.md](METRICS.md).
+`syberlabs metrics` folds every thread's events into one row of nine per-work-item metrics (cost with its basis, turns, agent time, fix rounds, web and GitHits lookups, delivered, review rejections, human interventions), each with the event hashes it came from and `unknown` where the record has no fact; `--json`, `--csv`, `--since`, `--check`, and `--from-export` for records written by `export`. `syberlabs note --intervention KIND` and `syberlabs review --record` write the facts a person's act or a verifier's verdict leave; `accept`, `approve` and `check --rerun` by a person write one automatically; `syberlabs settle` records the merge, the closing and the reviews of each pull request a thread opened, which is what makes `delivered` and agent time known. See [METRICS.md](METRICS.md).
 
 ## Inspector
 
@@ -136,6 +136,15 @@ The class is recorded at case creation, inside the hash chain, not written by ha
 | `intervention` | Reads a metric as the baseline and leaves the claim open on purpose (`effect_unknown`, `window_open`). Refusals before the baseline are no-writes. | Re-reads the metric after `window_seconds`: `applied` when it moved as predeclared, `not_applied` when it did not. See [OUTCOMES.md](OUTCOMES.md). |
 
 A transport failure is `unknown`, and `syberlabs recover` asks the destination. A remote that does not show the write is `absent`. That becomes `not_applied`, which frees the action for a fresh proposal, only after the action's `settle_seconds` (120 by default). Inside that window the effect stays pending, because a remote that has not shown a write yet is not proof it never will.
+
+### What became of the pull request: `syberlabs settle`
+
+Opening a pull request is the thread's last effect; merging it is a person's act on GitHub that the journal does not see. `syberlabs settle [--thread ID]` asks. One pass visits every thread whose `github_pull_request` effect succeeded (or was reconciled from GitHub), reads `GET /repos/{repository}/pulls/{number}` and its `/reviews` with the installed action's `api`, `repository`, `branch` and `token_env` (the same token the action opened it with), and records what is new as verified host observations: `pr_merged` once when it was merged, `pr_closed` when it was closed without a merge, and one `pr_review` per submitted review. Nothing is proposed or admitted; these are facts, written through the same `observe` route as `accepted` and `unattended`. A pull request whose merge is recorded is not asked about again. A non-200 answer, a network failure, an answer that is not that thread's pull request (its head must be the thread's branch) or a token that is not set records nothing for that pull request and prints `THREAD #N: <why>; nothing recorded` on stderr, exit 1; otherwise one line per pull request on stdout (`7523b0f2 #79 merged: pr_review 4123 approved, pr_merged 2026-10-24T09:12:00Z`), exit 0. The token is read for the request only and is never written or printed. `syberlabs run` runs the same pass once at the end of every pass when an installed pull-request action's `token_env` is set in its environment; it is not a step and does not change the exit code. The facts' shapes and what the metrics make of them are in [METRICS.md](METRICS.md), section 3.
+
+```
+GITHUB_TOKEN="$(gh auth token)" syberlabs settle               # every published thread, one pass
+GITHUB_TOKEN="$(gh auth token)" syberlabs run --interval 300   # steps, then a settlement pass, every five minutes
+```
 
 ## Durability and recovery
 

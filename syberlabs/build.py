@@ -1442,6 +1442,9 @@ class Runner:
     - a candidate is accepted and ``publish=True``: the first publishing action the contract lists
       whose prerequisite effect is already recorded; otherwise nothing.
 
+    After the threads, when an installed ``github_pull_request`` action's token is set, the pass runs the
+    settlement poll once (``syberlabs.settle``), which records what became of the pull requests opened.
+
     The runner never proposes: generation is another station's job. Every step is a kernel
     operation whose idempotence comes from the record (a pending proposal is reused, a claimed
     effect is reconciled, not repeated), so a runner killed anywhere leaves a valid chain and the
@@ -1510,7 +1513,21 @@ class Runner:
                 steps.append(self._emit(self._take(thread, step, target)))
             except Rejected as exc:
                 steps.append(self._emit(Step(thread.id, step, target, "refused", exc.code)))
+        self._settle()
         return steps
+
+    def _settle(self) -> None:
+        """Once per pass, when an installed pull-request action's token is in the environment: the settlement
+        poll (``syberlabs.settle``) records merges, closes and reviews of the pull requests threads opened. It
+        is not a step: it proposes nothing, and a failed poll records nothing and is reported on stderr."""
+        from syberlabs import settle
+        if not settle.tokens_available(self.kit):
+            return
+        for found in settle.settle(self.kit, thread=self.only):
+            if found.error:
+                print(found.line, file=sys.stderr)
+            else:
+                self.log(found.line)
 
     def _emit(self, step: Step) -> Step:
         self.log(step.line)
