@@ -29,6 +29,10 @@ Derivations (``docs/METRICS.md`` has the full table):
 - ``delivered``: true with a ``pr_merged`` fact; false when no pull request was opened, the thread was
   cancelled, or a ``pr_closed`` fact says the pull request was closed unmerged; unknown while a pull request is
   open and no merge is in the record. ``opened`` is separate. ``syberlabs.settle`` writes the ``pr_*`` facts.
+  every registration declares them. They count attempted lookups, blocked ones included; beside them
+  ``lookups_blocked`` counts the host's ``lookup`` facts whose query guard decision is a rule (not ``pass``).
+- ``delivered``: true with a ``pr_merged`` fact; false when no pull request was opened or the thread was
+  cancelled; unknown while a pull request is open and no merge is in the record. ``opened`` is separate.
 - ``review_rejections``: critic checks that did not pass or whose observation counts a high finding, plus
   ``review`` facts with verdict ``fail`` and ``pr_review`` facts with state ``changes_requested``.
 - ``human_interventions``: ``human_intervention`` facts, plus ``proposed``, ``approved`` and ``case_cancelled``
@@ -60,6 +64,7 @@ REVIEW = "review"
 PR_MERGED = "pr_merged"            # written by the settlement poll, syberlabs.settle
 PR_CLOSED = "pr_closed"            # the same poll: closed without a merge
 PR_REVIEW = "pr_review"
+LOOKUP = "lookup"                  # claude_code.LOOKUP; its ``guard`` is query_guard's decision
 INTERVENTION_KINDS = ("message", "commit", "approve", "edit", "override")
 VERDICTS = ("pass", "fail")
 MAX_NOTE = 500
@@ -113,9 +118,10 @@ class WorkItemMetrics:
     human_interventions: Metric
     index: Mapping[str, tuple[int, str]] = field(default_factory=dict, repr=False, compare=False)
     lane: str | None = None
+    lookups_blocked: Metric = field(default_factory=lambda: Metric(None, (), "not computed"))
 
     def metric(self, name: str) -> Metric:
-        if name not in METRICS + ("opened",):
+        if name not in METRICS + ("opened", "lookups_blocked"):
             raise KeyError(name)
         return getattr(self, name)
 
@@ -128,6 +134,7 @@ class WorkItemMetrics:
                  "pull_request": self.pull_request, "cost_basis": self.cost_basis, "lane": self.lane,
                  "opened": self.opened.to_dict()}
         found.update({name: self.metric(name).to_dict() for name in METRICS})
+        found["lookups_blocked"] = self.lookups_blocked.to_dict()
         return found
 
 
@@ -353,6 +360,19 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
     web = lookups(("web_search", "web_fetch"), "web_search and web_fetch")
     githits = lookups(("githits",), "githits")
 
+    # Lookups the host's query guard blocked: ``lookup`` facts whose ``guard`` names a rule.
+    seen = [(e, f) for e, f in ((e, fact(e, LOOKUP)) for e in events) if f is not None]
+    if any(not isinstance(f.get("guard"), str) for _e, f in seen):
+        blocked = Metric(None, tuple(e["hash"] for e, f in seen if not isinstance(f.get("guard"), str)),
+                         "a lookup was recorded without a query guard decision")
+    elif seen:
+        hits = [e["hash"] for e, f in seen if f["guard"] not in ("pass", "unguarded")]
+        blocked = Metric(len(hits), tuple(hits), "lookup facts whose query guard decision is a rule")
+    elif web.value == 0 and githits.value == 0:
+        blocked = Metric(0, (), "no lookups")
+    else:
+        blocked = Metric(None, (), "no lookup facts in the record")
+
     # Review rejections: the critic in the record, then recorded verdicts.
     rejections = []
     for event in events:
@@ -390,7 +410,8 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
         unattended=runner is not None, cancelled=cancel is not None, pull_request=number, cost_basis=cost_basis, lane=lane,
         opened=opened, cost=cost, turns=turns, agent_time=agent_time, fix_rounds=fix_rounds, web_lookups=web,
         githits_lookups=githits, delivered=delivered, review_rejections=review_rejections,
-        human_interventions=interventions, index={e["hash"]: (e["seq"], e["kind"]) for e in events})
+        human_interventions=interventions, index={e["hash"]: (e["seq"], e["kind"]) for e in events},
+        lookups_blocked=blocked)
 
 
 def work_items(events: Iterable[dict], contracts: Mapping | None = None) -> list[WorkItemMetrics]:
