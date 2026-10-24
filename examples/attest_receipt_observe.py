@@ -17,7 +17,7 @@ RECEIPT_SCHEMA = "attest.receipt/v0"
 OBSERVATION_KEY = "attest_receipt"
 OBSERVATION_SOURCE = "attest"
 OBSERVATION_ACTOR = "attest-bridge"
-RECEIPT_FIELDS = {
+REQUIRED_RECEIPT_FIELDS = {
     "schema",
     "case_id",
     "created_at",
@@ -31,6 +31,7 @@ RECEIPT_FIELDS = {
     "disposition",
     "verified",
 }
+OPTIONAL_RECEIPT_FIELDS = {"ticket", "app", "worker"}
 
 
 def receipt_to_observation(receipt: Any) -> dict[str, Any]:
@@ -40,18 +41,43 @@ def receipt_to_observation(receipt: Any) -> dict[str, Any]:
     if receipt.get("schema") != RECEIPT_SCHEMA:
         raise ValueError(f"receipt schema must be {RECEIPT_SCHEMA}")
 
-    missing = RECEIPT_FIELDS - receipt.keys()
+    missing = REQUIRED_RECEIPT_FIELDS - receipt.keys()
     if missing:
         raise ValueError("receipt is missing required fields: " + ", ".join(sorted(missing)))
-    unexpected = receipt.keys() - RECEIPT_FIELDS
+    allowed_fields = REQUIRED_RECEIPT_FIELDS | OPTIONAL_RECEIPT_FIELDS
+    unexpected = receipt.keys() - allowed_fields
     if unexpected:
         raise ValueError("receipt has unexpected fields: " + ", ".join(sorted(unexpected)))
     if receipt["verified"] is not False:
         raise ValueError("receipt verified must be false")
 
+    value = receipt
+    if receipt["disposition"] == "implemented":
+        ticket = receipt.get("ticket")
+        app = receipt.get("app")
+        if not isinstance(ticket, dict) or not isinstance(ticket.get("title"), str) or not ticket["title"]:
+            raise ValueError("implemented receipt must include ticket.title")
+        if not isinstance(app, dict) or not isinstance(app.get("patch_sha256"), str) or not app["patch_sha256"]:
+            raise ValueError("implemented receipt must include app.patch_sha256")
+        value = dict(receipt)
+        value["implementation"] = {
+            "ticket_title": ticket["title"],
+            "app_patch_sha256": app["patch_sha256"],
+        }
+
+    evidence = receipt.get("evidence")
+    after = evidence.get("after") if isinstance(evidence, dict) else None
+    if isinstance(after, dict) and after.get("status") == "proven":
+        if value is receipt:
+            value = dict(receipt)
+        value["destination_verification"] = {
+            "status": "proven",
+            "method": "Kane re-check",
+        }
+
     return {
         "key": OBSERVATION_KEY,
-        "value": receipt,
+        "value": value,
         "source": OBSERVATION_SOURCE,
         "version": RECEIPT_SCHEMA,
         "actor": OBSERVATION_ACTOR,

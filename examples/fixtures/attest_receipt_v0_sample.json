@@ -4,7 +4,7 @@
   "created_at": "2026-10-24T22:25:56+00:00",
   "doc": {
     "source": "demo/counter.md",
-    "sha256_before": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sha256_before": "a1812ca4f8bd68df897b1eb86705648e0000b366000000000000000000000000",
     "sha256_after": null
   },
   "claim": {
@@ -12,21 +12,37 @@
     "kind": "browser",
     "lines": [10, 10],
     "text": "increments by one",
-    "expects_before": {
-      "label": "1"
-    },
-    "expects_after": {
-      "label": "2"
-    }
+    "expects_before": {"label": "1"},
+    "expects_after": {"label": "1"}
   },
   "authority": {
     "policy": "demo/attest.policy.yaml",
-    "decision": "authorized"
+    "decision": "doc_repair_denied",
+    "rule": "match: increments by one"
   },
-  "proposal": {},
-  "approval": {},
-  "evidence": [],
-  "handoff": {},
-  "disposition": "recorded",
+  "proposal": {
+    "agent": null,
+    "patch_sha256": null,
+    "patch": null
+  },
+  "approval": {
+    "actor": "policy:demo/attest.policy.yaml",
+    "proposal_sha256": null
+  },
+  "evidence": {
+    "before": {
+      "status": "failed",
+      "note": "label showed 2",
+      "screenshot": null
+    },
+    "after": null
+  },
+  "handoff": {
+    "claim": "counter.promise",
+    "doc_text": "increments by one",
+    "observed": {"note": "label showed 2"},
+    "instruction": "the application must change, not the doc"
+  },
+  "disposition": "handoff_implementation",
   "verified": false
 }
