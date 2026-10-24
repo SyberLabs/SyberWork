@@ -223,13 +223,7 @@ def files_to_diff(ticket: dict[str, Any], files: Any) -> str:
 def _openai_instructions(ticket: dict[str, Any]) -> str:
     files = ", ".join(sorted(ticket["app"]["files"]))
     return f"""Implement the missing capability with the smallest change in the existing style.
-The final deliverable consumed by Attest is ONLY a git-format unified diff with paths a/<path> and b/<path> relative to app.root ({ticket['app']['root']}). Do not include prose, Markdown fences, or the *** Begin Patch format.
-
-Use exactly this two-line unified-diff header pattern (the example path is relative to app.root):
---- a/app.js
-+++ b/app.js
-
-The Responses API requires structured output here: return complete file contents in the JSON schema supplied by the caller, only for changed or newly created files. Do not return diff text or commentary inside those file contents. SyberWork will generate the final unified diff locally with difflib; that diff must contain only Git-format patch data and a/ and b/ paths. Do not modify files outside the ticket's app.files set unless a new file is required for the smallest implementation. Existing files: {files}."""
+Return only complete contents for changed or newly created files, as objects with path and content in the structured output schema. Do not return partial snippets or prose outside that schema. Paths must be relative to app.root ({ticket['app']['root']}). For an existing file, provide its complete replacement contents. Include only files that need to change. Existing files: {files}."""
 
 
 def _response_text(response: dict[str, Any]) -> str:
@@ -367,27 +361,52 @@ def validate_git_diff(patch: str) -> None:
             raise DispatchError("worker stdout contains text outside the Git-format diff")
 
 
-def load_worker_config(path: Path) -> dict[str, Any]:
+def load_worker_config(path: Path, worker_name: str | None = None) -> dict[str, Any]:
     try:
         config = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, DispatchError) as exc:
         raise DispatchError(f"cannot read worker configuration from {path}") from exc
-    if not isinstance(config, dict) or not isinstance(config.get("default"), dict):
-        raise DispatchError("worker configuration must contain a default worker object")
-    worker = config["default"]
+    if not isinstance(config, dict):
+        raise DispatchError("worker configuration must be a JSON object")
+
+    if "workers" in config:
+        workers = config["workers"]
+        if not isinstance(workers, dict):
+            raise DispatchError("workers must be an object of named worker configurations")
+        default_name = _nonempty_string(config.get("default"), "default")
+        selected_name = worker_name or default_name
+        if selected_name not in workers:
+            raise DispatchError(f"worker {selected_name!r} is not configured")
+        worker = workers[selected_name]
+        worker_label = f"workers.{selected_name}"
+    else:
+        if worker_name not in (None, "default"):
+            raise DispatchError("named worker selection requires a workers object")
+        worker = config.get("default")
+        worker_label = "default"
+
+    if not isinstance(worker, dict):
+        raise DispatchError("selected worker configuration must be an object")
     worker_type = worker.get("type")
     if worker_type == "command":
-        command = _nonempty_string(worker.get("cmd"), "default.cmd")
+        command = worker.get("cmd")
         try:
-            argv = shlex.split(command)
+            if isinstance(command, str):
+                argv = shlex.split(_nonempty_string(command, f"{worker_label}.cmd"))
+            elif isinstance(command, list) and command and all(isinstance(arg, str) and arg for arg in command):
+                argv = command
+            else:
+                raise DispatchError(f"{worker_label}.cmd must be a command string or nonempty argument list")
         except ValueError as exc:
-            raise DispatchError(f"invalid default.cmd: {exc}") from exc
+            raise DispatchError(f"invalid {worker_label}.cmd: {exc}") from exc
         if not argv:
-            raise DispatchError("default.cmd must contain a command")
+            raise DispatchError(f"{worker_label}.cmd must contain a command")
+        config_dir = str(path.resolve().parent)
+        argv = [arg.replace("{python}", sys.executable).replace("{config_dir}", config_dir) for arg in argv]
         return {"type": "command", "argv": argv}
     if worker_type == "openai":
-        return {"type": "openai", "model": _nonempty_string(worker.get("model"), "default.model")}
-    raise DispatchError("default.type must be 'command' or 'openai'")
+        return {"type": "openai", "model": _nonempty_string(worker.get("model"), f"{worker_label}.model")}
+    raise DispatchError(f"{worker_label}.type must be 'command' or 'openai'")
 
 
 def command_worker(ticket_json: str, argv: list[str]) -> str:
@@ -422,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_WORKERS,
         help=f"worker configuration JSON (default: {DEFAULT_WORKERS})",
     )
+    parser.add_argument("--worker", help="select a named worker from the configuration")
     args = parser.parse_args(argv)
 
     try:
@@ -431,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"attest_dispatch: admitted case {ticket['case_id']}", file=sys.stderr)
         print(json.dumps(observation, ensure_ascii=False, sort_keys=True), file=sys.stderr)
 
-        worker = load_worker_config(args.workers)
+        worker = load_worker_config(args.workers, args.worker)
         if worker["type"] == "command":
             patch = command_worker(ticket_json, worker["argv"])
         else:

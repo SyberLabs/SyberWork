@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -80,6 +81,35 @@ class AttestDispatchExampleTests(unittest.TestCase):
         self.assertIn('"verified": false', completed.stderr)
         self.assertIn("admitted case case-90", completed.stderr)
 
+    def test_example_config_defaults_to_offline_command_and_selects_openai(self) -> None:
+        default = attest_dispatch.load_worker_config(attest_dispatch.DEFAULT_WORKERS)
+        self.assertEqual(default["type"], "command")
+        self.assertEqual(default["argv"][0], sys.executable)
+        self.assertTrue(Path(default["argv"][1]).is_file())
+
+        openai = attest_dispatch.load_worker_config(attest_dispatch.DEFAULT_WORKERS, "openai")
+        self.assertEqual(openai, {"type": "openai", "model": "gpt-5-mini"})
+
+    def test_default_example_worker_runs_without_an_openai_key(self) -> None:
+        environment = os.environ.copy()
+        environment.pop("OPENAI_API_KEY", None)
+        environment.pop("SYBERWORK_OPENAI_API_KEY", None)
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            input=json.dumps(sample_ticket()),
+            text=True,
+            capture_output=True,
+            cwd=REPOSITORY,
+            env=environment,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completed.stdout.startswith("diff --git a/app.js b/app.js\n"))
+        self.assertNotIn("attest_ticket", completed.stdout)
+        attest_dispatch.validate_git_diff(completed.stdout)
+        self.assertIn('"verified": false', completed.stderr)
+
     def test_malformed_ticket_fails_with_a_reason_on_stderr(self) -> None:
         ticket = sample_ticket()
         ticket["schema"] = "wrong/v0"
@@ -135,9 +165,12 @@ class AttestDispatchExampleTests(unittest.TestCase):
         self.assertEqual(request_body["model"], "gpt-5-mini")
         self.assertEqual(request_body["text"]["format"]["type"], "json_schema")
         instructions = request_body["input"][0]["content"]
-        self.assertIn("ONLY a git-format unified diff", instructions)
-        self.assertIn("--- a/app.js\n+++ b/app.js", instructions)
-        self.assertIn("Do not include prose, Markdown fences, or the *** Begin Patch format", instructions)
+        self.assertIn("complete contents", instructions)
+        self.assertIn("structured output schema", instructions)
+        self.assertNotIn("unified diff", instructions.lower())
+        self.assertNotIn("--- a/", instructions)
+        self.assertNotIn("+++ b/", instructions)
+        self.assertNotIn("Begin Patch", instructions)
 
 
 if __name__ == "__main__":

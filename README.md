@@ -72,7 +72,7 @@ The **Contract & connector studio** accepts immutable contract and policy JSON d
 
 ## Attest ticket dispatch
 
-`examples/attest_dispatch.py` reads an `attest.ticket/v0` JSON document from stdin and prints only a Git-format unified diff. Its default worker configuration is `examples/fixtures/workers.example.json` (`openai`, model `gpt-5-mini`); set `OPENAI_API_KEY` for the Responses API (or `SYBERWORK_OPENAI_API_KEY` where the standard name is reserved). A command worker can be selected by changing the fixture to `{"default":{"type":"command","cmd":"..."}}`, or pass another configuration with `--workers`. The accepted ticket and its observation are recorded on stderr in the receipt bridge's unverified observation shape; no SyberWork database is modified by this example.
+`examples/attest_dispatch.py` reads an `attest.ticket/v0` JSON document from stdin and prints only a Git-format unified diff. Its default configuration, `examples/fixtures/workers.example.json`, selects an offline command worker that appends a blank line as a runnable demonstration; it does not implement the ticket's acceptance criteria. Replace that command with your harness, or select the optional OpenAI Responses API worker with `--worker openai` (model `gpt-5-mini`) and `OPENAI_API_KEY` or `SYBERWORK_OPENAI_API_KEY`. The OpenAI worker returns structured complete file contents; SyberWork generates the diff locally. The accepted ticket and its observation are recorded on stderr in the receipt bridge's unverified observation shape; no SyberWork database is modified by this example.
 
 ```sh
 ATTEST_WORKER_CMD="python <abs path>/examples/attest_dispatch.py" attest prove demo/spec.md --app demo/app --loop
