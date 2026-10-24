@@ -85,7 +85,7 @@ class AttestArtifactClassification(unittest.TestCase):
                 self.assertFalse(classification["handoff"])
                 self.assertFalse(classification["verified_reconciliation"])
 
-    def test_schema_tagged_attest_receipt_and_404_after_write_do_not_verify(self):
+    def test_receipt_file_shape_and_404_after_write_do_not_verify(self):
         with tempfile.TemporaryDirectory() as directory:
             erp = SimulatedERP(Path(directory) / "erp.sqlite3")
             work = Work(Path(directory) / "work.sqlite3")
@@ -109,16 +109,25 @@ class AttestArtifactClassification(unittest.TestCase):
                 erp.drop_after_write = True
                 self.assertEqual(work.commit(case_id, proposal_id, "scheduler")["status"], "unknown")
                 destination_record = erp.order_for_key(proposal_id)
+                # Live Attest path: <attest_home>/receipts/<case_id>.json.
+                # Keep the shipped top-level receipt shape opaque to SyberWork.
                 receipt_file = {
                     "schema": "attest.receipt/v0",
-                    "kind": "RunReceipt",
-                    "status": "proven",
-                    "effect_succeeded": True,
-                    "idempotency_key": proposal_id,
-                    "request_digest": destination_record["request_digest"],
-                    "external_id": destination_record["external_id"],
+                    "case_id": case_id,
+                    "created_at": "2026-10-24T00:00:00Z",
+                    "doc": {},
+                    "claim": {"status": "proven", "effect_succeeded": True},
+                    "authority": {},
+                    "proposal": {},
+                    "approval": {},
+                    "evidence": {},
+                    "handoff": None,
+                    "disposition": "complete",
+                    "verified": False,
                 }
                 self.assertTrue(classify_attest_artifact(receipt_file["schema"])["observation"])
+                self.assertFalse(receipt_file["verified"])
+                self.assertFalse(classify_attest_artifact(receipt_file["schema"])["verified_reconciliation"])
                 observation = work.observe(
                     case_id,
                     key="attest.run_receipt",
