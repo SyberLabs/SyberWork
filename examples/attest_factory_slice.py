@@ -10,9 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from adapters.attest_observe import (
-    ATTEST_RECEIPT_SCHEMA,
     receipt_file_to_observation_payload,
-    receipt_json_to_observation_payload,
     record_to_observation_payload,
 )
 from syberlabs import Session
@@ -61,17 +59,13 @@ def run(receipt_path: Path | None = None) -> dict:
     # Pass --receipt to import a file from an Attest run. Without it, use a
     # fictional receipt that keeps this example runnable offline.
     if receipt_path is None:
-        receipt = receipt_json_to_observation_payload(
-            {
-                "schema": ATTEST_RECEIPT_SCHEMA,
-                "run_id": "fictional-run-7",
-                "status": "passed",
-                "claim": "The candidate is ready to promote.",
-                "external_write": {"status": "succeeded", "external_id": "attest-claim-only"},
-            },
-            source_version=ATTEST_RECEIPT_SCHEMA,
-            actor="attest-importer",
+        fixture = (
+            Path(__file__).resolve().parents[1]
+            / "syberlabs"
+            / "attest_bridge"
+            / "attest-receipt-v0-fixture.json"
         )
+        receipt = receipt_file_to_observation_payload(fixture, actor="attest-importer")
     else:
         receipt = receipt_file_to_observation_payload(receipt_path, actor="attest-importer")
     authority = record_to_observation_payload(

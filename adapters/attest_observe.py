@@ -52,9 +52,11 @@ def receipt_file_to_observation_payload(
 ) -> dict[str, Any]:
     """Read an Attest ``<attest_home>/receipts/<case_id>.json`` as an unverified observation.
 
-    The receipt remains opaque payload data. Its schema tag identifies the
-    input format; it is not a signature check, authority grant, or destination
-    verification.
+    The reader enforces the receipt/v0 contract shape, including spec-mode
+    fields, while preserving the full source object. This is not a signature
+    check or SyberWork authority grant; the observation envelope stays
+    ``verified: false``. Contract projections remain observation data and do
+    not reconcile SyberWork effects.
     """
     path = Path(receipt_path)
     try:

@@ -17,7 +17,7 @@
   },
   "authority": {
     "policy": "factory-mvp",
-    "decision": "allow",
+    "decision": "doc_repair_allowed",
     "rule": "fictional-human-gate"
   },
   "proposal": {
@@ -30,10 +30,10 @@
     "proposal_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
   },
   "evidence": {
-    "before": {"state": "draft"},
-    "after": {"state": "reviewed"}
+    "before": {"status": "failed", "observed": {}, "note": "fictional before check", "screenshot": null},
+    "after": {"status": "proven", "observed": {}, "note": "fictional Kane pack fixture-only", "screenshot": null}
   },
   "handoff": null,
-  "disposition": "approved",
+  "disposition": "repaired",
   "verified": false
 }

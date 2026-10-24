@@ -16,11 +16,17 @@ from case_studies.enterprise_procurement import CONTRACT, SimulatedERP, configur
 from syberlabs.attest_bridge import AuthorityDecision, HandoffPackage, RunReceipt
 from syberwork.core import Work
 
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "syberlabs" / "attest_bridge"
+
+
+def receipt_fixture(name="attest-receipt-v0-fixture.json"):
+    return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
 
 class AttestObservationTypes(unittest.TestCase):
     def test_records_are_tagged_and_always_unverified(self):
         records = (
-            (RunReceipt({"run_id": "fixture-1", "status": "passed"}), "attest.run_receipt", "run_receipt"),
+            (RunReceipt(receipt_fixture()), "attest.run_receipt", "run_receipt"),
             (AuthorityDecision({"decision": "approved"}), "attest.authority_decision", "authority_decision"),
             (HandoffPackage({"owner": "release-manager"}), "attest.handoff_package", "handoff_package"),
         )
@@ -30,7 +36,8 @@ class AttestObservationTypes(unittest.TestCase):
                     record, source_version="attest-fixture-v1", actor="attest-importer"
                 )
                 self.assertEqual(observation["key"], key)
-                self.assertEqual(observation["value"], {"kind": kind, "payload": dict(record.payload)})
+                self.assertEqual(observation["value"]["kind"], kind)
+                self.assertEqual(observation["value"]["payload"], dict(record.payload))
                 self.assertEqual(observation["source"], "attest")
                 self.assertEqual(observation["version"], "attest-fixture-v1")
                 self.assertFalse(observation["verified"])
@@ -41,26 +48,27 @@ class AttestObservationTypes(unittest.TestCase):
                 {"bad": object()}, source_version="v1", actor="importer"
             )
         with self.assertRaises(ValueError):
-            receipt_json_to_observation_payload({}, source_version="", actor="importer")
+            receipt_json_to_observation_payload(receipt_fixture(), source_version="", actor="importer")
 
 
 class AttestReceiptFileImport(unittest.TestCase):
     def test_receipt_file_becomes_unverified_observation(self):
-        receipt = {
-            "schema": "attest.receipt/v0",
-            "case_id": "fixture-42",
-            "authority": {"decision": "allow"},
-        }
+        receipt = receipt_fixture()
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / ".attest" / "receipts" / "fixture-42.json"
+            path = Path(temp) / "attest-home" / "receipts" / "fixture-42.json"
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps(receipt), encoding="utf-8")
             observation = receipt_file_to_observation_payload(path, actor="attest-importer")
 
         self.assertEqual(observation["key"], "attest.run_receipt")
-        self.assertEqual(observation["value"], {"kind": "run_receipt", "payload": receipt})
+        self.assertEqual(observation["value"]["kind"], "run_receipt")
+        self.assertEqual(observation["value"]["payload"], receipt)
         self.assertEqual(observation["version"], "attest.receipt/v0")
         self.assertFalse(observation["verified"])
+        self.assertEqual(
+            observation["value"]["projection"]["destination_verification"]["method"],
+            "kane_recheck",
+        )
 
     def test_receipt_file_requires_attest_v0_schema_tag(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -69,10 +77,46 @@ class AttestReceiptFileImport(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "attest.receipt/v0"):
                 receipt_file_to_observation_payload(path, actor="attest-importer")
 
+    def test_spec_mode_projects_ticket_patch_and_kane_recheck(self):
+        receipt = receipt_fixture("attest-receipt-v0-spec-fixture.json")
+        observation = receipt_json_to_observation_payload(
+            receipt, source_version="attest.receipt/v0", actor="attest-importer"
+        )
+
+        self.assertFalse(observation["verified"])
+        self.assertEqual(observation["value"]["payload"], receipt)
+        self.assertEqual(
+            observation["value"]["projection"]["implementation"],
+            {
+                "ticket_title": "Missing capability: demo action",
+                "patch_sha256": receipt["app"]["patch_sha256"],
+            },
+        )
+        self.assertEqual(
+            observation["value"]["projection"]["destination_verification"],
+            {
+                "status": "verified",
+                "method": "kane_recheck",
+                "reported_by": "attest.receipt/v0 evidence.after.status",
+            },
+        )
+
+    def test_receipt_rejects_unknown_fields_and_verified_claim(self):
+        unknown_field_receipt = receipt_fixture()
+        unknown_field_receipt["unexpected"] = "not part of receipt/v0"
+        with self.assertRaisesRegex(ValueError, "unknown Attest receipt fields"):
+            RunReceipt(unknown_field_receipt)
+
+        claimed_verified_receipt = receipt_fixture()
+        claimed_verified_receipt["verified"] = True
+        with self.assertRaisesRegex(ValueError, "verified must be false"):
+            RunReceipt(claimed_verified_receipt)
+
     def test_cli_reads_receipt_path_and_labels_reconciliation_as_simulated(self):
-        receipt = {"schema": "attest.receipt/v0", "case_id": "fixture-42", "status": "passed"}
+        receipt = receipt_fixture()
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "receipt.json"
+            path = Path(temp) / "attest-home" / "receipts" / "fixture-42.json"
+            path.parent.mkdir(parents=True)
             path.write_text(json.dumps(receipt), encoding="utf-8")
             root = Path(__file__).resolve().parents[1]
             result = subprocess.run(
@@ -121,18 +165,21 @@ class AttestCannotReconcileAnExternalWrite(unittest.TestCase):
         outcome = self.work.commit(self.case, proposal_id, "scheduler")
         self.assertEqual(outcome["status"], "unknown")
 
-        # Even an Attest receipt that says the write succeeded is just observation data.
+        # Even a valid receipt with a proven Kane re-check remains an observation,
+        # not SyberWork reconciliation for this independent ERP effect.
+        attest_receipt = receipt_fixture()
+        attest_receipt["evidence"]["after"]["status"] = "proven"
         observation = receipt_json_to_observation_payload(
-            {
-                "run_id": "offline-fixture-7",
-                "effect": {"status": "succeeded", "external_id": "attest-claimed-order"},
-                "message": "The order was created.",
-            },
-            source_version="attest-fixture-v1",
+            attest_receipt,
+            source_version="attest.receipt/v0",
             actor="attest-importer",
         )
         event = self.work.observe(self.case, **observation)
         self.assertFalse(event["body"]["verified"])
+        self.assertEqual(
+            event["body"]["value"]["projection"]["destination_verification"]["method"],
+            "kane_recheck",
+        )
         state = self.work.inspect(self.case)
         effect_clause = next(row for row in state["acceptance"] if row["id"] == "order_recorded")
         self.assertFalse(effect_clause["passed"])

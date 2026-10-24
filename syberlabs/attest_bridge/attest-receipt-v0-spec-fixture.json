@@ -1,0 +1,42 @@
+{
+  "schema": "attest.receipt/v0",
+  "case_id": "fedcba987654-claim-implementation-2",
+  "created_at": "2026-10-24T17:15:00-07:00",
+  "doc": {
+    "source": "demo/spec.md",
+    "sha256_before": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sha256_after": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  },
+  "claim": {
+    "id": "claim-implementation",
+    "kind": "implementation",
+    "lines": [15, 15],
+    "text": "The app supports the requested capability.",
+    "expects_before": "missing",
+    "expects_after": "implemented"
+  },
+  "authority": {
+    "policy": "factory-mvp",
+    "decision": "implementation_required",
+    "rule": "protected-promise-handoff"
+  },
+  "proposal": {
+    "agent": "fictional-worker",
+    "patch_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "patch": "fictional unified diff"
+  },
+  "approval": {
+    "actor": "fictional-approver",
+    "proposal_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  },
+  "evidence": {
+    "before": {"status": "failed", "observed": {}, "note": "capability absent", "screenshot": null},
+    "after": {"status": "proven", "observed": {"capability": "present"}, "note": "fictional Kane re-check", "screenshot": null}
+  },
+  "handoff": null,
+  "disposition": "implemented",
+  "verified": false,
+  "ticket": {"path": "tickets/fedcba987654-claim-implementation-2.json", "title": "Missing capability: demo action"},
+  "app": {"original": "demo/app", "candidate": "candidate/demo/app", "patch_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
+  "worker": {"type": "command", "status": "completed"}
+}
