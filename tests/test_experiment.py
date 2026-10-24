@@ -20,10 +20,12 @@ from unittest.mock import patch
 
 from spec.validate import validate_events
 from syberlabs import experiment, metrics
+from syberlabs.claude_code import THIRD_PARTY_SWITCHES, ClaudeCodeProvider
 from syberlabs.cli import main as cli
 from syberlabs.events import GENESIS, event_digest
 from syberlabs.providers import RepairProvider
 from tests.test_build_thread import EXPORT, GOOD, TEST_EXPORT, RepoCase
+from tests.test_claude_code import COST as CLAUDE_CODE_COST, PRICES as CLAUDE_CODE_PRICES, WEB_QUERY, ClaudeCodeCase
 from tests.test_metrics import HOUR, T0, Journal, check
 
 NAME = "githits-pilot"
@@ -331,6 +333,12 @@ class Checks(unittest.TestCase):
             if event["kind"] == "candidate_registered":
                 event["body"]["signal"].pop("harness")
         self.assertEqual(experiment.report(events, NAME)["rows"][0]["flags"], ["arm_unverified"])
+        events = run("x-off", "X", "off")[0] + run("x-on", "X", "on", githits=1)[0]
+        for event in events:
+            if event["case_id"] == "x-on" and event["kind"] == "candidate_registered":
+                event["body"]["signal"]["harness"] = {"name": "claude-code", "installed_version": "2.1.309"}
+        self.assertEqual(experiment.report(events, NAME)["rows"][0]["flags"], ["arm_unverified"],
+                         "a harness that recorded nothing of its session's start does not say the server was off")
 
     def test_an_unlabelled_run_of_the_same_item_is_named(self):
         hidden = run("x-off-hidden", "X", "off", late=True, calls=1)[0]
@@ -666,6 +674,52 @@ class EndToEnd(RepoCase):
         code, text = self.cli("experiment", "label", "--name", NAME, "--item", "has space", "--arm", "on")
         self.assertEqual(code, 2)
         self.assertIn("invalid_experiment", text)
+
+
+class WithClaudeCode(ClaudeCodeCase):
+    """The pilot's two arms through the Claude Code proposer (#80, #82, #84): the stand-in ``claude`` of
+    ``tests/test_claude_code.py``, which reports GitHits connected only when ``--mcp-config`` is passed, behind the
+    real query guard. The report has to read the arm, the lookups and the price off that record, with no help."""
+
+    @staticmethod
+    def api_lane():
+        """The api lane as an operator's machine has it: a key, and no gateway or provider switch inherited from the
+        environment the suite happens to run in (``claude_code.THIRD_PARTY_SWITCHES`` would refuse it)."""
+        env = {k: v for k, v in os.environ.items() if k not in THIRD_PARTY_SWITCHES}
+        return patch.dict(os.environ, {**env, "ANTHROPIC_API_KEY": "test-placeholder"}, clear=True)
+
+    def test_the_report_reads_arm_lookups_and_cost_off_the_claude_code_record(self):
+        budget = {"max_candidates": 6, "max_evaluations": 6, "max_seconds": 600, "prices": CLAUDE_CODE_PRICES,
+                  "max_dollars": 1.0}
+        kit = self.kit(self.contract(**{"evolution.budget": budget}))
+        config = self.root.parent / "githits.json"
+        config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
+        web_only = [["WebSearch", {"query": WEB_QUERY}]]  # without the server, Claude Code has no GitHits tool to call
+        arms = {"off": {"executable": self.stand_in("off", lookups=web_only)},
+                "on": {"executable": self.stand_in("on"), "mcp_config": config}}
+        for arm, kwargs in arms.items():
+            thread = kit.start("Add a CSV export", paths=["src/", "tests/"], unattended=True,
+                               actor="runner@example.test")
+            thread.record_experiment(NAME, item="LIB-1", arm=arm, by="owner@example.test", tags=["needs_lookup"])
+            with self.api_lane():
+                [candidate] = thread.propose(ClaudeCodeProvider(kit.repo, bare=True, max_calls=1, **kwargs))
+            receipt = thread.accept(candidate.id, actor="runner@example.test")
+            self.assertEqual(receipt.status, "succeeded", receipt.reason)
+        events = [e for case in kit.journal.thread_ids() for e in kit.session.history(case)]
+        found = experiment.report(events, NAME, dict(kit.session.contracts))
+        [row] = found["rows"]
+        self.assertEqual(row["flags"], [], "the record agrees with the labels: GitHits connected and used in the "
+                                           "treatment only; the same base, objective, model and lane")
+        off, on = row["values"]["off"], row["values"]["on"]
+        self.assertEqual((off["githits_lookups"], on["githits_lookups"]), (0.0, 1.0))
+        self.assertEqual((off["web_lookups"], on["web_lookups"]), (1.0, 1.0))
+        self.assertEqual((off["turns"], on["turns"]), (2.0, 2.0), "Claude Code's num_turns, one call each")
+        self.assertEqual((off["cost"], on["cost"]), (CLAUDE_CODE_COST, CLAUDE_CODE_COST),
+                         "both arms billed on the api lane at the contract's prices")
+        self.assertEqual((off["accepted"], on["accepted"]), (1.0, 1.0))
+        self.assertEqual((found["per_arm"]["off"]["lookups_blocked"], found["per_arm"]["on"]["lookups_blocked"]), (0, 0),
+                         "every lookup passed the query guard")
+        self.assertEqual(found["items"], {"labelled": 1, "compared": 1, "excluded": 0})
 
 
 if __name__ == "__main__":

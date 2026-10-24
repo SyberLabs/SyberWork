@@ -183,7 +183,11 @@ def _promotion(contracts, contract) -> str:
 
 
 def _servers(registrations: list[dict], server: str | None) -> bool | str | None:
-    """Was ``server`` connected? Read from the ``signal.harness.mcp_servers`` a harness recorded (``name:status``)."""
+    """Was ``server`` connected? Read from the ``signal.harness.mcp_servers`` a harness recorded (``name:status``).
+
+    The Claude Code provider leaves ``mcp_servers`` out when its session started with none, so a harness that recorded
+    its session's start (a ``version`` or ``model``) and lists no servers had none connected. A harness that recorded
+    neither says nothing about its servers, and that call is not read."""
     if server is None:
         return None
     seen = []
@@ -191,6 +195,8 @@ def _servers(registrations: list[dict], server: str | None) -> bool | str | None
         signal = event["body"].get("signal")
         harness = signal.get("harness") if isinstance(signal, dict) else None
         if not isinstance(harness, dict):
+            continue
+        if "mcp_servers" not in harness and not any(isinstance(harness.get(k), str) for k in ("version", "model")):
             continue
         connected = False
         for entry in harness.get("mcp_servers") or []:

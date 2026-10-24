@@ -93,7 +93,7 @@ Each item is checked against the record. The first nine take the item out of eve
 
 Two lines are about the experiment as a whole. `not_run` names the registered items that never ran. `forgotten` names the forget tombstones written since the experiment's first thread started, because a forgotten thread leaves nothing else behind; under the default retention policy a thread with an accepted change is kept for 365 days, so a tombstone here is usually a run that was not accepted and was removed. Exported records carry no tombstones, so a report `--from-export` says it cannot see forgotten threads. `--from-export` also refuses a record whose hash chain does not verify (`export_unverified`): an edited export is not counted.
 
-`--server none` turns off the server checks for an experiment that does not switch an MCP server. `contaminated`, `contamination_unknown` and `unused` read GitHits lookups and apply only with `--server githits`.
+The Claude Code proposer leaves `mcp_servers` out of `signal.harness` when its session started with none, so a call whose harness recorded its session's start (a `version` or `model`) and lists no servers had none connected; a call whose harness recorded nothing of its start is not read. `--server none` turns off the server checks for an experiment that does not switch an MCP server. `contaminated`, `contamination_unknown` and `unused` read GitHits lookups and apply only with `--server githits`.
 
 ## Statistics, stated plainly
 
