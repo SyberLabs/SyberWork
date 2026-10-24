@@ -15,20 +15,27 @@ for the queries themselves: before Claude Code runs a GitHits (``mcp__githits__*
   verbatim in a tracked file of the worktree the run started from (the host hashes those lines into
   ``tree_lines.txt`` beside the hook before the run; the hook compares hashes and never holds the tree's text).
 
-Anything else passes unchanged. The outbound text is ``url`` for ``WebFetch`` (its ``prompt`` goes to Anthropic's
-model, not to the site), ``query`` and the domain lists for ``WebSearch``, and every string in the input for a
-GitHits tool; each string is judged on its own. The hook blocks the documented way: exit code 2 with a reason on
-standard error, which Claude Code returns to the model as the tool's error (``code.claude.com/docs/en/hooks``,
-read 2026-10-23 for Claude Code 2.1.309). The reason names the rule and never repeats the query. A hook that
-cannot read its input or its policy blocks too (``guard_error``): a guard that fails open is not a guard.
+Anything else passes unchanged. The outbound text is every string of the tool input, dictionary keys included, for
+every matched tool (``WebFetch``'s ``prompt`` too: it is processed off this machine). Each string is judged on its
+own, as typed and folded (``fold``: NFKC, every format character such as a zero-width space removed, and the
+Cyrillic and Greek letters that look like Latin ones mapped to them); a rule broken by either form blocks. The hook
+blocks the documented way: exit code 2 with a reason on standard error, which Claude Code returns to the model as
+the tool's error (``code.claude.com/docs/en/hooks``, read 2026-10-23 for Claude Code 2.1.309). The reason names
+the rule and never repeats the query. A hook that cannot read its input, its key or its policy, whose policy or
+tree file does not match the digest the host gave it, or whose input carries no ``tool_use_id`` blocks too
+(``guard_error``): a guard that fails open is not a guard.
 
-Every decision is written to ``decisions/`` beside the hook as ``{tool_use_id, tool, query_digest, rule}``: no
-query text. The host (``syberlabs.claude_code``) reads them after the run and records each lookup with its
-``guard``: the rule, ``pass``, or ``unguarded`` when the stream shows a lookup the hook never decided on.
+Every decision is written to ``decisions/`` beside the hook as ``{tool_use_id, tool, query_digest, rule, mac}``: no
+query text. ``mac`` is HMAC-SHA256 over the other four fields under a random per-call key the host puts in Claude
+Code's environment (``KEY_ENV``), which a hook inherits; no file beside the hook holds it. The host
+(``syberlabs.claude_code``) reads the decisions after the run, keeps only those whose MAC verifies, and records each
+lookup with its ``guard``: the rule, ``pass``, or ``unguarded`` when no verified decision carries the lookup's exact
+tool use id, tool and query digest.
 
 This is a filter over what the model typed, not a proof that no private material leaves the machine: a model can
-paraphrase code, spread it over several short queries, or quote a line it wrote during the run (the tree hash set
-is taken before the run). The operator tunes ``max_lines`` and ``max_chars`` (``SYBERLABS_GUARD_MAX_LINES``,
+paraphrase code, spread it (or one credential) over several short queries, encode it (base64, hex, URL or percent
+encoding, ROT13, one character per word), or quote a line it wrote during the run (the tree hash set is taken
+before the run). The operator tunes ``max_lines`` and ``max_chars`` (``SYBERLABS_GUARD_MAX_LINES``,
 ``SYBERLABS_GUARD_MAX_CHARS``, or the CLI); they are host policy, recorded in the candidate's signal, never
 contract data.
 
@@ -38,10 +45,14 @@ contract data.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
+import shutil
+import stat
 import sys
+import unicodedata
 from pathlib import Path
 
 if __package__ in (None, ""):  # run by absolute path (``-I``): import the host's own package beside this file
@@ -50,7 +61,7 @@ if __package__ in (None, ""):  # run by absolute path (``-I``): import the host'
 from syberlabs.canonical import canonical  # noqa: E402
 from syberlabs.metrics import _SECRET as CREDENTIAL  # noqa: E402  the one credential pattern set, shared, not copied
 
-VERSION = "1"
+VERSION = "2"
 DEFAULT_MAX_LINES = 3
 DEFAULT_MAX_CHARS = 400
 MIN_TREE_LINE = 16       # a normalized tree line shorter than this is too common to mean "copied from here"
@@ -61,13 +72,30 @@ MATCHER = "^(mcp__githits__.*|WebSearch|WebFetch)$"
 PASS, UNGUARDED, ERROR = "pass", "unguarded", "guard_error"
 RULES = ("secret", "url_credentials", "email", "too_long", "code_fence", "code_lines", "tree_line", ERROR)
 DECISIONS = "decisions"
+DECISION_FIELDS = ("tool_use_id", "tool", "query_digest", "rule")  # what the MAC covers
 POLICY_FILE, TREE_FILE, SETTINGS_FILE = "policy.json", "tree_lines.txt", "settings.json"
+# What the host hands the hook through Claude Code's environment, which a command hook inherits (the hooks reference
+# documents no per-hook ``env`` field): the per-call MAC key and the SHA-256 of the policy and tree files it wrote.
+KEY_ENV = "SYBERLABS_GUARD_KEY"
+POLICY_DIGEST_ENV, TREE_DIGEST_ENV = "SYBERLABS_GUARD_POLICY_DIGEST", "SYBERLABS_GUARD_TREE_DIGEST"
 BLOCK_EXIT = 2  # Claude Code: a PreToolUse hook that exits 2 blocks the call; its stderr is the reason the model sees
 
 _EXTRA_SECRET = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/=-]{20,}")
 _URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]*(:[^\s/@]*)?@")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 _FENCE = re.compile(r"```|~~~")
+# Cyrillic and Greek letters that NFKC leaves alone but that read as Latin letters (a Cyrillic shha in ``ghp_``, a
+# Cyrillic dze in ``sk-``, a Cyrillic A in ``AKIA``): mapped to Latin, so a lookalike prefix is judged as it reads.
+_LOOKALIKE = str.maketrans({
+    "\u0430": "a", "\u0432": "b", "\u0435": "e", "\u043a": "k", "\u043c": "m", "\u043d": "h", "\u043e": "o",
+    "\u0440": "p", "\u0441": "c", "\u0442": "t", "\u0443": "y", "\u0445": "x", "\u0456": "i", "\u0455": "s",
+    "\u0458": "j", "\u04bb": "h", "\u0501": "d", "\u051b": "q", "\u051d": "w",
+    "\u0410": "A", "\u0412": "B", "\u0415": "E", "\u041a": "K", "\u041c": "M", "\u041d": "H", "\u041e": "O",
+    "\u0420": "P", "\u0421": "C", "\u0422": "T", "\u0425": "X", "\u0406": "I", "\u0405": "S", "\u0408": "J",
+    "\u03b1": "a", "\u03bf": "o", "\u03c1": "p", "\u03ba": "k", "\u03b9": "i", "\u03c5": "u", "\u03bd": "v",
+    "\u0391": "A", "\u0392": "B", "\u0395": "E", "\u0396": "Z", "\u0397": "H", "\u0399": "I", "\u039a": "K",
+    "\u039c": "M", "\u039d": "N", "\u039f": "O", "\u03a1": "P", "\u03a4": "T", "\u03a7": "X", "\u03a5": "Y",
+})
 WHY = {
     "secret": "it looks like it contains a credential",
     "url_credentials": "it contains a URL with a user name or password",
@@ -95,23 +123,19 @@ def query_digest(tool_input) -> str:
 
 
 def outbound(tool_name: str, tool_input) -> list[str]:
-    """The texts this call sends to a third party, each judged on its own."""
+    """The texts this call sends off the machine, each judged on its own: every string of the input, dictionary keys
+    included, for every matched tool (``WebFetch``'s ``prompt``, ``WebSearch``'s domain lists, and any field a tool
+    adds later)."""
     if not isinstance(tool_input, dict):
         return [query_text(tool_input)]
-    if tool_name == "WebFetch":
-        return [tool_input["url"]] if isinstance(tool_input.get("url"), str) else [query_text(tool_input)]
-    if tool_name == "WebSearch":
-        texts = [tool_input["query"]] if isinstance(tool_input.get("query"), str) else [query_text(tool_input)]
-        for key in ("allowed_domains", "blocked_domains"):
-            texts += [d for d in tool_input.get(key) or [] if isinstance(d, str)]
-        return texts
     found: list[str] = []
 
     def walk(value) -> None:
         if isinstance(value, str):
             found.append(value)
         elif isinstance(value, dict):
-            for item in value.values():
+            for key, item in value.items():
+                found.append(key if isinstance(key, str) else str(key))
                 walk(item)
         elif isinstance(value, list):
             for item in value:
@@ -121,6 +145,14 @@ def outbound(tool_name: str, tool_input) -> list[str]:
 
     walk(tool_input)
     return found
+
+
+def fold(text: str) -> str:
+    """``text`` as a reader sees it: NFKC (fullwidth and other compatibility forms to their plain characters), every
+    format character (Unicode category ``Cf``: zero-width space and joiners, direction marks, soft hyphen) removed,
+    and the Cyrillic and Greek lookalikes of Latin letters mapped to them."""
+    plain = "".join(ch for ch in unicodedata.normalize("NFKC", text) if unicodedata.category(ch) != "Cf")
+    return plain.translate(_LOOKALIKE)
 
 
 def normalized(line: str) -> str:
@@ -163,7 +195,17 @@ def _credential(text: str) -> bool:
 
 def judge(text: str, *, max_lines: int = DEFAULT_MAX_LINES, max_chars: int = DEFAULT_MAX_CHARS,
           tree: set[str] | frozenset[str] = frozenset()) -> str:
-    """``pass`` or the first rule ``text`` breaks, in the order of ``RULES``."""
+    """``pass`` or the first rule ``text`` breaks, in the order of ``RULES``: as typed, then folded (``fold``). A
+    rule broken by either form blocks."""
+    rule = _judge(text, max_lines=max_lines, max_chars=max_chars, tree=tree)
+    if rule == PASS:
+        folded = fold(text)
+        if folded != text:
+            rule = _judge(folded, max_lines=max_lines, max_chars=max_chars, tree=tree)
+    return rule
+
+
+def _judge(text: str, *, max_lines: int, max_chars: int, tree: set[str] | frozenset[str]) -> str:
     if _credential(text):
         return "secret"
     if _URL_CREDENTIALS.search(text):
@@ -235,20 +277,63 @@ def settings(directory: Path, python: str | None = None) -> dict:
     return {"hooks": {"PreToolUse": [{"matcher": MATCHER, "hooks": [hook_command(directory, python)]}]}}
 
 
+def file_digest(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _write_read_only(path: Path, text: str) -> None:
+    path.write_bytes(text.encode("utf-8"))
+    os.chmod(path, stat.S_IREAD)  # read-only for everyone; on Windows, the read-only attribute
+
+
 def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = None) -> Path:
-    """Write the guard's directory (policy, tree digests, settings, an empty ``decisions/``); returns the settings
-    file to pass with ``--settings``. ``directory`` is the host's own, outside any worktree."""
+    """Write the guard's directory (policy, tree digests and settings, each read-only, and an empty
+    ``decisions/``); returns the settings file to pass with ``--settings``. ``directory`` is the host's own,
+    outside any worktree. ``hook_environment`` then gives the hook the files' digests and the MAC key."""
     directory = Path(directory)
     (directory / DECISIONS).mkdir(parents=True, exist_ok=True)
-    (directory / POLICY_FILE).write_text(json.dumps(rules), encoding="utf-8")
-    (directory / TREE_FILE).write_text("".join(d + "\n" for d in sorted(tree)), encoding="utf-8")
+    _write_read_only(directory / POLICY_FILE, json.dumps(rules))
+    _write_read_only(directory / TREE_FILE, "".join(d + "\n" for d in sorted(tree)))
     path = directory / SETTINGS_FILE
-    path.write_text(json.dumps(settings(directory, python), indent=2), encoding="utf-8")
+    _write_read_only(path, json.dumps(settings(directory, python), indent=2))
     return path
 
 
+def hook_environment(directory: Path, key: str) -> dict:
+    """What the host adds to Claude Code's environment for the hook, which inherits it: the per-call MAC key and
+    the SHA-256 of the policy and tree files ``prepare`` wrote."""
+    directory = Path(directory)
+    return {KEY_ENV: key, POLICY_DIGEST_ENV: file_digest(directory / POLICY_FILE),
+            TREE_DIGEST_ENV: file_digest(directory / TREE_FILE)}
+
+
+def remove(directory: Path) -> None:
+    """Remove a guard directory, its read-only files included."""
+    directory = Path(directory)
+    for folder, _, names in os.walk(directory):
+        for name in names:
+            try:
+                os.chmod(os.path.join(folder, name), stat.S_IREAD | stat.S_IWRITE)
+            except OSError:
+                pass
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+def mac(entry: dict, key: str) -> str:
+    """HMAC-SHA256 of a decision's four fields (``DECISION_FIELDS``, as canonical JSON) under the per-call key."""
+    message = canonical({field: entry.get(field) for field in DECISION_FIELDS}).encode("utf-8")
+    return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def authentic(entry: dict, key: str) -> bool:
+    """True only when ``entry`` carries a MAC that verifies under ``key``; a missing or wrong MAC is not."""
+    given = entry.get("mac")
+    return bool(key) and isinstance(given, str) and hmac.compare_digest(given, mac(entry, key))
+
+
 def read_decisions(directory: Path) -> list[dict]:
-    """The decisions the hook wrote, each ``{tool_use_id, tool, query_digest, rule}``; malformed files are skipped."""
+    """The decisions in ``decisions/``, each ``{tool_use_id, tool, query_digest, rule, mac}`` (``mac`` None when
+    absent); malformed files are skipped. None is trusted until ``authentic`` verifies it."""
     found = []
     folder = Path(directory) / DECISIONS
     for file in sorted(folder.glob("*.json")) if folder.is_dir() else []:
@@ -258,15 +343,18 @@ def read_decisions(directory: Path) -> list[dict]:
             continue
         if (isinstance(item, dict) and item.get("rule") in RULES + (PASS,) and isinstance(item.get("tool"), str)
                 and isinstance(item.get("query_digest"), str) and isinstance(item.get("tool_use_id"), (str, type(None)))):
-            found.append({k: item[k] for k in ("tool_use_id", "tool", "query_digest", "rule")})
+            found.append({**{k: item[k] for k in DECISION_FIELDS},
+                          "mac": item["mac"] if isinstance(item.get("mac"), str) else None})
     return found
 
 
-def _record(directory: Path, call: dict, rule: str) -> None:
+def _record(directory: Path, call: dict, rule: str, key: str) -> None:
     tool_use_id = call.get("tool_use_id") if isinstance(call.get("tool_use_id"), str) else None
     tool = call.get("tool_name") if isinstance(call.get("tool_name"), str) else ""
     digest = query_digest(call.get("tool_input"))
     entry = {"tool_use_id": tool_use_id, "tool": tool[:64], "query_digest": digest, "rule": rule}
+    if key:
+        entry["mac"] = mac(entry, key)
     name = hashlib.sha256(canonical([tool_use_id, tool, digest, os.getpid(), os.urandom(8).hex()]).encode()).hexdigest()
     folder = directory / DECISIONS
     temporary = folder / f".{name}.tmp"
@@ -274,22 +362,37 @@ def _record(directory: Path, call: dict, rule: str) -> None:
     os.replace(temporary, folder / f"{name}.json")
 
 
-def run(directory: Path, stdin, stderr) -> int:
-    """The hook process: read the call, decide, record the decision, and exit 0 (pass) or 2 (blocked)."""
+def _matching(path: Path, expected: str) -> bytes:
+    """The file's bytes when their SHA-256 is the digest the host gave; otherwise the guard refuses to judge."""
+    data = path.read_bytes()
+    if not expected or not hmac.compare_digest(hashlib.sha256(data).hexdigest(), expected):
+        raise ValueError(f"{path.name} does not match the host's digest")
+    return data
+
+
+def run(directory: Path, stdin, stderr, environ=None) -> int:
+    """The hook process: read the call, check the policy and tree files against the host's digests, decide, record
+    the decision with its MAC, and exit 0 (pass) or 2 (blocked)."""
     directory = Path(directory)
+    environ = os.environ if environ is None else environ
+    key = environ.get(KEY_ENV, "")
     call: dict = {}
     try:
         raw = stdin.buffer.read() if hasattr(stdin, "buffer") else stdin.read()
         call = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)  # Claude Code writes UTF-8
         if not isinstance(call, dict):
             raise ValueError("not an object")
-        rules = json.loads((directory / POLICY_FILE).read_text(encoding="utf-8"))
-        tree = set((directory / TREE_FILE).read_text(encoding="utf-8").split())
+        if not key:
+            raise ValueError("no key: the host did not start this hook")
+        if not isinstance(call.get("tool_use_id"), str) or not call["tool_use_id"]:
+            raise ValueError("no tool_use_id: no decision could be matched to this call")
+        rules = json.loads(_matching(directory / POLICY_FILE, environ.get(POLICY_DIGEST_ENV, "")).decode("utf-8"))
+        tree = set(_matching(directory / TREE_FILE, environ.get(TREE_DIGEST_ENV, "")).decode("utf-8").split())
         rule = decide(call, max_lines=rules["max_lines"], max_chars=rules["max_chars"], tree=tree)
     except Exception:  # noqa: BLE001  a guard that cannot judge blocks
         rule = ERROR
     try:
-        _record(directory, call if isinstance(call, dict) else {}, rule)
+        _record(directory, call if isinstance(call, dict) else {}, rule, key)
     except Exception:  # noqa: BLE001  an unrecorded pass would read as unguarded; an unrecorded block still blocks
         if rule == PASS:
             rule = ERROR

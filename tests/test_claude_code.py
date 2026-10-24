@@ -16,10 +16,12 @@ import json
 import os
 import re
 import sys
+import tempfile
 import textwrap
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from spec.validate import validate_events
@@ -28,6 +30,7 @@ from syberlabs.claude_code import (BIN_ENV, DEFAULT_TOOLS, LOGIN_LANE_DROPPED_EN
                                    Transcript, instruction_file, parse_tools, query_text)
 from syberlabs.cli import main as cli
 from syberlabs.events import verify_events
+from syberlabs.gitspace import IDENTITY
 from syberlabs.providers import RepairProvider
 from tests.test_build_thread import GOOD, REPORT, RepoCase
 
@@ -36,7 +39,8 @@ BROKEN = {**GOOD, "src/report.py": "def rows():\n    return []\n"}  # tests fail
 GITHITS_QUERY = "zq81 githits query: how does requests retry on 503"
 WEB_QUERY = "zq82 web query: python csv DictWriter newline windows"
 TREE_QUERY = '    return [{"name": "a", "qty": 2}, {"name": "b", "qty": 3}]'  # a line of src/report.py, verbatim
-POLICY = {"version": "1", "max_lines": 3, "max_chars": 400}
+POLICY = {"version": "2", "max_lines": 3, "max_chars": 400}
+POLICY_DIGEST = hashlib.sha256(json.dumps(POLICY).encode()).hexdigest()  # of the policy.json the host writes
 PRICES = {"claude-opus-5": {"input_per_million": 15, "output_per_million": 75}}
 # The two turns' usage, as the stand-in prints it (each message's usage appears on every block event of it).
 TURNS = [{"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 50, "cache_creation_input_tokens": 10},
@@ -47,19 +51,41 @@ SUMMED = {"input_tokens": 2500, "output_tokens": 500, "cache_read_input_tokens":
 COST = round((2500 + 50 + 10) * 15 / 1_000_000 + 500 * 75 / 1_000_000, 6)
 
 STAND_IN = r'''
-import json, os, re, subprocess, sys
+import hashlib, json, os, re, stat, subprocess, sys, time
 from pathlib import Path
 
 config = json.loads(Path(CONFIG).read_text(encoding="utf-8"))
+if "--version" in sys.argv:
+    print(config.get("version") or "2.1.309 (Claude Code)", flush=True)
+    sys.exit(0)
 prompt = sys.stdin.read()
 log = Path(LOG)
-settings = None
+settings = guard_dir = None
 if "--settings" in sys.argv:
-    settings = json.loads(Path(sys.argv[sys.argv.index("--settings") + 1]).read_text(encoding="utf-8"))
+    settings_path = Path(sys.argv[sys.argv.index("--settings") + 1])
+    settings, guard_dir = json.loads(settings_path.read_text(encoding="utf-8")), settings_path.parent
 hook_errors = []
+key = os.environ.get("SYBERLABS_GUARD_KEY", "")
+seen = {"guard_key": len(key), "policy_writable": None, "key_in_files": None}
+if guard_dir is not None:
+    policy = guard_dir / "policy.json"
+    seen["policy_writable"] = bool(stat.S_IMODE(os.stat(policy).st_mode) & stat.S_IWUSR)
+    seen["key_in_files"] = bool(key) and any(key.encode() in p.read_bytes() for p in guard_dir.rglob("*") if p.is_file())
+    if config.get("tamper_policy"):  # what a model with a shell or an unconfined Write could do to the host's file
+        os.chmod(policy, stat.S_IREAD | stat.S_IWRITE)
+        policy.write_text(json.dumps({"version": "2", "max_lines": 99, "max_chars": 100000}), encoding="utf-8")
+
+def forge(name, tool_input, use_id):
+    """A decision the hook never wrote, as a model that can write the guard's directory might leave it."""
+    query = tool_input.get("query") if isinstance(tool_input.get("query"), str) else tool_input.get("url", "")
+    entry = {"tool_use_id": use_id, "tool": name, "query_digest": hashlib.sha256(query.encode()).hexdigest(),
+             "rule": "pass", **({"mac": config["forge"]} if config["forge"] != "none" else {})}
+    (guard_dir / "decisions" / f"forged-{use_id}.json").write_text(json.dumps(entry), encoding="utf-8")
 
 def pre_tool_use(name, tool_input, use_id):
     """Claude Code's PreToolUse contract: run each matching hook with the call on stdin; exit 2 blocks."""
+    if config.get("forge") and guard_dir is not None:
+        forge(name, tool_input, use_id)
     if not config.get("hooks", True) or not settings:
         return None
     for group in settings.get("hooks", {}).get("PreToolUse", []):
@@ -120,27 +146,39 @@ for use_id, name, tool_input in rest:
     say({"type": "assistant", "message": {**second, "content": [{"type": "tool_use", "id": use_id, "name": name,
                                                                    "input": tool_input}]}})
 say({"type": "user", "message": {"role": "user", "content": results(rest)}})
+if config.get("fail_after_lookups"):
+    sys.exit(config["fail_after_lookups"])  # Claude Code dies after its lookups, with no result event
+if config.get("hang_after_lookups"):
+    time.sleep(600)  # until the host's timeout ends it
 say({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "result": "done: " + config["web"],
      "total_cost_usd": 0.0421, "session_id": "x", "usage": {}, "modelUsage": {}})
 with log.open("a", encoding="utf-8") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "prompt": prompt, "settings": settings,
                         "hooks": hook_errors, "api_key": "ANTHROPIC_API_KEY" in os.environ,
-                        "seed": "SYBERLABS_CERTIFICATE_SEED" in os.environ}) + "\n")
+                        "seed": "SYBERLABS_CERTIFICATE_SEED" in os.environ, **seen}) + "\n")
 '''
+VERSION_ONLY = [PY, "-c", "print('2.1.309 (Claude Code)')"]  # a stand-in that only answers --version
 
 
 class ClaudeCodeCase(RepoCase):
-    def stand_in(self, name, *, first=None, repair=None, exit=0, lookups=None, hooks=True, no_tool_use_id=False):
+    def stand_in(self, name, *, first=None, repair=None, exit=0, lookups=None, hooks=True, no_tool_use_id=False,
+                 version=None, forge=None, tamper_policy=False, fail_after_lookups=0, hang_after_lookups=False):
         """A stand-in ``claude``: ``first`` is what it writes on a first call, ``repair`` when the prompt quotes failed
         checks; ``lookups`` the ``[tool, input]`` calls it makes (default one GitHits search, one WebSearch);
-        ``hooks`` False skips the ``--settings`` hooks, as a Claude Code that does not run them would. Returns the
-        argv prefix that runs it."""
+        ``hooks`` False skips the ``--settings`` hooks, as a Claude Code that does not run them would; ``version``
+        what ``--version`` prints; ``forge`` writes a ``pass`` decision per lookup into the guard's directory with
+        that MAC (``"none"`` for none); ``tamper_policy`` rewrites ``policy.json`` before the lookups;
+        ``fail_after_lookups`` exits with that code, and ``hang_after_lookups`` sleeps, after the lookups and before
+        the result event. Returns the argv prefix that runs it."""
         config = self.root.parent / f"{name}.json"
         if lookups is None:
             lookups = [["mcp__githits__search", {"query": GITHITS_QUERY}], ["WebSearch", {"query": WEB_QUERY}]]
         config.write_text(json.dumps({"first": first if first is not None else GOOD, "repair": repair or {},
                                       "exit": exit, "turns": TURNS, "githits": GITHITS_QUERY, "web": WEB_QUERY,
-                                      "lookups": lookups, "hooks": hooks, "no_tool_use_id": no_tool_use_id}),
+                                      "lookups": lookups, "hooks": hooks, "no_tool_use_id": no_tool_use_id,
+                                      "version": version, "forge": forge, "tamper_policy": tamper_policy,
+                                      "fail_after_lookups": fail_after_lookups,
+                                      "hang_after_lookups": hang_after_lookups}),
                           encoding="utf-8")
         script = self.root.parent / f"{name}.py"
         script.write_text(f"CONFIG = {str(config)!r}\nLOG = {str(self.root.parent / (name + '.log'))!r}\n"
@@ -184,9 +222,10 @@ class OneShot(ClaudeCodeCase):
         self.assertEqual(signal["tool_usage"], {"web_search": 1, "web_fetch": 0, "githits": 1, "other": {"Edit": 1}})
         self.assertEqual((signal["lane"], signal["cost_basis"], signal["estimated_usd"]), ("subscription_local", "none", 0.0421))
         self.assertEqual(signal["harness"], {"name": "claude-code", "version": "2.1.309", "model": "claude-opus-5",
-                                             "effort": "high", "auth_source": "none"})
+                                             "effort": "high", "auth_source": "none", "installed_version": "2.1.309"})
         self.assertNotIn("model_usage_by_model", signal, "one model served the run")
-        self.assertEqual(signal["guard"], POLICY, "the guard's thresholds are host policy, recorded on the candidate")
+        self.assertEqual(signal["guard"], {**POLICY, "policy_digest": POLICY_DIGEST},
+                         "the guard's thresholds are host policy, recorded on the candidate with the policy file's digest")
         history = thread.history()
         lookups = [e["body"] for e in history if e["kind"] == "observed" and e["body"]["key"] == LOOKUP]
         self.assertEqual([(b["version"], b["verified"], b["actor"], b["source"]) for b in lookups],
@@ -294,10 +333,10 @@ class Lanes(ClaudeCodeCase):
         body = [e["body"] for e in thread.history() if e["kind"] == "candidate_registered"][-1]
         self.assertEqual((body["spend"]["dollars"], body["spend"]["host_observed"]), (0.0, False), "nothing priced")
         self.assertEqual(candidate.signal["estimated_usd"], 0.0421, "Claude Code's estimate is recorded as an estimate")
-        declared = ClaudeCodeProvider(kit.repo, trusted_tree=True, lane="seat_team_enterprise", executable=["x"])
+        declared = ClaudeCodeProvider(kit.repo, trusted_tree=True, lane="seat_team_enterprise", executable=VERSION_ONLY)
         self.assertEqual((declared.lane, declared.cost_basis), ("seat_team_enterprise", "none"))
         with self.assertRaises(Rejected) as caught:
-            ClaudeCodeProvider(kit.repo, bare=True, lane="subscription_local", executable=["x"])
+            ClaudeCodeProvider(kit.repo, bare=True, lane="subscription_local", executable=VERSION_ONLY)
         self.assertEqual(caught.exception.code, "invalid_provider")
 
     def test_a_login_lane_passes_no_credential_or_routing_variable_but_its_login(self):
@@ -309,11 +348,18 @@ class Lanes(ClaudeCodeCase):
                   "ANTHROPIC_FOUNDRY_API_KEY": "f", "ANTHROPIC_BEDROCK_BASE_URL": "https://b.example.test",
                   "AWS_BEARER_TOKEN_BEDROCK": "b", "AWS_SECRET_ACCESS_KEY": "s", "AWS_PROFILE": "x",
                   "GOOGLE_APPLICATION_CREDENTIALS": "g.json", "AZURE_CLIENT_SECRET": "a",
-                  "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1"}
-        kept = {"CLAUDE_CODE_OAUTH_TOKEN": "login", "ANTHROPIC_MODEL": "claude-opus-5", "SYBERLABS_PLAIN": "x"}
+                  "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1",
+                  # guard-hardening, finding 6: another configuration directory, and the proxies
+                  "CLAUDE_CONFIG_DIR": "/elsewhere/.claude", "HTTPS_PROXY": "http://proxy.example.test:3128",
+                  "HTTP_PROXY": "http://proxy.example.test:3128", "ALL_PROXY": "socks5://proxy.example.test:1080",
+                  "NO_PROXY": "example.test"}
+        if os.name != "nt":  # Windows folds environment names to upper case; POSIX keeps the lower-case forms apart
+            routed.update({"https_proxy": "http://p.example.test:1", "http_proxy": "http://p.example.test:1",
+                           "all_proxy": "socks5://p.example.test:2", "no_proxy": "example.test"})
+        kept ={"CLAUDE_CODE_OAUTH_TOKEN": "login", "ANTHROPIC_MODEL": "claude-opus-5", "SYBERLABS_PLAIN": "x"}
         with mock.patch.dict(os.environ, {**routed, **kept}):
             for lane in ("subscription_local", "seat_team_enterprise"):
-                env = ClaudeCodeProvider(kit.repo, trusted_tree=True, lane=lane, executable=["x"]).environment()
+                env = ClaudeCodeProvider(kit.repo, trusted_tree=True, lane=lane, executable=VERSION_ONLY).environment()
                 self.assertEqual([name for name in routed if name in env], [], lane)
                 self.assertEqual({name: env.get(name) for name in kept}, kept, "the login and plain settings stay")
         self.assertIn("AWS_*", LOGIN_LANE_DROPPED_ENV, "one named constant")
@@ -324,16 +370,16 @@ class Lanes(ClaudeCodeCase):
                             ("CLAUDE_CODE_USE_VERTEX", "true"), ("CLAUDE_CODE_USE_FOUNDRY", "1")):
             with mock.patch.dict(os.environ, {name: value}):
                 with self.assertRaises(Rejected) as caught:
-                    ClaudeCodeProvider(kit.repo, bare=True, executable=["x"])
+                    ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY)
                 self.assertEqual(caught.exception.code, "invalid_provider")
                 self.assertIn(name, caught.exception.detail)
                 self.assertIn("provider_3p", caught.exception.detail)
-                third = ClaudeCodeProvider(kit.repo, bare=True, lane="provider_3p", executable=["x"])
+                third = ClaudeCodeProvider(kit.repo, bare=True, lane="provider_3p", executable=VERSION_ONLY)
                 self.assertEqual((third.cost_basis, third.environment().get(name)), ("estimated", value),
                                  "the third-party lane keeps what routes it")
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_USE_BEDROCK": "0"}):
-            ClaudeCodeProvider(kit.repo, bare=True, executable=["x"])  # switched off is not a switch
-        api = ClaudeCodeProvider(kit.repo, bare=True, executable=["x"])
+            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY)  # switched off is not a switch
+        api = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY)
         with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "https://gw.example.test"}):
             with self.assertRaises(Rejected) as caught:
                 api.environment()
@@ -342,13 +388,13 @@ class Lanes(ClaudeCodeCase):
     def test_a_non_bare_run_on_an_undeclared_tree_is_refused_and_says_why(self):
         kit = self.kit()
         with self.assertRaises(Rejected) as caught:
-            ClaudeCodeProvider(kit.repo, executable=["x"])
+            ClaudeCodeProvider(kit.repo, executable=VERSION_ONLY)
         self.assertEqual(caught.exception.code, "untrusted_tree")
         self.assertIn("hooks", caught.exception.detail)
         self.assertIn(".mcp.json", caught.exception.detail)
         self.assertIn("--trusted-tree", caught.exception.detail)
         self.assertIn("CLAUDE.md", caught.exception.detail, "memory files are named, not only hooks and .mcp.json")
-        ClaudeCodeProvider(kit.repo, bare=True, executable=["x"])  # bare needs no declaration
+        ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY)  # bare needs no declaration
 
 
 class InstructionFiles(ClaudeCodeCase):
@@ -358,6 +404,35 @@ class InstructionFiles(ClaudeCodeCase):
             self.assertTrue(instruction_file(path), path)
         for path in ("src/report.py", "docs/CLAUDE_CODE.md", "claude.py", "tests/test_claude.md", ".claudeignore"):
             self.assertFalse(instruction_file(path), path)
+
+    def test_a_path_named_claude_and_a_link_into_one_are_instruction_files(self):
+        """guard-hardening, finding 6: on 92074e1cd0 ``.claude`` itself and a link into ``.claude/`` were not."""
+        for path in (".claude", "a/.claude", ".CLAUDE", "pkg/sub/.claude"):
+            self.assertTrue(instruction_file(path), f"{path}: a file or link standing in for the directory")
+        kit = self.kit()
+        base = kit.repo.rev("HEAD")
+        links = {"docs/rules": "../.claude/rules", "docs/memory.md": "../CLAUDE.md", "docs/abs": "/home/u/.claude/x",
+                 "docs/up": "../../elsewhere/AGENTS.md", "docs/fine": "notes/readme.md"}
+        commit = self.commit_links(kit.repo, base, links)
+        provider = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY)
+        parent = SimpleNamespace(commit=commit, changed_paths=tuple(sorted(links)) + ("src/report.py",))
+        space = SimpleNamespace(candidate=lambda _id: parent)
+        self.assertEqual(provider._instructions_changed(space, ["c1"]),
+                         ["docs/abs", "docs/memory.md", "docs/rules", "docs/up"],
+                         "a link whose target resolves to an instruction file or under .claude is a change to one")
+
+    @staticmethod
+    def commit_links(repo, base, links):
+        """A commit on ``base`` holding ``links`` as symbolic links (mode 120000), written with git alone, so the test
+        needs no symlink support from the file system."""
+        with tempfile.TemporaryDirectory() as folder:
+            env = {"GIT_INDEX_FILE": str(Path(folder) / "index"), **IDENTITY}
+            repo.git("read-tree", base, env=env)
+            for path, target in links.items():
+                blob = repo.git("hash-object", "-w", "--stdin", input=target.encode()).decode().strip()
+                repo.git("update-index", "--add", "--cacheinfo", f"120000,{blob},{path}", env=env)
+            tree = repo.git("write-tree", env=env).decode().strip()
+        return repo.git("commit-tree", tree, "-p", base, input=b"links", env=IDENTITY).decode().strip()
 
     def test_a_parent_that_adds_a_claude_md_line_is_refused_before_the_repair_runs(self):
         kit = self.kit()
@@ -384,6 +459,9 @@ class InstructionFiles(ClaudeCodeCase):
 
 GRANDCHILD = r'''
 import json, subprocess, sys, time
+if "--version" in sys.argv:
+    print("2.1.309 (Claude Code)")
+    sys.exit(0)
 beat = sys.argv[1]
 subprocess.Popen([sys.executable, "-c", "import pathlib, sys, time\nwhile True:\n    pathlib.Path(sys.argv[1]).write_text(str(time.time()))\n    time.sleep(0.1)", beat],
                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -391,6 +469,23 @@ sys.stdin.read()
 print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
 time.sleep(600)
 '''
+
+# Claude Code -> a child (an MCP server, a shell) -> a grandchild (what that started); each writes its own heartbeat.
+BEAT = "import pathlib, sys, time\nwhile True:\n    pathlib.Path(sys.argv[1]).write_text(str(time.time()))\n    time.sleep(0.1)"
+TWO_LEVELS = r'''
+import json, subprocess, sys, time
+if "--version" in sys.argv:
+    print("2.1.309 (Claude Code)")
+    sys.exit(0)
+child, grandchild = sys.argv[1], sys.argv[2]
+BEAT = %r
+spawn = "import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[3]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\nexec(sys.argv[1].replace('sys.argv[1]', 'sys.argv[2]'))"
+subprocess.Popen([sys.executable, "-c", spawn, BEAT, child, grandchild],
+                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+sys.stdin.read()
+print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
+time.sleep(600)
+''' % BEAT
 
 
 class Timeout(ClaudeCodeCase):
@@ -408,6 +503,27 @@ class Timeout(ClaudeCodeCase):
         before = beat.read_text(encoding="utf-8")
         time.sleep(1.5)
         self.assertEqual(beat.read_text(encoding="utf-8"), before, "the child was killed with its parent")
+
+    def test_a_timeout_ends_a_child_and_the_grandchild_it_started(self):
+        """guard-hardening, finding 7: Claude Code starts a child that starts a grandchild; after provider_timeout
+        neither is left running. ``checks._stop`` ends the session (POSIX, killpg) or the process tree (Windows,
+        taskkill /T); this test runs on whichever of the two the suite runs on."""
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        script = self.root.parent / "two_levels.py"
+        child, grandchild = self.root.parent / "child.txt", self.root.parent / "grandchild.txt"
+        script.write_text(TWO_LEVELS, encoding="utf-8")
+        provider = ClaudeCodeProvider(kit.repo, bare=True, executable=[PY, str(script), str(child), str(grandchild)],
+                                      timeout=6, max_calls=1)
+        self.assertEqual(thread.propose(provider), [])
+        search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
+        self.assertEqual((search["stopped"], search["error"]), ("error", "provider_timeout"))
+        self.assertTrue(child.exists() and grandchild.exists(), "both descendants ran before the timeout")
+        time.sleep(1.0)
+        before = (child.read_text(encoding="utf-8"), grandchild.read_text(encoding="utf-8"))
+        time.sleep(1.5)
+        self.assertEqual((child.read_text(encoding="utf-8"), grandchild.read_text(encoding="utf-8")), before,
+                         "the child and the grandchild were ended with Claude Code")
 
 
 class Guard(ClaudeCodeCase):
@@ -475,26 +591,85 @@ class Guard(ClaudeCodeCase):
         [item] = metrics.work_items(thread.history())
         self.assertEqual(item.lookups_blocked.value, 0, "unguarded is not blocked")
 
-    def test_without_a_tool_use_id_the_decision_is_matched_by_tool_and_digest(self):
+    def guard_inactive(self, thread):
+        search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
+        return (search["stopped"], search["error"]) == ("error", "provider_guard_inactive")
+
+    def test_without_a_tool_use_id_nothing_is_matched_and_the_search_stops(self):
+        """guard-hardening, finding 2(a): on 92074e1cd0 a decision with no tool_use_id was matched by tool and
+        digest, which is what a forged decision would rely on. Now the hook blocks a call it cannot tie to an id, and
+        the host matches by exact id only."""
         kit = self.kit()
         thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
         claude = self.stand_in("noid", no_tool_use_id=True,
                                lookups=[["WebSearch", {"query": "x" * 600}], ["WebFetch", {"url": "https://example.test/a",
-                                                                                          "prompt": "y" * 900}]])
+                                                                                          "prompt": "summarize"}]])
+        self.assertEqual(thread.propose(self.provider(kit, thread, claude, max_calls=1)), [])
+        self.assertTrue(self.guard_inactive(thread))
+        self.assertEqual([(b["value"]["tool"], b["value"]["guard"], b["value"]["ok"]) for b in self.lookup_facts(thread)],
+                         [("WebSearch", "unguarded", False), ("WebFetch", "unguarded", False)])
+        [run] = self.runs("noid")
+        self.assertTrue(all("rule: guard_error" in h.get("stderr", "") for h in run["hooks"]),
+                        "the hook blocked both calls before they left")
+
+    def test_a_forged_decision_is_not_the_hooks_and_reads_unguarded(self):
+        """guard-hardening, finding 2(b): a ``pass`` decision written into the guard's directory by anything but the
+        hook (no MAC, or a MAC under another key) was accepted on 92074e1cd0; it is now ``unguarded``."""
+        kit = self.kit()
+        for forged in ("none", "0" * 64):
+            thread = kit.start(f"Add a CSV export ({forged[:4]})", paths=["src/", "tests/"])
+            claude = self.stand_in(f"forge{forged[:4]}", hooks=False, forge=forged)
+            self.assertEqual(thread.propose(self.provider(kit, thread, claude, max_calls=1)), [], forged[:4])
+            self.assertTrue(self.guard_inactive(thread))
+            self.assertEqual([b["value"]["guard"] for b in self.lookup_facts(thread)], ["unguarded", "unguarded"])
+
+    def test_the_hook_holds_the_key_in_its_environment_and_the_policy_is_read_only(self):
+        """guard-hardening, finding 2(b)/(c): the key reaches the hook through the environment and no file; the
+        policy file is read-only and its digest is on the candidate."""
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        claude = self.stand_in("keyed")
+        [candidate] = thread.propose(self.provider(kit, thread, claude, max_calls=1))
+        [run] = self.runs("keyed")
+        self.assertEqual((run["guard_key"], run["key_in_files"], run["policy_writable"]), (64, False, False),
+                         "a 64-hex-character key in the environment, in no file of the guard's directory; policy read-only")
+        self.assertEqual(candidate.signal["guard"]["policy_digest"], POLICY_DIGEST)
+
+    def test_a_rewritten_policy_makes_the_hook_block(self):
+        """guard-hardening, finding 2(c): on 92074e1cd0 the hook obeyed a policy.json rewritten during the run."""
+        kit = self.kit()
+        thread = kit.start("Add a CSV export (tampered)", paths=["src/", "tests/"])
+        claude = self.stand_in("tamper", tamper_policy=True, lookups=[["WebSearch", {"query": "q" * 600}]])
         thread.propose(self.provider(kit, thread, claude, max_calls=1))
-        self.assertEqual([(b["value"]["tool"], b["value"]["guard"]) for b in self.lookup_facts(thread)],
-                         [("WebSearch", "too_long"), ("WebFetch", "pass")],
-                         "a 600-character query is blocked; WebFetch's prompt goes to the model, only its URL is judged")
+        self.assertEqual([(b["value"]["guard"], b["value"]["ok"]) for b in self.lookup_facts(thread)],
+                         [("guard_error", False)], "the hook refused the rewritten policy instead of obeying it")
+
+    def test_a_failed_or_timed_out_call_journals_its_lookups_first(self):
+        """guard-hardening, finding 4: on 92074e1cd0 provider_failed and provider_timeout were raised before the
+        call's lookups were recorded, although they had left the machine."""
+        kit = self.kit()
+        for name, options, error in (("dies", {"fail_after_lookups": 3}, "provider_failed"),
+                                     ("hangs", {"hang_after_lookups": True}, "provider_timeout")):
+            thread = kit.start(f"Add a CSV export ({name})", paths=["src/", "tests/"])
+            claude = self.stand_in(name, **options)
+            provider = self.provider(kit, thread, claude, max_calls=1, timeout=12)
+            self.assertEqual(thread.propose(provider), [], name)
+            search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
+            self.assertEqual((search["stopped"], search["error"]), ("error", error))
+            facts = self.lookup_facts(thread)
+            self.assertEqual([(b["value"]["tool"], b["value"]["guard"]) for b in facts],
+                             [("mcp__githits__search", "pass"), ("WebSearch", "pass")], name)
+            self.assertEqual(validate_events(thread.history(), "claude-code"), [])
 
     def test_thresholds_are_host_policy_from_the_caller_or_the_environment(self):
         kit = self.kit()
-        self.assertEqual(ClaudeCodeProvider(kit.repo, bare=True, executable=["x"], guard_max_lines=5,
-                                            guard_max_chars=900).guard, {"version": "1", "max_lines": 5, "max_chars": 900})
+        self.assertEqual(ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, guard_max_lines=5,
+                                            guard_max_chars=900).guard, {"version": "2", "max_lines": 5, "max_chars": 900})
         with mock.patch.dict(os.environ, {query_guard.LINES_ENV: "7", query_guard.CHARS_ENV: "120"}):
-            self.assertEqual(ClaudeCodeProvider(kit.repo, bare=True, executable=["x"]).guard,
-                             {"version": "1", "max_lines": 7, "max_chars": 120})
+            self.assertEqual(ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY).guard,
+                             {"version": "2", "max_lines": 7, "max_chars": 120})
         with self.assertRaises(Rejected) as caught:
-            ClaudeCodeProvider(kit.repo, bare=True, executable=["x"], guard_max_chars=0)
+            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, guard_max_chars=0)
         self.assertEqual(caught.exception.code, "invalid_provider")
 
 
@@ -535,6 +710,38 @@ class GitHitsAB(ClaudeCodeCase):
         self.assertEqual(on.guard, off.guard)
         self.assertEqual(on_run["prompt"].split("\n\n")[0], "Objective: Add a CSV export (on)")
         self.assertEqual(parse_tools("Read, Edit mcp__githits"), ["Read", "Edit", "mcp__githits"])
+
+
+class Confinement(ClaudeCodeCase):
+    def test_every_call_is_restricted_and_names_its_built_in_tools(self):
+        """guard-hardening, finding 2(d): ``--restricted`` (in 2.1.309's ``--help`` and the CLI reference, 2.1.248
+        and later) confines the file tools to the working directories; ``--tools`` names the allowed built-ins, so
+        no code-running tool exists unless the operator names one. Neither flag was passed on 92074e1cd0."""
+        kit = self.kit()
+        command = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY).command()
+        self.assertIn("--restricted", command)
+        self.assertEqual(command[command.index("--tools") + 1], ",".join(DEFAULT_TOOLS))
+        self.assertNotIn("Bash", DEFAULT_TOOLS, "no shell by default: a shell could read the guard's key")
+        self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+        wide = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY,
+                                  allowed_tools=["Read", "Edit", "WebFetch", "Bash(git log *)", "mcp__githits"]).command()
+        self.assertEqual(wide[wide.index("--tools") + 1], "Read,Edit,WebFetch,Bash",
+                         "built-ins only (--tools does not affect MCP tools), a rule's specifier dropped")
+        self.assertEqual(wide[wide.index("--allowedTools") + 1], "Read,Edit,WebFetch,Bash(git log *),mcp__githits")
+
+
+class Version(ClaudeCodeCase):
+    def test_claude_code_older_than_2_1_295_or_without_a_version_is_refused(self):
+        """guard-hardening, finding 5: 92074e1cd0 never asked; an older Claude Code ignores onFailure: "block"."""
+        kit = self.kit()
+        for printed in ("2.1.294 (Claude Code)", "1.9.999 (Claude Code)", "Claude Code"):
+            with self.assertRaises(Rejected) as caught:
+                ClaudeCodeProvider(kit.repo, bare=True, executable=self.stand_in("old", version=printed))
+            self.assertEqual(caught.exception.code, "invalid_provider", printed)
+            self.assertIn("2.1.295", caught.exception.detail)
+        provider = ClaudeCodeProvider(kit.repo, bare=True, executable=self.stand_in("floor", version="2.1.295 (Claude Code)"))
+        self.assertEqual(provider.version, "2.1.295")
+        self.assertEqual(self.runs("floor"), [], "--version is answered before any call runs")
 
 
 class StreamParsing(unittest.TestCase):
@@ -601,7 +808,9 @@ class CommandLine(ClaudeCodeCase):
         self.assertEqual(self.run_cli("export", "--out", str(exported))[0], 0)
         events = json.loads(exported.read_text(encoding="utf-8"))["events"]
         registered = [e["body"] for e in events if e.get("kind") == "candidate_registered"]
-        self.assertEqual(registered[-1]["signal"]["guard"], {"version": "1", "max_lines": 2, "max_chars": 300})
+        policy = {"version": "2", "max_lines": 2, "max_chars": 300}
+        self.assertEqual(registered[-1]["signal"]["guard"],
+                         {**policy, "policy_digest": hashlib.sha256(json.dumps(policy).encode()).hexdigest()})
         lookups = [e["body"]["value"]["guard"] for e in events if e.get("kind") == "observed" and e["body"]["key"] == LOOKUP]
         self.assertEqual(lookups, ["pass", "pass"], "the CLI's lookups reach the journal without a callback")
 

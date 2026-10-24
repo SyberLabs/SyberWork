@@ -6,6 +6,8 @@ code, its output and the decision it leaves beside itself.
 """
 
 import json
+import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -55,10 +57,45 @@ class Rules(unittest.TestCase):
                          f"a line shorter than {guard.MIN_TREE_LINE} characters is too common to block")
         self.assertTrue(all(len(d) == guard.TREE_DIGEST_CHARS for d in tree), "digests, never the text")
 
+    def test_unicode_evasions_are_judged_folded(self):
+        """guard-hardening, finding 1: each of these passed ``judge`` on 92074e1cd0."""
+        key = "ghp_" + "Z" * 36
+        cases = [
+            ("ghp_ZZZZZZ\u200b" + "Z" * 30, "secret", "a zero-width space inside a key"),
+            ("ghp_" + "Z" * 18 + "\u2060" + "Z" * 18, "secret", "a word joiner inside a key"),
+            ("use \uff53\uff4b-" + "a" * 24 + " in the header", "secret", "a fullwidth sk-"),
+            ("g\u04bbp_" + "Z" * 36, "secret", "a Cyrillic shha in place of the h of ghp_"),
+            ("\u0410\u041a\u0406\u0410" + "Z" * 16, "secret", "Cyrillic letters spelling AKIA"),
+            ("\U0001d5c0\U0001d5c1\U0001d5c9_" + "Z" * 36, "secret", "mathematical sans-serif ghp"),
+            ("ask jane.doe\uff20example.com about requests", "email", "a fullwidth at sign"),
+            ("ask jane.doe@exam\u200cple.com about requests", "email", "a zero-width non-joiner in the domain"),
+            ("\uff40\uff40\uff40python\nimport requests\n\uff40\uff40\uff40", "code_fence", "fullwidth backticks"),
+        ]
+        for text, rule, why in cases:
+            self.assertEqual(guard.judge(text), rule, why)
+        self.assertEqual(guard.fold("a\u200bb\u00adc"), "abc", "format characters (Cf) are removed")
+        self.assertEqual(guard.judge(key), "secret", "the plain key, as before")
+        for text in ("pydantic v2 model_validator usage", "risk-assessment library for python",
+                     "\u041a\u0430\u043a \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 requests retry",
+                     "na\u00efve bayes in scikit-learn"):
+            self.assertEqual(guard.judge(text), "pass", "plain and non-Latin questions still pass")
+
+    def test_keys_and_webfetch_prompt_are_judged(self):
+        """guard-hardening, finding 3: a credential used as a key, and WebFetch's prompt, passed on 92074e1cd0."""
+        self.assertEqual(guard.decide({"tool_name": "mcp__githits__search",
+                                       "tool_input": {"query": "retry", "filters": {SECRET: True}}}), "secret",
+                         "a dictionary key leaves the machine like a value")
+        self.assertEqual(guard.decide({"tool_name": "WebFetch", "tool_input": {"url": "https://docs.example.test/a",
+                                                                              "prompt": CODE}}), "code_lines",
+                         "WebFetch's prompt is processed off this machine, so it is judged")
+        self.assertEqual(guard.decide({"tool_name": "WebSearch", "tool_input": {"query": "csv", "extra": SECRET}}),
+                         "secret", "a field WebSearch adds later is judged too")
+        self.assertEqual(guard.outbound("WebFetch", {"url": "https://x.example.test/", "prompt": "summarize"}),
+                         ["url", "https://x.example.test/", "prompt", "summarize"])
+
     def test_what_is_judged_is_what_leaves(self):
         self.assertEqual(guard.decide({"tool_name": "WebFetch", "tool_input": {"url": "https://docs.example.test/a",
-                                                                              "prompt": CODE}}), "pass",
-                         "WebFetch's prompt goes to Anthropic's model; only its URL reaches the site")
+                                                                              "prompt": "the retry options"}}), "pass")
         self.assertEqual(guard.decide({"tool_name": "WebFetch", "tool_input": {"url": "https://u:p@x.example.test/"}}),
                          "url_credentials")
         self.assertEqual(guard.decide({"tool_name": "WebSearch", "tool_input": {"query": "csv dialects",
@@ -86,18 +123,23 @@ class Rules(unittest.TestCase):
             guard.policy(max_lines=0)
 
 
+KEY = "k" * 64  # a test key; a real one is secrets.token_hex(32), per call
+
+
 class Process(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.dir = Path(folder.name) / "guard"
+        self.addCleanup(guard.remove, self.dir)
         self.settings = guard.prepare(self.dir, guard.policy(), {guard.line_digest(PRIVATE_LINE)})
         [group] = json.loads(self.settings.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
         self.hook = group["hooks"][0]
+        self.env = {**os.environ, **guard.hook_environment(self.dir, KEY)}
 
-    def run_hook(self, payload: bytes):
+    def run_hook(self, payload: bytes, env=None):
         return subprocess.run([self.hook["command"], *self.hook["args"]], input=payload, capture_output=True, timeout=120,
-                              cwd=self.dir.parent)
+                              cwd=self.dir.parent, env=self.env if env is None else env)
 
     def call(self, name, tool_input, use_id="toolu_1"):
         return json.dumps({"session_id": "s", "hook_event_name": "PreToolUse", "cwd": str(self.dir.parent),
@@ -130,14 +172,20 @@ class Process(unittest.TestCase):
         done = self.run_hook(self.call("mcp__githits__search", {"query": "pydantic v2 model_validator usage"}))
         self.assertEqual((done.returncode, done.stdout, done.stderr), (0, b"", b""))
         [decision] = self.decisions()
-        self.assertEqual(decision, {"tool_use_id": "toolu_1", "tool": "mcp__githits__search",
-                                    "query_digest": guard.query_digest({"query": "pydantic v2 model_validator usage"}),
-                                    "rule": "pass"})
+        entry = {"tool_use_id": "toolu_1", "tool": "mcp__githits__search",
+                 "query_digest": guard.query_digest({"query": "pydantic v2 model_validator usage"}), "rule": "pass"}
+        self.assertEqual(decision, {**entry, "mac": guard.mac(entry, KEY)})
+        self.assertTrue(guard.authentic(decision, KEY))
+        self.assertFalse(guard.authentic({**decision, "rule": "secret"}, KEY), "the MAC covers the rule")
+        self.assertFalse(guard.authentic(decision, "other" * 8), "and only the call's key verifies it")
+        written = b"".join(p.read_bytes() for p in self.dir.rglob("*") if p.is_file())
+        self.assertNotIn(KEY.encode(), written, "the key is in the hook's environment, never in a file beside it")
 
     def test_a_guard_that_cannot_judge_blocks(self):
         done = self.run_hook(b"not json")
         self.assertEqual(done.returncode, guard.BLOCK_EXIT)
         self.assertIn(b"rule: guard_error", done.stderr)
+        os.chmod(self.dir / guard.POLICY_FILE, stat.S_IREAD | stat.S_IWRITE)
         (self.dir / guard.POLICY_FILE).unlink()
         done = self.run_hook(self.call("WebSearch", {"query": "fine"}))
         self.assertEqual(done.returncode, guard.BLOCK_EXIT, "a missing policy fails closed")
@@ -145,6 +193,38 @@ class Process(unittest.TestCase):
         done = subprocess.run([sys.executable, "-I", str(Path(guard.__file__).resolve())], input=b"{}", capture_output=True,
                               timeout=120)
         self.assertEqual(done.returncode, guard.BLOCK_EXIT, "no directory: blocked")
+
+    def test_the_policy_is_read_only_and_a_changed_policy_or_tree_file_blocks(self):
+        """guard-hardening, finding 2(c): on 92074e1cd0 a rewritten policy.json was obeyed."""
+        for name in (guard.POLICY_FILE, guard.TREE_FILE, guard.SETTINGS_FILE):
+            mode = stat.S_IMODE(os.stat(self.dir / name).st_mode)
+            self.assertEqual(mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH), 0, f"{name} is written read-only")
+        self.assertEqual(self.env[guard.POLICY_DIGEST_ENV], guard.file_digest(self.dir / guard.POLICY_FILE))
+        long_query = {"query": "q" * 600}
+        for name, text in ((guard.POLICY_FILE, json.dumps({"version": "2", "max_lines": 99, "max_chars": 100000})),
+                           (guard.TREE_FILE, "")):
+            path = self.dir / name
+            original = path.read_bytes()
+            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)  # what a process with the operator's rights could do
+            path.write_text(text, encoding="utf-8")
+            done = self.run_hook(self.call("WebSearch", long_query if name == guard.POLICY_FILE else {"query": PRIVATE_LINE}))
+            self.assertEqual(done.returncode, guard.BLOCK_EXIT, f"a changed {name} is refused, not obeyed")
+            self.assertIn(b"rule: guard_error", done.stderr)
+            path.write_bytes(original)
+        self.assertEqual([d["rule"] for d in self.decisions()], [guard.ERROR, guard.ERROR])
+
+    def test_without_the_key_or_a_tool_use_id_the_hook_blocks(self):
+        """guard-hardening, finding 2(a)/(b): a hook run outside the host's environment, or a call it cannot tie
+        to a tool use id, blocks; neither decision verifies, so the host reads the lookup as unguarded."""
+        env = {k: v for k, v in self.env.items() if k != guard.KEY_ENV}
+        done = self.run_hook(self.call("WebSearch", {"query": "fine"}), env=env)
+        self.assertEqual(done.returncode, guard.BLOCK_EXIT, "no key: blocked")
+        done = self.run_hook(self.call("WebSearch", {"query": "fine"}, use_id=None))
+        self.assertEqual(done.returncode, guard.BLOCK_EXIT, "no tool_use_id: blocked")
+        found = sorted(self.decisions(), key=lambda d: d["mac"] is None)
+        self.assertEqual([d["rule"] for d in found], [guard.ERROR, guard.ERROR])
+        self.assertEqual([guard.authentic(d, KEY) for d in found], [True, False], "a key-less decision has no MAC")
+        self.assertIsNone(found[0]["tool_use_id"])
 
     def test_malformed_decision_files_are_skipped(self):
         (self.dir / guard.DECISIONS / "x.json").write_text("{", encoding="utf-8")
