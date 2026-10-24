@@ -1,0 +1,32 @@
+{
+  "schema": "attest.receipt/v0",
+  "case_id": "a1812ca4f8bd-counter.promise-1",
+  "created_at": "2026-10-24T22:25:56+00:00",
+  "doc": {
+    "source": "demo/counter.md",
+    "sha256_before": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sha256_after": null
+  },
+  "claim": {
+    "id": "counter.promise",
+    "kind": "browser",
+    "lines": [10, 10],
+    "text": "increments by one",
+    "expects_before": {
+      "label": "1"
+    },
+    "expects_after": {
+      "label": "2"
+    }
+  },
+  "authority": {
+    "policy": "demo/attest.policy.yaml",
+    "decision": "authorized"
+  },
+  "proposal": {},
+  "approval": {},
+  "evidence": [],
+  "handoff": {},
+  "disposition": "recorded",
+  "verified": false
+}
