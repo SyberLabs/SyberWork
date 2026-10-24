@@ -1,0 +1,6 @@
+{
+  "default": {
+    "type": "openai",
+    "model": "gpt-5-mini"
+  }
+}
