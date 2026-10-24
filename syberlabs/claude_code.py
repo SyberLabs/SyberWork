@@ -37,8 +37,11 @@ the host writes in its own directory outside the worktree that holds one ``PreTo
 host's own ``query_guard.py`` by absolute path, matched to ``mcp__githits__*``, ``WebSearch`` and ``WebFetch``. It
 blocks a lookup whose query carries a credential, an email, a URL with credentials, code (more than ``max_lines``
 lines, a fence, more than ``max_chars`` characters) or a line copied from the worktree's tracked files, and writes
-its decision (rule name, never text) beside itself with an HMAC under a random per-call key that only the
-environment of Claude Code (and so of the hook it starts) holds. A blocked lookup is still a lookup: its record has
+its decision (rule name, never text) beside itself with an HMAC under a random per-call key that no file holds. The
+key is in Claude Code's environment, and every child of Claude Code inherits it: the hook, every stdio MCP server
+(the GitHits server process) and any code-running tool the operator allows. A verifying MAC therefore shows that a
+process holding the key wrote the decision, which a model limited to the file tools cannot do; it does not show
+that the hook wrote it. A blocked lookup is still a lookup: its record has
 ``ok: false`` and ``guard: <rule>``; an allowed one ``guard: "pass"``. A decision counts only when its MAC verifies
 and its ``tool_use_id``, tool and query digest equal the stream's lookup exactly; a lookup without one is recorded
 ``guard: "unguarded"`` and stops the search (``provider_guard_inactive``): the guard did not run, or its record was
@@ -50,7 +53,11 @@ confined to the working directories, only managed settings and ``--settings`` lo
 run commands or code, and ``WebFetch``, are removed unless ``--tools`` names them) and ``--tools`` with the
 built-in names of the allowed tools, so the guard's directory, which is outside the worktree, is out of the file
 tools' reach, and a code-running tool that could read the MAC key from the environment exists only when the
-operator allows it by name.
+operator allows it by name. When ``--mcp-config`` names any MCP server, an allowed code-running built-in
+(``CODE_TOOLS``: ``Bash`` and ``PowerShell``, the ones ``--restricted``'s help names) is refused when the provider
+is built (``invalid_provider``): a shell beside a server that already holds the key leaves the MAC nothing to
+prove. ``allow_code_tools_with_mcp`` (``--allow-code-tools-with-mcp``) overrides, and is recorded as
+``signal.guard.allow_code_tools_with_mcp``.
 
 Credential lanes (bring your own credential: SyberLabs never stores, pools or forwards a credential; the operator's
 own Claude Code runs under their own login, or ``--bare`` with their API key). ``api`` (``--bare``, the default
@@ -79,8 +86,8 @@ model must not write the next call's instructions. The base's own files are the 
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import importlib.util
+import json
 import os
 import posixpath
 import re
@@ -108,6 +115,11 @@ COST_BASES = ("billed", "estimated", "none")
 LANE_COST = {"api": "billed", "provider_3p": "estimated", "subscription_local": "none", "seat_team_enterprise": "none"}
 BIN_ENV = "SYBERLABS_CLAUDE_BIN"  # the Claude Code executable (a path, or a command line); default ``claude`` on PATH
 DEFAULT_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep")  # no Bash: a shell could read the guard's key
+# The built-in tools that run commands or code that ``--restricted``'s help names (2.1.309: "Bash, PowerShell and
+# the other code-running tools"); refused beside an MCP server unless the operator overrides. Compared ignoring case.
+CODE_TOOLS = ("Bash", "PowerShell")
+# ``claude --version`` as Claude Code documents it, the whole output: anything else is refused, never searched.
+VERSION_OUTPUT = re.compile(r"(\d+)\.(\d+)\.(\d+) \(Claude Code\)")
 MIN_VERSION = (2, 1, 295)  # ``onFailure: "block"`` on a command hook (code.claude.com/docs/en/hooks)
 LOOKUP = "lookup"  # observed: one GitHits or web lookup, versioned ``<search>.<call>.<n>``
 WEB_TOOLS = {"WebSearch": "web_search", "web_search": "web_search", "WebFetch": "web_fetch", "web_fetch": "web_fetch"}
@@ -182,8 +194,26 @@ def instruction_link(path: str, target: str) -> bool:
 
 
 def version_tuple(text: str) -> tuple[int, int, int] | None:
-    found = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+    """``(X, Y, Z)`` when the output, stripped, is exactly ``X.Y.Z (Claude Code)``; None otherwise, so a banner or
+    any other line before or after the version fails closed instead of lending its own number."""
+    found = VERSION_OUTPUT.fullmatch(text.strip())
     return (int(found[1]), int(found[2]), int(found[3])) if found else None
+
+
+def code_tools(tools: Sequence[str]) -> list[str]:
+    """The ``CODE_TOOLS`` among ``--allowedTools`` entries (``Bash(git *)`` is ``Bash``), compared ignoring case."""
+    named = {name.lower() for name in CODE_TOOLS}
+    return [name for name in built_in_tools(tools) if name.lower() in named]
+
+
+def names_mcp_server(path: Path) -> bool:
+    """False only for a JSON object whose ``mcpServers`` is absent or an empty object; a file that cannot be read
+    or parsed, or any other shape, counts as naming a server (fail closed)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(data, dict) and data.get("mcpServers", {}) == {})
 
 
 def built_in_tools(tools: Sequence[str]) -> list[str]:
@@ -353,7 +383,7 @@ class Transcript:
             if not is_lookup(use["name"]):
                 continue
             query = query_text(use["input"])
-            digest = hashlib.sha256(query.encode()).hexdigest()
+            digest = query_guard.query_digest(use["input"])  # the hook's own function: a lone surrogate agrees
             match = next((d for d in verified if d["tool_use_id"] == use_id and d["tool"] == use["name"][:64]
                           and d["query_digest"] == digest), None)
             if match is not None:
@@ -454,7 +484,8 @@ class ClaudeCodeProvider(RepairProvider):
                  mcp_config: str | Path | None = None, allowed_tools: Sequence[str] | None = None,
                  max_turns: int | None = None, lane: str | None = None, executable: Sequence[str] | None = None,
                  name: str = "claude-code", revision: str = "1", timeout: int = 1800, max_calls: int | None = None,
-                 guard_max_lines: int | None = None, guard_max_chars: int | None = None):
+                 guard_max_lines: int | None = None, guard_max_chars: int | None = None,
+                 allow_code_tools_with_mcp: bool = False):
         lane = lane or ("api" if bare else "subscription_local")
         if lane not in LANES:
             raise Rejected("invalid_provider", "lane must be one of " + ", ".join(LANES))
@@ -479,6 +510,14 @@ class ClaudeCodeProvider(RepairProvider):
             mcp_config = Path(mcp_config).resolve()
             if not mcp_config.is_file():
                 raise Rejected("invalid_provider", f"--mcp-config {mcp_config} is not a file")
+            risky = code_tools(tools)
+            if risky and not allow_code_tools_with_mcp and names_mcp_server(mcp_config):
+                raise Rejected("invalid_provider",
+                               f"refusing {', '.join(risky)} with --mcp-config naming an MCP server: the query "
+                               "guard's decision-signing key is in Claude Code's environment, which every child "
+                               "inherits (the MCP server holds it already), and a code-running tool can read it and "
+                               "sign a forged decision. Drop the tool, or pass --allow-code-tools-with-mcp to "
+                               "accept that (recorded in signal.guard)")
         try:
             guard = query_guard.policy(guard_max_lines, guard_max_chars)
         except ValueError as exc:
@@ -489,6 +528,7 @@ class ClaudeCodeProvider(RepairProvider):
         self.bare, self.trusted_tree, self.lane, self.cost_basis = bare, trusted_tree, lane, LANE_COST[lane]
         self.mcp_config, self.allowed_tools, self.max_turns = mcp_config, tools, max_turns
         self.guard = guard  # host policy: {version, max_lines, max_chars}
+        self.allow_code_tools_with_mcp = bool(allow_code_tools_with_mcp)  # the operator's override, on the signal
         self.lookups: list[dict] = []  # every lookup of every call, as recorded (digests, never query text)
         self.version = self._installed_version()
 
@@ -626,7 +666,8 @@ class ClaudeCodeProvider(RepairProvider):
                            "docs/CLAUDE_CODE.md, the query guard")
         signal = {"lane": self.lane, "cost_basis": self.cost_basis,
                   "harness": {**transcript.harness(), "installed_version": self.version},
-                  "guard": {**self.guard, "policy_digest": hook_env[query_guard.POLICY_DIGEST_ENV]}}
+                  "guard": {**self.guard, "policy_digest": hook_env[query_guard.POLICY_DIGEST_ENV],
+                            **({"allow_code_tools_with_mcp": True} if self.allow_code_tools_with_mcp else {})}}
         turns = transcript.result.get("num_turns")
         if type(turns) is int and turns >= 0:
             signal["harness_turns"] = turns

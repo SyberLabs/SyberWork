@@ -27,7 +27,11 @@ tree file does not match the digest the host gave it, or whose input carries no 
 
 Every decision is written to ``decisions/`` beside the hook as ``{tool_use_id, tool, query_digest, rule, mac}``: no
 query text. ``mac`` is HMAC-SHA256 over the other four fields under a random per-call key the host puts in Claude
-Code's environment (``KEY_ENV``), which a hook inherits; no file beside the hook holds it. The host
+Code's environment (``KEY_ENV``). No file holds it, but the hook is not its only holder: every child of Claude Code
+inherits that environment, the hook, every stdio MCP server (the GitHits server process) and any code-running tool
+the operator allows. So a verifying MAC shows that a process holding the key wrote the decision, which a model
+limited to the file tools cannot do; it does not show that this hook wrote it, and an MCP server or a shell could
+sign one (``claude_code`` refuses a code-running tool beside an MCP server unless the operator overrides). The host
 (``syberlabs.claude_code``) reads the decisions after the run, keeps only those whose MAC verifies, and records each
 lookup with its ``guard``: the rule, ``pass``, or ``unguarded`` when no verified decision carries the lookup's exact
 tool use id, tool and query digest.
@@ -76,6 +80,7 @@ DECISION_FIELDS = ("tool_use_id", "tool", "query_digest", "rule")  # what the MA
 POLICY_FILE, TREE_FILE, SETTINGS_FILE = "policy.json", "tree_lines.txt", "settings.json"
 # What the host hands the hook through Claude Code's environment, which a command hook inherits (the hooks reference
 # documents no per-hook ``env`` field): the per-call MAC key and the SHA-256 of the policy and tree files it wrote.
+# Every other child of Claude Code inherits them too, stdio MCP servers included.
 KEY_ENV = "SYBERLABS_GUARD_KEY"
 POLICY_DIGEST_ENV, TREE_DIGEST_ENV = "SYBERLABS_GUARD_POLICY_DIGEST", "SYBERLABS_GUARD_TREE_DIGEST"
 BLOCK_EXIT = 2  # Claude Code: a PreToolUse hook that exits 2 blocks the call; its stderr is the reason the model sees
@@ -118,8 +123,15 @@ def query_text(tool_input) -> str:
     return canonical(tool_input if tool_input is not None else {})
 
 
+def utf8(text: str) -> bytes:
+    """``text`` as UTF-8 with a lone surrogate (what a JSON escape of U+D800 to U+DFFF decodes to) kept as its
+    three bytes (``surrogatepass``) instead of raising. The hook and the host digest with this one function, so
+    their digests of the same query agree."""
+    return text.encode("utf-8", "surrogatepass")
+
+
 def query_digest(tool_input) -> str:
-    return hashlib.sha256(query_text(tool_input).encode()).hexdigest()
+    return hashlib.sha256(utf8(query_text(tool_input))).hexdigest()
 
 
 def outbound(tool_name: str, tool_input) -> list[str]:
@@ -160,7 +172,7 @@ def normalized(line: str) -> str:
 
 
 def line_digest(line: str) -> str:
-    return hashlib.sha256(normalized(line).encode()).hexdigest()[:TREE_DIGEST_CHARS]
+    return hashlib.sha256(utf8(normalized(line))).hexdigest()[:TREE_DIGEST_CHARS]
 
 
 def tree_digests(root: Path, paths) -> set[str]:
@@ -321,7 +333,7 @@ def remove(directory: Path) -> None:
 
 def mac(entry: dict, key: str) -> str:
     """HMAC-SHA256 of a decision's four fields (``DECISION_FIELDS``, as canonical JSON) under the per-call key."""
-    message = canonical({field: entry.get(field) for field in DECISION_FIELDS}).encode("utf-8")
+    message = utf8(canonical({field: entry.get(field) for field in DECISION_FIELDS}))
     return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
@@ -355,7 +367,7 @@ def _record(directory: Path, call: dict, rule: str, key: str) -> None:
     entry = {"tool_use_id": tool_use_id, "tool": tool[:64], "query_digest": digest, "rule": rule}
     if key:
         entry["mac"] = mac(entry, key)
-    name = hashlib.sha256(canonical([tool_use_id, tool, digest, os.getpid(), os.urandom(8).hex()]).encode()).hexdigest()
+    name = hashlib.sha256(utf8(canonical([tool_use_id, tool, digest, os.getpid(), os.urandom(8).hex()]))).hexdigest()
     folder = directory / DECISIONS
     temporary = folder / f".{name}.tmp"
     temporary.write_text(json.dumps(entry), encoding="utf-8")

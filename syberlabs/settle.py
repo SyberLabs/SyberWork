@@ -58,9 +58,10 @@ MAX_BYTES = 1_048_576
 PER_PAGE = 100
 MAX_PAGES = 10
 REVIEW_STATES = ("approved", "changes_requested", "commented", "dismissed")
-_LOGIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$")
-_SHA = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
-_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$")
+# Matched with ``fullmatch``: ``re.match`` with ``$`` also accepts the text followed by one trailing newline.
+_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?")
+_SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})")
 
 
 class PollFailed(Exception):
@@ -178,7 +179,7 @@ def _login(user) -> str | None:
     if user is None:
         return None
     login = user.get("login") if isinstance(user, dict) else None
-    if not isinstance(login, str) or not _LOGIN.match(login):
+    if not isinstance(login, str) or not _LOGIN.fullmatch(login):
         raise PollFailed("unexpected login in the response")
     return login
 
@@ -193,7 +194,7 @@ def _optional_time(value) -> str | None:
 
 
 def _time(value) -> str:
-    if not isinstance(value, str) or not _TIME.match(value) or metrics.parse_time(value) is None:
+    if not isinstance(value, str) or not _TIME.fullmatch(value) or metrics.parse_time(value) is None:
         raise PollFailed("unexpected time in the response")
     return value
 
@@ -257,7 +258,7 @@ def poll(kit, target: Published, *, environ: Mapping[str, str] | None = None,
         merged = closed = None
         if pull.get("merged") is True or merged_at:
             commit = pull.get("merge_commit_sha")
-            if not isinstance(commit, str) or not _SHA.match(commit):
+            if not isinstance(commit, str) or not _SHA.fullmatch(commit):
                 raise PollFailed("unexpected merge commit in the response")
             merged = {"number": target.number, "merged_at": _time(merged_at), "merge_commit": commit,
                       "merged_by": _login(pull.get("merged_by"))}
