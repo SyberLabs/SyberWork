@@ -1339,6 +1339,18 @@ class Thread:
             raise Rejected("invalid_review", str(exc)) from None
         return self.kit.session.observe(self.id, metrics.REVIEW, value, HOST, revision, HOST, verified=True)
 
+    def record_experiment(self, name: str, *, item: str, arm: str, by: str, tags: Sequence[str] = ()) -> dict:
+        """Put this thread in one arm of an experiment: ``observed{key: experiment}``, value ``{name, item, arm, tags, by,
+        at}``, versioned by the experiment's name. Write it before the first candidate; ``syberlabs experiment report``
+        marks a label written later (``docs/EXPERIMENTS.md``)."""
+        from syberlabs import experiment
+
+        try:
+            value = experiment.label_value(name, item, arm, by, metrics.utc(stamp(time.time())), tags)
+        except ValueError as exc:
+            raise Rejected("invalid_experiment", str(exc)) from None
+        return self.kit.session.observe(self.id, experiment.KEY, value, HOST, name, HOST, verified=True)
+
     def recover(self, *, actor: str | None = None, roles: Sequence[str] | None = None) -> list[Receipt]:
         """Settle interrupted acceptances and publishing effects by reading their destinations."""
         actor, roles = actor or self.kit.actor, list(roles or self.kit.roles)
