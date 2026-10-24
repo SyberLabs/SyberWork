@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from syberlabs.attest_bridge.types import (
@@ -13,6 +15,7 @@ from syberlabs.attest_bridge.types import (
 )
 
 _RECORD_TYPES = (RunReceipt, AuthorityDecision, HandoffPackage)
+ATTEST_RECEIPT_SCHEMA = "attest.receipt/v0"
 
 
 def record_to_observation_payload(
@@ -37,6 +40,29 @@ def record_to_observation_payload(
         "actor": actor,
         "verified": False,
     }
+
+
+def receipt_file_to_observation_payload(
+    receipt_path: str | Path, *, actor: str
+) -> dict[str, Any]:
+    """Read an Attest ``attest.receipt/v0`` JSON file as an unverified observation.
+
+    The receipt remains opaque payload data. Its schema tag identifies the
+    input format; it is not a signature check, authority grant, or destination
+    verification.
+    """
+    path = Path(receipt_path)
+    try:
+        receipt_json = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid Attest receipt JSON in {path}") from exc
+    if not isinstance(receipt_json, dict):
+        raise TypeError("Attest receipt file must contain a JSON object")
+    if receipt_json.get("schema") != ATTEST_RECEIPT_SCHEMA:
+        raise ValueError(f"Attest receipt schema must be {ATTEST_RECEIPT_SCHEMA}")
+    return receipt_json_to_observation_payload(
+        receipt_json, source_version=ATTEST_RECEIPT_SCHEMA, actor=actor
+    )
 
 
 def receipt_json_to_observation_payload(

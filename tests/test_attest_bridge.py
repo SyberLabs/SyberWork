@@ -1,10 +1,14 @@
 """Attest artifacts remain observations; external effects need destination proof."""
 
+import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from adapters.attest_observe import (
+    receipt_file_to_observation_payload,
     receipt_json_to_observation_payload,
     record_to_observation_payload,
 )
@@ -38,6 +42,53 @@ class AttestObservationTypes(unittest.TestCase):
             )
         with self.assertRaises(ValueError):
             receipt_json_to_observation_payload({}, source_version="", actor="importer")
+
+
+class AttestReceiptFileImport(unittest.TestCase):
+    def test_receipt_file_becomes_unverified_observation(self):
+        receipt = {
+            "schema": "attest.receipt/v0",
+            "case_id": "fixture-42",
+            "authority": {"decision": "allow"},
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / ".attest" / "receipts" / "fixture-42.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            observation = receipt_file_to_observation_payload(path, actor="attest-importer")
+
+        self.assertEqual(observation["key"], "attest.run_receipt")
+        self.assertEqual(observation["value"], {"kind": "run_receipt", "payload": receipt})
+        self.assertEqual(observation["version"], "attest.receipt/v0")
+        self.assertFalse(observation["verified"])
+
+    def test_receipt_file_requires_attest_v0_schema_tag(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "receipt.json"
+            path.write_text('{"schema": "attest.receipt/v1"}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "attest.receipt/v0"):
+                receipt_file_to_observation_payload(path, actor="attest-importer")
+
+    def test_cli_reads_receipt_path_and_labels_reconciliation_as_simulated(self):
+        receipt = {"schema": "attest.receipt/v0", "case_id": "fixture-42", "status": "passed"}
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "receipt.json"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            root = Path(__file__).resolve().parents[1]
+            result = subprocess.run(
+                [sys.executable, "examples/attest_factory_slice.py", "--receipt", str(path)],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        output = json.loads(result.stdout)
+        self.assertEqual(output["attest_receipt_source_version"], "attest.receipt/v0")
+        self.assertFalse(output["attest_receipt_verified"])
+        self.assertEqual(output["simulated_syberwork_destination_reconciliation"], "verified")
+        self.assertTrue(output["destination_is_simulated"])
+        self.assertFalse(output["receipt_fixture_only"])
 
 
 class AttestCannotReconcileAnExternalWrite(unittest.TestCase):
