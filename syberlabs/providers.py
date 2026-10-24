@@ -10,6 +10,9 @@
   the host's evaluation of the last candidate did not pass, another request that
   carries that candidate's check results and file texts as ``feedback``. It is
   the factory's default proposer path (owner decision of 2026-10-23).
+- ``syberlabs.claude_code.ClaudeCodeProvider`` is that loop with the operator's
+  own Claude Code as the call: ``claude -p`` in a worktree of the parent, the
+  change read back with git, usage and lookups parsed from its stream.
 
 ``run_json`` is also where the host observes spend. Inside ``metered(meter)``
 every call asks the meter's ``permit()`` before the command runs and hands the
@@ -62,6 +65,12 @@ def metered(meter):
         yield meter
     finally:
         _METER.reset(token)
+
+
+def current_meter():
+    """The usage meter of the search running in this context, or None. A provider that buys model calls without
+    ``run_json`` (``syberlabs.claude_code``) asks it ``permit()`` before a call and hands it ``observe(usage)`` after."""
+    return _METER.get()
 
 
 def refuse(space, reason: str, operator: str, parents=(), usage=None) -> None:
@@ -320,6 +329,12 @@ class RepairProvider:
         return (left.max_candidates > 0 and left.max_evaluations > 0 and left.max_seconds > 0
                 and (max_dollars is None or max_dollars > 0) and not getattr(space, "over_budget", False))
 
+    def _call(self, space: SearchSpace, request: dict, parents: list[str]):
+        """One model call: the search-protocol ``request`` in, the protocol's response out. ``parents`` is the
+        candidate being repaired (empty on the first call). A subclass may run something other than ``argv``
+        (``syberlabs.claude_code.ClaudeCodeProvider``); it raises ``Rejected`` with a ``provider_*`` code on failure."""
+        return run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
+
     def _request(self, space: SearchSpace, rng: random.Random, previous: str | None) -> dict:
         budget = space.remaining()
         request = {
@@ -357,7 +372,7 @@ class RepairProvider:
             self.trace.append(entry)
             self.calls, made_calls = self.calls + 1, made_calls + 1
             try:
-                response = run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd)
+                response = self._call(space, request, parents)
             except Rejected as exc:
                 if exc.code.startswith("provider_"):
                     refuse(space, "provider_error", "patch", parents or ["base"])

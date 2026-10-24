@@ -4,6 +4,7 @@
     syberlabs start "Add a CSV export" --paths src tests
     syberlabs context
     syberlabs propose --from-worktree          # or --command ./my_model_adapter
+    syberlabs propose --claude-code --bare     # the operator's own Claude Code in the repair loop (docs/CLAUDE_CODE.md)
     syberlabs check c1
     syberlabs findings c1                      # what the contract's critic found
     syberlabs diff c1
@@ -31,7 +32,7 @@ from pathlib import Path
 from syberlabs import certificate
 from syberlabs import critic
 from syberlabs import metrics
-from syberlabs.build import ACT_CLASSES, Kit, hint
+from syberlabs.build import ACT_CLASSES, HOST, Kit, hint
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.gitspace import Repo
@@ -147,8 +148,25 @@ def main(argv: list[str] | None = None) -> int:
                         help="repair loop, the default proposer path: the command proposes one patch under the search "
                              "protocol, then is asked again with the host's check results and the failed candidate's "
                              "files until a candidate passes or the budget stops it")
+    source.add_argument("--claude-code", action="store_true",
+                        help="repair loop with the operator's own Claude Code as the call: claude -p in a worktree of "
+                             "the parent, the change read back with git (docs/CLAUDE_CODE.md)")
     propose.add_argument("--max-calls", type=int,
-                         help="for --repair: the most adapter calls in this search (default: the search's candidate budget)")
+                         help="for --repair and --claude-code: the most calls in this search (default: the search's "
+                              "candidate budget; 1 is one shot)")
+    propose.add_argument("--bare", action="store_true",
+                         help="for --claude-code: claude --bare, API key from the environment (lane api, billed)")
+    propose.add_argument("--trusted-tree", action="store_true",
+                         help="for --claude-code without --bare: declare this repository trusted; a non-bare claude -p "
+                              "runs project hooks and .mcp.json servers with no trust prompt")
+    propose.add_argument("--mcp-config", metavar="FILE", help="for --claude-code: an MCP server file (--strict-mcp-config "
+                                                              "is always passed)")
+    propose.add_argument("--allowed-tools", metavar="LIST",
+                         help="for --claude-code: tools allowed without a prompt, comma separated "
+                              "(default Read,Edit,Write,Glob,Grep)")
+    propose.add_argument("--max-turns", type=int, help="for --claude-code: claude --max-turns")
+    propose.add_argument("--lane", choices=("api", "subscription_local", "seat_team_enterprise", "provider_3p"),
+                         help="for --claude-code: the credential lane (default api with --bare, else subscription_local)")
     propose.add_argument("--population", type=int, default=4)
     propose.add_argument("--generations", type=int, default=6)
     propose.add_argument("--crossover-every", type=int, default=3)
@@ -164,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
                               "search's rounds) or jev (one action per decision, by expected admission per dollar)")
     propose.add_argument("--message", default="")
     propose.add_argument("--name", help="provider name, recorded as the acting agent platform; "
-                                        "default patch for --from-worktree, repair for --repair, command otherwise")
+                                        "default patch for --from-worktree, repair for --repair, claude-code for "
+                                        "--claude-code, command otherwise")
     propose.add_argument("--revision", default="1")
     check = commands.add_parser("check", help="run the contract's checks and ask admission")
     check.add_argument("candidate")
@@ -479,6 +498,18 @@ def _run(kit: Kit, args) -> int:
         elif args.repair:
             provider = RepairProvider(split_command(args.repair), name=args.name or "repair", revision=args.revision,
                                       cwd=kit.repo.root, max_calls=args.max_calls)
+            found = thread.propose(provider, seed=args.seed)
+        elif args.claude_code:
+            from syberlabs.claude_code import ClaudeCodeProvider, parse_tools
+
+            def observe(key, value, version, case=thread.id):
+                kit.session.observe(case, key, value, HOST, version, HOST, verified=True)
+
+            provider = ClaudeCodeProvider(kit.repo, bare=args.bare, trusted_tree=args.trusted_tree,
+                                          mcp_config=args.mcp_config, max_turns=args.max_turns, lane=args.lane,
+                                          allowed_tools=parse_tools(args.allowed_tools) if args.allowed_tools else None,
+                                          name=args.name or "claude-code", revision=args.revision,
+                                          max_calls=args.max_calls, observe=observe)
             found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(split_command(args.provider_command), name=args.name or "command", revision=args.revision,

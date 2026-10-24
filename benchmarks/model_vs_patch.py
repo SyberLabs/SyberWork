@@ -63,7 +63,7 @@ from examples.evolve import git  # noqa: E402
 from syberlabs import Kit, Rejected  # noqa: E402
 from benchmarks.simulated_model import PROFILES  # noqa: E402
 from syberlabs.evolve import CommandMutator, EmpiricalPolicy, EvolutionaryProvider, JevPolicy  # noqa: E402
-from syberlabs.providers import model_usage, run_json, split_command  # noqa: E402
+from syberlabs.providers import model_usage, run_json, split_command, tool_usage  # noqa: E402
 
 SIMULATED = f"{sys.executable} {ROOT / 'benchmarks' / 'simulated_model.py'}"
 ARMS = ("single", "best_of_k", "repair", "evolve", "evolve_empirical", "evolve_jev")
@@ -143,7 +143,8 @@ class Patches:
             try:
                 made = space.submit(items[0]["changes"], parents=[previous] if (self.repair and previous) else [],
                                     operator="patch", message=items[0].get("message", "")[:200],
-                                    signal={**(items[0].get("signal") or {}), **({"model_usage": usage} if usage else {})})
+                                    signal={**(items[0].get("signal") or {}), **({"model_usage": usage} if usage else {}),
+                                            **({"tool_usage": tool_usage(response)} if tool_usage(response) else {})})
             except Rejected as exc:
                 if exc.code in ("no_change", "invalid_change"):
                     continue

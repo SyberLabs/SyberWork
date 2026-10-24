@@ -15,9 +15,13 @@ Derivations (``docs/METRICS.md`` has the full table):
   the ``candidate_registered.spend`` of its registrations), labelled ``cost_basis``: ``host_observed`` when a
   model call crossed the host's meter, ``declared`` when a provider only declared ``model_usage`` (dollars
   unknown), ``none`` when nothing was recorded (dollars unknown: the work happened outside the host).
+  ``lane`` is the registrations' declared credential lane (``signal.lane``: ``api``, ``subscription_local``,
+  ``seat_team_enterprise``, ``provider_3p``; ``mixed`` when they differ); on a lane whose ``signal.cost_basis`` is
+  ``none`` (no per-call bill) cost stays unknown and says why.
 - ``turns``: model calls with declared usage: registrations and ``proposal_refused`` records carrying
-  ``model_usage`` (adjacent records with identical usage are one call), plus ``critic_usage`` facts. Unknown
-  when any registration carries no usage (that work happened outside the host's view).
+  ``model_usage`` (adjacent records with identical usage are one call; a registration whose signal declares
+  ``harness_turns``, a harness run such as Claude Code's ``num_turns``, counts as that many), plus ``critic_usage``
+  facts. Unknown when any registration carries no usage (that work happened outside the host's view).
 - ``agent_time``: hours from ``case_created`` to the ``pr_merged`` fact's ``merged_at``; unknown without it.
 - ``fix_rounds``: registrations that follow a failed evaluation (a required check not ``passed``).
 - ``web_lookups`` / ``githits_lookups``: the adapter-declared ``signal.tool_usage`` counts; unknown unless
@@ -108,6 +112,7 @@ class WorkItemMetrics:
     review_rejections: Metric
     human_interventions: Metric
     index: Mapping[str, tuple[int, str]] = field(default_factory=dict, repr=False, compare=False)
+    lane: str | None = None
 
     def metric(self, name: str) -> Metric:
         if name not in METRICS + ("opened",):
@@ -120,7 +125,8 @@ class WorkItemMetrics:
     def to_dict(self) -> dict:
         found = {"thread": self.thread, "contract": self.contract, "act_class": self.act_class,
                  "started_at": utc(self.started_at), "unattended": self.unattended, "cancelled": self.cancelled,
-                 "pull_request": self.pull_request, "cost_basis": self.cost_basis, "opened": self.opened.to_dict()}
+                 "pull_request": self.pull_request, "cost_basis": self.cost_basis, "lane": self.lane,
+                 "opened": self.opened.to_dict()}
         found.update({name: self.metric(name).to_dict() for name in METRICS})
         return found
 
@@ -222,6 +228,27 @@ def _add(dollars: list, basis: list, event_hash: str, spend: dict) -> None:
     basis.append(event_hash)
 
 
+def _harness_turns(signal) -> int:
+    """The calls one registration stands for: ``signal.harness_turns`` when a harness declared it, else one."""
+    turns = signal.get("harness_turns") if isinstance(signal, dict) else None
+    return turns if type(turns) is int and turns >= 1 else 1
+
+
+def _lane(registrations: list[dict], cost: Metric) -> tuple[str | None, Metric]:
+    """The registrations' declared lane, and the cost labelled with it. A lane without a per-call bill
+    (``signal.cost_basis`` ``none``) leaves an unknown cost unknown, with the reason."""
+    signals = [e["body"].get("signal") for e in registrations]
+    lanes = {s.get("lane") for s in signals if isinstance(s, dict) and isinstance(s.get("lane"), str)}
+    if not lanes:
+        return None, cost
+    lane = lanes.pop() if len(lanes) == 1 else "mixed"
+    bases = {s.get("cost_basis") for s in signals if isinstance(s, dict) and isinstance(s.get("lane"), str)}
+    if cost.value is None and bases == {"none"}:
+        return lane, Metric(None, cost.basis, f"lane {lane}: no per-call bill (cost_basis none); Claude Code's "
+                                              "estimated_usd is an estimate, not spend")
+    return lane, Metric(cost.value, cost.basis, f"{cost.note}; lane {lane}, cost_basis {'/'.join(sorted(map(str, bases)))}")
+
+
 def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
     created = next((e for e in events if e["kind"] == "case_created"), None)
     body = created["body"] if created else {}
@@ -234,23 +261,27 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
     cancel = next((e for e in events if e["kind"] == "case_cancelled"), None)
 
     cost_basis, cost = _cost(events)
+    lane, cost = _lane(registrations, cost)
 
     # Turns: model calls whose usage is declared on a record. One call can leave several records with the same usage
     # (the items after a repair call's first are refused ``limit``); adjacent records with identical usage are one call.
-    calls, previous = [], None
+    calls, previous, count = [], None, 0
     for event in events:
         critic_usage = fact(event, critic.USAGE_KEY)
         if critic_usage is not None and _usage(critic_usage.get("usage")):
             calls.append(event["hash"])
+            count += 1
             previous = None
             continue
-        usage, refused = None, fact(event, PROPOSAL_REFUSED)
+        usage, refused, turns = None, fact(event, PROPOSAL_REFUSED), 1
         if event["kind"] == "candidate_registered" and isinstance(event["body"].get("signal"), dict):
             usage = _usage(event["body"]["signal"].get("model_usage"))
+            turns = _harness_turns(event["body"]["signal"])
         elif refused is not None:
             usage = _usage(refused.get("model_usage"))
         if usage is not None and usage != previous:
             calls.append(event["hash"])
+            count += turns
         previous = usage
     blind = [e["hash"] for e in registrations
              if not (isinstance(e["body"].get("signal"), dict) and _usage(e["body"]["signal"].get("model_usage")))]
@@ -258,7 +289,8 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
         turns = Metric(None, tuple(blind), "a registration carries no declared usage: its calls were outside the host"
                        if blind else "no model call is recorded")
     else:
-        turns = Metric(len(calls), tuple(calls), "host-recorded calls with declared usage, critic calls included")
+        turns = Metric(count, tuple(calls), "host-recorded calls with declared usage (a harness run counts its "
+                                            "declared harness_turns), critic calls included")
 
     # Opened and delivered.
     opened_event, number = None, None
@@ -355,7 +387,7 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
     return WorkItemMetrics(
         thread=case_id, contract=f"{contract[0]}.v{contract[1]}" if isinstance(contract, list) and len(contract) == 2 else None,
         act_class=inputs.get("act_class"), started_at=created["at"] if created else None,
-        unattended=runner is not None, cancelled=cancel is not None, pull_request=number, cost_basis=cost_basis,
+        unattended=runner is not None, cancelled=cancel is not None, pull_request=number, cost_basis=cost_basis, lane=lane,
         opened=opened, cost=cost, turns=turns, agent_time=agent_time, fix_rounds=fix_rounds, web_lookups=web,
         githits_lookups=githits, delivered=delivered, review_rejections=review_rejections,
         human_interventions=interventions, index={e["hash"]: (e["seq"], e["kind"]) for e in events})
@@ -433,7 +465,8 @@ def table_rows(items: Iterable[WorkItemMetrics]) -> list[list[str]]:
     rows = []
     for i in items:
         rows.append([i.thread[:8], i.act_class or "", (utc(i.started_at) or "")[:16].replace("T", " "),
-                     f"{_cell(i.cost, money=True)} ({i.cost_basis})", _cell(i.turns), _cell(i.agent_time),
+                     f"{_cell(i.cost, money=True)} ({i.cost_basis}{', ' + i.lane if i.lane else ''})", _cell(i.turns),
+                     _cell(i.agent_time),
                      _cell(i.fix_rounds), _cell(i.web_lookups), _cell(i.githits_lookups),
                      ("#" + i.pull_request) if i.opened.value else "no", _cell(i.delivered),
                      _cell(i.review_rejections), _cell(i.human_interventions)])
@@ -450,10 +483,10 @@ def to_csv(items: Iterable[WorkItemMetrics]) -> str:
     out = io.StringIO()
     writer = csv.writer(out, lineterminator="\n")
     writer.writerow(["thread", "contract", "act_class", "started_at", "unattended", "cancelled", "pull_request",
-                     "cost_basis", "opened", *METRICS])
+                     "cost_basis", "lane", "opened", *METRICS])
     for i in items:
         writer.writerow([i.thread, i.contract or "", i.act_class or "", utc(i.started_at) or "", i.unattended, i.cancelled,
-                         i.pull_request or "", i.cost_basis, i.opened.value,
+                         i.pull_request or "", i.cost_basis, i.lane or "", i.opened.value,
                          *[UNKNOWN if not i.metric(name).known else i.metric(name).value for name in METRICS]])
     return out.getvalue()
 

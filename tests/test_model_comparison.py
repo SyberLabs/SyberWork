@@ -159,6 +159,22 @@ class Accounting(RepoCase):
         self.assertEqual((provider.calls, provider.usage), (1, [USAGE]))
         self.assertEqual(candidate.signal["model_usage"]["output_tokens"], 300)
 
+    def test_the_harness_copies_the_adapters_tool_usage_into_the_signal(self):
+        """E4 finding 1: ``Patches.search`` passes ``tool_usage`` through beside ``model_usage``, bounded as the kernel does."""
+        script = self.root.parent / "looks.py"
+        tools = {"web_search": 1, "githits": 2, "other": {"Read": 3}, "ignored": 9}
+        script.write_text(textwrap.dedent(f'''\
+            import json, sys
+            json.load(sys.stdin)
+            print(json.dumps({{"candidates": [{{"changes": {json.dumps(GOOD)}, "message": "m"}}], "recommended": [0],
+                              "usage": {json.dumps(USAGE)}, "tool_usage": {json.dumps(tools)}}}))
+            '''))
+        kit = self.kit()
+        thread = kit.start("Add a CSV export")
+        [candidate] = thread.propose(harness.Patches([sys.executable, str(script)], 1, False, 1))
+        self.assertEqual(candidate.signal["tool_usage"], {"web_search": 1, "githits": 2, "other": {"Read": 3}})
+        self.assertEqual(candidate.signal["model_usage"]["output_tokens"], 300)
+
     def test_mutator_call_cap_and_duplicate_refusal(self):
         script = self.root.parent / "mutator.py"
         script.write_text("import json, sys\njson.load(sys.stdin)\nprint(json.dumps({'changes': {'src/n.py': 'x = 1\\n'}}))\n")
