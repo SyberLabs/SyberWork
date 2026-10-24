@@ -123,6 +123,13 @@ def evidence(thread, view: dict) -> str:
     return "implemented"
 
 
+def thread_branch(doc: dict, case_id: str) -> str:
+    """The branch an installed git_push or github_pull_request action writes for a thread (``{thread}`` is its
+    first eight characters). ``syberlabs.settle`` reads it, with the action's ``api``, ``repository`` and
+    ``token_env``, to find the pull request the action opened."""
+    return doc.get("branch", "syberlabs/{thread}").replace("{thread}", case_id[:8])
+
+
 def _bad(detail: str) -> Rejected:
     return Rejected("invalid_action", detail)
 
@@ -194,7 +201,7 @@ class _Publisher:
         return Thread(self.kit, case_id)
 
     def _branch(self, case_id: str) -> str:
-        return self.doc.get("branch", "syberlabs/{thread}").replace("{thread}", case_id[:8])
+        return thread_branch(self.doc, case_id)
 
 
 class GitPush(_Publisher):

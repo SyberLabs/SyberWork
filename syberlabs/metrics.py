@@ -26,8 +26,9 @@ Derivations (``docs/METRICS.md`` has the full table):
 - ``fix_rounds``: registrations that follow a failed evaluation (a required check not ``passed``).
 - ``web_lookups`` / ``githits_lookups``: the adapter-declared ``signal.tool_usage`` counts; unknown unless
   every registration declares them.
-- ``delivered``: true with a ``pr_merged`` fact; false when no pull request was opened or the thread was
-  cancelled; unknown while a pull request is open and no merge is in the record. ``opened`` is separate.
+- ``delivered``: true with a ``pr_merged`` fact; false when no pull request was opened, the thread was
+  cancelled, or a ``pr_closed`` fact says the pull request was closed unmerged; unknown while a pull request is
+  open and no merge is in the record. ``opened`` is separate. ``syberlabs.settle`` writes the ``pr_*`` facts.
 - ``review_rejections``: critic checks that did not pass or whose observation counts a high finding, plus
   ``review`` facts with verdict ``fail`` and ``pr_review`` facts with state ``changes_requested``.
 - ``human_interventions``: ``human_intervention`` facts, plus ``proposed``, ``approved`` and ``case_cancelled``
@@ -56,7 +57,8 @@ UNATTENDED = "unattended"          # build.UNATTENDED
 PROPOSAL_REFUSED = "proposal_refused"  # build.PROPOSAL_REFUSED
 HUMAN_INTERVENTION = "human_intervention"
 REVIEW = "review"
-PR_MERGED = "pr_merged"            # written by the merge poll (next packet); read here already
+PR_MERGED = "pr_merged"            # written by the settlement poll, syberlabs.settle
+PR_CLOSED = "pr_closed"            # the same poll: closed without a merge
 PR_REVIEW = "pr_review"
 INTERVENTION_KINDS = ("message", "commit", "approve", "edit", "override")
 VERDICTS = ("pass", "fail")
@@ -302,10 +304,14 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
                     f"pull request #{number}" if number else "no pull request opened")
     merged = next(((e, f) for e, f in ((e, fact(e, PR_MERGED)) for e in events)
                    if f is not None and (number is None or str(f.get("number")) == number)), None)
+    closed = [(e, f) for e, f in ((e, fact(e, PR_CLOSED)) for e in events)
+              if f is not None and number is not None and str(f.get("number")) == number]
     if merged is not None:
         delivered = Metric(True, (merged[0]["hash"],), f"merged {merged[1].get('merged_at')}")
     elif cancel is not None:
         delivered = Metric(False, (cancel["hash"],), "cancelled")
+    elif closed:
+        delivered = Metric(False, (closed[-1][0]["hash"],), f"closed unmerged {closed[-1][1].get('closed_at')}")
     elif opened_event is None:
         delivered = Metric(False, (), "no pull request opened")
     else:

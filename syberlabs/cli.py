@@ -14,6 +14,7 @@
     syberlabs verify CERT --public KEY --repo .  # check it with the public key; no Kit, no checks, no model
     syberlabs run --once                       # or a loop: every open thread's next safe step
     syberlabs metrics [--json|--csv] [--check]   # per-work-item metrics, every number from the journal
+    syberlabs settle [--thread ID]             # record merges, closes and reviews of the pull requests opened
     syberlabs note --intervention message --note "asked the agent to split the PR"
     syberlabs review --record --verdict pass --reviewer NAME --revision COMMIT
 
@@ -237,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
                          help="exit 1 when a delivered item has an unknown metric (for CI over admitted work)")
     measure.add_argument("--from-export", dest="exports", nargs="+", metavar="FILE",
                          help="read thread records written by syberlabs export instead of this home's journal")
+    settling = commands.add_parser("settle", help="poll GitHub once for the pull requests published threads opened; "
+                                                  "record pr_merged, pr_closed and pr_review facts (docs/METRICS.md)")
+    settling.add_argument("--thread", dest="settle_thread", help="only this thread (id or unique prefix)")
     note = commands.add_parser("note", help="record that a person acted on the thread (a human_intervention fact)")
     note.add_argument("--intervention", required=True, choices=list(metrics.INTERVENTION_KINDS))
     note.add_argument("--note", help=f"what was done, at most {metrics.MAX_NOTE} characters; never a secret")
@@ -350,6 +354,23 @@ def _metrics(args, kit: Kit | None) -> int:
     return 1 if missing else 0
 
 
+def _settle(kit: Kit, args) -> int:
+    """``syberlabs settle``: one settlement pass. Exit 0 when every pull request was read, 1 when one was not."""
+    from syberlabs import settle
+    try:
+        found = settle.settle(kit, thread=args.settle_thread or args.thread)
+    except Rejected:
+        raise
+    except Exception as exc:
+        print(settle.describe(exc, kit), file=sys.stderr)
+        return 1
+    for item in found:
+        print(item.line, file=sys.stderr if item.error else sys.stdout)
+    if not found:
+        print("no published pull request to settle")
+    return 1 if any(item.error for item in found) else 0
+
+
 def _intervened(thread, kit: Kit, kind: str, proposal: str | None = None) -> None:
     """A thread command run by a person (not the host, not the unattended runner) leaves a human_intervention fact."""
     if thread.is_person(kit.actor):
@@ -421,6 +442,8 @@ def _run(kit: Kit, args) -> int:
         return 0
     if args.command == "metrics":
         return _metrics(args, kit)
+    if args.command == "settle":
+        return _settle(kit, args)
     if args.command == "run":
         if args.interval < 0:
             raise Rejected("invalid_interval", "--interval is seconds, zero or more")
