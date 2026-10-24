@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:syberlabs:schemas:attest-observation:v1",
+  "title": "SyberWork Attest observation payload",
+  "description": "Observation envelope for opaque Attest records. It grants no SyberWork authority and is never destination proof.",
+  "allOf": [
+    {
+      "type": "object",
+      "required": ["key", "value", "source", "version", "actor", "verified"],
+      "properties": {
+        "key": {"enum": ["attest.run_receipt", "attest.authority_decision", "attest.handoff_package"]},
+        "value": {"type": "object"},
+        "source": {"const": "attest"},
+        "version": {"type": "string", "minLength": 1},
+        "actor": {"type": "string", "minLength": 1},
+        "verified": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "key": {"const": "attest.run_receipt"},
+            "value": {"$ref": "#/$defs/run_receipt"}
+          }
+        },
+        {
+          "properties": {
+            "key": {"const": "attest.authority_decision"},
+            "value": {"$ref": "#/$defs/authority_decision"}
+          }
+        },
+        {
+          "properties": {
+            "key": {"const": "attest.handoff_package"},
+            "value": {"$ref": "#/$defs/handoff_package"}
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "opaque_record": {
+      "type": "object",
+      "required": ["kind", "payload"],
+      "properties": {
+        "kind": {"type": "string"},
+        "payload": {"type": "object", "additionalProperties": true}
+      },
+      "additionalProperties": false
+    },
+    "run_receipt": {
+      "allOf": [
+        {"$ref": "#/$defs/opaque_record"},
+        {"properties": {"kind": {"const": "run_receipt"}}}
+      ]
+    },
+    "authority_decision": {
+      "allOf": [
+        {"$ref": "#/$defs/opaque_record"},
+        {"properties": {"kind": {"const": "authority_decision"}}}
+      ]
+    },
+    "handoff_package": {
+      "allOf": [
+        {"$ref": "#/$defs/opaque_record"},
+        {"properties": {"kind": {"const": "handoff_package"}}}
+      ]
+    }
+  }
+}
