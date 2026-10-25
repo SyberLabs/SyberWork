@@ -1,9 +1,10 @@
 """Dispatch an Attest ticket to a configured worker and print only its diff.
 
-The default worker configuration is examples/fixtures/workers.example.json.
-Command workers receive the original ticket JSON on stdin and must emit a
-Git-format unified diff on stdout. OpenAI workers return complete file contents
-through Structured Outputs; this program builds the diff locally.
+The default configuration selects the OpenAI Responses API. Select
+``--worker command`` to opt into an offline command worker. Command workers
+receive the original ticket JSON on stdin and must emit a Git-format unified
+diff on stdout. OpenAI workers return complete file contents through
+Structured Outputs; this program builds the diff locally.
 """
 
 from __future__ import annotations
@@ -429,6 +430,9 @@ def command_worker(ticket_json: str, argv: list[str]) -> str:
         patch = result.stdout.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise DispatchError("command worker stdout must be UTF-8 text") from exc
+    # Command workers often run through Windows text-mode stdout, which uses CRLF.
+    # Normalize before emitting so the dispatcher never doubles those newlines.
+    patch = patch.replace("\r\n", "\n")
     validate_git_diff(patch)
     return patch
 
@@ -460,8 +464,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise DispatchError("OPENAI_API_KEY is not set (or SYBERWORK_OPENAI_API_KEY)")
             patch = openai_worker(ticket, worker["model"], api_key)
             validate_git_diff(patch)
-        sys.stdout.write(patch)
-        sys.stdout.flush()
+        # Bypass platform text-mode newline conversion to preserve Git diff bytes.
+        sys.stdout.buffer.write(patch.encode("utf-8"))
+        sys.stdout.buffer.flush()
         return 0
     except (DispatchError, UnicodeDecodeError) as exc:
         print(f"attest_dispatch: {exc}", file=sys.stderr)

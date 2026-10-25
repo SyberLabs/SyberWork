@@ -1,5 +1,5 @@
 {
-  "default": "command",
+  "default": "openai",
   "workers": {
     "command": {
       "type": "command",

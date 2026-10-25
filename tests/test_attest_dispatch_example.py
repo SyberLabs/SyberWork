@@ -59,10 +59,11 @@ class AttestDispatchExampleTests(unittest.TestCase):
             "-const status = 'Open';\n"
             "+const status = 'Won';\n"
         )
+        crlf_diff = expected_diff.replace("\n", "\r\n")
         fake_command = (
             "import json,sys; ticket=json.load(sys.stdin); "
             "assert ticket['schema']=='attest.ticket/v0'; "
-            f"sys.stdout.write({expected_diff!r})"
+            f"sys.stdout.buffer.write({crlf_diff!r}.encode('utf-8'))"
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             config = write_worker_config(Path(temp_dir), shlex.join([sys.executable, "-c", fake_command]))
@@ -81,21 +82,39 @@ class AttestDispatchExampleTests(unittest.TestCase):
         self.assertIn('"verified": false', completed.stderr)
         self.assertIn("admitted case case-90", completed.stderr)
 
-    def test_example_config_defaults_to_offline_command_and_selects_openai(self) -> None:
+    def test_example_config_defaults_to_openai_and_selects_command(self) -> None:
         default = attest_dispatch.load_worker_config(attest_dispatch.DEFAULT_WORKERS)
-        self.assertEqual(default["type"], "command")
-        self.assertEqual(default["argv"][0], sys.executable)
-        self.assertTrue(Path(default["argv"][1]).is_file())
+        self.assertEqual(default, {"type": "openai", "model": "gpt-5-mini"})
 
-        openai = attest_dispatch.load_worker_config(attest_dispatch.DEFAULT_WORKERS, "openai")
-        self.assertEqual(openai, {"type": "openai", "model": "gpt-5-mini"})
+        command = attest_dispatch.load_worker_config(attest_dispatch.DEFAULT_WORKERS, "command")
+        self.assertEqual(command["type"], "command")
+        self.assertEqual(command["argv"][0], sys.executable)
+        self.assertTrue(Path(command["argv"][1]).is_file())
 
-    def test_default_example_worker_runs_without_an_openai_key(self) -> None:
+    def test_default_openai_worker_requires_a_key(self) -> None:
         environment = os.environ.copy()
         environment.pop("OPENAI_API_KEY", None)
         environment.pop("SYBERWORK_OPENAI_API_KEY", None)
         completed = subprocess.run(
             [sys.executable, str(SCRIPT)],
+            input=json.dumps(sample_ticket()),
+            text=True,
+            capture_output=True,
+            cwd=REPOSITORY,
+            env=environment,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stdout, "")
+        self.assertIn("OPENAI_API_KEY is not set", completed.stderr)
+
+    def test_command_worker_is_an_explicit_offline_opt_in(self) -> None:
+        environment = os.environ.copy()
+        environment.pop("OPENAI_API_KEY", None)
+        environment.pop("SYBERWORK_OPENAI_API_KEY", None)
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT), "--worker", "command"],
             input=json.dumps(sample_ticket()),
             text=True,
             capture_output=True,
