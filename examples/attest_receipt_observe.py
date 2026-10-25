@@ -1,7 +1,9 @@
 """Print an unverified SyberWork observation from an Attest v0 receipt file.
 
-Attest writes these receipts under `<attest_home>/receipts/<case_id>.json`.
-This example only translates the JSON into Work.observe-compatible arguments;
+Attest writes these receipts under `<attest_home>/receipts/<case_id>.json`,
+where `<attest_home>` is Attest's `--home`, else `$ATTEST_HOME`, else `.attest`
+relative to Attest's working directory. `.attest/receipts` is only that default;
+pass the receipt path explicitly rather than assuming it. This example only translates the JSON into Work.observe-compatible arguments;
 it does not append to a case or verify receipt authority.
 """
 
@@ -102,7 +104,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "receipt",
         type=Path,
-        help="receipt path (Attest writes <attest_home>/receipts/<case_id>.json)",
+        help=(
+            "receipt path (Attest writes <attest_home>/receipts/<case_id>.json; "
+            "<attest_home> is Attest's --home, else $ATTEST_HOME, else .attest)"
+        ),
     )
     args = parser.parse_args(argv)
     try:
