@@ -91,6 +91,37 @@ class AttestDispatchExampleTests(unittest.TestCase):
         self.assertEqual(command["argv"][0], sys.executable)
         self.assertTrue(Path(command["argv"][1]).is_file())
 
+    def test_openai_config_accepts_service_tier_and_reasoning_effort(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "workers.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "default": "crm",
+                        "workers": {
+                            "crm": {
+                                "type": "openai",
+                                "model": "gpt-6-sol",
+                                "service_tier": "priority",
+                                "reasoning": {"effort": "medium"},
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            worker = attest_dispatch.load_worker_config(config_path)
+
+        self.assertEqual(
+            worker,
+            {
+                "type": "openai",
+                "model": "gpt-6-sol",
+                "service_tier": "priority",
+                "reasoning": {"effort": "medium"},
+            },
+        )
+
     def test_default_openai_worker_requires_a_key(self) -> None:
         environment = os.environ.copy()
         environment.pop("OPENAI_API_KEY", None)
@@ -175,17 +206,28 @@ class AttestDispatchExampleTests(unittest.TestCase):
         structured = json.dumps({"files": [{"path": "app.js", "content": "const status = 'Won';\n"}]})
         fake_response = FakeResponse({"output_text": structured})
         with patch.object(attest_dispatch.urllib.request, "urlopen", return_value=fake_response) as urlopen:
-            patch_text = attest_dispatch.openai_worker(ticket, "gpt-5-mini", "not-a-real-key")
+            patch_text = attest_dispatch.openai_worker(
+                ticket,
+                "gpt-6-sol",
+                "not-a-real-key",
+                service_tier="priority",
+                reasoning={"effort": "medium"},
+            )
 
         self.assertTrue(patch_text.startswith("diff --git a/app.js b/app.js\n"))
         self.assertIn("--- a/app.js\n+++ b/app.js\n", patch_text)
         request = urlopen.call_args.args[0]
         request_body = json.loads(request.data)
-        self.assertEqual(request_body["model"], "gpt-5-mini")
+        self.assertEqual(request_body["model"], "gpt-6-sol")
+        self.assertEqual(request_body["service_tier"], "priority")
+        self.assertEqual(request_body["reasoning"], {"effort": "medium"})
         self.assertEqual(request_body["text"]["format"]["type"], "json_schema")
         instructions = request_body["input"][0]["content"]
-        self.assertIn("complete contents", instructions)
+        self.assertIn("complete new content of each file you change", instructions)
         self.assertIn("structured output schema", instructions)
+        self.assertIn("Do not change seed data, existing rows, names, or unrelated behavior", instructions)
+        self.assertIn("Do not add data that makes the spec pass by itself", instructions)
+        self.assertIn("user performs the spec's steps in the browser", instructions)
         self.assertNotIn("unified diff", instructions.lower())
         self.assertNotIn("--- a/", instructions)
         self.assertNotIn("+++ b/", instructions)

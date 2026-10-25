@@ -223,8 +223,9 @@ def files_to_diff(ticket: dict[str, Any], files: Any) -> str:
 
 def _openai_instructions(ticket: dict[str, Any]) -> str:
     files = ", ".join(sorted(ticket["app"]["files"]))
-    return f"""Implement the missing capability with the smallest change in the existing style.
-Return only complete contents for changed or newly created files, as objects with path and content in the structured output schema. Do not return partial snippets or prose outside that schema. Paths must be relative to app.root ({ticket['app']['root']}). For an existing file, provide its complete replacement contents. Include only files that need to change. Existing files: {files}."""
+    return f"""Implement the capability with the smallest change, following the existing code style, markup, and CSS conventions.
+Do not change seed data, existing rows, names, or unrelated behavior. Do not add data that makes the spec pass by itself; the user performs the spec's steps in the browser.
+Return only the complete new content of each file you change, as objects with path and content in the structured output schema. Do not return partial snippets or prose outside that schema. Paths must be relative to app.root ({ticket['app']['root']}). For an existing file, provide its complete replacement contents. Include only files that need to change. Existing files: {files}."""
 
 
 def _response_text(response: dict[str, Any]) -> str:
@@ -251,7 +252,13 @@ def openai_api_key() -> str | None:
     return os.environ.get("OPENAI_API_KEY") or os.environ.get("SYBERWORK_OPENAI_API_KEY")
 
 
-def openai_worker(ticket: dict[str, Any], model: str, api_key: str) -> str:
+def openai_worker(
+    ticket: dict[str, Any],
+    model: str,
+    api_key: str,
+    service_tier: str | None = None,
+    reasoning: dict[str, str] | None = None,
+) -> str:
     """Call the Responses API for structured file contents and create a diff."""
     schema = {
         "type": "object",
@@ -287,6 +294,10 @@ def openai_worker(ticket: dict[str, Any], model: str, api_key: str) -> str:
             }
         },
     }
+    if service_tier is not None:
+        payload["service_tier"] = service_tier
+    if reasoning is not None:
+        payload["reasoning"] = reasoning
     request = urllib.request.Request(
         "https://api.openai.com/v1/responses",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -406,7 +417,24 @@ def load_worker_config(path: Path, worker_name: str | None = None) -> dict[str, 
         argv = [arg.replace("{python}", sys.executable).replace("{config_dir}", config_dir) for arg in argv]
         return {"type": "command", "argv": argv}
     if worker_type == "openai":
-        return {"type": "openai", "model": _nonempty_string(worker.get("model"), f"{worker_label}.model")}
+        config: dict[str, Any] = {
+            "type": "openai",
+            "model": _nonempty_string(worker.get("model"), f"{worker_label}.model"),
+        }
+        if "service_tier" in worker:
+            config["service_tier"] = _nonempty_string(
+                worker["service_tier"], f"{worker_label}.service_tier"
+            )
+        if "reasoning" in worker:
+            reasoning = worker["reasoning"]
+            if not isinstance(reasoning, dict):
+                raise DispatchError(f"{worker_label}.reasoning must be an object")
+            if set(reasoning) != {"effort"}:
+                raise DispatchError(f"{worker_label}.reasoning must contain only effort")
+            config["reasoning"] = {
+                "effort": _nonempty_string(reasoning["effort"], f"{worker_label}.reasoning.effort")
+            }
+        return config
     raise DispatchError(f"{worker_label}.type must be 'command' or 'openai'")
 
 
@@ -462,7 +490,13 @@ def main(argv: list[str] | None = None) -> int:
             api_key = openai_api_key()
             if not api_key:
                 raise DispatchError("OPENAI_API_KEY is not set (or SYBERWORK_OPENAI_API_KEY)")
-            patch = openai_worker(ticket, worker["model"], api_key)
+            patch = openai_worker(
+                ticket,
+                worker["model"],
+                api_key,
+                worker.get("service_tier"),
+                worker.get("reasoning"),
+            )
             validate_git_diff(patch)
         # Bypass platform text-mode newline conversion to preserve Git diff bytes.
         sys.stdout.buffer.write(patch.encode("utf-8"))
