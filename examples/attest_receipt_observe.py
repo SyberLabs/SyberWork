@@ -3,8 +3,9 @@
 Attest writes these receipts under `<attest_home>/receipts/<case_id>.json`,
 where `<attest_home>` is Attest's `--home`, else `$ATTEST_HOME`, else `.attest`
 relative to Attest's working directory. `.attest/receipts` is only that default;
-pass the receipt path explicitly rather than assuming it. This example only translates the JSON into Work.observe-compatible arguments;
-it does not append to a case or verify receipt authority.
+pass the receipt path explicitly rather than assuming it. This example only
+translates the JSON into Work.observe-compatible arguments; it does not append
+to a case or verify receipt authority.
 """
 
 from __future__ import annotations
