@@ -759,8 +759,11 @@ function tabPropose(info) {
   const props = M.proposals(info.events).reverse();
   const actions = Object.keys(info.contract.actions || {});
   // The typed draft survives a re-render (a reload, a counter refresh), and belongs to this case only.
-  const kept = state.handDraft && state.handDraft.case === info.case.id ? state.handDraft
+  const draft = state.handDraft && state.handDraft.case === info.case.id ? state.handDraft
     : {case: info.case.id, action: actions.includes(info.next_compiled) ? info.next_compiled : actions[0], origin: 'human', args: '{}'};
+  // An origin kept from another identity that this one cannot claim falls back to human, so the form never
+  // shows a selected option it would leave out of what it sends.
+  const kept = {...draft, origin: M.can(state.me, 'propose', {info, origin: draft.origin}).ok ? draft.origin : 'human'};
   const keep = () => { state.handDraft = {case: info.case.id, ...Object.fromEntries(new FormData(form))}; drawPreview(); };
   const form = h('form', {class: 'inline-form', onsubmit: e => e.preventDefault(), oninput: keep, onchange: keep},
     h('label', {}, 'Action', h('select', {name: 'action'}, actions.map(a => h('option', {value: a, selected: a === kept.action || undefined}, a)))),
@@ -777,16 +780,19 @@ function tabPropose(info) {
   const slot = h('div', {class: 'preview-slot', 'aria-live': 'polite'});
   const drawPreview = () => slot.replaceChildren(...[previewBody(info, form)].flat(Infinity).filter(Boolean));
   // Ask the server what proposing would record now (POST .../preview). It writes nothing, so it acts at once.
+  // Only the newest request's answer is kept. It goes into state, so an answer that arrives after a re-render
+  // (a reload, a mutation) is drawn by the form on the page now, not by the one that sent it.
   const ask = async (body, fill) => {
-    const who = state.active;
+    const who = state.active, ticket = ++previewTicket;
     const entry = await api('/api/cases/' + encodeURIComponent(info.case.id) + '/preview', body).then(r => ({body: r}), error => ({error}));
-    if (state.active !== who || state.selected !== info.case.id) return;
+    if (ticket !== previewTicket || state.active !== who || state.selected !== info.case.id) return;
     state.preview = {case: info.case.id, who, at: Date.now(), ...entry, view: entry.body ? M.previewView(entry.body) : null, request: body};
     if (fill && entry.body && state.preview.view.state === 'preview') {
-      form.elements.args.value = pretty(state.preview.view.args);
-      state.handDraft = {case: info.case.id, ...Object.fromEntries(new FormData(form))};
+      const current = state.handDraft && state.handDraft.case === info.case.id ? state.handDraft : {case: info.case.id, action: body.action, origin: body.origin};
+      state.handDraft = {...current, args: pretty(state.preview.view.args)};
+      if (form.isConnected) form.elements.args.value = state.handDraft.args;
     }
-    drawPreview();
+    if (form.isConnected) drawPreview(); else if (state.tab === 'propose') renderMain();
   };
   const bind = action({label: 'Fill from contract bindings', op: 'preview', ctx: {info},
     run: () => { const d = read(); return ask({action: d.action, origin: d.origin}, true); }});
@@ -814,6 +820,7 @@ function tabPropose(info) {
     section('Proposals', h('span', {class: 'muted'}, props.length + ' total, newest first'),
       props.length ? h('div', {class: 'proposal-list'}, props.map(p => proposalCard(p, info))) : empty('No proposals yet', null)));
 }
+let previewTicket = 0;
 // The last admission preview for this case and identity, laid against what the form would send now.
 function previewBody(info, form) {
   const kept = state.preview;

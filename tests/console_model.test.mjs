@@ -337,9 +337,16 @@ test('an admission preview is read as the server gave it', () => {
 
 test('a preview of another shape, or one that says it was written, is unknown', () => {
   for (const body of [null, 'denied', [], {}, { ...PREVIEW, written: true }, { ...PREVIEW, written: undefined }, { ...PREVIEW, rule: '' },
-    { ...PREVIEW, rule: null }, { ...PREVIEW, status: 1 }, { ...PREVIEW, reason: null }, { ...PREVIEW, args: [] }, { ...PREVIEW, args: null },
-    { ...PREVIEW, action: 3 }]) {
+    { ...PREVIEW, rule: null }, { ...PREVIEW, status: 1 }, { ...PREVIEW, reason: null }, { ...PREVIEW, action: 3 }]) {
     assert.equal(M.previewView(body).state, 'unknown', JSON.stringify(body));
+  }
+  const { args: _dropped, ...noArgs } = PREVIEW;
+  assert.equal(M.previewView(noArgs).state, 'unknown');
+  // Arguments that are not an object are the server's answer (proposal.shape), shown as given.
+  for (const args of [[], null, 'x', 1]) {
+    const view = M.previewView({ ...PREVIEW, status: 'denied', reason: 'invalid_proposal_shape', rule: 'proposal.shape', args, bound: false });
+    assert.deepEqual([view.state, view.rule], ['preview', 'proposal.shape'], JSON.stringify(args));
+    assert.equal(M.previewCurrent(view, { action: 'issue_order', origin: 'human', args }, 7).state, 'current');
   }
   assert.deepEqual(M.previewCurrent(M.previewView(null), {}, 1), { state: 'none' });
   assert.deepEqual(M.previewCurrent(null, {}, 1), { state: 'none' });

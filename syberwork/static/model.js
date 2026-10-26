@@ -430,11 +430,12 @@ export function admissionNow(explained) {
 
 // What admission answers now for a proposal not yet made (POST /api/cases/{id}/preview, Work.preview_admission).
 // Nothing was recorded and nothing is reserved: proposing admits again and writes its own decision, which can
-// differ once the case, the policy in force, the clock or another case's reservation moves. An answer of
-// another shape is unknown, never guessed.
+// differ once the case, the policy in force, the clock or another case's reservation moves. The arguments are
+// whatever was admitted, an object or not (a non-object meets proposal.shape). An answer of another shape is
+// unknown, never guessed.
 export function previewView(body) {
   if (!body || typeof body !== 'object' || body.written !== false || !named(body.rule) || typeof body.status !== 'string' ||
-      typeof body.reason !== 'string' || typeof body.action !== 'string' || !body.args || typeof body.args !== 'object' || Array.isArray(body.args)) {
+      typeof body.reason !== 'string' || typeof body.action !== 'string' || !('args' in body)) {
     return {state: 'unknown', text: 'not returned by the server'};
   }
   const head = body.head && typeof body.head === 'object' && Number.isInteger(body.head.seq) ? body.head.seq : 0;

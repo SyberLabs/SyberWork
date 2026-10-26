@@ -588,6 +588,10 @@ class ConsolePreview(CellCase):
         self.assertEqual((preview["status"], preview["reason"], preview["rule"]), ("denied", "amount_required", "limits.amount"))
         self.assertEqual(preview["provenance"]["module"], "syberlabs/admission.py")
         self.assertEqual(preview["provenance"]["symbol"], "limits_amount")
+        # Arguments present but not an object are admitted as given, as propose admits them; only a missing key binds.
+        for args in (None, [1], "x"):
+            preview, _ = self.assert_preview_is_what_propose_records(case, {"action": "record_review", "args": args}, "operator")
+            self.assertEqual((preview["reason"], preview["bound"], preview["args"]), ("invalid_proposal_shape", False, args))
         self.assert_preview_is_what_propose_records(case, {"action": "record_review", "args": {"part_number": "P-104"}}, "operator")
         work.observe(case, "part_number", "P-104", "inventory", "inventory-v1", "operator", verified=True)
         preview, _ = self.assert_preview_is_what_propose_records(case, {"action": "record_review"}, "supplier")
@@ -606,6 +610,29 @@ class ConsolePreview(CellCase):
         head = work.inspect(case)["events"][-3]
         self.assertEqual(preview["head"], {"seq": head["seq"], "hash": head["hash"]}, "the head the answer was computed against")
         self.assertEqual((preview["written"], preview["policy_version"], preview["origin"]), (False, 1, "human"))
+
+    def test_each_preview_is_counted_and_traced_though_no_event_records_it(self):
+        case = self.case()
+        recorded = []
+        self.cell.work.trace = type("Trace", (), {"record": lambda _self, name, **fields: recorded.append((name, fields))})()
+        self.addCleanup(setattr, self.cell.work, "trace", None)
+        before = self.cell.work.metrics.get("admission_preview", 0)
+        self.cell.json(f"/api/cases/{case}/preview", {"action": "issue_order", "args": {"amount": 30000}}, who="manager")
+        self.assertEqual(self.cell.work.metrics["admission_preview"], before + 1)
+        self.assertEqual(recorded, [("admission_preview", {"case_id": case, "actor": "manager", "action": "issue_order", "status": "denied",
+                                                           "reason": "actor_role_missing", "rule": "actor.role"})])
+
+    def test_a_contract_binding_that_is_not_a_string_is_refused_not_crashed(self):
+        contract = json.loads((EXAMPLES / "contract.json").read_text(encoding="utf-8"))
+        contract.update(id="odd-bindings", compiled_path=["record_review"])
+        contract["actions"]["record_review"]["arguments"] = {"part_number": 5}
+        contract["acceptance"] = [{"id": "reviewed", "kind": "effect", "action": "record_review"}]
+        self.cell.work.install_contract(contract)
+        case = self.cell.json("/api/cases", {"contract_id": "odd-bindings", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        self.cell.work.observe(case, "part_number", "P-104", "inventory", "inventory-v1", "operator", verified=True)
+        for path, body, who in ((f"/api/cases/{case}/preview", {"action": "record_review"}, "supplier"), (f"/api/cases/{case}/compiled", {}, "scheduler")):
+            with self.subTest(path):
+                self.assertEqual(self.cell.json(path, body, who=who), (409, {"error": "invalid_binding", "detail": "contract arguments must map each parameter to a binding string"}))
 
     def test_preview_appends_nothing_for_anyone(self):
         case = self.case()

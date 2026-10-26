@@ -66,10 +66,11 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
      listed with its read role and whether this credential holds it.
   3. *Propose*: the compiled step, a proposal by hand (origins the credential does not hold are
      disabled), and the external planner. The By hand form starts at the next compiled action and keeps what was
-     typed across reloads. **Fill from contract bindings** asks the server to bind the arguments from the newest
+     typed when the page redraws (`r`, or after any action); a browser reload starts it again. **Fill from contract bindings** asks the server to bind the arguments from the newest
      observations, and **Check admission** asks what proposing them would record now (`POST …/preview`); both
      record nothing. The answer shows the decision, the deciding rule, the head and policy version it was computed
-     against and when it was read, and turns *out of date* when the form or the case moves.
+     against and when it was read. It turns *out of date* when the form changes, or when a redraw brings in a
+     new event (there is no push).
      When `SYBERWORK_PLANNER_URL` is unset the planner panel is an
      empty state naming the variable; when set, **Ask configured planner** is enabled for a `model`
      credential. All proposals with their decisions and actions. An expanded proposal shows its
@@ -137,7 +138,7 @@ refusals answer `409`, including a missing token (`unauthorized`).
 | `/api/actions` | admin; others `403 forbidden` | installed definitions by name. They contain credential variable names, never values. |
 | `/api/sources` | admin: installed definitions, as above. Any other principal: read roles only | `{name: {roles}}`. `roles` is what `refresh_fact` checks (`["operator"]` when the definition names none; `null` when the stored value is not a list of names, and the console then says the server decides). No URL, credential variable, value path or kind. |
 | `/api/cases/{id}/side` | any principal, like `/api/cases/{id}` | `Work.side_channel` unchanged: `[{seq, jcs, rule}]`, the RFC 8785 SHA-256 of the fields each event's hash covers and, for a decision, the deciding rule id. Events written before the side table have no row. An unknown case answers `unknown_case`. |
-| `POST /api/cases/{id}/preview` with `{action, args?, origin?}` | any principal, like `POST /api/cases/{id}/proposals` | `Work.preview_admission`: `status`, `reason`, `rule`, `provenance` (named as the explain route names it), the `args` admitted (`bound: true` when `args` was absent and the server bound them from the contract, as the compiled step does), `origin`, `policy_version`, `head: {seq, hash}`, `written: false` and a note. The origin is checked as propose checks it (`invalid_origin`, `origin_denied`). Binding refuses `missing_fact`, `missing_fact_field` or `action_not_in_contract`. |
+| `POST /api/cases/{id}/preview` with `{action, args?, origin?}` | any principal, like `POST /api/cases/{id}/proposals` | `Work.preview_admission`: `status`, `reason`, `rule`, `provenance` (named as the explain route names it), the `args` admitted (`bound: true` when the body had no `args` key and the server bound them from the contract, as the compiled step does; any value present, `null` included, is admitted as given), `origin`, `policy_version`, `head: {seq, hash}`, `written: false` and a note. The origin is checked as propose checks it (`invalid_origin`, `origin_denied`). Binding refuses `missing_fact`, `missing_fact_field`, `invalid_binding` or `action_not_in_contract`. |
 | `/api/cases/{id}/proposals/{proposal}/explain?when=recorded\|now` | any principal, like `/api/cases/{id}` | `Work.explain_admission` (`status`, `reason`, `rule`, `provenance: {module, symbol, line}`) and `recorded`: the proposal's first decision as stored, with the rule id written beside it on the side channel (`null` for rows older than that table). `when` defaults to `now`, as in `Work`. |
 
 A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 not_found` instead of
@@ -250,10 +251,20 @@ Gaps from #95, closed or still open:
   it never carries a preview into the proposal. With no `args`, the server binds them from the contract
   (`bind_arguments`, the same function the compiled step uses). That is why **Fill from contract bindings**
   is offered to every credential, not only `compiled`; a binding that needs an absent fact answers
-  `missing_fact`, and the console points to Evidence. The route is open to any principal, as `propose` is. It
-  returns nothing the caller could not learn by proposing, except that nothing is written: arguments are
-  built from events `GET /api/cases/{id}` already returns, and decisions under a policy are already answered
-  by replay. It is a `POST` because the arguments are a JSON body. The Flow banner does not call it: the
+  `missing_fact`, and the console points to Evidence. A contract whose `arguments` map a parameter to anything
+  but a string used to crash the compiled step with a 500. `bind_arguments` now refuses it as `invalid_binding`,
+  for the compiled step and the preview alike (`test_a_contract_binding_that_is_not_a_string_is_refused_not_crashed`).
+  The route is open to any principal, as `propose` is. The arguments it binds come from events
+  `GET /api/cases/{id}` already returns.
+  **Open decision: probing without a record.** A proposal can reveal the same facts the preview does: the
+  policy's `max_amount` (`limits.amount`) and, for an economic action, how much of a shared budget other cases
+  hold. Before this route, each probe left a denied decision on the case history. A preview leaves none.
+  Each preview is counted (`admission_preview` in `Work.metrics`) and written to the trace when one is
+  configured (`syberwork/trace.py`), with the actor, action, status, reason and rule. The case history holds
+  nothing. Replay does not cover this: it re-decides only proposals already recorded. Policy bodies are
+  restricted to admin and manager because they carry budget limits. If a recordless probe of those limits is
+  unacceptable, the route could answer only credentials that hold the action's role, or be rate-limited.
+  Neither is done here. It is a `POST` because the arguments are a JSON body. The Flow banner does not call it: the
   compiled step is proposed with exactly the bound arguments, and its forecast already comes from
   `model.js`.
 - The **Builder API** and **push updates** remain open as listed. No backend for them was added.

@@ -95,9 +95,11 @@ def _explanation(work: Work, case_id: str, proposal_id: str, when: str) -> dict:
 def _preview(work: Work, case_id: str, data: dict, name: str, roles: list) -> dict:
     """Work.preview_admission for an HTTP caller: what proposing would record now. Appends nothing.
 
-    ``args`` absent or null binds them from the contract. The rule module is named as the explain route names it.
+    Without an ``args`` key the server binds them from the contract; any value present, null included, is admitted
+    as given, as propose would admit it. The rule module is named as the explain route names it.
     """
-    previewed = work.preview_admission(case_id, data["action"], data.get("args"), name, roles, data.get("origin", "human"))
+    previewed = work.preview_admission(case_id, data["action"], data.get("args"), name, roles, data.get("origin", "human"),
+                                       bind="args" not in data)
     found = previewed.get("provenance") or {}
     return {**previewed, "provenance": {"module": _module(found.get("module")), "symbol": found.get("symbol"), "line": found.get("line")},
             "written": False, "note": "Admission now for a proposal not yet made; nothing was recorded and nothing is reserved"}
