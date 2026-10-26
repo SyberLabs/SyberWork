@@ -92,6 +92,17 @@ def _explanation(work: Work, case_id: str, proposal_id: str, when: str) -> dict:
             "recorded": work.recorded_decision(case_id, proposal_id)}
 
 
+def _preview(work: Work, case_id: str, data: dict, name: str, roles: list) -> dict:
+    """Work.preview_admission for an HTTP caller: what proposing would record now. Appends nothing.
+
+    ``args`` absent or null binds them from the contract. The rule module is named as the explain route names it.
+    """
+    previewed = work.preview_admission(case_id, data["action"], data.get("args"), name, roles, data.get("origin", "human"))
+    found = previewed.get("provenance") or {}
+    return {**previewed, "provenance": {"module": _module(found.get("module")), "symbol": found.get("symbol"), "line": found.get("line")},
+            "written": False, "note": "Admission now for a proposal not yet made; nothing was recorded and nothing is reserved"}
+
+
 def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
     httpd = make_server(work, users, host, port)
     print(f"SyberWork listening at http://{host}:{httpd.server_port}", flush=True)
@@ -313,6 +324,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                         result = work.record_evaluation(case_id, data, name, roles)
                     elif operation == "searches":
                         result = work.record_search(case_id, data["phase"], data["search"], name, roles)
+                    elif operation == "preview":
+                        result = _preview(work, case_id, data, name, roles)
                     elif operation == "replay":
                         result = work.replay(case_id, data["contract_version"], data["policy_version"])
                     else:

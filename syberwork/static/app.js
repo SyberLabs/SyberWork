@@ -16,7 +16,7 @@ const state = {
   cases: null, casesError: null, meta: new Map(), filter: '',
   contracts: null, policies: null, policiesError: null, registry: {actions: null, sources: null},
   verifications: new Map(), replay: null, lastResponse: null, focusProposal: null,
-  explaining: new Map(), explained: new Map(), headReads: new Map(),
+  explaining: new Map(), explained: new Map(), headReads: new Map(), handDraft: null, preview: null,
   studio: {kind: 'contract', id: null, version: null, tab: 'document', artifacts: null, draft: null, error: null},
   metrics: null, workItems: null, workItemsError: null,
 };
@@ -758,20 +758,48 @@ function tabEvidence(info) {
 function tabPropose(info) {
   const props = M.proposals(info.events).reverse();
   const actions = Object.keys(info.contract.actions || {});
-  const form = h('form', {class: 'inline-form', onsubmit: e => e.preventDefault()},
-    h('label', {}, 'Action', h('select', {name: 'action'}, actions.map(a => h('option', {value: a}, a)))),
-    h('label', {}, 'Origin', h('select', {name: 'origin'}, ['human', 'compiled', 'model'].map(o => h('option', {value: o, disabled: o !== 'human' && !state.me.roles.includes(o)}, o)))),
-    h('label', {class: 'wide'}, 'Arguments (JSON)', h('textarea', {name: 'args', rows: 4, spellcheck: 'false'}, '{}')));
+  // The typed draft survives a re-render (a reload, a counter refresh), and belongs to this case only.
+  const kept = state.handDraft && state.handDraft.case === info.case.id ? state.handDraft
+    : {case: info.case.id, action: actions.includes(info.next_compiled) ? info.next_compiled : actions[0], origin: 'human', args: '{}'};
+  const keep = () => { state.handDraft = {case: info.case.id, ...Object.fromEntries(new FormData(form))}; drawPreview(); };
+  const form = h('form', {class: 'inline-form', onsubmit: e => e.preventDefault(), oninput: keep, onchange: keep},
+    h('label', {}, 'Action', h('select', {name: 'action'}, actions.map(a => h('option', {value: a, selected: a === kept.action || undefined}, a)))),
+    h('label', {}, 'Origin', h('select', {name: 'origin'}, ['human', 'compiled', 'model'].map(o => h('option', {value: o, selected: o === kept.origin || undefined, disabled: o !== 'human' && !state.me.roles.includes(o)}, o)))),
+    h('label', {class: 'wide'}, 'Arguments (JSON)', h('textarea', {name: 'args', rows: 4, spellcheck: 'false'}, kept.args)));
+  const read = () => {
+    const data = new FormData(form);
+    const origin = data.get('origin');
+    const verdict = M.can(state.me, 'propose', {info, origin});
+    if (!verdict.ok) throw new ApiError('origin_denied', verdict.reason);
+    return {action: data.get('action'), origin, text: data.get('args')};
+  };
+  const parsed = text => { try { return JSON.parse(text); } catch (error) { throw new ApiError('invalid_json', error.message); } };
+  const slot = h('div', {class: 'preview-slot', 'aria-live': 'polite'});
+  const drawPreview = () => slot.replaceChildren(...[previewBody(info, form)].flat(Infinity).filter(Boolean));
+  // Ask the server what proposing would record now (POST .../preview). It writes nothing, so it acts at once.
+  const ask = async (body, fill) => {
+    const who = state.active;
+    const entry = await api('/api/cases/' + encodeURIComponent(info.case.id) + '/preview', body).then(r => ({body: r}), error => ({error}));
+    if (state.active !== who || state.selected !== info.case.id) return;
+    state.preview = {case: info.case.id, who, at: Date.now(), ...entry, view: entry.body ? M.previewView(entry.body) : null, request: body};
+    if (fill && entry.body && state.preview.view.state === 'preview') {
+      form.elements.args.value = pretty(state.preview.view.args);
+      state.handDraft = {case: info.case.id, ...Object.fromEntries(new FormData(form))};
+    }
+    drawPreview();
+  };
+  const bind = action({label: 'Fill from contract bindings', op: 'preview', ctx: {info},
+    run: () => { const d = read(); return ask({action: d.action, origin: d.origin}, true); }});
+  const check = action({label: 'Check admission', op: 'preview', ctx: {info},
+    run: () => { const d = read(); return ask({action: d.action, origin: d.origin, args: parsed(d.text)}, false); }});
   const submit = action({label: 'Submit proposal', op: 'propose', ctx: {info},
     run: async () => {
-      const data = new FormData(form);
-      let args;
-      try { args = JSON.parse(data.get('args')); } catch (error) { throw new ApiError('invalid_json', error.message); }
-      const origin = data.get('origin');
-      const verdict = M.can(state.me, 'propose', {info, origin});
-      if (!verdict.ok) throw new ApiError('origin_denied', verdict.reason);
-      return mutate(casePath('proposals'), {action: data.get('action'), args, origin}, r => `${r.proposal.action}: ${r.decision.status} (${r.decision.reason})`);
+      const d = read();
+      const args = parsed(d.text);
+      state.preview = null;
+      return mutate(casePath('proposals'), {action: d.action, args, origin: d.origin}, r => `${r.proposal.action}: ${r.decision.status} (${r.decision.reason})`);
     }});
+  drawPreview();
   const planner = state.console && state.console.planner_configured
     ? h('div', {}, h('p', {class: 'hint'}, 'The configured planner sees names, sources and acceptance, never fact values or credentials. It returns ', mono('{action, args}'), ', which only becomes a proposal; admission and approval still apply.'),
       action({label: 'Ask configured planner', op: 'suggest', ctx: {info, console: state.console},
@@ -781,10 +809,36 @@ function tabPropose(info) {
   return h('div', {class: 'propose'},
     h('div', {class: 'grid-3'},
       section('Compiled step', badge('idle', 'scheduler'), h('p', {class: 'hint'}, 'Bound from verified facts by the contract\'s argument bindings. ', info.next_compiled ? ['Next: ', mono(info.next_compiled)] : 'No remaining compiled step.'), compiledButton(info)),
-      section('By hand', badge('idle', 'any role'), form, submit),
+      section('By hand', badge('idle', 'any role'), form, h('div', {class: 'step-actions'}, bind, check, submit), slot),
       section('External planner', badge(state.console && state.console.planner_configured ? 'applied' : 'idle', state.console && state.console.planner_configured ? 'configured' : 'not configured'), planner)),
     section('Proposals', h('span', {class: 'muted'}, props.length + ' total, newest first'),
       props.length ? h('div', {class: 'proposal-list'}, props.map(p => proposalCard(p, info))) : empty('No proposals yet', null)));
+}
+// The last admission preview for this case and identity, laid against what the form would send now.
+function previewBody(info, form) {
+  const kept = state.preview;
+  if (!kept || kept.case !== info.case.id || kept.who !== state.active) {
+    return h('p', {class: 'hint'}, 'Check admission asks the server what proposing these arguments would record now, without recording anything. A denied proposal stays on the case history.');
+  }
+  const at = h('span', {class: 'muted'}, ' · read ' + new Date(kept.at).toLocaleTimeString());
+  if (kept.error) {
+    const binding = kept.request && kept.request.args === undefined;
+    return h('div', {class: 'preview'}, badge('unknown', 'unavailable'), ' ', mono(kept.error.code || 'error'), kept.error.detail ? h('span', {class: 'why'}, ' ' + kept.error.detail) : null, at,
+      binding && /^missing_fact/.test(kept.error.code || '') ? h('div', {class: 'why'}, 'The contract binds this argument from a fact the case does not hold yet; refresh it under Evidence.') : null);
+  }
+  const v = kept.view;
+  if (!v || v.state !== 'preview') return h('div', {class: 'preview'}, badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v ? v.text : 'not returned by the server'), at);
+  let args;
+  try { args = JSON.parse(form.elements.args.value); } catch { args = undefined; }
+  const fresh = M.previewCurrent(v, {action: form.elements.action.value, origin: form.elements.origin.value, args}, info.events.length ? info.events[info.events.length - 1].seq : 0);
+  const where = M.provenanceText(v.provenance);
+  return h('div', {class: 'preview' + (fresh.state === 'current' ? '' : ' superseded'), 'data-fresh': fresh.state},
+    h('div', {}, h('b', {}, 'If proposed now'), ' ', decisionBadge({status: v.status, reason: v.reason}), ' ', h('span', {class: 'muted mono-s'}, v.reason), ' ',
+      mono(v.rule, 'rule-name'), where ? h('span', {class: 'muted mono-s'}, ' · ' + where) : null,
+      h('span', {class: 'muted'}, ` · against #${v.head}` + (v.policy !== null ? ` · policy v${v.policy}` : '')), at),
+    fresh.state === 'current' ? null : h('div', {class: 'why warn'}, badge('pending', 'out of date'), ' ', fresh.text),
+    v.bound ? h('div', {class: 'why'}, 'Arguments bound by the server from the contract and the newest observations.') : null,
+    h('div', {class: 'why'}, 'Nothing was recorded and nothing is reserved. Submitting admits again and records its own decision.'));
 }
 function proposalCard(p, info) {
   const open = state.focusProposal === p.id;
