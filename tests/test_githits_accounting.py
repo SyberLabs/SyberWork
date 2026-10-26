@@ -27,18 +27,17 @@ the operator's token.
 
 What should count. ``docs/METRICS.md`` defines ``githits_lookups`` as the lookups the host's client made and
 recorded, a target it refused itself (``excluded_target``) included; a launcher command the query guard blocked never
-reaches the client and is counted in ``lookups_blocked``. GitHits usage is what the server received. ``Exact`` holds
-the cases where the two agree and the count equals the server's. ``NotSent`` holds the two where the client counts a
-lookup that never reached GitHits, by definition. ``Unknowable`` holds the cases where the journal itself cannot say
-how many requests reached GitHits, for which ``githits_lookups`` is now unknown instead of a number (``MetricRule``
-pins that rule on a hand-written journal). ``Findings`` pins, as expected failures, what is wrong in files this
-module does not own (``githits.py``, ``claude_code.py``); when one is fixed its test passes, unittest reports an
-unexpected success, and the decorator should go.
+reaches the client and is counted in ``lookups_blocked``. GitHits usage is what the server received; since #142 each
+record also says whether its request was written (``sent``), and every case compares the facts with ``sent: true``
+to the server too. ``Exact`` holds the cases where the count equals the server's. ``NotSent`` holds the two where the
+client counts a lookup that never reached GitHits, by definition. ``Unknowable`` holds the cases where the journal
+itself cannot say how many requests reached GitHits, for which ``githits_lookups`` is unknown instead of a number
+(``MetricRule`` pins that rule on a hand-written journal). ``Fixed`` holds what this module pinned as expected
+failures in files it does not own (``githits.py``, ``claude_code.py``) until #142 closed it.
 
 No real GitHits, Claude Code or token is used: the counter listens on loopback and the token is random per test.
 """
 
-import contextlib
 import hashlib
 import json
 import os
@@ -160,6 +159,7 @@ def client_facts(events) -> list[dict]:
 class Ledger(NamedTuple):
     server: int             # requests the counter received for the work item
     journal: int            # lookup facts with tool githits.<op>
+    sent: int               # those whose record says the request was written to GitHits (``sent: true``, #142)
     metric: metrics.Metric  # githits_lookups over the whole thread
     paired: int             # facts naming a request id the counter issued, same operation and digest
     unpaired: list          # request ids of the other facts (None: the client never read an answer)
@@ -211,7 +211,8 @@ class GroundTruth(ClaudeCodeCase):
         for entry in served:
             self.assertEqual((entry["agent"], entry["client"]), (AGENT, githits.CLIENT_NAME))
             self.assertEqual(entry["authorization"], self.bearer, "the operator's token, in the Authorization header")
-        return Ledger(len(served), len(facts), item.githits_lookups, len(paired), unpaired,
+        return Ledger(len(served), len(facts), sum(1 for value in facts if value.get("sent") is True),
+                      item.githits_lookups, len(paired), unpaired,
                       [entry["request_id"] for entry in served if entry["request_id"] not in paired], facts)
 
     def server_body(self, path: str) -> bytes:
@@ -225,14 +226,15 @@ class GroundTruth(ClaudeCodeCase):
 
 
 class Exact(GroundTruth):
-    """The count equals what the server received, request for request."""
+    """The count equals what the server received, request for request, and so does the number of facts whose record
+    says the request was written (``sent: true``)."""
 
     def test_a_lookup_is_one_request_one_fact_and_one_count(self):
         kit = self.kit()
         thread, claude = self.work_item(kit, "normal", [launcher(SEARCH)])
         [candidate] = thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value), (1, 1, 1))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value), (1, 1, 1, 1))
         self.assertEqual((found.paired, found.unpaired, found.unanswered), (1, [], []))
         self.assertEqual([(v["tool"], v["status"], v["request_id"], v["ok"], v["guard"]) for v in found.facts],
                          [("githits.search", "ok", "srv-0001", True, "pass")])
@@ -253,7 +255,7 @@ class Exact(GroundTruth):
                                                           launcher(READ)])
         thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value, found.paired), (4, 4, 4, 4))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value, found.paired), (4, 4, 4, 4, 4))
         self.assertEqual([(v["tool"], v["status"], v["results_returned"], v["results_dropped"],
                            v["results_dropped_license"], v["contamination_blocked"]) for v in found.facts],
                          [("githits.search", "ok", 1, 2, 0, False),
@@ -271,7 +273,7 @@ class Exact(GroundTruth):
             launcher('search "ask dev@example.test about retry" --target pypi:requests')])
         [candidate] = thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value), (0, 0, 0))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value), (0, 0, 0, 0))
         self.assertEqual([(b["value"]["tool"], b["value"]["guard"]) for b in self.lookup_facts(thread)],
                          [("Bash", "not_launcher"), ("Bash", "shell_syntax"), ("Bash", "secret"), ("Bash", "email")])
         [item] = metrics.work_items(thread.history())
@@ -287,7 +289,7 @@ class Exact(GroundTruth):
         thread, claude = self.work_item(kit, "errors", [launcher(SEARCH)] * 5)
         [candidate] = thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value, found.paired), (5, 5, 5, 5))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value, found.paired), (5, 5, 5, 5, 5))
         self.assertEqual([e["status"] for e in self.server.log], [401, 404, 500, 503, 429], "one request per call")
         self.assertEqual([(v["status"], v["request_id"], v["ok"]) for v in found.facts],
                          [("error", f"srv-{n:04d}", False) for n in range(1, 6)])
@@ -299,7 +301,8 @@ class Exact(GroundTruth):
         thread, claude = self.work_item(kit, "transport", [launcher(SEARCH + " --timeout 1"), launcher(SEARCH)])
         thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value), (2, 2, 2))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value), (2, 2, 2, 2),
+                         "both requests were written before the answer failed: sent: true")
         self.assertEqual((found.paired, found.unpaired, found.unanswered), (0, [None, None], ["srv-0001", "srv-0002"]),
                          "the client never read an answer, so no X-Request-ID reached the record")
         self.assertEqual([(v["status"], v["query_digest"]) for v in found.facts],
@@ -307,10 +310,11 @@ class Exact(GroundTruth):
 
     def test_several_lookups_in_one_call_are_one_request_and_one_fact_each_in_order(self):
         kit = self.kit()
-        thread, claude = self.work_item(kit, "several", [launcher(text) for text in (SEARCH, EXAMPLE, READ, LIST, GREP)])
+        lookups = [launcher(text) for text in (SEARCH, EXAMPLE, READ, LIST, GREP)]
+        thread, claude = self.work_item(kit, "several", lookups)
         [candidate] = thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value, found.paired), (5, 5, 5, 5))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value, found.paired), (5, 5, 5, 5, 5))
         self.assertEqual([v["request_id"] for v in found.facts], [e["request_id"] for e in self.server.log],
                          "the journal's order is the order the requests arrived")
         self.assertEqual([(v["tool"], e["path"]) for v, e in zip(found.facts, self.server.log)], [
@@ -326,7 +330,7 @@ class Exact(GroundTruth):
         thread, claude = self.work_item(kit, "arm-a", [launcher(SEARCH)], log_env=True)
         [candidate] = thread.propose(ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=1))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value), (0, 0, 0))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value), (0, 0, 0, 0))
         self.assertEqual(self.server.log, [])
         [run] = self.runs("arm-a")
         self.assertNotIn(githits.TOKEN_ENV, run["env"], "arm A holds no GitHits credential")
@@ -343,6 +347,7 @@ class Exact(GroundTruth):
         self.assertEqual([process.wait(timeout=120) for process in processes], [0] * 8)
         read = githits.read_records(folder, key)
         self.assertEqual((len(self.server.of("parallel-b")), len(read.records), read.ignored), (8, 8, 0))
+        self.assertEqual({record["sent"] for record in read.records}, {True})
         digests = {entry["request_id"]: entry["digest"] for entry in self.server.log}
         self.assertEqual(sorted(digests), sorted(record["request_id"] for record in read.records))
         self.assertTrue(all(digests[record["request_id"]] == record["query_digest"] for record in read.records))
@@ -360,7 +365,7 @@ class Exact(GroundTruth):
         thread.propose(self.arm_b(kit, thread, later))
         events = thread.history()
         whole = self.ledger(thread, events)
-        self.assertEqual((whole.server, whole.journal, whole.metric.value, whole.paired), (5, 5, 5, 5))
+        self.assertEqual((whole.server, whole.journal, whole.sent, whole.metric.value, whole.paired), (5, 5, 5, 5, 5))
         accept = next(e for e in events
                       if e["kind"] == "effect_succeeded" and e["body"].get("action") == experiment.PROMOTE)
         before = client_facts(e for e in events if e["seq"] <= accept["seq"])
@@ -370,9 +375,23 @@ class Exact(GroundTruth):
         self.assertEqual([v["request_id"] for v in before], [e["request_id"] for e in self.server.log[:4]])
         self.assertEqual((run.value("fix_rounds").value, run.work.githits_lookups.value), (1, 5))
 
+    def test_an_answer_the_client_cannot_read_is_still_one_request_and_one_fact(self):
+        """A search hit that is not an object, outside the pinned contract. Before #142 it crashed the client after the
+        request left, with no record (``githits_unrecorded``); #142 records it: ``malformed_response``, sent."""
+        self.server.plan = {"/v1/searches": [None, answer(NULL_HIT)]}
+        kit = self.kit()
+        thread, claude = self.work_item(kit, "unreadable", [launcher(SEARCH), launcher(SEARCH)])
+        [candidate] = thread.propose(self.arm_b(kit, thread, claude))
+        found = self.ledger(thread)
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value, found.paired), (2, 2, 2, 2, 2))
+        self.assertEqual([(v["status"], v["request_id"], v["sent"]) for v in found.facts],
+                         [("ok", "srv-0001", True), ("error", "srv-0002", True)])
+        self.assertNotIn("mismatch", candidate.signal["githits"])
+
 
 class NotSent(GroundTruth):
-    """Counted as lookups by definition (the client made the call), though nothing reached GitHits."""
+    """Counted as lookups by definition (the client made the call), though nothing reached GitHits. Each fact's record
+    says so (``sent: false``, #142), so what GitHits received is still read off the journal exactly."""
 
     def test_a_target_the_client_refuses_is_counted_and_never_reaches_the_server(self):
         kit = self.kit()
@@ -380,12 +399,11 @@ class NotSent(GroundTruth):
         thread, claude = self.work_item(kit, "excluded", refused + [launcher(SEARCH)])
         thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value, found.paired), (1, 3, 3, 1))
-        self.assertEqual([(v["tool"], v["status"], v["request_id"]) for v in found.facts],
-                         [("githits.search", "excluded_target", None), ("githits.list", "excluded_target", None),
-                          ("githits.search", "ok", "srv-0001")])
-        self.assertEqual(sum(1 for v in found.facts if v["status"] != githits.EXCLUDED), found.server,
-                         "the journal tells them apart: what reached GitHits is the rest")
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value, found.paired), (1, 3, 1, 3, 1))
+        self.assertEqual([(v["tool"], v["status"], v["request_id"], v["sent"]) for v in found.facts],
+                         [("githits.search", "excluded_target", None, False),
+                          ("githits.list", "excluded_target", None, False),
+                          ("githits.search", "ok", "srv-0001", True)])
 
     def test_a_connection_that_never_opened_is_counted_and_the_server_saw_nothing(self):
         kit = self.kit()
@@ -393,32 +411,30 @@ class NotSent(GroundTruth):
         with mock.patch.dict(os.environ, {githits.URL_ENV: dead_url()}):
             thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value), (0, 1, 1))
-        self.assertEqual([(v["status"], v["request_id"]) for v in found.facts], [("error", None)],
-                         "the same fact as a timeout after GitHits got the request (Findings)")
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value), (0, 1, 0, 1))
+        self.assertEqual([(v["status"], v["request_id"], v["sent"]) for v in found.facts], [("error", None, False)],
+                         "unlike a timeout after GitHits got the request (sent: true), its record says it never left")
 
 
 class Unknowable(GroundTruth):
     """Cases where the journal cannot say how many requests reached GitHits: the count is unknown, never a guess."""
 
     def test_a_launcher_call_that_left_no_record_makes_the_count_unknown(self):
+        """A usage error (``search`` with no ``--target``) exits 2 before a client exists: nothing is sent or recorded,
+        and the guard passed the call, so the call reports ``githits_unrecorded``. Since #142 the client records every
+        call it starts (an answer it cannot read, a SIGTERM), but a launcher killed outright (SIGKILL) or a record that
+        cannot be written still leaves this same journal after its request left, so 1 could be one short."""
         kit = self.kit()
-        usage, claude = self.work_item(kit, "usage", [launcher(SEARCH), launcher("search")])  # no --target: no request
-        [first] = usage.propose(self.arm_b(kit, usage, claude))
-        self.server.plan = {"/v1/searches": [None, answer(NULL_HIT)]}  # the second request crashes the client
-        crash, claude = self.work_item(kit, "crash", [launcher(SEARCH), launcher(SEARCH)])
-        [second] = crash.propose(self.arm_b(kit, crash, claude))
-        quiet, sent = self.ledger(usage), self.ledger(crash)
-        self.assertEqual([(quiet.server, quiet.journal), (sent.server, sent.journal)], [(1, 1), (2, 1)],
-                         "one unrecorded call sent nothing, the other reached GitHits")
-        self.assertEqual(first.signal["githits"], second.signal["githits"], "and the journal cannot tell them apart")
-        self.assertEqual(first.signal["githits"]["mismatch"], "githits_unrecorded")
-        for found, registration in ((quiet, usage), (sent, crash)):
-            self.assertIsNone(found.metric.value, "1 would be right for one thread and short for the other")
-            self.assertIn("left no GitHits client record", found.metric.note)
-            self.assertIn("(1 recorded)", found.metric.note)
-            self.assertEqual(found.metric.basis, tuple(e["hash"] for e in registration.history()
-                                                       if e["kind"] == "candidate_registered"))
+        thread, claude = self.work_item(kit, "usage", [launcher(SEARCH), launcher("search")])  # no --target
+        [candidate] = thread.propose(self.arm_b(kit, thread, claude))
+        found = self.ledger(thread)
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value), (1, 1, 1, None))
+        self.assertEqual({k: candidate.signal["githits"].get(k) for k in ("launcher_passed", "records", "mismatch")},
+                         {"launcher_passed": 2, "records": 1, "mismatch": "githits_unrecorded"})
+        self.assertIn("left no GitHits client record", found.metric.note)
+        self.assertIn("(1 recorded)", found.metric.note)
+        self.assertEqual(found.metric.basis, tuple(e["hash"] for e in thread.history()
+                                                   if e["kind"] == "candidate_registered"))
 
     def test_a_command_the_launcher_refuses_sends_nothing_and_still_makes_the_count_unknown(self):
         """#135: the launcher's entry runs only the five lookups, and ``example`` only with ``license_mode: strict``;
@@ -431,7 +447,7 @@ class Unknowable(GroundTruth):
             launcher('example "retry an HTTP call" --license-mode yolo')])
         [candidate] = thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value), (1, 1, None))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value), (1, 1, 1, None))
         self.assertEqual([entry["path"] for entry in self.server.log], ["/v1/searches"], "no doctor, no example")
         self.assertEqual({k: candidate.signal["githits"].get(k) for k in ("launcher_passed", "records", "mismatch")},
                          {"launcher_passed": 4, "records": 1, "mismatch": "githits_unrecorded"})
@@ -443,39 +459,59 @@ class Unknowable(GroundTruth):
         self.assertEqual(thread.propose(self.arm_b(kit, thread, claude)), [])
         self.assertEqual(self.stopped(thread), ("error", "provider_guard_inactive"))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value), (1, 2, None))
+        self.assertEqual((found.server, found.journal, found.sent, found.metric.value), (1, 2, 1, None))
         self.assertEqual((found.paired, found.unpaired), (1, ["req-forged"]),
                          "one record names a request the server never answered")
-        self.assertEqual([v["guard"] for v in found.facts], ["unguarded", "unguarded"])
+        self.assertEqual([(v["guard"], v["sent"]) for v in found.facts], [("unguarded", None), ("unguarded", True)])
         self.assertIn("no guarded launcher call", found.metric.note)
 
+    def test_a_lookup_in_flight_when_the_call_times_out_makes_the_count_unknown(self):
+        """The host ends a Claude Code call past its timeout by killing its session (SIGKILL), so a launcher whose
+        request has left writes no record, and a failed call registers no candidate to carry the mismatch. Before
+        #142 the journal held no trace and the count was a known number one short (this module's finding 3). Since
+        #142 the failed call's records are journaled ``unguarded``, and when it has none, one ``githits.unrecorded``
+        fact stands for each launcher call the guard passed: either way the count is unknown."""
+        self.server.plan = {"/v1/searches": [None, HOLD, HOLD]}
+        kit = self.kit()
+        recorded, claude = self.work_item(kit, "in-flight", [launcher(SEARCH), launcher(SEARCH)])
+        self.assertEqual(recorded.propose(self.arm_b(kit, recorded, claude, timeout=15)), [])
+        alone, claude = self.work_item(kit, "in-flight-alone", [launcher(SEARCH)])
+        self.assertEqual(alone.propose(self.arm_b(kit, alone, claude, timeout=10)), [])
+        for thread in (recorded, alone):
+            self.assertEqual(self.stopped(thread), ("error", "provider_timeout"))
+        first, second = self.ledger(recorded), self.ledger(alone)
+        self.assertEqual((first.server, first.journal, first.sent, first.metric.value), (2, 1, 1, None))
+        self.assertEqual([(v["tool"], v["guard"], v["sent"]) for v in first.facts],
+                         [("githits.search", "unguarded", True)], "the answered one, no longer reconciled")
+        self.assertEqual((second.server, second.journal, second.sent, second.metric.value), (1, 1, 0, None))
+        self.assertEqual([(v["tool"], v["guard"], v["sent"], v["request_id"]) for v in second.facts],
+                         [("githits.unrecorded", "unguarded", None, None)], "a trace for the one in flight")
 
-class Findings(GroundTruth):
-    """Discrepancies in files this module does not own, each pinned as an expected failure with what it shows."""
 
-    @unittest.expectedFailure
-    def test_githits_a_response_the_client_cannot_filter_is_still_recorded(self):
-        """githits.py, ``Client.call``: after the request is sent, an exception other than ``GitHitsError`` ends the
-        call before ``_record``. A search hit that is not an object makes ``_filter`` raise AttributeError
-        (``hit.get``); a one-off probe on CPython 3.13 found the same for JSON nested past the recursion limit
-        (``json.loads`` raises RecursionError, not the ValueError the client catches), not pinned here because how
-        deep that is depends on the interpreter and platform. GitHits served the request and no record exists, so the
-        launcher call is ``githits_unrecorded`` (``Unknowable``), and leaves no trace when the Claude Code call fails
-        or is refused."""
+class Fixed(GroundTruth):
+    """Findings this module pinned as expected failures until #142 closed them (this branch carries #142's commits
+    until #142 merges). The fourth, a lookup in flight when the call times out, is ``Unknowable`` above."""
+
+    def test_githits_an_answer_the_client_cannot_read_is_still_recorded(self):
+        """githits.py, ``Client.call``: an exception after the request was sent ended the call before ``_record``: a
+        search hit that is not an object (``_filter`` called ``hit.get``), or JSON nested past the recursion limit
+        (``json.loads`` raised RecursionError). GitHits served the request and no record existed. #142 records every
+        failure: here ``malformed_response``, with the answer's request id, sent."""
         folder, key = self.root.parent / "unfiltered-records", secrets.token_hex(32)
         client = githits.Client(token=self.token, base_url=self.server.url, record_dir=folder, record_key=key)
         self.server.plan = {"/v1/searches": [answer(NULL_HIT)]}
-        with contextlib.suppress(Exception):
+        with self.assertRaises(githits.GitHitsError) as caught:
             client.search("q", ["pypi:requests"])
+        self.assertEqual(caught.exception.code, "malformed_response")
         self.assertEqual(len(self.server.log), 1, "the request reached the server")
-        self.assertEqual(len(githits.read_records(folder, key).records), 1)
+        [record] = githits.read_records(folder, key).records
+        self.assertEqual((record["status"], record["request_id"], record["sent"]), ("error", "srv-0001", True))
 
-    @unittest.expectedFailure
     def test_githits_a_transport_failure_record_says_whether_the_request_was_sent(self):
         """githits.py, ``RECORD_FIELDS``: a timeout after GitHits received the request and a connection refused before
-        anything received it leave the same record (``status: error``, ``http_status`` and ``request_id`` null; only
-        ``at`` and ``latency_ms`` differ), so the requests GitHits received cannot be read off the journal exactly once
-        a transport failure occurs. ``githits_lookups`` counts both by its definition (``NotSent``)."""
+        anything received it left the same record (``status: error``, ``http_status`` and ``request_id`` null), so the
+        requests GitHits received could not be read off the journal once a transport failure occurred. #142 adds
+        ``sent``: true once the request was written, false when it never left."""
         folder, key = self.root.parent / "transport-records", secrets.token_hex(32)
         self.server.plan = {"/v1/searches": [HOLD]}
         for base_url in (self.server.url, dead_url()):
@@ -483,34 +519,15 @@ class Findings(GroundTruth):
             with self.assertRaises(githits.GitHitsError):
                 client.search("requests retry", ["pypi:requests"])
         self.assertEqual(len(self.server.log), 1, "the timed-out request reached the server; the refused one did not")
-        timed_out, refused = (({k: v for k, v in record.items() if k not in ("at", "latency_ms")})
-                              for record in githits.read_records(folder, key).records)
-        self.assertNotEqual(timed_out, refused)
+        timed_out, refused = githits.read_records(folder, key).records
+        self.assertEqual([(r["status"], r["http_status"], r["request_id"], r["sent"]) for r in (timed_out, refused)],
+                         [("error", None, None, True), ("error", None, None, False)])
 
-    @unittest.expectedFailure
-    def test_claude_code_a_launcher_call_in_flight_at_the_call_timeout_is_not_lost(self):
-        """claude_code.py, ``_call``: a launcher call the guard passed is journaled only through its client record,
-        and the record-count mismatch rides only on a registered candidate's ``signal.githits``. When the Claude Code
-        call times out while a lookup is in flight, the request has reached GitHits, the killed launcher wrote no
-        record, and no candidate carries the mismatch: the journal holds no trace of it, and ``githits_lookups`` is a
-        known number one short. (A call refused ``no_change`` loses its mismatch the same way, ``spec/GAPS.md`` 59
-        (12).) Any fix that leaves the count unknown here, or exact, passes."""
-        self.server.plan = {"/v1/searches": [None, HOLD]}
-        kit = self.kit()
-        thread, claude = self.work_item(kit, "in-flight", [launcher(SEARCH), launcher(SEARCH)])
-        self.assertEqual(thread.propose(self.arm_b(kit, thread, claude, timeout=15)), [])
-        self.assertEqual(self.stopped(thread), ("error", "provider_timeout"))
-        found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal), (2, 1))
-        self.assertTrue(found.metric.value is None or found.metric.value >= found.server,
-                        f"githits_lookups is {found.metric.value}, the server received {found.server}")
-
-    @unittest.expectedFailure
     def test_claude_code_a_provider_built_in_python_names_its_thread_in_the_session(self):
-        """claude_code.py, ``_session``: the label is ``thread_label``, else ``space.thread_id``, which
+        """claude_code.py, ``_session``: the label was ``thread_label``, else ``space.thread_id``, which
         ``GitSearchSpace`` does not have, else the search id. Only the CLI passes ``thread_label``, so a provider built
-        in Python sends ``s1-b`` as ``X-GitHits-Session-ID`` for the first search of every thread, and GitHits' own
-        per-session view of usage merges work items."""
+        in Python sent ``s1-b`` for the first search of every thread, and GitHits' own per-session view of usage
+        merged work items. #142 reads the space's thread."""
         kit = self.kit()
         threads = []
         for name in ("label-1", "label-2"):
