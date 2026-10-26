@@ -269,12 +269,12 @@ class InventoryShape(Inventory):
 
 # A miniature tree for the twins: a destination match carrying the exact line the twins rewrite.
 TWIN_CORE = '''def reconcile(record):
-    matched = record == "match"
-    if True:
-        if True:
+            matched = record == "match"
+            if False:
+                status = "skip"
 ''' + gate.MATCH_LINE + '''            else:
                 status, reason = "unverified", "destination_record_mismatch"
-    return status
+            return status
 '''
 TWIN_SUITE = '''import unittest
 from syberwork.core import reconcile

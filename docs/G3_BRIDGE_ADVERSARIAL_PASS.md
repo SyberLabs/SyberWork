@@ -68,7 +68,7 @@ G3 can add.
 A suite that refuses everything, or one whose assertions went soft, could pass
 every adversarial case for the wrong reason. The third step reruns the gate on
 two throwaway copies of the tree. In each copy, the destination match in
-`Work.reconcile` (`if matched:` in `syberwork/core.py`) is replaced:
+`Work.reconcile` (`elif matched:` in `syberwork/core.py`, after the simulated-record check) is replaced:
 
 | Twin | Destination match becomes | Must newly fail |
 |---|---|---|

@@ -410,13 +410,14 @@ def emit(text: str) -> None:
 
 # -- refuse-everything / accept-everything twins --------------------------------------
 
-# The destination match in ``Work.reconcile``. Each twin replaces this one line in a copy of the tree.
+# The live destination match in ``Work.reconcile``, after the simulated-record check.
+# Each twin replaces this one line in a copy of the tree.
 MATCH_FILE = "syberwork/core.py"
-MATCH_LINE = "            if matched:\n                status, reason = \"verified\", \"destination_record_matched\"\n"
+MATCH_LINE = "            elif matched:\n                status, reason = \"verified\", \"destination_record_matched\"\n"
 TWINS = {
-    # name: (replacement for ``if matched:``, the kind of case that must newly fail)
-    "refuse-everything": ("            if False:\n", CONTROL),
-    "accept-everything": ("            if True:\n", "adversarial"),
+    # name: (replacement for ``elif matched:``, the kind of case that must newly fail)
+    "refuse-everything": ("            elif False:\n", CONTROL),
+    "accept-everything": ("            elif True:\n", "adversarial"),
 }
 
 
