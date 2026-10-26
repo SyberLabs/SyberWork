@@ -105,14 +105,18 @@ def _preview(work: Work, case_id: str, data: dict, name: str, roles: list) -> di
             "written": False, "note": "Admission now for a proposal not yet made; nothing was recorded and nothing is reserved"}
 
 
-def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
-    httpd = make_server(work, users, host, port)
+def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None):
+    httpd = make_server(work, users, host, port, witness_log=witness_log)
     print(f"SyberWork listening at http://{host}:{httpd.server_port}", flush=True)
     httpd.serve_forever()
 
 
-def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766) -> ThreadingHTTPServer:
-    """Build the loopback server without starting it. Port 0 picks a free port."""
+def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None) -> ThreadingHTTPServer:
+    """Build the loopback server without starting it. Port 0 picks a free port.
+
+    ``witness_log`` is a ``TransparencyLog.open_readonly`` reader of the witness's log, or None. It holds no seed and
+    cannot append; ``GET /api/cases/{id}/witness`` reads it.
+    """
     loopback = host in ("127.0.0.1", "::1", "localhost")
     if not loopback and os.getenv("SYBERWORK_BIND", "") != host:
         raise Rejected("unsafe_bind", "the operator service must bind to loopback")
@@ -210,6 +214,10 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     # Work.side_channel: the JCS digest and deciding rule id stored beside each event. Neither is
                     # in the event hash; events written before that table existed have no row.
                     self._json(work.side_channel(unquote(parts[2])))
+                elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "witness":
+                    # Work.witness_status: each signed chain head the witness's log holds for this case, judged against
+                    # the events now. Without a configured log the answer says so; nothing is drawn as witnessed.
+                    self._json(work.witness_status(unquote(parts[2]), witness_log))
                 elif len(parts) == 6 and parts[:2] == ["api", "cases"] and parts[3] == "proposals" and parts[5] == "explain":
                     # The deciding rule for a stored proposal: ?when=recorded (the original decision) or now (the default).
                     when = parse_qs(urlsplit(self.path).query).get("when", ["now"])[-1]

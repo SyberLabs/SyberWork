@@ -180,6 +180,64 @@ class TransparencyLog:
                 raise
             return count
 
+    def entries(self) -> tuple[list[tuple[int, dict]], bool]:
+        """Every leaf as ``(index, envelope)`` in log order, and whether the newest signed checkpoint covers them all.
+
+        Leaves and checkpoint are read in one transaction, so an append in between cannot split them. A leaf that
+        is not a JSON object is left out of the list but still counts toward the checkpoint. Reading an entry
+        proves nothing about it: its chain-head signature is the caller's to check under ``public``.
+        """
+        with self._lock:
+            self._db.execute("BEGIN")
+            try:
+                rows = list(self._db.execute("SELECT idx, body FROM leaves ORDER BY idx"))
+                checkpoint = self._db.execute("SELECT envelope FROM checkpoints ORDER BY size DESC LIMIT 1").fetchone()
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
+        found = []
+        for row in rows:
+            if not isinstance(row["body"], str):
+                continue
+            try:
+                envelope = json.loads(row["body"])
+            except (TypeError, json.JSONDecodeError, RecursionError):
+                continue
+            if isinstance(envelope, dict):
+                found.append((row["idx"], envelope))
+        # An empty log has no checkpoint to cover it; a checkpoint over leaves that are gone covers nothing. A body
+        # that is not text was not written by append and is covered by no checkpoint this reader can check.
+        if any(not isinstance(row["body"], str) for row in rows):
+            return found, False
+        return found, (checkpoint is None and not rows) or self._covers(checkpoint, [row["body"].encode() for row in rows])
+
+    def _covers(self, checkpoint, entries: list[bytes]) -> bool:
+        """True when ``checkpoint`` is a checkpoint row signed under this key naming exactly ``entries``: size and root."""
+        if checkpoint is None:
+            return False
+        try:
+            signed = json.loads(checkpoint["envelope"])
+        except (TypeError, json.JSONDecodeError, RecursionError):
+            return False
+        payload = verified_payload(signed, self.public, CHECKPOINT_TYPE)
+        if payload is None:
+            return False
+        try:
+            document = json.loads(payload)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(document, dict) or type(document.get("size")) is not int:
+            return False
+        if document["size"] != len(entries) or not isinstance(document.get("root"), str):
+            return False
+        try:
+            root = bytes.fromhex(document["root"])
+        except ValueError:
+            return False
+        return len(root) == 32 and merkle_root(entries) == root
+
     def verify_witnessed(self, envelope: Mapping, events: list) -> bool:
         """True when the envelope matches the events, is in the log, and the signed checkpoint includes it."""
         if not verify_chain_head(envelope, events, self.public):
@@ -191,30 +249,12 @@ class TransparencyLog:
             checkpoint = self._db.execute(
                 "SELECT envelope FROM checkpoints ORDER BY size DESC LIMIT 1"
             ).fetchone()
-            if match is None or checkpoint is None:
-                return False
-            try:
-                signed = json.loads(checkpoint["envelope"])
-            except json.JSONDecodeError:
-                return False
-            payload = verified_payload(signed, self.public, CHECKPOINT_TYPE)
-            if payload is None:
-                return False
-            try:
-                document = json.loads(payload)
-            except json.JSONDecodeError:
-                return False
-            if not isinstance(document, dict) or type(document.get("size")) is not int:
-                return False
-            if document["size"] != len(rows) or not isinstance(document.get("root"), str):
-                return False
-            try:
-                root = bytes.fromhex(document["root"])
-            except ValueError:
+            if match is None:
                 return False
             entries = [row["body"].encode() for row in rows]
-            if merkle_root(entries) != root or len(root) != 32:
+            if not self._covers(checkpoint, entries):
                 return False
+            root = merkle_root(entries)
             leaves = [leaf_hash(entry) for entry in entries]
             proof = inclusion_proof(leaves, match["idx"])
-            return verify_inclusion(match["idx"], document["size"], leaves[match["idx"]], proof, root)
+            return verify_inclusion(match["idx"], len(rows), leaves[match["idx"]], proof, root)

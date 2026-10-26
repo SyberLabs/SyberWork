@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import threading
@@ -19,6 +20,7 @@ from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
 from syberlabs.clock import stamp
 from syberlabs.contracts import check_case_inputs, compile_path, prepare_contract
+from syberlabs.dsse import CHAIN_HEAD_TYPE, head_payload, verified_payload
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
@@ -73,6 +75,32 @@ def _destination_code(exc: BaseException) -> str:
     if isinstance(exc, (urllib.error.URLError, TimeoutError, OSError)):
         return "destination_unreachable"
     return "destination_error"
+
+
+def _decoded(payload) -> bytes | None:
+    try:
+        return base64.standard_b64decode(payload) if isinstance(payload, str) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _head_document(payload: bytes | None) -> dict | None:
+    """The ``{case_id, count, head}`` a chain-head payload names, or None when it names none."""
+    if payload is None:
+        return None
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _linked(events: list) -> bool:
+    """True when each event's hash is its own digest and names the one before: the chain a witness signs."""
+    try:
+        return verify_events(events)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 class Work:
@@ -899,6 +927,56 @@ class Work:
         with self.tx() as db:
             events = self._events(db, case_id)
         return client.submit(events)
+
+    def witness_status(self, case_id: str, log) -> dict:
+        """What a read-only transparency log says about this case's history. Appends nothing, signs nothing.
+
+        ``log`` is ``TransparencyLog.open_readonly`` under the witness's public key, or None when none is
+        configured. Each leaf naming this case is judged against the events as they are now. A signed head
+        covers the first ``count`` events, so it stays ``included`` as later events arrive. ``head_differs``
+        (event ``count`` has another hash) and ``beyond_history`` (the witness signed more events than the case
+        holds) mean this history is not the one that was witnessed, and so does ``chain_broken``: the head
+        matches the hash stored on event ``count``, but events #1 to ``count`` no longer hash to it.
+        ``bad_signature`` is a leaf the configured key did not sign, ``malformed`` one it signed that is not a
+        chain head, and ``not_included`` a matching head the log's newest signed checkpoint does not cover.
+        ``witnessed_through`` is the largest ``included`` count above zero, and None while any leaf conflicts.
+        """
+        with self.tx() as db:
+            self._case(db, case_id)
+            events = self._events(db, case_id)
+        head = {"seq": events[-1]["seq"], "hash": events[-1]["hash"]} if events else None
+        if log is None:
+            return {"case_id": case_id, "configured": False, "count": len(events), "head": head,
+                    "note": "serve has no witness log; set SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC to read one"}
+        leaves, covered = log.entries()
+        linked = {}
+        judged = []
+        for index, envelope in leaves:
+            # The unsigned payload only selects this case's leaves; every verdict is reached under the public key.
+            if (_head_document(_decoded(envelope.get("payload"))) or {}).get("case_id") != case_id:
+                continue
+            payload = verified_payload(envelope, log.public, CHAIN_HEAD_TYPE)
+            signed = _head_document(payload)
+            count = signed.get("count") if signed else None
+            if payload is None:
+                verdict, count, signed = "bad_signature", None, None
+            elif signed is None or type(count) is not int or count < 0 or not isinstance(signed.get("head"), str):
+                verdict, count, signed = "malformed", None, None
+            elif count > len(events):
+                verdict = "beyond_history"
+            elif payload != head_payload(case_id, events[:count]):
+                verdict = "head_differs"
+            elif not linked.setdefault(count, _linked(events[:count])):
+                verdict = "chain_broken"
+            else:
+                # The checkpoint signs the Merkle root of every leaf read with it, so it covers this one or none.
+                verdict = "included" if covered else "not_included"
+            judged.append({"index": index, "count": count, "head": signed["head"] if signed else None, "verdict": verdict})
+        conflict = any(entry["verdict"] in ("head_differs", "beyond_history", "chain_broken") for entry in judged)
+        through = None if conflict else max((entry["count"] for entry in judged if entry["verdict"] == "included" and entry["count"] > 0), default=None)
+        return {"case_id": case_id, "configured": True, "count": len(events), "head": head, "public_key": log.public.hex(),
+                "checkpoint": covered, "entries": judged, "witnessed_through": through,
+                "note": "Read from the witness's log under its public key. The witness holds the seed; this read appends nothing"}
 
     def chain_ok(self, db, case_id: str) -> bool:
         """Check one case on a connection the caller already holds."""

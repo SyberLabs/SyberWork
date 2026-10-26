@@ -7,11 +7,33 @@ import os
 import secrets
 from pathlib import Path
 
+from syberlabs.errors import Rejected
+from syberlabs.tlog import TransparencyLog
+
 from .backup import export_cell, restore_cell
 from .core import Work
 from .server import serve
 from .trace import TraceLog
 from .worker import run_available, serve as serve_worker
+
+
+def _witness_log(parser):
+    """The witness's transparency log, opened read-only, when SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC name one.
+
+    The public key is the hex ``python -m syberlabs.witness`` prints. Half a configuration stops serve rather than
+    serving a console that says no witness is configured.
+    """
+    path, public = os.getenv("SYBERWORK_WITNESS_LOG"), os.getenv("SYBERWORK_WITNESS_PUBLIC")
+    if not path and not public:
+        return None
+    if not path or not public:
+        parser.error("set both SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC, or neither")
+    try:
+        return TransparencyLog.open_readonly(path, bytes.fromhex(public))
+    except ValueError:
+        parser.error("SYBERWORK_WITNESS_PUBLIC must be the witness public key in hex")
+    except Rejected as exc:
+        parser.error(f"witness log: {exc.code}: {exc.detail}")
 
 
 def main():
@@ -79,7 +101,8 @@ def main():
     elif args.command == "serve":
         if not userfile.exists():
             parser.error("run init first")
-        serve(db, json.loads(userfile.read_text()), host=os.getenv("SYBERWORK_BIND", "127.0.0.1"), port=args.port)
+        serve(db, json.loads(userfile.read_text()), host=os.getenv("SYBERWORK_BIND", "127.0.0.1"), port=args.port,
+              witness_log=_witness_log(parser))
     elif args.command == "backup":
         print(json.dumps(export_cell(db, args.directory)))
     elif args.command == "restore":

@@ -17,6 +17,14 @@ python examples/reference_system.py --database .reference/system.sqlite3
 python -m syberwork.cli --home .syberwork serve
 ```
 
+To read a witness's log, start the witness first and give `serve` its log and public key. The witness
+prints `{"public": "<hex>", "port": <n>}`; both variables or neither, or `serve` stops:
+
+```sh
+python -m syberlabs.witness --log .witness/log.sqlite3     # keep it running; it holds the signing seed
+SYBERWORK_WITNESS_LOG=.witness/log.sqlite3 SYBERWORK_WITNESS_PUBLIC=<hex> python -m syberwork.cli --home .syberwork serve
+```
+
 Open the page, press `i`, and paste the `operator`, `scheduler`, `manager`, `planner` and `admin`
 tokens one at a time. They are kept in this tab's `sessionStorage` (as the old console kept one token)
 and are sent only as a bearer header to the loopback service. They never appear in the URL. Leave the
@@ -37,6 +45,7 @@ tab or choose **Forget all** to drop them.
 | 8 | scheduler | **Execute** (press twice) | A real POST to the reference system with `Idempotency-Key` and `If-Match`; *Applied · destination acknowledged HTTP 201*. Only the original proposer can execute; anyone else gets *only the original proposer (scheduler) may execute* with a switch link. |
 | 9 | manager | **Sign off as manager** | The sign-off is offered only after `issue_order` has applied, because the server accepts an earlier signature but it never satisfies the clause. The case becomes *Complete*. |
 | 10 | any | History (`5`), then `v` | The server's `/verify` result is recorded with the head it covered (`intact through #13 …`). It is marked stale when newer events arrive. |
+| 11 | outside the console | `Work.submit_witness(case_id, WitnessClient(port, public, log))`, then `r` | Without a configured log, **Witness** reads *not configured* and names the two variables. With one: *not witnessed* before, then *witnessed through #13* with the leaf, its signed head and *in the log*. An event added later is listed as *not witnessed*. |
 
 If the destination is down at step 8, the effect becomes *Outcome unknown · check destination*, the
 case list shows *effect unknown*, and the next move is a manager's **Check destination status**. A 404
@@ -81,8 +90,9 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
      its JCS side record (digest, and the deciding rule for a decision) and body. A link-break check runs
      in the page, but only the server's verification counts. Above the timeline: the side-record coverage
      (`GET /api/cases/{id}/side`), this case's work item (`GET /metrics/work_items/{id}`: each metric's
-     value, the events it came from and the server's note), and **Witness and certificate**, two disabled
-     buttons that name the read route each one lacks.
+     value, the events it came from and the server's note), **Witness** (`GET /api/cases/{id}/witness`: each
+     leaf of the witness's log that names this case, the events it covers and the server's verdict) and
+     **Certificate**, a disabled button that names the read route it lacks.
   6. *Replay*: choose a contract and a policy version. The table shows each changed decision as recorded
      and as replayed, and each acceptance clause before and after. The server's note (no re-read, no
      mutation) is shown verbatim.
@@ -125,7 +135,7 @@ refreshes and proposals act at once, because they are either read-only or pass t
 
 All require a bearer token and append nothing (`tests/test_console.py` `test_reads_append_nothing`,
 `test_explain_appends_nothing_and_writes_no_row`, `test_side_read_appends_nothing_and_an_unknown_case_is_refused`,
-`test_preview_appends_nothing_for_anyone`). All are `GET` except `POST /api/cases/{id}/preview`, which carries
+`test_preview_appends_nothing_for_anyone`, `test_the_read_appends_nothing_to_the_case_or_the_log`). All are `GET` except `POST /api/cases/{id}/preview`, which carries
 the proposal's arguments in its body and, like the existing `replay` POST, writes nothing. As a POST, its
 refusals answer `409`, including a missing token (`unauthorized`).
 
@@ -139,6 +149,7 @@ refusals answer `409`, including a missing token (`unauthorized`).
 | `/api/sources` | admin: installed definitions, as above. Any other principal: read roles only | `{name: {roles}}`. `roles` is what `refresh_fact` checks (`["operator"]` when the definition names none; `null` when the stored value is not a list of names, and the console then says the server decides). No URL, credential variable, value path or kind. |
 | `/api/cases/{id}/side` | any principal, like `/api/cases/{id}` | `Work.side_channel` unchanged: `[{seq, jcs, rule}]`, the RFC 8785 SHA-256 of the fields each event's hash covers and, for a decision, the deciding rule id. Events written before the side table have no row. An unknown case answers `unknown_case`. |
 | `POST /api/cases/{id}/preview` with `{action, args?, origin?}` | any principal, like `POST /api/cases/{id}/proposals` | `Work.preview_admission`: `status`, `reason`, `rule`, `provenance` (named as the explain route names it), the `args` admitted (`bound: true` when the body had no `args` key and the server bound them from the contract, as the compiled step does; any value present, `null` included, is admitted as given), `origin`, `policy_version`, `head: {seq, hash}`, `written: false` and a note. The origin is checked as propose checks it (`invalid_origin`, `origin_denied`). Binding refuses `missing_fact`, `missing_fact_field`, `invalid_binding` or `action_not_in_contract`. |
+| `/api/cases/{id}/witness` | any principal, like `/api/cases/{id}` | `Work.witness_status`. Without a log: `{case_id, configured: false, count, head, note}`. With one: also `public_key`, `checkpoint` (the newest signed checkpoint covers the log as read), `witnessed_through`, and `entries: [{index, count, head, verdict}]`, one per leaf naming this case. Verdicts: `included`, `not_included`, `head_differs`, `chain_broken`, `beyond_history`, `bad_signature`, `malformed`. `witnessed_through` is the largest `included` count above zero, and `null` while any leaf is `head_differs`, `chain_broken` or `beyond_history`. An unknown case answers `unknown_case`. |
 | `/api/cases/{id}/proposals/{proposal}/explain?when=recorded\|now` | any principal, like `/api/cases/{id}` | `Work.explain_admission` (`status`, `reason`, `rule`, `provenance: {module, symbol, line}`) and `recorded`: the proposal's first decision as stored, with the rule id written beside it on the side channel (`null` for rows older than that table). `when` defaults to `now`, as in `Work`. |
 
 A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 not_found` instead of
@@ -163,7 +174,7 @@ docs/METRICS.md); no branch in this stack adds a metrics route.
 | 7 | External planner | Done, with an empty state when unset (`GET /api/console`). Not exercised against a live planner. |
 | 8 | Effect and reconciliation status | Done. Attest text is never drawn as reconciled; legacy `reconciled` rows without proof are flagged. |
 | 9 | Keyboard, contrast, states, responsive | Done for keyboard, contrast and loading/empty/error/success states. Responsive layout is checked at 820 px only. |
-| 10 | Tests | `tests/test_console.py` (routes, static safety, the node projection tests with Python parity, the browser walkthrough). |
+| 10 | Tests | `tests/test_console.py` (routes, static safety, the node projection tests with Python parity, the browser walkthrough, which also has a witness sign the completed case and reads it back). |
 
 Gaps from #95, closed or still open:
 
@@ -174,7 +185,8 @@ Gaps from #95, closed or still open:
 | Source read roles for non-admins | **Closed**: every credential reads each source's read roles (only); the refresh button names the missing role and offers a switch; a source that is not installed is said so | `GET /api/sources`; `test_other_credentials_see_each_sources_read_roles_and_nothing_else`, `test_listed_read_roles_are_the_ones_refresh_enforces` |
 | `/api/policies` read scope | **Closed**: admin or manager, without an automation role; `model`, `compiled`, `operator` and observer credentials get `403` | `POLICY_READERS` in `server.py`; `ConsoleReadScope` |
 | JCS side records (`Work.side_channel`) | **Closed**: a read-only route returns `Work.side_channel` as stored; History shows coverage and each event's digest and rule. The console does not recompute digests | `GET /api/cases/{id}/side`; `M.sideRecords`; `ConsoleSideRecords` |
-| Witness and certificate | **Open, shown as missing**: no read path exists. History has two disabled buttons naming `GET /api/cases/{id}/witness` and `GET /api/cases/{id}/certificate` and why neither exists | `witnessPanel` in `app.js`; `test_witness_and_certificate_are_named_as_missing_not_drawn` |
+| Witness | **Closed for reading** (this branch): `serve` opens the witness's log read-only when `SYBERWORK_WITNESS_LOG` and `SYBERWORK_WITNESS_PUBLIC` name it, and History draws what the server judged. Asking the witness to sign from the console is still open (below) | `GET /api/cases/{id}/witness` (`Work.witness_status`); `M.witnessView`; `ConsoleWitness`; the browser walkthrough |
+| Certificate | **Open, shown as missing**: no read path exists. History has a disabled button naming `GET /api/cases/{id}/certificate` and why it does not exist | `witnessPanel` in `app.js`; `test_the_certificate_is_named_as_missing_not_drawn` |
 | Admission before proposing | **Closed**: Propose → By hand binds arguments from the contract and asks the server what proposing would record now, before anything is written | `POST /api/cases/{id}/preview` (`Work.preview_admission`); `M.previewView`, `M.previewCurrent`; `ConsolePreview` |
 | Builder API (`/api/builder/*`) | Open | a separate surface, not part of this console |
 | Push updates | Open | there is no push: press `r` to reload |
@@ -221,14 +233,61 @@ Gaps from #95, closed or still open:
   changed digest. A changed row comes back from the route unchanged. `verify` refuses a digest changed to
   another string, and accepts a nulled digest or a changed rule
   (`test_the_route_reports_a_stored_digest_as_stored_and_verify_judges_it`).
-- **Witness and certificate** (open, shown as missing): `syberwork serve` configures no witness.
-  `Work.submit_witness` asks a loopback `python -m syberlabs.witness` process to sign the chain head and
-  returns the DSSE envelope to its caller; nothing stores it in the case database, and no HTTP route reads
-  it or the transparency log. Admission certificates (`syberlabs certify`, docs/CERTIFICATE.md) belong to
-  Build Threads and are files under `<home>/certificates`; a case here has none. So the console draws
-  nothing as witnessed or certified. It shows two disabled buttons, *Show witness* and *Show certificate*,
-  each naming the GET it would need. The routes are not served (`404 not_found`). Closing this needs a
-  stored witness envelope, or a read-only log reader configured in `serve`, before any route can exist.
+- **Witness** (closed for reading): before this, `serve` configured no witness. `Work.submit_witness` asked a
+  loopback `python -m syberlabs.witness` process to sign the chain head and returned the DSSE envelope to its
+  caller, and nothing read the log back. Now `syberwork serve` opens the witness's transparency log with
+  `TransparencyLog.open_readonly` when `SYBERWORK_WITNESS_LOG` and `SYBERWORK_WITNESS_PUBLIC` (the hex the witness
+  prints) are both set. Setting only one, or a key that is not 32 bytes of hex, stops `serve`. So does a path that is the case
+  database or not a log. The reader has no seed and cannot append. `GET /api/cases/{id}/witness` returns
+  `Work.witness_status`: each leaf whose payload names this case, judged against the events as they are now. A
+  signed head covers events #1 to its `count`, so it stays `included` when later events arrive, and those later
+  events are listed as *not witnessed*. `head_differs` (event `count` has another hash) and `beyond_history` (the
+  witness signed more events than the case holds) mean this history is not the one that was witnessed. So does
+  `chain_broken`: the signed head equals the hash stored on event `count`, but events #1 to `count` no longer
+  hash to it (`verify_events` on that prefix, the check the witness ran before signing). Without it, a body
+  rewritten after signing still read *included* (`test_a_history_changed_after_signing_is_not_witnessed`). Any of
+  the three makes `witnessed_through` `null`, and the console reads *history differs*, even when another leaf is
+  `included`. `bad_signature` is a leaf the configured key did not sign. `malformed` is one it signed that is
+  not a chain head. `not_included` is a matching head when the newest signed checkpoint does not cover the log
+  as read. Leaves and checkpoint are read in one transaction, so a concurrent append cannot split them. An
+  empty log with no checkpoint counts as covered. A leaf body that is not JSON text is skipped and makes the
+  checkpoint not cover the log, instead of answering 500 (`test_an_unreadable_leaf_is_skipped_not_a_crash`).
+  - **Who judges.** The server checks every signature, the checkpoint and the Merkle root under the configured
+    public key; the console checks none. It does refuse an `included` answer whose head is not the hash it shows
+    at that event (*unknown · press r*). It counts only `included` heads at an event it holds. A head past the
+    events on the page, which the server read later, is not drawn as witnessing them; the panel says the server
+    read more events (`r`). The cache key is the case and its head `seq`, not its hash, so a history rewritten at
+    the same length keeps the earlier answer until `r`. So the panel is only as independent as the process that serves it and
+    the public key it was given. A reader who doubts the server checks the same log with
+    `TransparencyLog.verify_witnessed` under the witness key. The known limits in `docs/SDK_REDTEAM.md` row 4
+    still apply: a same-user process can open the log file writable, an operator who holds the seed can rebuild
+    the log, and this is not Sigstore Rekor.
+  - **Selection.** Leaves are picked by the `case_id` in their unsigned payload; every verdict is then reached
+    under the key. A leaf of another case is not verified, so a case's read costs one Ed25519 check per leaf
+    naming it plus one for the checkpoint. On the machine this branch was built on, the pure-Python verify took
+    about 0.14 s per signature (one measurement, not a benchmark). To keep that cost off every redraw, the
+    console keeps an answer per case and head, and `r` asks again, because the log moves without the case.
+  - **SDK change.** `syberlabs/tlog.py` gains `TransparencyLog.entries()` (every leaf and whether the newest
+    signed checkpoint covers them, in one read transaction, rolled back if a read fails). The checkpoint check
+    moved into `_covers`, which `verify_witnessed` now shares. One difference: a checkpoint row that is not text
+    now returns False where it raised `TypeError`. `tests/test_witness.py` and `tests/test_external_witness.py`
+    are unchanged and pass.
+  - **Independent review.** A Claude session that did not write the change reviewed it and found that a
+    history changed after signing still read *included*. That is now `chain_broken`. Its other findings are
+    also fixed. `witnessed_through` now reports nothing while a leaf conflicts, and was 0 for an empty head.
+    An unreadable leaf no longer answers 500. A failed read now rolls back its transaction. The console counts
+    only heads at events it holds. The browser test's signing assertion could not fail; it now can. The reviewer
+    also ran 60 appends from another process against about 90,000 reads. No read saw the leaves and checkpoint
+    out of step, none hit a lock error, and none left a transaction open.
+  - **Still open: asking for a signature from the console.** The console has no *Ask witness to sign* button.
+    `Work.submit_witness` needs the witness's port beside the log, and nothing in the code says which role
+    may ask. The witness appends to its own log, but it writes nothing to the case. That is a role decision,
+    not made here. The browser walkthrough signs from outside the console through `Work.submit_witness` and a
+    `WitnessClient`, as an operator's own script would.
+- **Certificate** (open, shown as missing): admission certificates (`syberlabs certify`, docs/CERTIFICATE.md)
+  belong to Build Threads and are files under `<home>/certificates`; a case here has none. The console draws
+  nothing as certified. A disabled *Show certificate* names `GET /api/cases/{id}/certificate`, which is not
+  served (`404 not_found`).
 - **Work item per case** (closed): History reads `GET /metrics/work_items/{id}` (an existing route) and
   shows each of the nine metrics (`syberlabs.metrics.METRICS`, with a parity test) as `_cell` writes it.
   *unknown* stays a badge, a boolean is yes or no, cost has four decimals. One exception: a whole-number
