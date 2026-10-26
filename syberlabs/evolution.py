@@ -610,10 +610,13 @@ def candidate_views(contract: dict, history: list, now) -> list[dict]:
             candidate_id = body["args"].get("candidate")
             if isinstance(candidate_id, str):
                 proposals.setdefault(candidate_id, []).append(body["id"])
-    decisions, outcomes = {}, {}
+    decisions, outcomes, evaluations = {}, {}, {}
     for event in history:
         body = event["body"]
-        if event["kind"] == "decision":
+        if event["kind"] == "candidate_evaluated":
+            # The last one in history order is the newest: what ``latest_evaluation`` finds scanning backwards.
+            evaluations[(body["candidate"], body["commit"], body["tree"])] = event
+        elif event["kind"] == "decision":
             decisions[body["proposal_id"]] = body
         elif event["kind"] in ("effect_started", "effect_unknown", "effect_rejected", "effect_succeeded"):
             outcomes.setdefault(body["proposal_id"], []).append(event["kind"])
@@ -624,7 +627,7 @@ def candidate_views(contract: dict, history: list, now) -> list[dict]:
         if event["kind"] != "candidate_registered":
             continue
         candidate = event["body"]
-        evaluation = latest_evaluation(history, candidate)
+        evaluation = evaluations.get((candidate["id"], candidate["commit"], candidate["tree"]))
         if evaluation is None:
             evaluated = "none"
         else:
