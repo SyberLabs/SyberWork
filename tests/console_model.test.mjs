@@ -385,10 +385,13 @@ test('a signed head witnesses the events it counts, never the ones after it', ()
   assert.deepEqual([none.state, none.through, none.unwitnessed, none.checkpoint], ['none', null, [1, 2, 3, 4], false]);
   assert.equal(M.witnessView(WITNESS([{ index: 0, count: 0, head: '0'.repeat(64), verdict: 'included' }]), FOUR()).state, 'none', 'a head over no events witnesses nothing');
   assert.equal(M.witnessView(WITNESS([], { count: 5 }), FOUR()).moved, true);
+  // The server read a sixth event this page does not hold: its head is not drawn as witnessing what is shown.
+  const ahead = M.witnessView(WITNESS([{ index: 0, count: 6, head: 'h6', verdict: 'included' }], { count: 6 }), FOUR());
+  assert.deepEqual([ahead.state, ahead.through, ahead.moved], ['none', null, true]);
 });
 
 test('a head this history does not have outranks a witnessed one', () => {
-  for (const verdict of ['head_differs', 'beyond_history']) {
+  for (const verdict of ['head_differs', 'beyond_history', 'chain_broken']) {
     const view = M.witnessView(WITNESS([{ index: 0, count: 4, head: 'h4', verdict: 'included' }, { index: 1, count: 4, head: 'x', verdict }]), FOUR());
     assert.deepEqual([view.state, view.through, view.conflicts.map(e => e.tone)], ['conflict', 4, ['denied']], verdict);
   }

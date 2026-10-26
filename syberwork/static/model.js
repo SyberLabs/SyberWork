@@ -552,6 +552,7 @@ export const WITNESS_VERDICT = {
   included: ['verified', 'in the log', 'the signed head matches this history and the log\'s newest signed checkpoint covers it'],
   not_included: ['pending', 'not covered now', 'signed for this history, but the log\'s newest signed checkpoint does not cover the log as read'],
   head_differs: ['denied', 'head differs', 'the witness signed another hash for this event: this history is not the one witnessed'],
+  chain_broken: ['denied', 'chain broken', 'the head matches the hash stored on this event, but the events before it no longer hash to it: this history was changed'],
   beyond_history: ['denied', 'beyond this history', 'the witness signed more events than this case holds: events were removed, or this is another database'],
   bad_signature: ['unverified', 'not signed by this key', 'names this case but is not signed by the configured witness key'],
   malformed: ['unknown', 'unreadable', 'signed by the configured key, but not a chain head this server can read'],
@@ -574,10 +575,10 @@ export function witnessView(body, events) {
   // that event; otherwise the two reads disagree and the console names neither as witnessed.
   const disagree = entries.filter(e => e.verdict === 'included' && hashAt.has(e.count) && hashAt.get(e.count) !== e.head);
   if (disagree.length) return unknown(`the answer names another hash at #${disagree[0].count} than this page shows; press r`);
-  // A head over no events witnesses nothing.
-  const included = entries.filter(e => e.verdict === 'included' && e.count > 0);
+  // A head over no events witnesses nothing, and one past the events this page holds is not drawn as witnessing them.
+  const included = entries.filter(e => e.verdict === 'included' && e.count > 0 && hashAt.has(e.count));
   const through = included.length ? Math.max(...included.map(e => e.count)) : null;
-  const conflicts = entries.filter(e => e.verdict === 'head_differs' || e.verdict === 'beyond_history');
+  const conflicts = entries.filter(e => ['head_differs', 'beyond_history', 'chain_broken'].includes(e.verdict));
   return {state: conflicts.length ? 'conflict' : through !== null ? 'witnessed' : 'none', entries, through, conflicts,
     unwitnessed: events.filter(e => through === null || e.seq > through).map(e => e.seq), count: body.count,
     shown: events.length, moved: body.count !== events.length, checkpoint: body.checkpoint === true,

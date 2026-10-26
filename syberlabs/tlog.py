@@ -192,17 +192,25 @@ class TransparencyLog:
             try:
                 rows = list(self._db.execute("SELECT idx, body FROM leaves ORDER BY idx"))
                 checkpoint = self._db.execute("SELECT envelope FROM checkpoints ORDER BY size DESC LIMIT 1").fetchone()
-            finally:
-                self._db.execute("COMMIT")
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
         found = []
         for row in rows:
+            if not isinstance(row["body"], str):
+                continue
             try:
                 envelope = json.loads(row["body"])
-            except (TypeError, json.JSONDecodeError):
+            except (TypeError, json.JSONDecodeError, RecursionError):
                 continue
             if isinstance(envelope, dict):
                 found.append((row["idx"], envelope))
-        # An empty log has no checkpoint to cover it; a checkpoint over leaves that are gone covers nothing.
+        # An empty log has no checkpoint to cover it; a checkpoint over leaves that are gone covers nothing. A body
+        # that is not text was not written by append and is covered by no checkpoint this reader can check.
+        if any(not isinstance(row["body"], str) for row in rows):
+            return found, False
         return found, (checkpoint is None and not rows) or self._covers(checkpoint, [row["body"].encode() for row in rows])
 
     def _covers(self, checkpoint, entries: list[bytes]) -> bool:
@@ -211,7 +219,7 @@ class TransparencyLog:
             return False
         try:
             signed = json.loads(checkpoint["envelope"])
-        except json.JSONDecodeError:
+        except (TypeError, json.JSONDecodeError, RecursionError):
             return False
         payload = verified_payload(signed, self.public, CHECKPOINT_TYPE)
         if payload is None:

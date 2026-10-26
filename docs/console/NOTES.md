@@ -149,7 +149,7 @@ refusals answer `409`, including a missing token (`unauthorized`).
 | `/api/sources` | admin: installed definitions, as above. Any other principal: read roles only | `{name: {roles}}`. `roles` is what `refresh_fact` checks (`["operator"]` when the definition names none; `null` when the stored value is not a list of names, and the console then says the server decides). No URL, credential variable, value path or kind. |
 | `/api/cases/{id}/side` | any principal, like `/api/cases/{id}` | `Work.side_channel` unchanged: `[{seq, jcs, rule}]`, the RFC 8785 SHA-256 of the fields each event's hash covers and, for a decision, the deciding rule id. Events written before the side table have no row. An unknown case answers `unknown_case`. |
 | `POST /api/cases/{id}/preview` with `{action, args?, origin?}` | any principal, like `POST /api/cases/{id}/proposals` | `Work.preview_admission`: `status`, `reason`, `rule`, `provenance` (named as the explain route names it), the `args` admitted (`bound: true` when the body had no `args` key and the server bound them from the contract, as the compiled step does; any value present, `null` included, is admitted as given), `origin`, `policy_version`, `head: {seq, hash}`, `written: false` and a note. The origin is checked as propose checks it (`invalid_origin`, `origin_denied`). Binding refuses `missing_fact`, `missing_fact_field`, `invalid_binding` or `action_not_in_contract`. |
-| `/api/cases/{id}/witness` | any principal, like `/api/cases/{id}` | `Work.witness_status`. Without a log: `{case_id, configured: false, count, head, note}`. With one: also `public_key`, `checkpoint` (the newest signed checkpoint covers the log as read), `witnessed_through`, and `entries: [{index, count, head, verdict}]`, one per leaf naming this case. Verdicts: `included`, `not_included`, `head_differs`, `beyond_history`, `bad_signature`, `malformed`. An unknown case answers `unknown_case`. |
+| `/api/cases/{id}/witness` | any principal, like `/api/cases/{id}` | `Work.witness_status`. Without a log: `{case_id, configured: false, count, head, note}`. With one: also `public_key`, `checkpoint` (the newest signed checkpoint covers the log as read), `witnessed_through`, and `entries: [{index, count, head, verdict}]`, one per leaf naming this case. Verdicts: `included`, `not_included`, `head_differs`, `chain_broken`, `beyond_history`, `bad_signature`, `malformed`. `witnessed_through` is the largest `included` count above zero, and `null` while any leaf is `head_differs`, `chain_broken` or `beyond_history`. An unknown case answers `unknown_case`. |
 | `/api/cases/{id}/proposals/{proposal}/explain?when=recorded\|now` | any principal, like `/api/cases/{id}` | `Work.explain_admission` (`status`, `reason`, `rule`, `provenance: {module, symbol, line}`) and `recorded`: the proposal's first decision as stored, with the rule id written beside it on the side channel (`null` for rows older than that table). `when` defaults to `now`, as in `Work`. |
 
 A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 not_found` instead of
@@ -242,15 +242,22 @@ Gaps from #95, closed or still open:
   `Work.witness_status`: each leaf whose payload names this case, judged against the events as they are now. A
   signed head covers events #1 to its `count`, so it stays `included` when later events arrive, and those later
   events are listed as *not witnessed*. `head_differs` (event `count` has another hash) and `beyond_history` (the
-  witness signed more events than the case holds) mean this history is not the one that was witnessed; the
-  console then reads *history differs* and does not call the case witnessed, even when another leaf is
+  witness signed more events than the case holds) mean this history is not the one that was witnessed. So does
+  `chain_broken`: the signed head equals the hash stored on event `count`, but events #1 to `count` no longer
+  hash to it (`verify_events` on that prefix, the check the witness ran before signing). Without it, a body
+  rewritten after signing still read *included* (`test_a_history_changed_after_signing_is_not_witnessed`). Any of
+  the three makes `witnessed_through` `null`, and the console reads *history differs*, even when another leaf is
   `included`. `bad_signature` is a leaf the configured key did not sign. `malformed` is one it signed that is
   not a chain head. `not_included` is a matching head when the newest signed checkpoint does not cover the log
   as read. Leaves and checkpoint are read in one transaction, so a concurrent append cannot split them. An
-  empty log with no checkpoint counts as covered.
+  empty log with no checkpoint counts as covered. A leaf body that is not JSON text is skipped and makes the
+  checkpoint not cover the log, instead of answering 500 (`test_an_unreadable_leaf_is_skipped_not_a_crash`).
   - **Who judges.** The server checks every signature, the checkpoint and the Merkle root under the configured
     public key; the console checks none. It does refuse an `included` answer whose head is not the hash it shows
-    at that event (*unknown · press r*). So the panel is only as independent as the process that serves it and
+    at that event (*unknown · press r*). It counts only `included` heads at an event it holds. A head past the
+    events on the page, which the server read later, is not drawn as witnessing them; the panel says the server
+    read more events (`r`). The cache key is the case and its head `seq`, not its hash, so a history rewritten at
+    the same length keeps the earlier answer until `r`. So the panel is only as independent as the process that serves it and
     the public key it was given. A reader who doubts the server checks the same log with
     `TransparencyLog.verify_witnessed` under the witness key. The known limits in `docs/SDK_REDTEAM.md` row 4
     still apply: a same-user process can open the log file writable, an operator who holds the seed can rebuild
@@ -261,9 +268,17 @@ Gaps from #95, closed or still open:
     about 0.14 s per signature (one measurement, not a benchmark). To keep that cost off every redraw, the
     console keeps an answer per case and head, and `r` asks again, because the log moves without the case.
   - **SDK change.** `syberlabs/tlog.py` gains `TransparencyLog.entries()` (every leaf and whether the newest
-    signed checkpoint covers them, in one read transaction). The checkpoint check moved into `_covers`, which
-    `verify_witnessed` now shares, with no change in behavior (`tests/test_witness.py`,
-    `tests/test_external_witness.py` unchanged and passing).
+    signed checkpoint covers them, in one read transaction, rolled back if a read fails). The checkpoint check
+    moved into `_covers`, which `verify_witnessed` now shares. One difference: a checkpoint row that is not text
+    now returns False where it raised `TypeError`. `tests/test_witness.py` and `tests/test_external_witness.py`
+    are unchanged and pass.
+  - **Independent review.** A Claude session that did not write the change reviewed it and found that a
+    history changed after signing still read *included*. That is now `chain_broken`. Its other findings are
+    also fixed. `witnessed_through` now reports nothing while a leaf conflicts, and was 0 for an empty head.
+    An unreadable leaf no longer answers 500. A failed read now rolls back its transaction. The console counts
+    only heads at events it holds. The browser test's signing assertion could not fail; it now can. The reviewer
+    also ran 60 appends from another process against about 90,000 reads. No read saw the leaves and checkpoint
+    out of step, none hit a lock error, and none left a transaction open.
   - **Still open: asking for a signature from the console.** The console has no *Ask witness to sign* button.
     `Work.submit_witness` needs the witness's port beside the log, and nothing in the code says which role
     may ask. The witness appends to its own log, but it writes nothing to the case. That is a role decision,

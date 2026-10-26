@@ -90,9 +90,17 @@ def _head_document(payload: bytes | None) -> dict | None:
         return None
     try:
         document = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return None
     return document if isinstance(document, dict) else None
+
+
+def _linked(events: list) -> bool:
+    """True when each event's hash is its own digest and names the one before: the chain a witness signs."""
+    try:
+        return verify_events(events)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 class Work:
@@ -927,9 +935,11 @@ class Work:
         configured. Each leaf naming this case is judged against the events as they are now. A signed head
         covers the first ``count`` events, so it stays ``included`` as later events arrive. ``head_differs``
         (event ``count`` has another hash) and ``beyond_history`` (the witness signed more events than the case
-        holds) mean this history is not the one that was witnessed. ``bad_signature`` is a leaf the configured
-        key did not sign, ``malformed`` one it signed that is not a chain head, and ``not_included`` a matching
-        head the log's newest signed checkpoint does not cover.
+        holds) mean this history is not the one that was witnessed, and so does ``chain_broken``: the head
+        matches the hash stored on event ``count``, but events #1 to ``count`` no longer hash to it.
+        ``bad_signature`` is a leaf the configured key did not sign, ``malformed`` one it signed that is not a
+        chain head, and ``not_included`` a matching head the log's newest signed checkpoint does not cover.
+        ``witnessed_through`` is the largest ``included`` count above zero, and None while any leaf conflicts.
         """
         with self.tx() as db:
             self._case(db, case_id)
@@ -939,6 +949,7 @@ class Work:
             return {"case_id": case_id, "configured": False, "count": len(events), "head": head,
                     "note": "serve has no witness log; set SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC to read one"}
         leaves, covered = log.entries()
+        linked = {}
         judged = []
         for index, envelope in leaves:
             # The unsigned payload only selects this case's leaves; every verdict is reached under the public key.
@@ -955,11 +966,14 @@ class Work:
                 verdict = "beyond_history"
             elif payload != head_payload(case_id, events[:count]):
                 verdict = "head_differs"
+            elif not linked.setdefault(count, _linked(events[:count])):
+                verdict = "chain_broken"
             else:
                 # The checkpoint signs the Merkle root of every leaf read with it, so it covers this one or none.
                 verdict = "included" if covered else "not_included"
             judged.append({"index": index, "count": count, "head": signed["head"] if signed else None, "verdict": verdict})
-        through = max((entry["count"] for entry in judged if entry["verdict"] == "included"), default=None)
+        conflict = any(entry["verdict"] in ("head_differs", "beyond_history", "chain_broken") for entry in judged)
+        through = None if conflict else max((entry["count"] for entry in judged if entry["verdict"] == "included" and entry["count"] > 0), default=None)
         return {"case_id": case_id, "configured": True, "count": len(events), "head": head, "public_key": log.public.hex(),
                 "checkpoint": covered, "entries": judged, "witnessed_through": through,
                 "note": "Read from the witness's log under its public key. The witness holds the seed; this read appends nothing"}

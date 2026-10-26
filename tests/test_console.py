@@ -643,7 +643,29 @@ class ConsoleWitness(CellCase):
                          [(len(events), "included"), (len(events), "head_differs"), (len(events) + 1, "beyond_history"),
                           (None, "bad_signature"), (None, "malformed")])
         self.assertEqual(body["entries"][1]["head"], "0" * 64)
-        self.assertEqual(body["witnessed_through"], len(events), "the server reports what it found; the console lets a conflict outrank it")
+        self.assertIsNone(body["witnessed_through"], "a head this history does not have outranks a witnessed one")
+
+    def test_a_history_changed_after_signing_is_not_witnessed(self):
+        """The head matches the hash stored on the last event, but an earlier event no longer hashes into it."""
+        case, events = self.case_events()
+        self.attest(events)
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness")[1]["witnessed_through"], len(events))
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            db.execute("UPDATE events SET body=? WHERE case_id=? AND seq=1", (canonical({"tampered": True}), case))
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": False})
+        body = self.cell.json(f"/api/cases/{case}/witness")[1]
+        self.assertEqual(([e["verdict"] for e in body["entries"]], body["witnessed_through"]), (["chain_broken"], None))
+
+    def test_an_unreadable_leaf_is_skipped_not_a_crash(self):
+        case, events = self.case_events()
+        self.attest(events)
+        self.forge({"payloadType": CHAIN_HEAD_TYPE, "payload": "[" * 100000})
+        db = self.witness_log._db
+        size = db.execute("SELECT COUNT(*) AS n FROM leaves").fetchone()["n"]
+        db.execute("INSERT INTO leaves (idx, body) VALUES (?, ?)", (size, b"\x00binary"))
+        status, body = self.cell.json(f"/api/cases/{case}/witness")
+        self.assertEqual(status, 200)
+        self.assertEqual(([e["verdict"] for e in body["entries"]], body["checkpoint"]), (["not_included"], False))
 
     def test_a_leaf_the_newest_checkpoint_does_not_cover_is_not_included(self):
         case, events = self.case_events()
@@ -1043,7 +1065,7 @@ class ConsoleBrowser(CellCase):
         # Before the witness signs, the log holds nothing for the case; after, every event up to the head is witnessed.
         self.assertIn("not witnessed", report["witness_before"])
         self.assertIn("No leaf in the log names this case", report["witness_before"])
-        self.assertTrue(report["witness_signed"])
+        self.assertIs(report["witness_signed"], True, report["witness_signed"])
         events = report["history_events"]
         self.assertIn(f"witnessed through #{events}", report["witness_after"])
         self.assertNotIn("not witnessed", report["witness_after"])
