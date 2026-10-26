@@ -18,7 +18,10 @@ def next_compiled(contract: dict, history: list) -> str | None:
 def bind_arguments(contract: dict, history: list, action: str) -> dict:
     """Build proposal arguments from the contract's fact and version bindings."""
     args = {}
-    for param, binding in contract["actions"][action].get("arguments", {}).items():
+    bindings = contract["actions"][action].get("arguments", {})
+    if not isinstance(bindings, dict) or not all(isinstance(binding, str) for binding in bindings.values()):
+        raise Rejected("invalid_binding", "contract arguments must map each parameter to a binding string")
+    for param, binding in bindings.items():
         name = binding.removeprefix("version:").removeprefix("fact:").split(".")[0]
         fact = next(
             (event for event in reversed(history) if event["kind"] == "observed" and event["body"]["key"] == name),

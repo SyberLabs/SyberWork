@@ -428,6 +428,41 @@ export function admissionNow(explained) {
   return {state: 'now', rule: explained.rule, status: explained.status, reason: explained.reason, provenance: explained.provenance};
 }
 
+// What admission answers now for a proposal not yet made (POST /api/cases/{id}/preview, Work.preview_admission).
+// Nothing was recorded and nothing is reserved: proposing admits again and writes its own decision, which can
+// differ once the case, the policy in force, the clock or another case's reservation moves. The arguments are
+// whatever was admitted, an object or not (a non-object meets proposal.shape). An answer of another shape is
+// unknown, never guessed.
+export function previewView(body) {
+  if (!body || typeof body !== 'object' || body.written !== false || !named(body.rule) || typeof body.status !== 'string' ||
+      typeof body.reason !== 'string' || typeof body.action !== 'string' || !('args' in body)) {
+    return {state: 'unknown', text: 'not returned by the server'};
+  }
+  const head = body.head && typeof body.head === 'object' && Number.isInteger(body.head.seq) ? body.head.seq : 0;
+  return {state: 'preview', status: body.status, reason: body.reason, rule: body.rule, provenance: body.provenance,
+    action: body.action, args: body.args, origin: typeof body.origin === 'string' ? body.origin : 'human', bound: body.bound === true,
+    head, policy: Number.isInteger(body.policy_version) ? body.policy_version : null};
+}
+
+// The same JSON value whatever the key order.
+function stable(value) {
+  if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + stable(value[k])).join(',') + '}';
+  return JSON.stringify(value);
+}
+
+// Whether a preview still describes what the form would send now: the same action, origin and arguments, against
+// the case head it was read at. `draft.args` is the parsed form value, or undefined when it does not parse. The
+// clock and the policy can still move without a new event, which is why the console also shows when it was read.
+export function previewCurrent(view, draft, headSeq) {
+  if (!view || view.state !== 'preview') return {state: 'none'};
+  if (view.head !== headSeq) return {state: 'case_moved', text: `the case moved since this check (#${view.head} → #${headSeq}); check again`};
+  if (!draft || view.action !== draft.action || view.origin !== draft.origin || draft.args === undefined || stable(view.args) !== stable(draft.args)) {
+    return {state: 'changed', text: 'the form changed since this check; check again'};
+  }
+  return {state: 'current'};
+}
+
 // "syberlabs/admission.py:185 limits_amount". The server withholds an absolute module path.
 export function provenanceText(provenance) {
   if (!provenance || typeof provenance !== 'object') return '';

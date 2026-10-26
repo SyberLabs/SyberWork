@@ -1049,6 +1049,39 @@ class Work:
                 raise Rejected("invalid_explain", "when must be now or recorded")
             return explain(self._context(contract, policy, history, proposal, now, db))
 
+    def preview_admission(self, case_id: str, action: str, args: Any, actor: str, roles: list[str], origin: str = "human",
+                          *, bind: bool = False) -> dict:
+        """Admission for a proposal not yet made, with the deciding rule. Appends nothing.
+
+        The origin is checked as ``propose`` checks it, and admission runs on the same history, policy and
+        clock ``propose`` would use, with a fresh proposal id. A proposal made at once gets this answer unless
+        the case, the policy in force, the clock or another case's reservation moves first; the answer
+        reserves nothing. ``bind`` ignores ``args`` and binds them from the contract, as ``compiled_propose`` does;
+        otherwise ``args`` is admitted as given, so a value that is not an object meets ``proposal.shape`` as it would
+        in ``propose``. Each answer is counted and traced like a decision, though no event records it.
+        """
+        if origin not in ("human", "model", "compiled"):
+            raise Rejected("invalid_origin", "origin must be human, model or compiled")
+        if origin != "human" and origin not in roles:
+            raise Rejected("origin_denied", "the actor cannot claim this proposer origin")
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+            policy = self._policy(db)
+            history = self._events(db, case_id)
+            bound = bind
+            if bound:
+                if action not in contract["actions"]:
+                    raise Rejected("action_not_in_contract", "only a contract action has argument bindings")
+                args = bind_arguments(contract, history, action)
+            proposal = {"id": str(uuid.uuid4()), "action": action, "args": args, "actor": actor, "roles": roles, "origin": origin}
+            found = explain(self._context(contract, policy, history, proposal, time.time(), db))
+            head = history[-1] if history else None
+            self._emit("admission_preview", case_id=case_id, actor=actor, action=action, status=found["status"],
+                       reason=found["reason"], rule=found["rule"])
+            return {**found, "action": action, "args": args, "bound": bound, "origin": origin,
+                    "policy_version": policy["version"], "head": {"seq": head["seq"], "hash": head["hash"]} if head else None}
+
     def recorded_decision(self, case_id: str, proposal_id: str) -> dict | None:
         """The proposal's first decision as stored, with the rule id written beside it.
 

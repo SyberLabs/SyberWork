@@ -235,6 +235,9 @@ ol.path { list-style: none; margin: 0 0 var(--s4); padding: 0; display: grid; ga
 .rule-line .why.warn, .rule-slot .why.warn { margin-top: 2px; }
 .step-actions { display: flex; gap: var(--s3); flex-wrap: wrap; align-items: flex-start; }
 .step-actions:empty { display: none; }
+.preview-slot { margin-top: var(--s3); }
+.preview { display: grid; gap: 4px; }
+.preview.superseded > div:first-child { opacity: .55; }
 details.response summary { font-weight: 500; }
 
 .proposal-list, .connector-list { display: grid; gap: 6px; }

@@ -553,6 +553,156 @@ class ConsoleSideRecords(CellCase):
         self.assertIn("Nothing on this page is witnessed or certified.", app)
 
 
+class ConsolePreview(CellCase):
+    """POST /api/cases/{id}/preview: what proposing would record now (Work.preview_admission). It records nothing."""
+
+    def case(self):
+        return self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+
+    def dump(self):
+        with connect_db(self.cell.database) as db:
+            return list(db.iterdump())
+
+    def assert_preview_is_what_propose_records(self, case, body, who):
+        """The preview, then the proposal made at once: same status, reason and deciding rule as written."""
+        status, preview = self.cell.json(f"/api/cases/{case}/preview", body, who=who)
+        self.assertEqual(status, 200, preview)
+        args = body["args"] if "args" in body else preview["args"]
+        status, made = self.cell.json(f"/api/cases/{case}/proposals", {"action": body["action"], "args": args, "origin": body.get("origin", "human")}, who=who)
+        self.assertEqual(status, 200, made)
+        written = {row["seq"]: row["rule"] for row in self.cell.work.side_channel(case)}
+        decision = self.cell.work.inspect(case)["events"][-1]
+        self.assertEqual(decision["kind"], "decision")
+        self.assertEqual((preview["status"], preview["reason"], preview["rule"]),
+                         (made["decision"]["status"], made["decision"]["reason"], written[decision["seq"]]))
+        return preview, made
+
+    def test_preview_requires_a_bearer_token(self):
+        case = self.case()
+        status, body = self.cell.json(f"/api/cases/{case}/preview", {"action": "record_review"}, who=None)
+        self.assertEqual((status, body["error"]), (409, "unauthorized"), "a refused POST answers 409, as every POST here does")
+
+    def test_preview_is_what_propose_then_records(self):
+        work, case = self.cell.work, self.case()
+        preview, _ = self.assert_preview_is_what_propose_records(case, {"action": "issue_order", "args": {}}, "operator")
+        self.assertEqual((preview["status"], preview["reason"], preview["rule"]), ("denied", "amount_required", "limits.amount"))
+        self.assertEqual(preview["provenance"]["module"], "syberlabs/admission.py")
+        self.assertEqual(preview["provenance"]["symbol"], "limits_amount")
+        # Arguments present but not an object are admitted as given, as propose admits them; only a missing key binds.
+        for args in (None, [1], "x"):
+            preview, _ = self.assert_preview_is_what_propose_records(case, {"action": "record_review", "args": args}, "operator")
+            self.assertEqual((preview["reason"], preview["bound"], preview["args"]), ("invalid_proposal_shape", False, args))
+        self.assert_preview_is_what_propose_records(case, {"action": "record_review", "args": {"part_number": "P-104"}}, "operator")
+        work.observe(case, "part_number", "P-104", "inventory", "inventory-v1", "operator", verified=True)
+        preview, _ = self.assert_preview_is_what_propose_records(case, {"action": "record_review"}, "supplier")
+        self.assertEqual(preview["reason"], "actor_role_missing")
+        preview, made = self.assert_preview_is_what_propose_records(case, {"action": "record_review", "origin": "compiled"}, "scheduler")
+        self.assertEqual((preview["status"], preview["bound"], preview["args"]), ("allowed", True, {"part_number": "P-104"}))
+        self.cell.json(f"/api/cases/{case}/commit", {"proposal_id": made["proposal"]["id"]}, who="scheduler")
+        work.observe(case, "quote", {"id": "Q-7", "price": 10, "part_number": "P-104", "supplier": "s"}, "supplier", "supplier-v1", "operator", verified=True)
+        preview, _ = self.assert_preview_is_what_propose_records(case, {"action": "issue_order"}, "operator")
+        self.assertEqual((preview["status"], preview["reason"], preview["rule"]), ("needs_approval", "approval_required:manager", "approval.required"))
+        # The bound arguments are the ones the compiled step binds from the same events.
+        compiled = self.cell.json(f"/api/cases/{case}/compiled", {}, who="scheduler")[1]
+        self.assertEqual(preview["args"], compiled["proposal"]["args"])
+        preview, _ = self.assert_preview_is_what_propose_records(case, {"action": "issue_order", "args": {**preview["args"], "amount": 20000}}, "operator")
+        self.assertEqual(preview["reason"], "amount_exceeds_limit")
+        head = work.inspect(case)["events"][-3]
+        self.assertEqual(preview["head"], {"seq": head["seq"], "hash": head["hash"]}, "the head the answer was computed against")
+        self.assertEqual((preview["written"], preview["policy_version"], preview["origin"]), (False, 1, "human"))
+
+    def test_each_preview_is_counted_and_traced_though_no_event_records_it(self):
+        case = self.case()
+        recorded = []
+        self.cell.work.trace = type("Trace", (), {"record": lambda _self, name, **fields: recorded.append((name, fields))})()
+        self.addCleanup(setattr, self.cell.work, "trace", None)
+        before = self.cell.work.metrics.get("admission_preview", 0)
+        self.cell.json(f"/api/cases/{case}/preview", {"action": "issue_order", "args": {"amount": 30000}}, who="manager")
+        self.assertEqual(self.cell.work.metrics["admission_preview"], before + 1)
+        self.assertEqual(recorded, [("admission_preview", {"case_id": case, "actor": "manager", "action": "issue_order", "status": "denied",
+                                                           "reason": "actor_role_missing", "rule": "actor.role"})])
+
+    def test_a_contract_binding_that_is_not_a_string_is_refused_not_crashed(self):
+        contract = json.loads((EXAMPLES / "contract.json").read_text(encoding="utf-8"))
+        contract.update(id="odd-bindings", compiled_path=["record_review"])
+        contract["actions"]["record_review"]["arguments"] = {"part_number": 5}
+        contract["acceptance"] = [{"id": "reviewed", "kind": "effect", "action": "record_review"}]
+        self.cell.work.install_contract(contract)
+        case = self.cell.json("/api/cases", {"contract_id": "odd-bindings", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        self.cell.work.observe(case, "part_number", "P-104", "inventory", "inventory-v1", "operator", verified=True)
+        for path, body, who in ((f"/api/cases/{case}/preview", {"action": "record_review"}, "supplier"), (f"/api/cases/{case}/compiled", {}, "scheduler")):
+            with self.subTest(path):
+                self.assertEqual(self.cell.json(path, body, who=who), (409, {"error": "invalid_binding", "detail": "contract arguments must map each parameter to a binding string"}))
+
+    def test_preview_appends_nothing_for_anyone(self):
+        case = self.case()
+        self.cell.work.observe(case, "part_number", "P-104", "inventory", "inventory-v1", "operator", verified=True)
+        before, events = self.dump(), self.cell.work.inspect(case)["events"]
+        bodies = ({"action": "record_review"}, {"action": "issue_order"}, {"action": "issue_order", "args": {"amount": 5}},
+                  {"action": "record_review", "origin": "compiled"}, {"action": "record_review", "origin": "elsewhere"},
+                  {"action": "absent", "args": {}}, {"action": "absent"}, {"args": {}}, {"action": "record_review", "args": []})
+        for body in bodies:
+            for who in ("operator", "scheduler", "manager", "planner", "supplier", None):
+                self.cell.call(f"/api/cases/{case}/preview", body, who=who)
+        self.assertEqual(self.cell.work.inspect(case)["events"], events)
+        self.assertEqual(self.dump(), before, "no table changed, including event_side and reservations")
+        self.assertTrue(self.cell.work.verify_chain(case))
+
+    def test_preview_checks_the_origin_as_propose_does_and_refuses_without_crashing(self):
+        case = self.case()
+        for body, who, code in (({"action": "record_review", "origin": "elsewhere"}, "operator", "invalid_origin"),
+                                ({"action": "record_review", "origin": "compiled"}, "operator", "origin_denied"),
+                                ({"action": "record_review", "origin": "model"}, "scheduler", "origin_denied"),
+                                ({"action": "record_review"}, "operator", "missing_fact"),
+                                ({"action": "absent"}, "operator", "action_not_in_contract"),
+                                ({"args": {}}, "operator", "invalid_request")):
+            with self.subTest(body=body, who=who):
+                status, answer = self.cell.json(f"/api/cases/{case}/preview", body, who=who)
+                self.assertEqual((status, answer["error"]), (409, code), answer)
+                if body.get("origin") in ("elsewhere", "compiled", "model"):
+                    self.assertEqual(self.cell.json(f"/api/cases/{case}/proposals", {**body, "args": {}}, who=who)[1]["error"], code)
+        for case_id in ("no-such-case", ".."):
+            with self.subTest(case_id):
+                status, answer = self.cell.json(f"/api/cases/{case_id}/preview", {"action": "record_review", "args": {}})
+                self.assertEqual(status, 409, answer)
+                self.assertNotEqual(answer["error"], "internal_error")
+        status, answer = self.cell.json(f"/api/cases/{case}/preview", {"action": "absent", "args": {}})
+        self.assertEqual((status, answer["reason"], answer["rule"]), (200, "action_not_in_contract", "contract.action_listed"))
+
+    def test_preview_reads_other_cases_reservations_and_reserves_nothing(self):
+        """An economic action: the budget another case holds is counted; the preview itself holds none."""
+        work = self.cell.work
+        closed = f"http://127.0.0.1:{free_port()}"
+        work.install_action("buy_data", {"kind": "economic_http", "url": closed + "/settle", "status_url": closed + "/status/{key}",
+                                         "rail": "usdc_service", "asset": "USDC:base", "counterparty": "vendor-A",
+                                         "operation": "purchase_capability", "no_write_statuses": [412]})
+        work.install_contract({"id": "research", "version": 1, "inputs": {"subject": "string"}, "actions": {"buy_data": {
+            "required_facts": [{"key": "quote", "source": "vendor", "verified": True, "max_age_seconds": 3600}],
+            "arguments": {"amount_units": "fact:quote.units"}, "max_amount_units": "1000000"}},
+            "acceptance": [{"id": "data", "kind": "effect", "action": "buy_data"}]})
+        work.install_policy({"version": 2, "actions": {**json.loads((EXAMPLES / "policy.json").read_text())["actions"], "buy_data": {
+            "roles": ["operator"], "economic": {"budget_id": "research-q3", "budget_units": "1500000", "max_amount_units": "1000000",
+                                                "asset": "USDC:base", "rail": "usdc_service", "counterparties": ["vendor-A"]}}}})
+
+        def opened():
+            case = work.create_case("research", 1, {"subject": "chips"}, "operator")
+            evidence = work.observe(case, "quote", {"units": "900000"}, "vendor", "q1", "vendor", verified=True)["hash"]
+            return case, {"operation": "purchase_capability", "amount_units": "900000", "asset": "USDC:base", "counterparty": "vendor-A",
+                          "purpose": "shipment evidence", "evidence": [evidence], "expires_at": time.time() + 600}
+        first, args = opened()
+        preview = self.cell.json(f"/api/cases/{first}/preview", {"action": "buy_data", "args": args})[1]
+        self.assertEqual(preview["status"], "allowed", preview)
+        before = self.dump()
+        for _ in range(3):
+            self.assertEqual(self.cell.json(f"/api/cases/{first}/preview", {"action": "buy_data", "args": args})[1]["status"], "allowed")
+        self.assertEqual(self.dump(), before, "a preview of an economic action reserves nothing")
+        made = work.propose(first, "buy_data", args, "operator", ["operator"])
+        self.assertEqual(work.commit(first, made["proposal"]["id"], "operator")["status"], "unknown", "the settlement is unreachable; 900000 stays reserved")
+        second, args = opened()
+        preview, _ = self.assert_preview_is_what_propose_records(second, {"action": "buy_data", "args": args}, "operator")
+        self.assertEqual((preview["status"], preview["reason"], preview["rule"]), ("denied", "economic_budget_exceeded", "economic.reserve"))
+
+
 class ConsoleStatic(CellCase):
     def test_console_files_are_served_with_the_content_security_policy(self):
         for name, kind in (("", "text/html"), ("app.js", "text/javascript"), ("model.js", "text/javascript"), ("style.css", "text/css")):
@@ -601,6 +751,9 @@ class ConsoleStatic(CellCase):
         self.assertIn("headRead('side', id => '/api/cases/' + encodeURIComponent(id) + '/side', info)", app)
         self.assertIn("headRead('work_item', id => '/metrics/work_items/' + encodeURIComponent(id), info)", app)
         self.assertIn("api(route(info.case.id))", app)
+        # The admission preview posts to the case being drawn, like the History reads.
+        self.assertIn("api('/api/cases/' + encodeURIComponent(info.case.id) + '/preview', body)", app)
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/preview", {"action": "record_review", "args": {}}, who="admin")[0], 200)
         for operation in ("refresh", "facts", "proposals", "compiled", "suggest", "approve", "commit", "signoff", "reconcile",
                           "replay", "cancel", "resolution-request", "resolution-resolve", "resolution-escalate", "candidates", "evaluations"):
             with self.subTest(operation):
@@ -647,6 +800,13 @@ class ConsoleModel(CellCase):
         item = item_body["items"][0]
         cells = [[name, _cell(Metric(None if item[name]["value"] == UNKNOWN else item[name]["value"]), money=name == "cost")] for name in METRICS]
         parity["work_item"] = {"case": case, "body": item_body, "cells": cells}
+        # What POST .../preview answers on a second case, before and after its first fact.
+        fresh = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        unbound = self.cell.json(f"/api/cases/{fresh}/preview", {"action": "issue_order", "args": {}})[1]
+        self.cell.work.observe(fresh, "part_number", "P-104", "inventory", "inventory-v1", "operator", verified=True)
+        bound = self.cell.json(f"/api/cases/{fresh}/preview", {"action": "record_review"})[1]
+        parity["preview"] = [{"body": unbound, "expected": ["denied", "amount_required", "limits.amount", False, 1]},
+                             {"body": bound, "expected": ["allowed", "all_checks_passed", "admission.passed", True, 2]}]
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -732,9 +892,22 @@ class ConsoleBrowser(CellCase):
         self.assertEqual(sorted(report["source_roles"]), ["inventoryoperator✕no read role", "supplieroperator✕no read role"])
         self.assertIn("admin or manager role required", report["policy_nav"])
         self.assertFalse(report["storage_has_token_in_url"])
+        # Propose → By hand, before issue_order: the server's admission preview, recorded nowhere.
+        self.assertEqual(report["preview_default_action"], "issue_order", "the form starts at the next compiled step")
+        for text in ("If proposed now", "denied", "amount_required", "limits.amount", "Nothing was recorded"):
+            self.assertIn(text, report["preview_empty"])
+        for text in ("needs approval", "approval_required:manager", "approval.required", "bound by the server"):
+            self.assertIn(text, report["preview_bound"])
+        self.assertNotIn("out of date", report["preview_bound"])
+        self.assertEqual(sorted(report["preview_args"]), ["amount", "part_number", "quote", "quote_id", "quote_version"])
+        self.assertIn("out of date", report["preview_changed"])
+        self.assertIn("the form changed since this check", report["preview_changed"])
+        self.assertEqual(report["preview_proposals_before"], report["preview_proposals_after"])
         cases = self.cell.work.list_cases()
         done_case = next(c for c in cases if self.cell.work.inspect(c["id"])["complete"])
         self.assertTrue(self.cell.work.verify_chain(done_case["id"]))
+        reasons = [e["body"]["reason"] for e in self.cell.work.inspect(done_case["id"])["events"] if e["kind"] == "decision"]
+        self.assertEqual(reasons, ["all_checks_passed", "approval_required:manager"], "no preview reached the case history")
 
 
 if __name__ == "__main__":

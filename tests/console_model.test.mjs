@@ -41,6 +41,13 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   const item = M.workItemRows(cases.work_item.body, cases.side.events, cases.work_item.case);
   assert.equal(item.state, 'read');
   assert.deepEqual(item.rows.map(r => [r.name, r.text]), cases.work_item.cells);
+  // What POST .../preview answered for the same case before anything was proposed, read as the console reads it.
+  for (const c of cases.preview) {
+    const view = M.previewView(c.body);
+    assert.deepEqual([view.state, view.status, view.reason, view.rule, view.bound, view.head], ['preview', ...c.expected]);
+    assert.ok(M.provenanceText(view.provenance).startsWith('syberlabs/admission.py:'), M.provenanceText(view.provenance));
+    assert.deepEqual(M.previewCurrent(view, {action: view.action, origin: view.origin, args: view.args}, view.head), {state: 'current'});
+  }
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -315,4 +322,48 @@ test('a work item keeps unknown as unknown and maps each basis to event numbers'
   assert.equal(M.workItemRows({ items: [{ ...item, cost: { value: 1.5, basis: [] } }] }, events, 'c1').rows[0].text, '$1.5000');
   assert.equal(M.workItemRows({ items: [] }, events, 'c1').state, 'unknown');
   assert.equal(M.workItemRows(null, events, 'c1').state, 'unknown');
+});
+
+const PREVIEW = { status: 'needs_approval', reason: 'approval_required:manager', rule: 'approval.required',
+  provenance: { module: 'syberlabs/admission.py', symbol: 'approval_required', line: 371 }, action: 'issue_order',
+  args: { part_number: 'P-104', amount: 10 }, bound: true, origin: 'human', policy_version: 1, head: { seq: 7, hash: 'h7' }, written: false };
+
+test('an admission preview is read as the server gave it', () => {
+  const view = M.previewView(PREVIEW);
+  assert.deepEqual([view.state, view.status, view.reason, view.rule, view.bound, view.head, view.policy], ['preview', 'needs_approval', 'approval_required:manager', 'approval.required', true, 7, 1]);
+  assert.equal(M.provenanceText(view.provenance), 'syberlabs/admission.py:371 approval_required');
+  assert.equal(M.previewView({ ...PREVIEW, bound: 'yes' }).bound, false);
+});
+
+test('a preview of another shape, or one that says it was written, is unknown', () => {
+  for (const body of [null, 'denied', [], {}, { ...PREVIEW, written: true }, { ...PREVIEW, written: undefined }, { ...PREVIEW, rule: '' },
+    { ...PREVIEW, rule: null }, { ...PREVIEW, status: 1 }, { ...PREVIEW, reason: null }, { ...PREVIEW, action: 3 }]) {
+    assert.equal(M.previewView(body).state, 'unknown', JSON.stringify(body));
+  }
+  const { args: _dropped, ...noArgs } = PREVIEW;
+  assert.equal(M.previewView(noArgs).state, 'unknown');
+  // Arguments that are not an object are the server's answer (proposal.shape), shown as given.
+  for (const args of [[], null, 'x', 1]) {
+    const view = M.previewView({ ...PREVIEW, status: 'denied', reason: 'invalid_proposal_shape', rule: 'proposal.shape', args, bound: false });
+    assert.deepEqual([view.state, view.rule], ['preview', 'proposal.shape'], JSON.stringify(args));
+    assert.equal(M.previewCurrent(view, { action: 'issue_order', origin: 'human', args }, 7).state, 'current');
+  }
+  assert.deepEqual(M.previewCurrent(M.previewView(null), {}, 1), { state: 'none' });
+  assert.deepEqual(M.previewCurrent(null, {}, 1), { state: 'none' });
+});
+
+test('a preview is out of date once the case or the form moves', () => {
+  const view = M.previewView(PREVIEW);
+  const draft = { action: 'issue_order', origin: 'human', args: { amount: 10, part_number: 'P-104' } };
+  assert.deepEqual(M.previewCurrent(view, draft, 7), { state: 'current' }, 'key order does not matter');
+  const moved = M.previewCurrent(view, draft, 9);
+  assert.equal(moved.state, 'case_moved');
+  assert.match(moved.text, /#7 → #9/);
+  for (const changed of [{ ...draft, action: 'record_review' }, { ...draft, origin: 'compiled' }, { ...draft, args: { ...draft.args, amount: 11 } },
+    { ...draft, args: { part_number: 'P-104' } }, { ...draft, args: undefined }, { ...draft, args: { ...draft.args, amount: '10' } }, null]) {
+    assert.equal(M.previewCurrent(view, changed, 7).state, 'changed', JSON.stringify(changed));
+  }
+  const nested = M.previewView({ ...PREVIEW, args: { quote: { id: 'Q-7', price: 10 } } });
+  assert.equal(M.previewCurrent(nested, { ...draft, args: { quote: { price: 10, id: 'Q-7' } } }, 7).state, 'current');
+  assert.equal(M.previewCurrent(nested, { ...draft, args: { quote: { price: 10, id: 'Q-8' } } }, 7).state, 'changed');
 });
