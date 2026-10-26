@@ -220,8 +220,8 @@ def bash_arguments(command, launcher: str | None) -> tuple[str, list[str]]:
     ``not_launcher`` / ``shell_syntax`` and none. The command must be ``launcher`` exactly, alone or followed by a
     space; what follows may hold plain words (``_PLAIN``), ``'single'`` and ``"double"`` quoted strings and spaces,
     and none of ``_SHELL_FORBIDDEN`` or a control character anywhere. A word is the concatenation of its adjacent
-    plain and quoted parts, as the shell reads it; a word whose unquoted start a shell option reads differently
-    (``_READ_DIFFERENTLY``: ``=cmd``, ``NAME=value``) is refused, and passes quoted."""
+    plain and quoted parts, as the shell reads it; a word whose unquoted start a shell reads differently
+    (``_READ_DIFFERENTLY``: ``=cmd``, ``NAME=value``, ``@name``) is refused, and passes quoted."""
     if not isinstance(command, str) or not launcher or not (command == launcher or command.startswith(launcher + " ")):
         return NOT_LAUNCHER, []
     rest = command[len(launcher):]
