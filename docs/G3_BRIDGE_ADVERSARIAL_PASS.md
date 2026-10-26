@@ -84,7 +84,20 @@ asserts nothing about the outcome, and check that it is reported as
 
 ## Status
 
-**Proposed.** Measured status is recorded below only from real Actions output.
+**Measured (SyberWork bridge, scoped). Not on `main`, not required.** The case modules are still in open PRs, so the job ran in real Actions on disposable refs. These refs are not pull requests. Each one is gate commit `da7ed1e` merged with the PRs listed. Python 3.12.15, ubuntu-latest.
+
+| Ref | Contents | Run | Active cases | Twins | Job |
+|---|---|---|---|---|---|
+| `ci/g3-bridge-94-97-r27` (`abf9e51`) | main + #94 + #97 + gate | [run 40308841465](https://github.com/SyberLabs/SyberWork/actions/runs/40308841465) | **PASS**: 27 active adversarial + 2 positive controls passed; 3 xfail open gaps | refuse-everything caught (2 controls newly fail), accept-everything caught (8 cases newly fail) | **success** |
+| `ci/g3-bridge-96-97-r27` (`592e0e2`) | main + #96 + #97 + gate | [run 40308845544](https://github.com/SyberLabs/SyberWork/actions/runs/40308845544) | **PASS**: 31 active adversarial + 2 positive controls passed; 4 xfail open gaps | refuse-everything caught (2), accept-everything caught (10) | **success** |
+| `ci/g3-bridge-integration-r27` (`2ec7410`) | main + #94 + #96 + #97 + gate | [run 40308837485](https://github.com/SyberLabs/SyberWork/actions/runs/40308837485) | **FAIL**: 42 passed; 1 active SCH case failed: #96 `test_malformed_http_reconcile_requests_never_reconcile`, subtest `body='missing_id'` (the #94×#96 interaction, see notes) | refuse-everything caught (3), accept-everything caught (12) | **failure** (true positive) |
+| `feat/ci-g3-adversarial-pass` (`da7ed1e`) | main + gate, no inventory | [run 40308821609](https://github.com/SyberLabs/SyberWork/actions/runs/40308821609) | **FAIL** closed: no inventory, no active case, no positive control | FAIL: baseline has no active case | **failure** (expected until #94/#96/#97 merge) |
+
+The 22 gate controls passed in all four runs.
+
+Per-category active-pass counts in the full integration run: PI 3, AB 4, DS 9, SIM 4, SCH 9 (+1 failing), COST 3, REC 10, positive controls 3. The open xfail gaps are #97's SIM record labeled simulated, SIM settlement on another rail and SCH duplicate-key status body, and #96's SCH duplicate-key receipt. Each still fails an assertion. These are counts of tagged test methods, not coverage.
+
+Update this section only from real Actions output.
 
 ## Notes
 
@@ -98,3 +111,13 @@ asserts nothing about the outcome, and check that it is reported as
 - **Attest's G3 is separate.** It runs `tests/redteam` in the attest repo and is
   not affected by this job.
 - **No coverage figure.** Counts are counts of tagged test methods.
+- **#94 and #96 interact, and G3 fails on it.** With both merged, #96's SCH
+  `test_malformed_http_reconcile_requests_never_reconcile` (subtest
+  `body='missing_id'`) expects `409 invalid_request` and gets
+  `409 manual_reconciliation_disabled`, because #94's allowlist refuses first.
+  The route still fails closed (409, no lookup, no event), so this is an
+  expectation conflict, not a product weakening. G3 still fails the case,
+  because that is the encoded expectation. Whichever PR merges second should
+  update the expected code. The case is not converted to a stub or skip here.
+- **Rubric R9 is not tagged by any bridge case,** so R9 (audit trail) is not
+  claimed as covered.
