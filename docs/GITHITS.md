@@ -257,6 +257,7 @@ authentic client record (tool `githits.<op>`), which `syberlabs metrics` counts 
 | `contaminated` | excluded | the baseline shows a GitHits lookup: its `githits_lookups` is above zero, or its thread holds a verified `lookup` fact the host observed, an MCP call (`mcp__githits__*`) or a client record a guarded launcher call stands behind (`githits.<op>` but `doctor`, guard `pass`), a call that failed before its candidate included |
 | `contamination_unknown` | kept | the baseline shows no lookup but its `githits_lookups` is unknown, so it cannot be shown clean |
 | `server_mixed` | kept | some of a treatment thread's calls carry the ledger and some do not |
+| `two_routes` | kept | a treatment thread had GitHits by both routes, the ledger and a connected GitHits MCP server (one left in arm B by mistake): still the treatment, but not one route alone, and where it has client records `githits_lookups` counts only those, leaving the MCP lookups out (`spec/GAPS.md` 59) |
 | `unused` | kept | the treatment shows no GitHits lookup and its count is known to be zero (a launcher call the guard refused never reached GitHits) |
 | `use_unknown` | kept | the treatment shows no GitHits lookup but its count is unknown, so it cannot be shown to have used GitHits (nor not to) |
 | `arm_unverified` | kept | no call recorded its MCP servers or the ledger |
@@ -271,7 +272,8 @@ never imputed. The arm itself is read from the ledger's presence, not from any c
 an item between arms or into `arm_conflict`.
 
 The MCP route is read as before (`signal.harness.mcp_servers` listing `githits:connected`), and a call counts as
-having GitHits by either route. Before the report read the ledger, every arm-B item of an API-route pilot was
+having GitHits by either route: a stray GitHits MCP server in arm A is `arm_conflict`, one beside the launcher in
+arm B is `two_routes`. Before the report read the ledger, every arm-B item of an API-route pilot was
 excluded as `arm_conflict` (the server "not connected in the treatment"), so nothing was compared and the delivery
 rule could not be read. `--server none` still turns these checks off; another `--server` name reads that MCP server
 only, never the launcher.

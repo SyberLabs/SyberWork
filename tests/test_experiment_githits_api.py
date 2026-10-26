@@ -15,6 +15,7 @@ import contextlib
 import copy
 import importlib.util
 import io
+import json
 import os
 import secrets
 import tempfile
@@ -24,7 +25,7 @@ from unittest import mock
 
 from spec.validate import validate_events
 from syberlabs import experiment, githits
-from syberlabs.claude_code import THIRD_PARTY_SWITCHES, ClaudeCodeProvider
+from syberlabs.claude_code import DEFAULT_TOOLS, THIRD_PARTY_SWITCHES, ClaudeCodeProvider
 from syberlabs.cli import main as cli
 from tests.test_build_thread import GOOD, REPORT
 from tests.test_claude_code import COST, PRICES, ClaudeCodeCase
@@ -209,7 +210,10 @@ class ApiRouteChecks(unittest.TestCase):
         for event in events:  # call 1 through the MCP server, call 2 through the launcher
             if event["case_id"] == "x-on" and event["body"].get("id") == "c1":
                 event["body"]["signal"]["harness"]["mcp_servers"] = ["githits:connected"]
-        self.assertEqual(self.row(events)["flags"], [], "GitHits in every call, by one route or the other")
+        self.assertEqual({r.thread: (r.server, r.routes) for r in experiment.runs(events, NAME)},
+                         {"x-off": (False, ()), "x-on": (True, ("launcher", "mcp"))})
+        self.assertEqual(self.row(events)["flags"], ["two_routes"],
+                         "GitHits in every call, by one route or the other: the treatment, said to have had two")
         self.assertEqual(self.row(self.pair(), server="docs")["excluded"], ["arm_conflict"],
                          "the launcher is GitHits'; another server named on the command line is not it")
         self.assertEqual(self.row(self.pair(on_launcher=(False,)), server=None)["flags"], [],
@@ -252,8 +256,9 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         ``{launcher}``; without that rule its Bash tool denies the command, as Claude Code's ``dontAsk`` does."""
         return ["Bash", {"command": "{launcher} " + words, "description": "look up a public API"}]
 
-    def run_arm(self, item, arm, tag, *, githits_on, name, first=None, repair=None, lookups=()):
-        """One labelled thread through ``ClaudeCodeProvider``: labelled, proposed, accepted, reviewed blind."""
+    def run_arm(self, item, arm, tag, *, githits_on, name, first=None, repair=None, lookups=(), **options):
+        """One labelled thread through ``ClaudeCodeProvider`` (``options`` passed to it): labelled, proposed,
+        accepted, reviewed blind."""
         kit = self.kit_
         thread = kit.start(f"Add a CSV export ({item})", paths=["src/", "tests/"], unattended=True, actor=RUNNER)
         (kit.home / "current").write_text(thread.id + "\n")
@@ -262,7 +267,7 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         self.assertNotIn("labelled_late", text)
         claude = self.stand_in(name, first=first, repair=repair, lookups=[list(entry) for entry in lookups])
         provider = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=3, githits=githits_on,
-                                      arm=arm, thread_label=thread.id)
+                                      arm=arm, thread_label=thread.id, **options)
         found = thread.propose(provider)
         receipt = thread.accept(found[-1].id, actor=RUNNER)
         self.assertEqual(receipt.status, "succeeded", receipt.reason)
@@ -331,6 +336,41 @@ class ApiArmEndToEnd(ClaudeCodeCase):
                              f"fix rounds {value['fix_rounds']:g}  web {value['web_lookups']:g}  "
                              f"githits {value['githits_lookups']:g}  reviewed {value['reviewed']:g}")
         print("\n".join(lines + ["  " + verdict]))
+
+    def test_a_stray_githits_mcp_server_beside_the_launcher(self):
+        """Arm B runs the API launcher and, by mistake, a GitHits MCP server as well (``--mcp-config``), and the model
+        uses both. GitHits was there, so the item is no ``arm_conflict``; the treatment is said to have had two routes
+        (``two_routes``, kept: the pilot pre-registers its exclusions, and this is not one). Its paired GitHits count is
+        the metrics station's count of client records, which leaves the MCP lookup out (``spec/GAPS.md`` 59), while
+        the report sees both. The same stray server in arm A is ``arm_conflict``, and its lookup ``contaminated``."""
+        config = self.root.parent / "githits-mcp.json"
+        config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
+        mcp = ["mcp__githits__search", {"query": "zq95 githits mcp query: csv writer header"}]
+        search = self.launcher('search "csv DictWriter writeheader zq96" --target pypi:requests@2.32.3')
+        tools = [*DEFAULT_TOOLS, "mcp__githits"]
+        self.run_arm("Z", "off", "needs_lookup", githits_on=False, name="z-off")
+        thread, on = self.run_arm("Z", "on", "needs_lookup", githits_on=True, name="z-on", lookups=[mcp, search],
+                                  mcp_config=config, allowed_tools=tools)
+        self.assertEqual((on[0].signal["harness"]["mcp_servers"], on[0].signal["githits"]["records"]),
+                         (["githits:connected"], 1), "both routes there, and both used")
+        self.assertEqual([e["body"]["value"]["tool"] for e in thread.history() if e["kind"] == "observed"
+                          and e["body"]["key"] == "lookup"], ["mcp__githits__search", "githits.search"])
+        self.run_arm("W", "off", "needs_lookup", githits_on=False, name="w-off", lookups=[mcp], mcp_config=config,
+                     allowed_tools=tools)
+        self.run_arm("W", "on", "needs_lookup", githits_on=True, name="w-on", lookups=[search])
+        found = experiment.report(self.events(), NAME, dict(self.kit_.session.contracts))
+        rows = {row["item"]: row for row in found["rows"]}
+        self.assertEqual((rows["Z"]["flags"], rows["Z"]["excluded"]), (["two_routes"], []))
+        runs = {(r.item, r.arm): r for r in experiment.runs(self.events(), NAME)}
+        self.assertEqual((runs["Z", "on"].server, runs["Z", "on"].routes, runs["Z", "on"].observed), (True,
+                         ("launcher", "mcp"), 2))
+        self.assertEqual(rows["Z"]["values"]["on"]["githits_lookups"], 1.0,
+                         "metrics counts the client's record only; the MCP lookup is the report's to see")
+        self.assertEqual(rows["W"]["excluded"], ["arm_conflict", "contaminated"])
+        self.assertEqual(found["items"], {"labelled": 2, "compared": 1, "excluded": 1})
+        code, text = self.cli("experiment", "report", "--name", NAME)
+        self.assertEqual(code, 0, text)
+        self.assertIn("check two_routes (kept): Z: the treatment had GitHits by two routes", text)
 
     def test_an_api_pilot_run_against_its_label_is_excluded(self):
         search = self.launcher('search "csv DictWriter writeheader zq94" --target pypi:requests@2.32.3')

@@ -40,6 +40,10 @@ the GitHits pilot a call had GitHits when the host's record of that call says so
   (``signal.harness.skill``) and the operator's name for the arm (``signal.githits.arm``) are not read for the arm;
 - the MCP route: ``signal.harness.mcp_servers`` lists the server ``connected``, as Claude Code's ``init`` event said.
 
+A call with GitHits by either route counts; a treatment thread that had both (an MCP server left in arm B beside the
+launcher) is still the treatment, and is said: ``two_routes``, kept, since where client records exist the metrics
+station counts only those (``spec/GAPS.md`` 59). In the baseline either route is ``arm_conflict``.
+
 A GitHits lookup is shown by the metrics station's ``githits_lookups`` above zero (on the API route, its count of the
 host's ``lookup`` facts from authentic client records), or by a verified ``lookup`` fact the host observed: an MCP
 server call (``mcp__githits__*``), or a client record a guarded launcher call stands behind (``githits.<op>``, guard
@@ -118,6 +122,8 @@ CHECKS = {
     "base_unknown": "a thread has no recorded base commit, so the start could not be compared",
     "arm_unverified": "no call recorded its MCP servers or a GitHits launcher, so only the label says which arm ran",
     "server_mixed": "the server was there in some of a thread's calls and not in others",
+    "two_routes": "the treatment had GitHits by two routes, the host's API launcher and its MCP server, not one; where "
+                  "it has client records, its GitHits count (metrics) leaves the MCP server's lookups out",
     "unused": "the treatment made no lookups on its server",
     "use_unknown": "the record cannot say how many lookups the treatment made on its server, and shows none, so it "
                    "cannot be shown to have used it",
@@ -192,6 +198,7 @@ class Run:
     work: metrics.WorkItemMetrics
     upto: metrics.WorkItemMetrics | None = None  # the same fold over the events up to acceptance
     observed: int = 0              # lookup facts showing a lookup on the server, in the whole thread (``_observed``)
+    routes: tuple[str, ...] = ()   # how its calls had GitHits: ``launcher``, ``mcp`` or both (``_routes``)
 
     def value(self, name: str) -> metrics.Metric:
         """A compared number. An accepted thread's work metrics are read up to its first acceptance, so what happened
@@ -242,19 +249,38 @@ def _servers(registrations: list[dict], server: str | None) -> bool | str | None
         if (not launcher and "mcp_servers" not in harness
                 and not any(isinstance(harness.get(k), str) for k in ("version", "model"))):
             continue
-        connected = launcher
-        for entry in harness.get("mcp_servers") or []:
-            if isinstance(entry, str):
-                name, _, status = entry.partition(":")
-            elif isinstance(entry, dict):
-                name, status = entry.get("name"), entry.get("status")
-            else:
-                continue
-            connected = connected or (name == server and status == "connected")
-        seen.append(connected)
+        seen.append(launcher or _connected(harness, server))
     if not seen:
         return None
     return True if all(seen) else False if not any(seen) else "mixed"
+
+
+def _connected(harness: dict, server: str) -> bool:
+    """The ``signal.harness.mcp_servers`` a harness recorded (``name:status``) list ``server`` connected."""
+    for entry in harness.get("mcp_servers") or []:
+        if isinstance(entry, str):
+            name, _, status = entry.partition(":")
+        elif isinstance(entry, dict):
+            name, status = entry.get("name"), entry.get("status")
+        else:
+            continue
+        if name == server and status == "connected":
+            return True
+    return False
+
+
+def _routes(registrations: list[dict], server: str | None) -> tuple[str, ...]:
+    """The routes by which a thread's calls had GitHits: ``launcher`` (the host's API launcher, ``_launcher``) and
+    ``mcp`` (its MCP server connected). Read for ``githits`` only: the launcher is GitHits'."""
+    found = set()
+    for event in registrations if server == SERVER else ():
+        signal = event["body"].get("signal")
+        harness = signal.get("harness") if isinstance(signal, dict) else None
+        if _launcher(signal):
+            found.add("launcher")
+        if isinstance(harness, dict) and _connected(harness, server):
+            found.add("mcp")
+    return tuple(sorted(found))
 
 
 def _observed(events: list[dict], server: str | None) -> int:
@@ -360,7 +386,8 @@ def _run(case_id: str, events: list[dict], name: str, work: metrics.WorkItemMetr
                label=event["hash"], labelled_late=late, relabelled=len({_identity(v) for _e, v in labels}) > 1,
                base=_base(events), objective=_objective(events), server=_servers(registrations, server),
                models=_models(registrations), accepted=accepted, time_to_pass=time_to_pass,
-               reviewed=_reviewed(events, accept, commit), work=work, upto=upto, observed=_observed(events, server))
+               reviewed=_reviewed(events, accept, commit), work=work, upto=upto, observed=_observed(events, server),
+               routes=_routes(registrations, server))
 
 
 def _threads(events: Iterable[dict]) -> dict[str, list[dict]]:
@@ -418,6 +445,8 @@ def _flags(item_runs: dict[str, list[Run]], baseline: str, treatment: str, serve
             flags.append("arm_unverified")
         if any(run.server == "mixed" for run in treat_runs):
             flags.append("server_mixed")
+        if any(set(run.routes) >= {"launcher", "mcp"} for run in treat_runs):
+            flags.append("two_routes")
         if server == SERVER:
             # An unknown count is never read as zero: it shows no baseline clean and no treatment unused.
             if any(_looked_up(run) for run in base_runs):
