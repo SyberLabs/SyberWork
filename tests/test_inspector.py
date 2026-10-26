@@ -57,6 +57,23 @@ class Inspector(RepoCase):
         self.assertEqual((status, verdict["reason"], verdict["untested"]), (200, "candidate_not_evaluated", ["tests"]))
         self.assertEqual(len(self.thread.history()), before, "viewing a verdict must not run checks or record anything")
 
+    def test_an_altered_thread_stays_refused_on_every_request(self):
+        """perf-a-followups (verification of #105, finding 4): a long-running inspector opened over an altered
+        thread refused the first request and served the verified prefix as healthy from the second on."""
+        path = self.kit_.journal.thread_path(self.thread.id)
+        records = [json.loads(line) for line in path.read_bytes().splitlines()]
+        records[-1]["event"]["body"]["tampered"] = True
+        path.write_bytes(b"".join((json.dumps(record) + "\n").encode() for record in records))
+        server = make_inspector(self.kit(), token="secret-token")
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.port = server.server_port
+        for _attempt in range(3):
+            for url in ("/api/threads", f"/api/threads/{self.thread.id}", f"/api/threads/{self.thread.id}/events"):
+                status, _, body = self.request(url)
+                self.assertEqual((status, json.loads(body)["error"]), (409, "journal_corrupt"), url)
+
     def test_views(self):
         status, _, body = self.request(f"/api/threads/{self.thread.id[:8]}")
         data = json.loads(body)
