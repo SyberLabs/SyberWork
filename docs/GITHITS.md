@@ -258,7 +258,7 @@ authentic client record (tool `githits.<op>`), which `syberlabs metrics` counts 
 | `contaminated` | excluded | the baseline shows a GitHits lookup: its `githits_lookups` is above zero, or its thread holds a verified `lookup` fact the host observed, an MCP call (`mcp__githits__*`) or a client record a guarded launcher call stands behind (`githits.<op>` but `doctor`, guard `pass`), a call that failed before its candidate included |
 | `contamination_unknown` | kept | the baseline shows no lookup but its `githits_lookups` is unknown, so it cannot be shown clean |
 | `server_mixed` | kept | some of a treatment thread's calls carry the ledger and some do not |
-| `two_routes` | kept | a treatment thread had GitHits by both routes, the ledger and a connected GitHits MCP server (one left in arm B by mistake): still the treatment, but not one route alone, and where it has client records `githits_lookups` counts only those, leaving the MCP lookups out (`spec/GAPS.md` 59) |
+| `two_routes` | kept | a treatment thread had GitHits by both routes, the ledger and a connected GitHits MCP server (one left in arm B by mistake): still the treatment, but not one route alone, and `githits_lookups` includes authentic client records plus host-observed MCP attempts, while guard-blocked attempts do not establish actual use (`spec/GAPS.md` 59) |
 | `unused` | kept | the treatment shows no GitHits lookup and its count is known to be zero (a launcher call the guard refused never reached GitHits) |
 | `use_unknown` | kept | the treatment shows no GitHits lookup but its count is unknown, so it cannot be shown to have used GitHits (nor not to) |
 | `arm_unverified` | kept | no call recorded its MCP servers or the ledger |

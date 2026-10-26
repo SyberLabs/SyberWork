@@ -82,6 +82,8 @@ import ipaddress
 import json
 import os
 import re
+import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -1002,16 +1004,18 @@ class Client:
             with exc:
                 error = self._http_error(exc)
             raise error from None
-        except (urllib.error.URLError, ValueError) as exc:
-            # Before the request was written: urllib wraps an OSError of opening the connection (refused, a DNS,
-            # TLS or proxy failure, a connect timeout) and of writing the request in URLError, and a URL or header it
-            # cannot form is a ValueError.
+        except ValueError as exc:
             raise self._transport(exc, sent=False) from None
+        except urllib.error.URLError as exc:
+            # urllib also wraps failures while writing: those may follow a partial
+            # or complete request. Only demonstrably pre-send failures are false.
+            before = isinstance(exc.reason, (ConnectionRefusedError, socket.gaierror, ssl.SSLCertVerificationError))
+            raise self._transport(exc, sent=False if before else None) from None
         except (http.client.HTTPException, OSError) as exc:
             # After it was written: no answer in time, a connection closed or reset, a body cut short.
             raise self._transport(exc, sent=True) from None
 
-    def _transport(self, exc: BaseException, sent: bool) -> GitHitsError:
+    def _transport(self, exc: BaseException, sent: bool | None) -> GitHitsError:
         reason = getattr(exc, "reason", None) or type(exc).__name__
         # Scrubbed before it is cut: a token across the cut would otherwise leave its first characters.
         return GitHitsError("transport", self._scrub(f"{type(exc).__name__}: {reason}")[:200], sent=sent)

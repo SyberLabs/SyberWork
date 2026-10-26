@@ -216,6 +216,19 @@ class Arguments(unittest.TestCase):
 class Pieces(unittest.TestCase):
     """The budget, the contracts, the gate and the report's exclusions, one by one."""
 
+    def test_failed_command_output_is_scrubbed_before_logging_or_returning(self):
+        credentials = {githits.TOKEN_ENV: "fake-githits-credential", pilot.API_KEY_ENV: "fake-anthropic-credential"}
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, credentials):
+            root = Path(folder)
+            echoed = " ".join(credentials.values())
+            command = pilot.Syberlabs(root / "home", root, "operator", lambda *args: pilot.Done(1, echoed, echoed),
+                                     root / "commands.log")
+            done = command("status")
+            logged = (root / "commands.log").read_text(encoding="utf-8")
+            self.assertEqual(done.code, 1)
+            for value in credentials.values():
+                self.assertNotIn(value, done.out + done.err + logged + json.dumps(command.commands))
+
     def plan(self, **changes):
         doc = {"items": [{"id": f"A-{n}", "objective": f"change {n}"} for n in range(3)], "prices": PRICES}
         return pilot.validate_plan({**doc, **changes})
@@ -668,14 +681,17 @@ def run(self):
         (self.out / token).write_text(token)
     return 0
 with mock.patch.object(pilot.DryRun, "run", run):
-    if mode == "unreadable":
+    if mode == "first-unreadable":
+        with mock.patch.object(pilot, "files_holding", side_effect=[([], 0, 1), ([], 1, 0)]):
+            code = pilot.main(["--plan", "unused.json", "--repo", repo, "--out", out])
+    elif mode == "unreadable":
         with mock.patch.object(pilot, "files_holding", return_value=([], 0, 1)):
             code = pilot.main(["--plan", "unused.json", "--repo", repo, "--out", out])
     else:
         code = pilot.main(["--plan", "unused.json", "--repo", repo, "--out", out])
 sys.exit(code)
 '''
-        for mode in ("pass", "secret", "unreadable", "exception"):
+        for mode in ("pass", "secret", "unreadable", "first-unreadable", "exception"):
             with self.subTest(mode=mode):
                 out = self.root.parent / ("final-" + mode)
                 done = subprocess.run([sys.executable, "-c", script, mode, str(self.root), str(out)],

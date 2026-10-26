@@ -451,15 +451,22 @@ class Syberlabs:
 
     def __call__(self, *args: str, env: dict | None = None, timeout: float | None = 900) -> Done:
         args = tuple(map(str, args))
+        credentials = [os.environ.get(name) for name in (githits.TOKEN_ENV, API_KEY_ENV)]
+        def scrub(text):
+            for value in credentials:
+                if value:
+                    text = text.replace(value, "[credential redacted]")
+            return text
         argv = ["--home", str(self.home), "--repo", str(self.repo), "--actor", self.actor, *args]
         try:
             done = self.runner(argv, env or {}, timeout)
         except subprocess.TimeoutExpired:
             done = Done(124, "", f"timed out after {timeout} seconds")
-        self.commands.append({"argv": [self.shown(arg) for arg in args], "code": done.code})
+        done = Done(done.code, scrub(done.out), scrub(done.err))
+        self.commands.append({"argv": [scrub(self.shown(arg)) for arg in args], "code": done.code})
         if self.log is not None:
             with open(self.log, "a", encoding="utf-8") as handle:
-                handle.write(f"$ syberlabs {' '.join(args)}\n[exit {done.code}]\n{done.out}{done.err}\n")
+                handle.write(f"$ syberlabs {scrub(' '.join(args))}\n[exit {done.code}]\n{done.out}{done.err}\n")
         return done
 
     def current(self) -> str:
@@ -705,7 +712,8 @@ def check_budget(cap, contract: dict, runs: int) -> Check:
     if budget.get("strict") is not True:
         return Check("budget cap", FAIL, "the arms' contract needs budget.strict true: usage of a model its prices do "
                                          "not name must refuse promotion, or cost turns unknown")
-    return Check("budget cap", PASS, f"${cap:.2f} hard cap for the canary and {runs} runs; each thread's contract "
+    return Check("budget cap", PASS, f"${cap:.2f} token-cost dispatch threshold for the canary and {runs} runs; "
+                                     "one-call overshoot and server fees are not covered; each thread's contract "
                                      f"max_dollars ${share:.4f}; a run starts only while spent + ${share:.4f} <= "
                                      f"${cap:.2f}; priced: {', '.join(sorted(budget['prices']))}",
                  {"cap": cap, "thread_budget": share})
@@ -878,7 +886,7 @@ def gate(spent: float | None, reserve: float, cap: float) -> str | None:
         return ("the spend so far is unknown (a model the prices do not name, a call the meter missed, or a thread "
                 "whose record could not be read), so the cap cannot be enforced")
     if spent + reserve > cap + 1e-9:
-        return (f"${spent:.4f} spent; another run may cost up to ${reserve:.4f} (a thread's max_dollars), which the "
+        return (f"${spent:.4f} spent; another run reserves ${reserve:.4f} (a thread's max_dollars), which the "
                 f"${cap:.2f} cap cannot cover")
     return None
 
@@ -1290,8 +1298,8 @@ class DryRun:
         (self.out / "plan.json").write_text(Path(self.args.plan).read_text(encoding="utf-8"), encoding="utf-8")
         self.receipt["files"]["items"] = "items.txt"
         say(f"\nready: the canary, then {len(self.order)} runs ({len(plan['items'])} items x 2 arms) from "
-            f"{self.base[:10]} in the order of seed {self.seed}; up to ${self.cap:.2f} on your Anthropic key (each "
-            f"thread ${self.share:.4f}) and a few GitHits lookups")
+            f"{self.base[:10]} in the order of seed {self.seed}; token-cost dispatch threshold ${self.cap:.2f} "
+            f"(each thread ${self.share:.4f}); one call can overshoot, and GitHits/search fees are extra")
         if self.args.yes:
             return True
         try:
@@ -1482,15 +1490,15 @@ class DryRun:
         credentials = [(name, os.environ.get(name, "")) for name in (githits.TOKEN_ENV, API_KEY_ENV)]
         credentials = [(name, value) for name, value in credentials if len(value) >= MIN_SECRET_CHARS]
         files = [path for path in out.rglob("*") if path.is_file()]
-        written, read, unread = [], 0, 0
+        written, unread = [], 0
         for name, value in credentials:  # every file, whatever its size
-            found, read, unread = files_holding(value, files, limit=None)
+            found, _read, missed = files_holding(value, files, limit=None)
+            unread += missed
             written += [f"{name} in {path.relative_to(out).as_posix()}" for path in found]
-        receipt["credential_scan"] = {"files": read, "unread": unread, "found": written}
+        receipt["credential_scan"] = {"files": len(files), "unread": unread, "found": written}
         if unread:
             receipt["verdict"] = FAIL
-            receipt["reasons"].append(f"{unread} file(s) of the run's directory could not be read for the credential "
-                                      "scan")
+            receipt["reasons"].append(f"{unread} credential-scan file read(s) failed")
         if written:  # never expected: nothing in the factory writes a credential
             receipt["verdict"] = FAIL
             receipt["reasons"].append("a credential was written in the run's directory: " + "; ".join(written))

@@ -925,6 +925,26 @@ class Transport(FakeCase):
 
 
 class Records(FakeCase):
+    def test_an_ambiguous_write_error_cannot_claim_that_nothing_was_sent(self):
+        arrived = threading.Event()
+        def answer(request):
+            arrived.set()
+            return 200, {}, b"{}"
+        self.fake.script["/v1/searches"] = answer
+        self.fake.server.handle_error = lambda *args: None  # the intentionally closed client may break its pipe
+        original = githits.http.client.HTTPConnection.request
+        def after_send(connection, *args, **kwargs):
+            original(connection, *args, **kwargs)
+            self.assertTrue(arrived.wait(3), "the real loopback server received the request")
+            raise BrokenPipeError("injected after the real request")
+        with mock.patch.object(githits.http.client.HTTPConnection, "request", after_send):
+            with self.assertRaises(githits.GitHitsError):
+                self.client().search("q", ["pypi:requests"])
+        self.assertEqual(len(self.fake.requests), 1)
+        [record] = self.records().records
+        self.assertEqual(record["status"], "error")
+        self.assertIsNone(record["sent"], "a wrapped write error cannot establish a pre-send refusal")
+
     def test_an_interrupted_tail_is_ignored_without_hiding_the_next_record(self):
         client = self.client()
         client.search("first", ["pypi:requests"])

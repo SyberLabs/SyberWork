@@ -122,8 +122,8 @@ CHECKS = {
     "base_unknown": "a thread has no recorded base commit, so the start could not be compared",
     "arm_unverified": "no call recorded its MCP servers or a GitHits launcher, so only the label says which arm ran",
     "server_mixed": "the server was there in some of a thread's calls and not in others",
-    "two_routes": "the treatment had GitHits by two routes, the host's API launcher and its MCP server, not one; where "
-                  "it has client records, its GitHits count (metrics) leaves the MCP server's lookups out",
+    "two_routes": "the treatment had GitHits by two routes, the host's API launcher and its MCP server; the metric "
+                  "includes both routes' attempts, but this is not the registered single-route treatment",
     "unused": "the treatment made no lookups on its server",
     "use_unknown": "the record cannot say how many lookups the treatment made on its server, and shows none, so it "
                    "cannot be shown to have used it",
