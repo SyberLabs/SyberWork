@@ -179,6 +179,22 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--githits-arm", default="b", metavar="NAME",
                          help="for --githits: the arm's name in X-GitHits-Session-ID <thread>-<arm> and "
                               "X-GitHits-Agent syberfactory/<arm> (default b)")
+    propose.add_argument("--router", action="store_true",
+                         help="for --repair and --claude-code (research, not the default): between attempts the "
+                              "factory decides to repair from the failed check's output, look the library up in "
+                              "GitHits at its installed version (GITHITS_API_TOKEN), search the web, or stop; every "
+                              "decision is journaled (docs/ROUTER.md)")
+    propose.add_argument("--router-max-lookups", type=int, metavar="N",
+                         help="for --router: lookups (GitHits and web together) per search (default 2)")
+    propose.add_argument("--router-holdout", type=float, metavar="P",
+                         help="for --router: replace a lookup the policy chose with a repair with probability P, "
+                              "recorded, so a lookup's value can be measured against its absence (default 0)")
+    propose.add_argument("--router-web", metavar="COMMAND",
+                         help="for --router: a web search command (JSON on stdin and stdout); without it the router "
+                              "has no web route")
+    propose.add_argument("--router-decider", metavar="COMMAND",
+                         help="for --router: a decider model command (JSON on stdin and stdout); the baseline policy "
+                              "decides when it fails or chooses an action that is not open")
     propose.add_argument("--max-turns", type=int, help="for --claude-code: claude --max-turns")
     propose.add_argument("--lane", choices=("api", "subscription_local", "seat_team_enterprise", "provider_3p"),
                          help="for --claude-code: the credential lane (default api with --bare, else subscription_local)")
@@ -204,7 +220,8 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--message", default="")
     propose.add_argument("--name", help="provider name, recorded as the acting agent platform; "
                                         "default patch for --from-worktree, repair for --repair, claude-code for "
-                                        "--claude-code, command otherwise")
+                                        "--claude-code (repair-router and claude-code-router with --router), "
+                                        "command otherwise")
     propose.add_argument("--revision", default="1")
     check = commands.add_parser("check", help="run the contract's checks and ask admission")
     check.add_argument("candidate")
@@ -446,6 +463,32 @@ def _settle(kit: Kit, args) -> int:
     return 1 if any(item.error for item in found) else 0
 
 
+def _router(args, thread):
+    """``propose --router``'s settings (research, opt-in: docs/ROUTER.md), or None without ``--router``. A router
+    option without ``--router``, ``--router`` on a provider that is not the repair loop, and ``--router`` with
+    ``--githits`` are refused, so an option never does nothing silently."""
+    named = [flag for flag, value in (("--router-max-lookups", args.router_max_lookups),
+                                      ("--router-holdout", args.router_holdout), ("--router-web", args.router_web),
+                                      ("--router-decider", args.router_decider)) if value is not None]
+    if not args.router:
+        if named:
+            raise Rejected("invalid_provider", f"{', '.join(named)} needs --router")
+        return None
+    if not (args.repair or args.claude_code):
+        raise Rejected("invalid_provider", "--router routes the repair loop: use it with --repair or --claude-code")
+    if args.githits:
+        raise Rejected("invalid_provider", "--router and --githits give GitHits to different deciders (the factory, "
+                                           "the model); pick one")
+    from syberlabs import router
+
+    config = router.cli_config(args, thread.id)
+    why = config.githits.ready()
+    if why:
+        print(f"router: no GitHits lookups in this search ({why}); it repairs, "
+              + ("searches the web " if config.web else "") + "or stops", file=sys.stderr)
+    return config
+
+
 def _intervened(thread, kit: Kit, kind: str, proposal: str | None = None) -> None:
     """A thread command run by a person (not the host, not the unattended runner) leaves a human_intervention fact."""
     if thread.is_person(kit.actor):
@@ -579,6 +622,7 @@ def _run(kit: Kit, args) -> int:
                 print(excerpt.text + "\n")
         print(f"{len(excerpts)} excerpts, {total} bytes. Drop any with --drop PATH; this selection is recorded.")
     elif args.command == "propose":
+        routing = _router(args, thread)
         if args.from_worktree:
             changes, skipped = thread.worktree_changes()
             if skipped:
@@ -611,22 +655,31 @@ def _run(kit: Kit, args) -> int:
                                             migrants=args.migrants, policy=policy)
             found = thread.propose(provider, seed=args.seed)
         elif args.repair:
-            provider = RepairProvider(split_command(args.repair), name=args.name or "repair", revision=args.revision,
-                                      cwd=kit.repo.root, max_calls=args.max_calls)
+            kind, extra = RepairProvider, {}
+            if routing is not None:  # research, opt-in: the router between attempts (docs/ROUTER.md)
+                from syberlabs.router import RouterProvider
+                kind, extra = RouterProvider, {"router": routing}
+            provider = kind(split_command(args.repair), name=args.name or ("repair-router" if extra else "repair"),
+                            revision=args.revision, cwd=kit.repo.root, max_calls=args.max_calls, **extra)
             found = thread.propose(provider, seed=args.seed)
         elif args.claude_code:
             from syberlabs.claude_code import ClaudeCodeProvider, parse_tools
 
+            kind, extra = ClaudeCodeProvider, {}
+            if routing is not None:  # research, opt-in: the router between attempts (docs/ROUTER.md)
+                from syberlabs.router import routed
+                kind, extra = routed(ClaudeCodeProvider), {"router": routing}
             # Lookup facts go through the search space (GitSearchSpace.observe), not a callback from here.
-            provider = ClaudeCodeProvider(kit.repo, bare=args.bare, trusted_tree=args.trusted_tree,
-                                          mcp_config=args.mcp_config, max_turns=args.max_turns, lane=args.lane,
-                                          allowed_tools=parse_tools(args.allowed_tools) if args.allowed_tools else None,
-                                          name=args.name or "claude-code", revision=args.revision,
-                                          max_calls=args.max_calls, guard_max_lines=args.guard_max_lines,
-                                          guard_max_chars=args.guard_max_chars,
-                                          allow_code_tools_with_mcp=args.allow_code_tools_with_mcp,
-                                          githits=args.githits, arm=args.githits_arm,
-                                          thread_label=thread.id if args.githits else None)
+            provider = kind(kit.repo, bare=args.bare, trusted_tree=args.trusted_tree,
+                            mcp_config=args.mcp_config, max_turns=args.max_turns, lane=args.lane,
+                            allowed_tools=parse_tools(args.allowed_tools) if args.allowed_tools else None,
+                            name=args.name or ("claude-code-router" if extra else "claude-code"),
+                            revision=args.revision,
+                            max_calls=args.max_calls, guard_max_lines=args.guard_max_lines,
+                            guard_max_chars=args.guard_max_chars,
+                            allow_code_tools_with_mcp=args.allow_code_tools_with_mcp,
+                            githits=args.githits, arm=args.githits_arm,
+                            thread_label=thread.id if args.githits else None, **extra)
             found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(split_command(args.provider_command), name=args.name or "command", revision=args.revision,

@@ -64,7 +64,9 @@ PUBLISH_EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
 UNATTENDED = "unattended"
 BASE_EVALUATION = "base_evaluation"  # observed: the host's checks on the thread's base tree, versioned by the base commit
 PROPOSAL_REFUSED = "proposal_refused"  # observed: a proposal discarded before candidate_registered, versioned by the search id
-PROVIDER_FACTS = ("lookup",)  # observed keys a provider may write through GitSearchSpace.observe (claude_code.LOOKUP)
+# Observed keys a provider may write through GitSearchSpace.observe: claude_code.LOOKUP, and router.ROUTE (one decision
+# of the lookup router, which only the opt-in router writes; docs/ROUTER.md).
+PROVIDER_FACTS = ("lookup", "route")
 MAX_PROVIDER_FACT_BYTES = 4096
 # The host's own refusal codes, as the closed reason set names them. Any other code ends the search and is not a refusal.
 _REFUSAL_CODES = {"no_change": "no_change", "duplicate": "duplicate", "invalid_change": "unparsable", "zero_usage": "zero_usage",
@@ -399,10 +401,11 @@ class GitSearchSpace:
 
         Written through ``Session.observe`` with source and actor ``syberlabs.host``, the route ``proposal_refused``
         uses, so a provider built in Python keeps its facts without a callback from the CLI. Only the keys in
-        ``PROVIDER_FACTS`` (``lookup``: one GitHits or web tool call of a Claude Code run) may be written; the value
-        is an object of at most ``MAX_PROVIDER_FACT_BYTES`` in canonical JSON; the version is a short name
-        (``<search>.<call>.<n>``). The provider runs in the host's process: this is not a boundary against a
-        hostile provider, it keeps an honest one inside a closed set of keys.
+        ``PROVIDER_FACTS`` (``lookup``: one GitHits or web tool call of a Claude Code run or of the router; ``route``:
+        one decision of the opt-in lookup router) may be written; the value is an object of at most
+        ``MAX_PROVIDER_FACT_BYTES`` in canonical JSON; the version is a short name (``<search>.<call>.<n>``, or the
+        router's ``<search>.r<n>`` and ``<search>.r<n>.<k>``). The provider runs in the host's process: this is not a
+        boundary against a hostile provider, it keeps an honest one inside a closed set of keys.
         """
         if key not in PROVIDER_FACTS:
             raise Rejected("invalid_fact", "a provider may record only " + ", ".join(PROVIDER_FACTS))
