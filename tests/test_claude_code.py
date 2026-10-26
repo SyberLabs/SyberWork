@@ -7,6 +7,9 @@ working directory, and prints a recorded ``stream-json`` transcript of two turns
 Claude Code documents for a ``PreToolUse`` hook (``code.claude.com/docs/en/hooks``): it runs every hook in the
 ``--settings`` file whose matcher matches the tool name, with the call on standard input, and a hook that exits 2
 turns the call into an error result carrying the hook's standard error. So the real query guard runs as a process.
+A ``Bash`` call is Claude Code's Bash tool, emulated: denied unless an ``--allowedTools`` rule ``Bash(<prefix>:*)``
+names it (``dontAsk``), otherwise the launcher runs as ``sh`` runs it (its ``exec`` line, then the command's words),
+so the real GitHits client runs against a loopback fake GitHits and writes its records.
 """
 
 import contextlib
@@ -15,6 +18,10 @@ import io
 import json
 import os
 import re
+import secrets
+import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -25,15 +32,17 @@ from types import SimpleNamespace
 from unittest import mock
 
 from spec.validate import validate_events
-from syberlabs import Rejected, metrics, query_guard
-from syberlabs.claude_code import (BIN_ENV, CODE_TOOLS, DEFAULT_TOOLS, LOGIN_LANE_DROPPED_ENV, LOOKUP,
-                                   ClaudeCodeProvider, Transcript, instruction_file, parse_tools, query_text,
-                                   version_tuple)
+from syberlabs import Rejected, githits, metrics, query_guard
+from syberlabs.canonical import canonical
+from syberlabs.claude_code import (BIN_ENV, CODE_TOOLS, DEFAULT_TOOLS, GITHITS_ENTRY, LOGIN_LANE_DROPPED_ENV, LOOKUP,
+                                   SKILL_PATH, ClaudeCodeProvider, Transcript, code_tools, githits_skill,
+                                   instruction_file, parse_tools, query_text, version_tuple, write_launcher)
 from syberlabs.cli import main as cli
 from syberlabs.events import verify_events
 from syberlabs.gitspace import IDENTITY
 from syberlabs.providers import RepairProvider
 from tests.test_build_thread import GOOD, REPORT, RepoCase
+from tests.test_githits import FakeGitHits
 
 PY = sys.executable
 BROKEN = {**GOOD, "src/report.py": "def rows():\n    return []\n"}  # tests fail: the report rows are gone
@@ -53,7 +62,7 @@ SUMMED = {"input_tokens": 2500, "output_tokens": 500, "cache_read_input_tokens":
 COST = round((2500 + 50 + 10) * 15 / 1_000_000 + 500 * 75 / 1_000_000, 6)
 
 STAND_IN = r'''
-import hashlib, json, os, re, stat, subprocess, sys, time
+import hashlib, json, os, re, shlex, stat, subprocess, sys, time
 from pathlib import Path
 
 config = json.loads(Path(CONFIG).read_text(encoding="utf-8"))
@@ -76,6 +85,31 @@ if guard_dir is not None:
     if config.get("tamper_policy"):  # what a model with a shell or an unconfined Write could do to the host's file
         os.chmod(policy, stat.S_IREAD | stat.S_IWRITE)
         policy.write_text(json.dumps({"version": "2", "max_lines": 99, "max_chars": 100000}), encoding="utf-8")
+
+allowed = sys.argv[sys.argv.index("--allowedTools") + 1].split(",") if "--allowedTools" in sys.argv else []
+prefixes = [rule[5:-3] for rule in allowed if rule.startswith("Bash(") and rule.endswith(":*)")]
+launcher = prefixes[0] if prefixes else None
+
+def run_bash(command):
+    """Claude Code's Bash tool under dontAsk: a command no allow rule names is denied; the launcher runs as sh would."""
+    if not any(command == prefix or command.startswith(prefix + " ") for prefix in prefixes):
+        return True, "Permission to use Bash with command denied"
+    words = shlex.split(command)
+    line = next(l for l in Path(words[0]).read_text(encoding="utf-8").splitlines() if l.startswith("exec "))
+    argv = [word for word in shlex.split(line)[1:] if word != "$@"] + words[1:]
+    done = subprocess.run(argv, capture_output=True, timeout=120)
+    return done.returncode != 0, (done.stdout + done.stderr).decode("utf-8", "replace")
+
+def write_record(valid):
+    """A record line in the client's record directory, as a process holding the record key (valid) or not would."""
+    sys.path.insert(0, config["host_root"])
+    from syberlabs import githits
+    record = {field: None for field in githits.RECORD_FIELDS}
+    record.update(op="search", query_digest="0" * 64, targets_count=1, status="ok", http_status=200,
+                  request_id="req-forged", results_returned=3, results_dropped=0, results_dropped_license=0,
+                  contamination_blocked=False, latency_ms=1, at="2026-10-26T00:00:00.000Z")
+    key = os.environ.get(githits.RECORD_KEY_ENV, "") if valid else "not-the-key"
+    githits.write_record(os.environ[githits.RECORD_DIR_ENV], key, record)
 
 def forge(name, tool_input, use_id):
     """A decision the hook never wrote, as a model that can write the guard's directory might leave it."""
@@ -127,6 +161,10 @@ def results(uses):
         blocked = pre_tool_use(name, tool_input, use_id)
         if blocked is not None:
             found.append({"type": "tool_result", "tool_use_id": use_id, "content": blocked, "is_error": True})
+        elif name == "Bash":
+            failed, text = run_bash(tool_input.get("command", ""))
+            bash_outputs.append(text)
+            found.append({"type": "tool_result", "tool_use_id": use_id, "content": text, "is_error": failed})
         else:
             found.append({"type": "tool_result", "tool_use_id": use_id, "content": "result " + json.dumps(tool_input)})
     return found
@@ -134,7 +172,11 @@ def results(uses):
 say({"type": "system", "subtype": "init", "claude_code_version": "2.1.309", "model": model, "effort": "high",
      "apiKeySource": "ANTHROPIC_API_KEY" if bare else "none", "mcp_servers": servers, "session_id": "x",
      "tools": ["Read", "Edit"]})
-lookups = [(f"t{n}", name, tool_input) for n, (name, tool_input) in enumerate(config["lookups"], 1)]
+bash_outputs = []
+for valid in config.get("records_written") or []:
+    write_record(valid)
+lookups = [(f"t{n}", name, json.loads(json.dumps(tool_input).replace("{launcher}", launcher or "githits")))
+           for n, (name, tool_input) in enumerate(config["lookups"], 1)]
 first = {"id": "msg_1", "model": model, "usage": turns[0]}
 say({"type": "assistant", "message": {**first, "content": [{"type": "text", "text": "Looking up " + config["githits"]}]},
      "parent_tool_use_id": None})
@@ -157,21 +199,26 @@ say({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, 
 with log.open("a", encoding="utf-8") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "prompt": prompt, "settings": settings,
                         "hooks": hook_errors, "api_key": "ANTHROPIC_API_KEY" in os.environ,
-                        "seed": "SYBERLABS_CERTIFICATE_SEED" in os.environ, **seen}) + "\n")
+                        "seed": "SYBERLABS_CERTIFICATE_SEED" in os.environ, "bash": bash_outputs,
+                        **({"env": dict(os.environ)} if config.get("log_env") else {}), **seen}) + "\n")
 '''
 VERSION_ONLY = [PY, "-c", "print('2.1.309 (Claude Code)')"]  # a stand-in that only answers --version
 
 
 class ClaudeCodeCase(RepoCase):
     def stand_in(self, name, *, first=None, repair=None, exit=0, lookups=None, hooks=True, no_tool_use_id=False,
-                 version=None, forge=None, tamper_policy=False, fail_after_lookups=0, hang_after_lookups=False):
+                 version=None, forge=None, tamper_policy=False, fail_after_lookups=0, hang_after_lookups=False,
+                 log_env=False, records_written=()):
         """A stand-in ``claude``: ``first`` is what it writes on a first call, ``repair`` when the prompt quotes failed
         checks; ``lookups`` the ``[tool, input]`` calls it makes (default one GitHits search, one WebSearch);
         ``hooks`` False skips the ``--settings`` hooks, as a Claude Code that does not run them would; ``version``
         what ``--version`` prints; ``forge`` writes a ``pass`` decision per lookup into the guard's directory with
         that MAC (``"none"`` for none); ``tamper_policy`` rewrites ``policy.json`` before the lookups;
         ``fail_after_lookups`` exits with that code, and ``hang_after_lookups`` sleeps, after the lookups and before
-        the result event. Returns the argv prefix that runs it."""
+        the result event; ``log_env`` logs the whole environment it was given; ``records_written`` writes, before
+        the lookups, one client record line per item, signed with the call's record key (True) or another (False).
+        A ``{launcher}`` in a lookup's input is the launcher ``--allowedTools`` names. Returns the argv prefix that
+        runs it."""
         config = self.root.parent / f"{name}.json"
         if lookups is None:
             lookups = [["mcp__githits__search", {"query": GITHITS_QUERY}], ["WebSearch", {"query": WEB_QUERY}]]
@@ -180,7 +227,9 @@ class ClaudeCodeCase(RepoCase):
                                       "lookups": lookups, "hooks": hooks, "no_tool_use_id": no_tool_use_id,
                                       "version": version, "forge": forge, "tamper_policy": tamper_policy,
                                       "fail_after_lookups": fail_after_lookups,
-                                      "hang_after_lookups": hang_after_lookups}),
+                                      "hang_after_lookups": hang_after_lookups, "log_env": log_env,
+                                      "records_written": list(records_written),
+                                      "host_root": str(Path(__file__).resolve().parents[1])}),
                           encoding="utf-8")
         script = self.root.parent / f"{name}.py"
         script.write_text(f"CONFIG = {str(config)!r}\nLOG = {str(self.root.parent / (name + '.log'))!r}\n"
@@ -827,6 +876,289 @@ class CodeToolsWithMcp(ClaudeCodeCase):
         other = kit.start("Add a CSV export (no override)", paths=["src/", "tests/"])
         [plain] = other.propose(self.provider(kit, other, claude, bare=True, max_calls=1))
         self.assertNotIn("allow_code_tools_with_mcp", plain.signal["guard"], "recorded only when the operator overrides")
+
+
+def launcher_lookup(command: str) -> list:
+    """A ``Bash`` lookup through the launcher: ``{launcher}`` is replaced by the stand-in with the path the
+    provider allowed."""
+    return ["Bash", {"command": "{launcher} " + command, "description": "look up a public API"}]
+
+
+SEARCH = 'search "requests retry backoff zq71" --target pypi:requests@2.32.3'
+EXAMPLE = 'example "retry an HTTP call with backoff zq72" --language python'
+# What a provider built today passes; githits=False must stay byte-identical (githits-wiring, item 2).
+TODAY_NOTE = ("Make the change by editing files in the current directory. The host reads the result from this working "
+              "tree with git and runs its own checks. Do not commit.")
+
+
+class GitHitsLauncher(ClaudeCodeCase):
+    """githits-wiring: GitHits through the host's API client. The stand-in's Bash tool runs the real launcher, which
+    runs the host checkout's client against a loopback fake GitHits; nothing reaches the real API."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake = FakeGitHits()
+        self.addCleanup(self.fake.close)
+        self.token = "ghtest_" + secrets.token_hex(16)
+        patcher = mock.patch.dict(os.environ, {githits.TOKEN_ENV: self.token, githits.URL_ENV: self.fake.url})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in (githits.EXCLUDE_ENV, githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.SESSION_ENV,
+                     githits.AGENT_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV):
+            os.environ.pop(name, None)
+
+    def arm_b(self, kit, claude, **kwargs):
+        kwargs.setdefault("max_calls", 1)
+        return ClaudeCodeProvider(kit.repo, bare=True, executable=claude, githits=True, **kwargs)
+
+    def test_arm_a_is_unchanged_and_arm_b_differs_only_in_the_githits_additions_and_the_skill(self):
+        kit = self.kit()
+        claude = self.stand_in("arms", lookups=[launcher_lookup(SEARCH)], log_env=True)
+        arm_a = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=1)
+        self.assertEqual(arm_a.command("S"), [*claude, "-p", "--bare", "--output-format", "stream-json", "--verbose",
+                                              "--permission-mode", "dontAsk", "--restricted", "--tools",
+                                              "Read,Edit,Write,Glob,Grep", "--allowedTools", "Read,Edit,Write,Glob,Grep",
+                                              "--setting-sources", "user", "--strict-mcp-config",
+                                              "--no-session-persistence", "--append-system-prompt", TODAY_NOTE,
+                                              "--settings", "S"], "arm A's argv is what main built before this packet")
+        arm_b = self.arm_b(kit, claude, thread_label="thread-ab")
+        for name, provider in (("a", arm_a), ("b", arm_b)):
+            thread = kit.start(f"Add a CSV export ({name})", paths=["src/", "tests/"])
+            [candidate] = thread.propose(provider)
+            if name == "a":
+                self.assertNotIn("githits", candidate.signal)
+                self.assertNotIn("skill", candidate.signal["harness"])
+                self.assertEqual(candidate.signal["tool_usage"]["other"], {"Bash": 1, "Edit": 1})
+            else:
+                skill = candidate.signal["harness"]["skill"]
+                self.assertEqual(skill, {"path": "skills/githits/SKILL.md",
+                                         "sha256": hashlib.sha256(SKILL_PATH.read_bytes()).hexdigest()})
+        run_a, run_b = self.runs("arms")
+        argv_a, argv_b = list(run_a["argv"]), list(run_b["argv"])
+        launcher = argv_b[argv_b.index("--allowedTools") + 1].split(",")[-1][len("Bash("):-len(":*)")]
+        for argv in (argv_a, argv_b):
+            argv[argv.index("--settings") + 1] = "<guard settings>"  # each call has its own guard directory
+        changed = [i for i, (x, y) in enumerate(zip(argv_a, argv_b)) if x != y]
+        self.assertEqual(len(argv_a), len(argv_b))
+        self.assertEqual([argv_a[i - 1] for i in changed], ["--tools", "--allowedTools", "--append-system-prompt"])
+        self.assertEqual([argv_b[i] for i in changed],
+                         [argv_a[changed[0]] + ",Bash", argv_a[changed[1]] + f",Bash({launcher}:*)",
+                          TODAY_NOTE + "\n\n" + githits_skill()[0].replace("{launcher}", launcher)])
+        self.assertTrue(launcher.endswith("/githits") and Path(launcher).is_absolute() and "\\" not in launcher)
+        self.assertNotIn(Path(run_b["cwd"]).resolve(), Path(launcher).resolve().parents, "outside the worktree")
+        env_a, env_b = run_a["env"], run_b["env"]
+        per_call = {query_guard.KEY_ENV}  # a fresh MAC key per call
+        self.assertEqual({k for k in env_a if k not in os.environ}, {query_guard.KEY_ENV, query_guard.POLICY_DIGEST_ENV,
+                                                                    query_guard.TREE_DIGEST_ENV},
+                         "arm A: the caller's environment plus the guard's three, as before")
+        self.assertEqual({k: v for k, v in env_a.items() if k in os.environ}, {
+            k: v for k, v in os.environ.items() if k not in ("SYBERLABS_CERTIFICATE_SEED",)})
+        added = {k: env_b[k] for k in env_b if k not in env_a}
+        self.assertEqual(set(added), {query_guard.LAUNCHER_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV,
+                                      githits.SESSION_ENV, githits.AGENT_ENV, githits.LICENSES_ENV,
+                                      githits.EXCLUDE_ENV})
+        self.assertEqual({k for k in env_a if k not in env_b}, set())
+        self.assertEqual([k for k in env_a if k not in per_call and env_a[k] != env_b[k]], [])
+        self.assertEqual((added[query_guard.LAUNCHER_ENV], added[githits.SESSION_ENV], added[githits.AGENT_ENV],
+                          added[githits.LICENSES_ENV], added[githits.EXCLUDE_ENV]),
+                         (launcher, "thread-ab-b", "syberfactory/b", ",".join(githits.LicensePolicy().allowed),
+                          "syberlabs"))
+        self.assertEqual(len(added[githits.RECORD_KEY_ENV]), 64)
+        self.assertEqual(env_b[githits.TOKEN_ENV], self.token, "the operator's token, passed through")
+        self.assertNotIn(Path(run_b["cwd"]).resolve(), Path(added[githits.RECORD_DIR_ENV]).resolve().parents)
+        [group_a] = run_a["settings"]["hooks"]["PreToolUse"]
+        [group_b] = run_b["settings"]["hooks"]["PreToolUse"]
+        self.assertEqual((group_a["matcher"], group_b["matcher"]), (query_guard.MATCHER, query_guard.MATCHER_BASH))
+        self.assertEqual(group_a["hooks"][0]["args"][:2], group_b["hooks"][0]["args"][:2], "the same hook")
+        self.assertEqual(len(self.fake.requests), 1, "only arm B's launcher call reached GitHits")
+        self.assertIn("Permission to use Bash", run_a["bash"][0], "in arm A the same Bash call is denied")
+
+    def test_launcher_lookups_become_host_observed_lookup_facts_and_metrics_read_them(self):
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        claude = self.stand_in("facts", lookups=[launcher_lookup(SEARCH), launcher_lookup(EXAMPLE)])
+        [candidate] = thread.propose(self.arm_b(kit, claude, thread_label=thread.id))
+        facts = self.lookup_facts(thread)
+        self.assertEqual([(b["version"], b["actor"], b["verified"]) for b in facts],
+                         [("s1.1.1", "syberlabs.host", True), ("s1.1.2", "syberlabs.host", True)])
+        values = [b["value"] for b in facts]
+        self.assertEqual([(v["tool"], v["status"], v["request_id"], v["results_returned"], v["results_dropped"],
+                           v["results_dropped_license"], v["contamination_blocked"], v["ok"], v["guard"]) for v in values],
+                         [("githits.search", "ok", "req0001", 1, 0, 0, False, True, "pass"),
+                          ("githits.example", "ok", "req0002", 1, 0, 0, False, True, "pass")])
+        sent = json.loads(self.fake.requests[0]["body"])
+        self.assertEqual(values[0]["query_digest"], hashlib.sha256(canonical(sent).encode("utf-8")).hexdigest())
+        self.assertTrue(all(isinstance(v["latency_ms"], int) and v["at"].endswith("Z") for v in values))
+        for request in self.fake.requests:
+            self.assertEqual((request["headers"]["x-githits-session-id"], request["headers"]["x-githits-agent"],
+                              request["headers"]["authorization"]), (f"{thread.id}-b", "syberfactory/b",
+                                                                     f"Bearer {self.token}"))
+        signal = candidate.signal
+        self.assertEqual(signal["tool_usage"], {"web_search": 0, "web_fetch": 0, "githits": 2,
+                                                "other": {"Bash": 2, "Edit": 1}})
+        self.assertEqual(signal["githits"], {"arm": "b", "launcher_calls": 2, "launcher_passed": 2, "records": 2,
+                                             "records_ignored": 0, "bash_refused": 0,
+                                             "license_policy": githits.LicensePolicy().digest})
+        [item] = metrics.work_items(thread.history())
+        self.assertEqual((item.githits_lookups.value, item.lookups_blocked.value), (2, 0))
+        self.assertEqual(item.githits_lookups.basis, tuple(e["hash"] for e in thread.history() if e["kind"] == "observed"
+                                                           and e["body"]["key"] == LOOKUP))
+        self.assertIn("host-observed", item.githits_lookups.note)
+        record = self.journal_bytes()
+        for text in ("zq71", "zq72", "requests retry backoff", self.token):
+            self.assertNotIn(text.encode(), record, "no query text or token anywhere under .syberlabs")
+        [run] = self.runs("facts")
+        self.assertTrue(run["bash"][0].startswith("search: 1 results"), "the model read the client's compact text")
+        self.assertEqual(validate_events(thread.history(), "claude-code"), [])
+        self.assertTrue(verify_events(thread.history()))
+
+    def test_other_commands_metacharacters_and_secrets_are_blocked_and_recorded(self):
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        secret = "ghp_" + "Z" * 36
+        claude = self.stand_in("blocked", lookups=[
+            ["Bash", {"command": "cat ~/.ssh/id_rsa", "description": "x"}],
+            launcher_lookup('search "retry" --target pypi:requests; env'),
+            launcher_lookup(f'search "retry with {secret}" --target pypi:requests'),
+            launcher_lookup(SEARCH)])
+        [candidate] = thread.propose(self.arm_b(kit, claude))
+        values = [b["value"] for b in self.lookup_facts(thread)]
+        self.assertEqual([(v["tool"], v["guard"], v["ok"]) for v in values],
+                         [("Bash", "not_launcher", False), ("Bash", "shell_syntax", False), ("Bash", "secret", False),
+                          ("githits.search", "pass", True)])
+        [run] = self.runs("blocked")
+        rules = [h["stderr"] for h in run["hooks"] if not h.get("passed")]
+        self.assertEqual([re.search(r"rule: (\w+)", text)[1] for text in rules], ["not_launcher", "shell_syntax", "secret"])
+        self.assertTrue(all(secret not in text and "id_rsa" not in text for text in rules), "never echoed")
+        self.assertEqual(len(self.fake.requests), 1, "only the clean launcher call left the machine")
+        self.assertEqual((candidate.signal["githits"]["bash_refused"], candidate.signal["githits"]["launcher_calls"],
+                          candidate.signal["githits"]["records"]), (3, 3, 1))
+        self.assertNotIn("mismatch", candidate.signal["githits"])
+        [item] = metrics.work_items(thread.history())
+        self.assertEqual((item.githits_lookups.value, item.lookups_blocked.value), (1, 3))
+        self.assertNotIn(secret.encode(), self.journal_bytes())
+
+    def test_a_forged_record_is_ignored_and_an_unrecorded_launcher_call_is_flagged(self):
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        claude = self.stand_in("forged", records_written=[False],
+                               lookups=[launcher_lookup(SEARCH), launcher_lookup("search")])  # the second: no --target
+        [candidate] = thread.propose(self.arm_b(kit, claude))
+        self.assertEqual([b["value"]["tool"] for b in self.lookup_facts(thread)], ["githits.search"])
+        self.assertEqual({k: candidate.signal["githits"][k] for k in ("launcher_passed", "records", "records_ignored",
+                                                                      "mismatch")},
+                         {"launcher_passed": 2, "records": 1, "records_ignored": 1, "mismatch": "githits_unrecorded"})
+        self.assertEqual(candidate.signal["tool_usage"]["githits"], 1, "authentic records only")
+        self.assertNotIn(b"req-forged", self.journal_bytes())
+
+    def test_a_record_without_a_guarded_launcher_call_stops_the_search_unguarded(self):
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        claude = self.stand_in("unexpected", records_written=[True], lookups=[])
+        self.assertEqual(thread.propose(self.arm_b(kit, claude)), [])
+        search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
+        self.assertEqual((search["stopped"], search["error"]), ("error", "provider_guard_inactive"))
+        self.assertEqual([(b["value"]["tool"], b["value"]["guard"], b["value"]["ok"], b["value"]["request_id"])
+                          for b in self.lookup_facts(thread)], [("githits.search", "unguarded", False, "req-forged")],
+                         "a record signed with the call's key but with no guarded launcher call behind it")
+
+    def test_code_running_tools_are_refused_except_the_launcher(self):
+        """githits-wiring, item 4: #119's refusal now holds for --githits too, and the one exception is the
+        launcher's own Bash(<launcher>:*) entry, which the provider adds per call."""
+        kit = self.kit()
+        config = self.root.parent / "githits-mcp.json"
+        config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
+        for tools, mcp in ((["Read", "Bash"], None), (["Read", "PowerShell"], None), (["Edit", "Bash(git log *)"], None),
+                           (["Read", "bash"], config), (["Read", "Bash(/tmp/githits:*)"], None)):
+            with self.subTest(tools=tools), self.assertRaises(Rejected) as caught:
+                ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, allowed_tools=tools,
+                                   mcp_config=mcp)
+            self.assertEqual(caught.exception.code, "invalid_provider")
+            self.assertIn("launcher", caught.exception.detail)
+        for mcp in (None, config):
+            provider = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, mcp_config=mcp)
+            command = provider.command("S", "C:/tmp/syberlabs-guard-1/githits")
+            tools = command[command.index("--allowedTools") + 1].split(",")
+            self.assertEqual(tools, list(DEFAULT_TOOLS) + ["Bash(C:/tmp/syberlabs-guard-1/githits:*)"])
+            self.assertEqual(code_tools(tools), ["Bash"], "the launcher's entry is the only code-running one")
+            self.assertEqual(command[command.index("--tools") + 1], ",".join(DEFAULT_TOOLS) + ",Bash")
+        ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, allowed_tools=["Read", "Bash"],
+                           allow_code_tools_with_mcp=True)  # the operator's recorded override still builds it
+        with mock.patch.dict(os.environ, {githits.TOKEN_ENV: ""}), self.assertRaises(Rejected) as caught:
+            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True)
+        self.assertIn(githits.TOKEN_ENV, caught.exception.detail)
+        for arm in ("", "a/b", "x" * 17):
+            with self.assertRaises(Rejected):
+                ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, arm=arm)
+
+    def test_the_launcher_is_read_only_outside_the_worktree_and_runs_the_host_client(self):
+        with tempfile.TemporaryDirectory() as folder:
+            launcher = write_launcher(Path(folder))
+            path = Path(launcher)
+            text = path.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("#!/bin/sh\n"))
+            self.assertIn(f"exec '{Path(sys.executable).as_posix()}' -I '{GITHITS_ENTRY.as_posix()}' \"$@\"\n", text)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode) & stat.S_IWUSR, 0, "read-only")
+            self.assertEqual(GITHITS_ENTRY.parent, Path(query_guard.__file__).resolve().parent, "the host checkout's")
+            decoy = Path(folder) / "decoy"
+            (decoy / "syberlabs").mkdir(parents=True)
+            (decoy / "syberlabs" / "__init__.py").write_text("raise SystemExit('the worktree package ran')\n")
+            env = {**os.environ, "PYTHONPATH": str(decoy)}
+            done = subprocess.run([sys.executable, "-I", str(GITHITS_ENTRY), "doctor"], cwd=decoy, env=env,
+                                  capture_output=True, timeout=120)
+            self.assertEqual(done.returncode, 0, done.stderr[-400:])
+            self.assertTrue(done.stdout.decode().startswith("githits doctor: ok"), "the host's client, not the decoy")
+            sh = shutil.which("sh")
+            if sh:  # what Claude Code's Bash tool does with the launcher (Git Bash on Windows)
+                done = subprocess.run([sh, "-c", launcher + " doctor"], capture_output=True, timeout=120, env=env)
+                self.assertEqual(done.returncode, 0, done.stderr[-400:])
+                self.assertTrue(done.stdout.decode().startswith("githits doctor: ok"))
+            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)  # so the temporary directory can be removed on Windows
+        with tempfile.TemporaryDirectory(prefix="with space ") as folder, self.assertRaises(Rejected):
+            write_launcher(Path(folder))
+
+    def test_the_skill_is_the_adapted_apache_text_and_carries_its_license(self):
+        template, digest = githits_skill()
+        self.assertEqual(digest, hashlib.sha256(SKILL_PATH.read_bytes()).hexdigest())
+        self.assertFalse(template.startswith("---"), "the front matter stays out of the prompt")
+        self.assertIn("{launcher}", template)
+        for words in ("Targets first", "untrusted", "No code, no line copied from this repository", "Cite what you used",
+                      "search", "grep", "list", "read"):
+            self.assertIn(words, template)
+        self.assertLess(len(SKILL_PATH.read_bytes()), 12000, "it rides in argv; keep it well under Windows' limit")
+        front = SKILL_PATH.read_text(encoding="utf-8").split("---")[1]
+        for words in ("githits-com/githits-cli", "0bc9f5e68b6b4d1792b8ec238b03c5591e43d925", "Copyright 2025 GitHits Inc.",
+                      "Apache-2.0", "Changed by SyberLabs"):
+            self.assertIn(words, front)
+        license_text = (SKILL_PATH.parent / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("Apache License", license_text)
+        self.assertIn("Version 2.0, January 2004", license_text)
+        notice = (SKILL_PATH.parent / "NOTICE").read_text(encoding="utf-8")
+        self.assertIn("0bc9f5e68b6b4d1792b8ec238b03c5591e43d925", notice)
+        self.assertIn("changed the files on 2026-10-26", notice)
+
+    def test_propose_githits_from_the_terminal(self):
+        out, err = io.StringIO(), io.StringIO()
+
+        def run_cli(*args, env=None):
+            out.seek(0), out.truncate(), err.seek(0), err.truncate()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.dict(os.environ, env or {}):
+                code = cli(["--repo", str(self.root), "--home", str(self.root / ".syberlabs"),
+                            "--actor", "dev@example.test", *args])
+            return code, out.getvalue(), err.getvalue()
+
+        self.assertEqual(run_cli("init")[0], 0)
+        self.assertEqual(run_cli("start", "Add a CSV export for report rows", "--paths", "src", "tests")[0], 0)
+        env = {BIN_ENV: " ".join(self.stand_in("cli-githits", lookups=[launcher_lookup(SEARCH)]))}
+        code, text, problem = run_cli("propose", "--claude-code", "--bare", "--max-calls", "1", "--githits",
+                                      "--githits-arm", "on", env=env)
+        self.assertEqual(code, 0, text + problem)
+        thread = (self.root / ".syberlabs" / "current").read_text().strip()
+        self.assertEqual(self.fake.requests[0]["headers"]["x-githits-session-id"], f"{thread}-on")
+        self.assertEqual(self.fake.requests[0]["headers"]["x-githits-agent"], "syberfactory/on")
+        code, text, _ = run_cli("metrics", "--json")
+        [item] = json.loads(text)["items"]
+        self.assertEqual(item["githits_lookups"]["value"], 1)
 
 
 class StreamParsing(unittest.TestCase):

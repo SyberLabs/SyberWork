@@ -8,6 +8,7 @@ syberlabs githits read pypi:requests@2.32.3 --path src/requests/api.py --start-l
 syberlabs githits list github:psf/requests --path "src/**" --recursive
 syberlabs githits grep "Retry(" --target pypi:urllib3@2.2.1 --literal --max-matches 10
 syberlabs githits search ... --json      # the filtered response and every count, as JSON
+syberlabs githits doctor                 # one cheap authenticated request: ok, auth, rate_limited, no_token or error
 ```
 
 `syberlabs/githits.py` is a standard-library client for five read-only operations of the GitHits public REST
@@ -17,9 +18,11 @@ API: `search` (`POST /v1/searches`), `example` (`POST /v1/examples/search`), `re
 the request, it keeps the response lean, and it keeps its own record of each call. It also gives the host a place
 to filter results before an agent sees them.
 
-This packet builds the client and its CLI. Nothing calls it yet. Wiring it into the Claude Code provider and the
-query guard is a later packet (`spec/GAPS.md` 59). No call to the real API was made while building it. Every test
-runs against a loopback fake server, and no token was available.
+`githits-client` built the client and its CLI; `githits-wiring` made it the GitHits route of the Claude Code
+provider: `syberlabs propose --claude-code --githits` runs it through a per-call launcher as the agent's only
+command, behind the query guard, and journals each of its records as a `lookup` (`docs/CLAUDE_CODE.md`, GitHits
+through the launcher). No call to the real API was made while building either. Every test runs against a loopback
+fake server, and no token was available.
 
 ## Exit codes
 
@@ -49,16 +52,21 @@ records.
 ## Contamination control
 
 GitHits indexes public code, and SyberLabs' own repositories are public. An agent working on SyberLabs code must
-not be shown SyberLabs code as if it were outside evidence. The client works in three layers. The exclusion list is
-`SyberLabs` unless `SYBERLABS_GITHITS_EXCLUDE` names others: a comma list of owners or `owner/repo`, matched
-case-insensitively. An empty value keeps the default; turning the control off takes code, not an environment
-variable.
+not be shown SyberLabs code as if it were outside evidence. For the pilot, contamination is resolved on SyberLabs'
+side: the work items are unpublished, both arms run locally on a pinned base, and this client is the backstop. An
+exclusion at GitHits' index is optional, not something the pilot relies on.
+
+The client works in three layers. The exclusion list is `SyberLabs` plus whatever `SYBERLABS_GITHITS_EXCLUDE` adds:
+a comma list of owners or `owner/repo`, matched case-insensitively. The variable only adds; it never removes
+`SyberLabs`, and an empty value keeps the default. `SYBERLABS_GITHITS_EXCLUDE_REPLACE=1` makes the variable's list
+replace the default; it exists for tests only, and the Claude Code provider never passes it to the launcher's client.
+Passing another list to `Client(exclude=...)` in code replaces the default too.
 
 | Layer | What it catches | What it does | Limit |
 |---|---|---|---|
 | (a) target | a search, read, list or grep target that names an excluded owner: `github:SyberLabs/x`, `https://github.com/SyberLabs/x`, `git@github.com:SyberLabs/x.git`, a bare `SyberLabs/x`, `npm:@syberlabs/x`, `pypi:syberlabs`, `syberlabs.github.io`, GitLab, Codeberg, raw and API hosts, URL-encoded forms | refuses with `excluded_target`; **no request is sent**; the refusal is recorded | a package whose name does not name the owner (for example a mirror under another name) passes; layer (b) sees its served repository afterwards |
 | (b) result identity | a search hit whose `locator.repo_url`, `source_url` or `docs_read_target` is under an excluded owner; a grep hit's `repo_url`, `page_url` or read target; a list whose served repository or `canonical_target` is excluded (every entry dropped) or an entry whose read or browse target is; a read whose served repository or documentation source is excluded | drops the result and counts it (`results_dropped`); the call is still `ok` | the request was sent and GitHits returned the content; this only keeps it from the agent |
-| (c) free text | an example's Markdown and any structured field, or a read body, that mentions an excluded owner on a code host (`github.com/<owner>/`, `<owner>.github.io` and the other hosts, as typed or URL-decoded) | drops the **whole** response: `contamination_blocked`, exit 2 | **detection, not prevention**. A generated example can blend code from an excluded repository without citing it, and nothing on this side can see that. A mention spelled in a form the patterns do not list (split across lines, zero-width characters, a link shortener) passes. Index-side exclusion of SyberLabs repositories is asked of GitHits. |
+| (c) free text | an example's Markdown and any structured field, or a read body, that mentions an excluded owner on a code host (`github.com/<owner>/`, `<owner>.github.io` and the other hosts, as typed or URL-decoded) | drops the **whole** response: `contamination_blocked`, exit 2 | **detection, not prevention**. A generated example can blend code from an excluded repository without citing it, and nothing on this side can see that. A mention spelled in a form the patterns do not list (split across lines, zero-width characters, a link shortener) passes. This is why the pilot resolves contamination on its own side (above); index-side exclusion at GitHits is optional. |
 
 ## License policy
 
@@ -70,8 +78,12 @@ at most that a notice be kept, which an Apache-2.0 project can do. It is an allo
 dropped: GPL, LGPL, AGPL, MPL, EPL, EUPL, CDDL, SSPL, `NOASSERTION`, a license the list does not name, and a
 missing license.
 
-An SPDX expression passes when one `OR` branch has every `AND` part on the list, ignoring an exception after
-`WITH`. So `MIT OR GPL-2.0-only` passes and `MIT AND GPL-2.0-only` does not.
+An SPDX expression is parsed as SPDX defines it (`githits.spdx_parse`): `WITH` binds tighter than `AND`, `AND`
+tighter than `OR`, parentheses group, and operators and ids are matched ignoring case. It passes when it can be
+satisfied with licenses on the list: an `AND` needs both sides, an `OR` either; the exception after `WITH` is
+checked for form and not judged. So `MIT OR GPL-2.0-only` and `(MIT AND GPL-3.0) OR Apache-2.0` pass, and
+`MIT AND GPL-2.0-only` and `GPL-3.0-only AND (MIT OR Apache-2.0)` do not. An expression that does not parse (an
+unbalanced parenthesis, a dangling operator, a stray character, more than 64 tokens) is not admitted.
 
 - **Server side, preferred where it exists.** Of the five operations, only `example` has a license parameter
   (`license_mode`: `strict`, `yolo`, `custom`). The client always sends `strict`. The OpenAPI document does not
@@ -137,6 +149,30 @@ which process that was.
   them to separate its arms. Invalid values are refused before any request.
 - A non-2xx answer raises `GitHitsError` with code `http_<status>`. Its message holds the problem's stable `code`
   and `title`, never `detail`. Errors are recorded with their HTTP status and request id.
+- The token is removed from server text **before** the text is cut to length (120 characters per problem field,
+  200 for a transport reason), so a token across the cut cannot leave its first characters behind; `X-Request-ID`
+  is scrubbed the same way before it is cut to 128 characters and reaches an exception, a record or `--json`.
+
+## Readiness: `syberlabs githits doctor`
+
+One cheap authenticated request, the lightest operation in the document: `GET /v1/languages?query=python&limit=1`
+(no body, no target, no repository content; at most one language name back). It prints one line, for example
+`githits doctor: ok (HTTP 200, request <id>, 212 ms, base https://api.githits.dev/v1, token set)`, or a JSON object
+with `--json`, and exits 0 only when the status is `ok`:
+
+| Status | When |
+|---|---|
+| `ok` | 200 and a JSON array |
+| `auth` | 401 or 403 (a missing, rejected or inactive credential, or terms not accepted); the problem's code is shown, for example `AUTHENTICATION_REQUIRED` or `TERMS_ACCEPTANCE_REQUIRED` |
+| `rate_limited` | 429, with `Retry-After` when sent |
+| `no_token` | `GITHITS_API_TOKEN` is not set; nothing is sent |
+| `error` | anything else: another status, a malformed body, a transport failure |
+
+The token is reported as `set` or `unset`, never shown. The operation sends no rate-limit headers in the spec, so
+`rate limit remaining` appears only if GitHits adds them. With records configured, the check is recorded like any
+call (`op: doctor`). Its operation is pinned apart from the five, in
+`tests/fixtures/githits_openapi_v1_languages.json` (15,285 bytes, the same closed-subset form from the same
+document), so the larger fixture stays byte-identical. This is what a first live canary runs before any lookup.
 
 ## The pinned contract
 
@@ -175,7 +211,8 @@ The same digest means the five operations are unchanged.
 | `GITHITS_API_TOKEN` | the bearer token (required for a call; a refused target needs none) |
 | `GITHITS_API_URL` | base URL, default `https://api.githits.dev/v1` |
 | `GITHITS_SESSION_ID`, `GITHITS_AGENT` | optional `X-GitHits-Session-ID` and `X-GitHits-Agent` |
-| `SYBERLABS_GITHITS_EXCLUDE` | excluded owners or `owner/repo`, comma list (default `SyberLabs`) |
+| `SYBERLABS_GITHITS_EXCLUDE` | owners or `owner/repo` to exclude besides `SyberLabs`, comma list (it only adds) |
+| `SYBERLABS_GITHITS_EXCLUDE_REPLACE` | `1`: the list above replaces `SyberLabs` (tests only) |
 | `SYBERLABS_GITHITS_LICENSES` | allowed SPDX ids, comma list, or `any` (default: the permissive list) |
 | `SYBERLABS_GITHITS_RECORD_DIR`, `SYBERLABS_GITHITS_RECORD_KEY` | where records go and their MAC key (both or neither) |
 
