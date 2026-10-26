@@ -173,6 +173,14 @@ class Journal:
         self._offsets[path] = offset + complete
         return records
 
+    def unread(self, path: Path) -> None:
+        """Forget how far ``path`` was read, so the next ``read_new`` returns it from its first byte.
+
+        A reader that refuses the records ``read_new`` returned calls this: the offset had already moved past
+        them, and the next read would otherwise start after the refused records and find nothing wrong."""
+        self._offsets.pop(path, None)
+        self._counts.pop(path.stem, None)
+
     def _write(self, path: Path, record: dict, *, create: bool = False) -> None:
         data = (canonical(record) + "\n").encode()
         if len(data) > MAX_LINE_BYTES:

@@ -146,7 +146,10 @@ class PositiveReconcileTwin(LostAcknowledgement):
             with original(request, *args, **kwargs) as response:
                 record = json.loads(response.read())
             change(record)
-            return io.BytesIO(json.dumps(record).encode())
+            # Keep the destination's HTTP status: reconcile reads a record only from a 200.
+            body = io.BytesIO(json.dumps(record).encode())
+            body.status = response.status
+            return body
 
         return patch.object(HTTP, "open", side_effect=open_)
 
