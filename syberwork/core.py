@@ -673,8 +673,8 @@ class Work:
         request = urllib.request.Request(target, headers=headers)
         try:
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
-                if response.status != 200:
-                    raise StatusNotAuthoritative(response.status)
+                if getattr(response, "status", None) != 200:
+                    raise StatusNotAuthoritative(getattr(response, "status", None))
                 raw = response.read(65537)
                 if len(raw) > 65536:
                     raise ValueError("status response exceeds 64 KB")

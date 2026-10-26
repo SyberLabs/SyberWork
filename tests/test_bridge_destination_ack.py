@@ -7,6 +7,7 @@ The status lookup proves a record only from a 200. A 202 Accepted, 203 Non-Autho
 destination and moves no funds. Positive controls show the same fixtures still reconcile and settle.
 """
 
+import io
 import json
 import tempfile
 import threading
@@ -14,9 +15,10 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from syberlabs.evidence import verified_reconciliation
-from syberwork.core import Rejected, Work, digest
+from syberwork.core import HTTP, Rejected, Work, digest
 
 # 2xx statuses that are not "here is the destination's record". 204 and 205 carry no body.
 NOT_AUTHORITATIVE = (201, 202, 203, 204, 205, 206, 207, 208, 226)
@@ -159,6 +161,14 @@ class StatusLookupAck(Cell):
         self.dest.lookup_code = 200
         self.assert_verified(case, key, self.work.reconcile(case, key, "manager", ["manager"]))
         self.assertEqual(self.dest.posts, 1)
+
+    def test_lookup_without_an_http_status_stays_pending(self):
+        case, key = self.unknown()
+        record = json.dumps(self.dest.records[key]).encode()
+        with patch.object(HTTP, "open", return_value=io.BytesIO(record)):
+            result = self.work.reconcile(case, key, "manager", ["manager"])
+        self.assertEqual((result["status"], result["reason"]), ("pending", "status_not_authoritative"))
+        self.assert_unresolved(case, key, lambda: self.propose(case))
 
     def test_positive_control_200_lookup_reconciles(self):
         case, key = self.unknown()
