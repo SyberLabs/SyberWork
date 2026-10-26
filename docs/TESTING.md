@@ -129,10 +129,12 @@ A shard that exits without `done` (killed, crashed, or a test that called
 `os._exit`, even with exit code 0) is `shard_crashed`, and the runner prints
 the last test its stream started and the tail of its log. A shard still
 running past its time budget is `shard_timeout`. The budget is
-`--shard-timeout SECONDS`, or by default three times the shard's planned
-seconds and at least 300 s; the runner prints it beside the plan. On the CI
-runners of 2026-10-26 the slowest shard took 1.9 times its plan (Windows,
-533 s against 286 s planned). The runner stops a timed-out shard with every
+`--shard-timeout SECONDS`, or by default five times the shard's planned
+seconds and at least 300 s; the runner prints it beside the plan. The budget
+is for a hung shard, not a slow one. On the Windows CI runners of 2026-10-26
+the slowest shard took 1.9 and then 2.25 times its plan (533 s against 286 s
+planned, then 646 s against 287 s), so three times would leave too little
+room. The runner stops a timed-out shard with every
 process it started. On Windows it runs `taskkill /T /F`. On POSIX it sends
 each process of the tree SIGSTOP until a `ps` listing finds nothing new, then
 SIGKILL, and the shards stay in the runner's session, so a host that ends

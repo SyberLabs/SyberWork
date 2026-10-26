@@ -37,7 +37,7 @@ Completeness, checked and never assumed:
   test discovered on BASE is discovered here too, unless the diff BASE..HEAD deletes or
   renames its file, removes its ``def``, or renames its class (``test_set_shrank``).
 
-A shard that runs past its time budget (``--shard-timeout``, or by default three times
+A shard that runs past its time budget (``--shard-timeout``, or by default five times
 its planned seconds and at least five minutes) is stopped with every process it started,
 and the run fails with ``shard_timeout``, naming the last test the shard started.
 Discovery has the same budget (the given one, or five minutes).
@@ -82,9 +82,10 @@ WORK_PREFIX = "syberlabs-shards-"  # the logs; the shards' scratch homes live in
 SCRATCH_PREFIX = "syberlabs-shard-scratch-"
 BASE_ENV = "SYBERLABS_BASE"
 # The default time budget of a shard: this many times its planned seconds, and never less than the floor.
-# The floor is also the default budget of a discovery child. On the CI runners of 2026-10-26 the slowest
-# shard took 1.9 times its plan (Windows, 533 s against 286 s planned).
-SHARD_TIMEOUT_FACTOR = 3.0
+# The floor is also the default budget of a discovery child. The budget is for a hung shard, not a slow
+# one: on the Windows CI runners of 2026-10-26 the slowest shard took 1.9 and then 2.25 times its plan
+# (533 s against 286 s, 646 s against 287 s), so three times would have left too little room.
+SHARD_TIMEOUT_FACTOR = 5.0
 SHARD_TIMEOUT_FLOOR = 300.0
 MAX_CHANNEL_BYTES = 64 * 1024 * 1024
 # The TestCase methods that start a test and report it. A discovered test whose class (or instance)
