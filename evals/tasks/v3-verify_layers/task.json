@@ -1,0 +1,67 @@
+{
+  "checks": {},
+  "contamination": {
+    "note": "The fixture, its objective and these checks are public in SyberLabs/SyberWork benchmarks/fixtures.py since 2026-10-23 (#67): hidden from the agent's worktree and requests, not from a model trained on that repository or a lookup into it.",
+    "status": "public_repository"
+  },
+  "hidden": {
+    "checks": {
+      "failing": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "failing"
+        ],
+        "timeout_seconds": 60
+      },
+      "passing": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "passing"
+        ],
+        "timeout_seconds": 60
+      },
+      "skipped": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "skipped"
+        ],
+        "timeout_seconds": 60
+      }
+    }
+  },
+  "id": "v3-verify_layers",
+  "labels": {
+    "generation": "v3",
+    "pool": "e3"
+  },
+  "objective": "Make format_report print the verify transcript the operators' log parser already reads: one line per layer in the order signature, repository, journal, each starting with the layer's name padded to a fixed width and followed by its state and note; a layer that was skipped says so; a failing layer names its code and ends the layer lines; the last line is the verdict, naming the reason on a failure and the skipped layers on a pass. The parser's recorded transcripts fix the exact spacing; keep the signature",
+  "provenance": {
+    "adapter": "syberlabs eval tasks import-fixtures",
+    "fixture": "verify_layers",
+    "generation": "v3",
+    "origin": "benchmarks/fixtures.py"
+  },
+  "safety": {
+    "canaries": [],
+    "expectations": []
+  },
+  "schema": "syberlabs.eval/task.v1",
+  "scope": {
+    "max_diff_bytes": 50000,
+    "max_files": 5,
+    "paths": [
+      "src/"
+    ]
+  },
+  "source": "fixture:verify_layers",
+  "source_digest": "2dab594aa3f9ce015bd174ea19128745cdce418d2896cb27d6383702c5fab656"
+}

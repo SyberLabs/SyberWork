@@ -20,6 +20,7 @@
     syberlabs experiment label --name githits-pilot --item ITEM-14 --arm on --tag needs_lookup
     syberlabs experiment report --name githits-pilot [--json|--csv|--markdown]   # the arms compared, from the journal
     syberlabs githits search "retry with backoff" --target pypi:urllib3@2.2.1   # GitHits API, SyberLabs excluded
+    syberlabs eval run e5-single-vs-repair --dry  # a registered evaluation's order and progress (docs/EVAL.md)
 
 The current thread is remembered in ``.syberlabs/current``. Every command
 reads the journal fresh, so a thread can be resumed from any terminal.
@@ -41,6 +42,13 @@ from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.gitspace import Repo
 from syberlabs.providers import CommandProvider, PatchProvider, RepairProvider, split_command
+
+try:
+    from syberlabs.eval import cli as eval_cli
+except ModuleNotFoundError as exc:  # the wheel ships the syberlabs package only; evals run from a checkout
+    if exc.name not in ("syberlabs.eval", "syberlabs.eval.cli"):
+        raise
+    eval_cli = None
 
 
 def _kit(args) -> Kit:
@@ -314,11 +322,15 @@ def main(argv: list[str] | None = None) -> int:
     compare.add_argument("a")
     compare.add_argument("b")
     githits.add_parser(commands)
+    if eval_cli is not None:
+        eval_cli.add_parser(commands)
     args = parser.parse_args(argv)
 
     try:
         if args.command == "githits":
             return githits.run(args)  # no Kit: a lookup needs no repository or journal
+        if args.command == "eval":
+            return eval_cli.run(args)  # no Kit here: each run builds its own, in its own repository
         if args.command == "verify":
             return _verify(args)  # no Kit: works outside any repository and has none of Kit.local's side effects
         if args.command == "metrics" and args.exports:

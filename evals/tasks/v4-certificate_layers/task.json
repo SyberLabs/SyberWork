@@ -1,0 +1,117 @@
+{
+  "checks": {},
+  "contamination": {
+    "note": "The fixture, its objective and these checks are public in SyberLabs/SyberWork benchmarks/fixtures.py since 2026-10-23 (#75): hidden from the agent's worktree and requests, not from a model trained on that repository or a lookup into it.",
+    "status": "public_repository"
+  },
+  "hidden": {
+    "checks": {
+      "envelope_fields": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "envelope_fields"
+        ],
+        "timeout_seconds": 60
+      },
+      "identity": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "identity"
+        ],
+        "timeout_seconds": 60
+      },
+      "layer_order": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "layer_order"
+        ],
+        "timeout_seconds": 60
+      },
+      "pae": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "pae"
+        ],
+        "timeout_seconds": 60
+      },
+      "statement_shape": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "statement_shape"
+        ],
+        "timeout_seconds": 60
+      },
+      "subject": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "subject"
+        ],
+        "timeout_seconds": 60
+      },
+      "target_ref": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "target_ref"
+        ],
+        "timeout_seconds": 60
+      },
+      "unwrap_codes": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "unwrap_codes"
+        ],
+        "timeout_seconds": 60
+      }
+    }
+  },
+  "id": "v4-certificate_layers",
+  "labels": {
+    "generation": "v4",
+    "pool": "e3"
+  },
+  "objective": "The toy certificate pipeline under src does not interoperate with the DSSE and in-toto tools the receipts are checked with: a generic DSSE verifier rejects every envelope src/envelope.py signs, because neither its pre-authentication encoding nor its field encoding is the standard's; what src/statement.py wraps is not an in-toto Statement v1, its subject is not the certified ref with its commit and tree, and unwrap answers every defect with one code instead of saying which of the statement's type, predicate type or subject is wrong; src/payload.py's identity block does not carry the issuer fields the certificate specification names and puts the signing seed's value where the verifier expects the variable's name, and its target ref is not the branch a thread's acceptance moves; and src/layers.py runs the three layers in the wrong order, does not stop at the first failure, and records a skipped layer as a word. Make each module behave as the specification does; keep every signature",
+  "provenance": {
+    "adapter": "syberlabs eval tasks import-fixtures",
+    "fixture": "certificate_layers",
+    "generation": "v4",
+    "origin": "benchmarks/fixtures.py"
+  },
+  "safety": {
+    "canaries": [],
+    "expectations": []
+  },
+  "schema": "syberlabs.eval/task.v1",
+  "scope": {
+    "max_diff_bytes": 50000,
+    "max_files": 5,
+    "paths": [
+      "src/"
+    ]
+  },
+  "source": "fixture:certificate_layers",
+  "source_digest": "708db076deac47bd8bc073855e8ab7ddc832b8aca338fef7d3d51c902911d149"
+}

@@ -1,0 +1,133 @@
+{
+  "arms": [
+    {
+      "adapter": [
+        "{python}",
+        "{harness}/adapters/anthropic_adapter.py"
+      ],
+      "effort": "medium",
+      "kind": "single",
+      "max_calls": 1,
+      "model": "claude-sonnet-5-5",
+      "name": "single",
+      "notes": "providers.CommandProvider: one call under the search protocol, no feedback.",
+      "timeout_seconds": 600
+    },
+    {
+      "adapter": [
+        "{python}",
+        "{harness}/adapters/anthropic_adapter.py"
+      ],
+      "effort": "medium",
+      "kind": "repair",
+      "max_calls": 6,
+      "model": "claude-sonnet-5-5",
+      "name": "repair",
+      "notes": "providers.RepairProvider: up to K = 6 calls, each after the first carrying the host's check results and the failed candidate's files.",
+      "timeout_seconds": 600
+    }
+  ],
+  "budget": {
+    "calls": 6,
+    "dollars": 1.0,
+    "prices": {
+      "claude-sonnet-5-5": {
+        "cache_creation_per_million": 2.5,
+        "cache_read_per_million": 0.2,
+        "input_per_million": 2.0,
+        "output_per_million": 10.0
+      }
+    },
+    "seconds": 1800,
+    "strict": true,
+    "total_dollars": 10.0
+  },
+  "decision_rule": {
+    "aggregation": "mean_over_seeds",
+    "baseline": "single",
+    "comparison": "paired_difference",
+    "metric": "hidden_pass_rate",
+    "operator": ">=",
+    "test": "sign",
+    "threshold": 0.0,
+    "treatment": "repair",
+    "unit": "task"
+  },
+  "exclusions": [
+    {
+      "id": "harness_error",
+      "rule": "A run that raised in the harness leaves no bundle and is run again; it is not a result. A run that left a bundle is never run again or dropped."
+    },
+    {
+      "id": "provider_error",
+      "rule": "A run whose provider failed (search_finished.error provider_*) is a 0 in the primary metric and is counted per arm; it is not excluded."
+    },
+    {
+      "id": "incomplete_task",
+      "rule": "If the eval stops (eval_budget_exhausted, eval_spend_unknown) a task without a bundle for every arm and seed is left out of the paired comparison and named in the report."
+    }
+  ],
+  "hypothesis": "Framework validation, not a new claim. On the eight v3 and v4 fixture tasks, with Claude Sonnet 5.5 at medium effort and K = 6 calls, the repair arm's per-task pass rate on the hidden checks is at least the single arm's (E3 v3 and v4, 2026-10-22: repair closed every fixture in one or two calls). A result against E3 is a finding about the instrument before it is one about the arms.",
+  "id": "e5-single-vs-repair",
+  "notes": "Pre-registered by the eval-core packet (2026-10-26); not run there. Running it spends money (about $10 at most): syberlabs eval preflight e5-single-vs-repair, then syberlabs eval run e5-single-vs-repair with ANTHROPIC_API_KEY and SYBERLABS_CERTIFICATE_SEED set.",
+  "order_seed": 20261026,
+  "primary_metric": {
+    "definition": "Per task and arm, the mean over seeds of a run's pass: 1 when the run accepted a candidate (admission allowed it and the thread's branch moved) and that candidate passed every hidden.* check on its exact tree, else 0. A run with no candidate, a candidate not acceptable or refused, or a provider error is 0.",
+    "name": "hidden_pass_rate"
+  },
+  "question": "Does the evaluation framework, running every attempt through the real Build Thread with host-held hidden acceptance checks, reproduce the E3 finding that the repair loop solves the v3 and v4 fixtures at least as often as one model patch?",
+  "reporting": [
+    "Every run's bundle digest, outcome and order index, whatever the result.",
+    "The primary metric per task and arm, the paired per-task differences (repair minus single), their mean over tasks against the threshold, and the decision as the rule gives it, applied mechanically; the sign test over tasks beside it.",
+    "The secondary metrics descriptively, never as the decision.",
+    "Provider errors, refused proposals, exclusions applied, and every planned run not completed, by count and by name.",
+    "Host-observed dollars in total against the $10.00 cap, and per arm.",
+    "Model, adapter, harness and Python versions from the bundles.",
+    "The caveats: the Build Thread worktree is not a sandbox (research register N4); the fixtures and their checks are public in this repository; this eval validates the instrument, whose E3 answer is already known."
+  ],
+  "schema": "syberlabs.eval/spec.v1",
+  "secondary_metrics": [
+    {
+      "definition": "Per run, the fraction of the task's hidden checks the chosen candidate passed; partial, and labelled partial.",
+      "name": "hidden_parts_passed"
+    },
+    {
+      "definition": "Model calls the arm made in the run (the provider's count; K at most).",
+      "name": "calls"
+    },
+    {
+      "definition": "Host-observed dollars per run (search_finished.spend), priced by this spec's table; never a bill.",
+      "name": "host_dollars"
+    },
+    {
+      "definition": "Host evaluations (candidate_evaluated) per run.",
+      "name": "evaluations"
+    },
+    {
+      "definition": "proposal_refused records per run, by reason.",
+      "name": "refused_proposals"
+    },
+    {
+      "definition": "The eval-score packet's journal safety gate per run: one violation fails the run whatever its pass; reported beside the primary metric, never blended into it.",
+      "name": "safety_gate"
+    }
+  ],
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "tasks": {
+    "ids": [
+      "v3-gaps_renumber",
+      "v3-journal_chain",
+      "v3-worktree_order",
+      "v3-verify_layers",
+      "v4-stack_landing",
+      "v4-certificate_layers",
+      "v4-cell_metrics",
+      "v4-thread_stations"
+    ],
+    "set_digest": "13589c4ff8e07e9666c72f3922d743bf076b9e225024f1296864ecc31642cb17"
+  }
+}
