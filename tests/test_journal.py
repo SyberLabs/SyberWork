@@ -2,11 +2,13 @@
 
 import errno
 import importlib.util
+import itertools
 import json
 import os
 import tempfile
 import threading
 import types
+import uuid
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, call, patch
@@ -296,6 +298,109 @@ class Executors(unittest.TestCase):
         self.assertEqual(self.session.reconcile(self.case, pid, "engineer", ["engineer"])["status"], "not_applied")
         self.assertEqual(self.session.propose(self.case, "record_checks", {"version": "1.4.0"}, "engineer",
                                               ["engineer"])["decision"]["status"], "allowed")
+
+
+
+def reference_read_new(self, path):
+    """``Journal.read_new`` as it was before perf-packet-a, which opened the file on every call."""
+    offset = self._offsets.get(path, 0)
+    if not path.exists():
+        return []
+    with open(path, "r+b") as handle:
+        handle.seek(offset)
+        data = handle.read()
+        complete = data.rfind(b"\n") + 1
+        if complete < len(data):
+            handle.truncate(offset + complete)
+            handle.flush()
+            os.fsync(handle.fileno())
+    records = []
+    for line in data[:complete].splitlines():
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            raise Rejected("journal_corrupt", f"{path.name}: unreadable record after byte {offset}") from None
+    self._offsets[path] = offset + complete
+    return records
+
+
+class StatBeforeOpen(unittest.TestCase):
+    """perf-packet-a (efficiency audit 2026-10-26, item 2): ``read_new`` does not open a file whose size equals the
+    offset it has read. Every guarded operation reads the registry and each loaded thread, and on Windows an open of
+    a file this process has just written waits on the file-system filter (6.2 ms per append without fsync)."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name)
+
+    def scenario(self, home, reader):
+        """Two sessions interleave on one home, a writer dies mid-record, a third session repairs it and the first
+        writes again. Returns every journal byte, every read, and what each session shows."""
+        reads, journals = [], []
+        ids = itertools.count(1)
+        ticks = itertools.count(1_800_000_000)
+
+        def logged(journal, path):
+            records = reader(journal, path)
+            reads.append((path.name, records))
+            return records
+
+        def session():
+            journal = Journal(home)
+            journals.append(journal)
+            return Session(journal=journal, clock=lambda: float(next(ticks)))
+
+        with patch.object(Journal, "read_new", logged), patch("syberlabs.session.uuid.uuid4",
+                                                              lambda: uuid.UUID(int=next(ids))):
+            first = session()
+            case = release_gate(first)
+            second = session()
+            second.observe(case, "note", "from the second process", "ops", "v1", "engineer")
+            first.observe(case, "note", "from the first process", "ops", "v2", "engineer")
+            with open(home / "threads" / f"{case}.jsonl", "ab") as handle:
+                handle.write(b'{"t":"event","event":{"case_id"')
+            shown = [shape(session(), case), shape(first, case), shape(second, case)]
+            first.observe(case, "note", "after the repair", "ops", "v3", "engineer")
+            shown.append(shape(second, case))
+        for journal in journals:
+            journal.close()
+        files = {p.relative_to(home).as_posix(): p.read_bytes() for p in sorted(home.rglob("*.jsonl"))}
+        return files, reads, shown
+
+    def test_every_byte_and_every_read_equal_the_reader_that_always_opened(self):
+        new = Journal.read_new
+        expected = self.scenario(self.root / "reference", reference_read_new)
+        self.assertEqual(self.scenario(self.root / "stat", new), expected)
+        files, reads, shown = expected
+        self.assertEqual(len(files), 2, "the registry and one thread")
+        self.assertTrue(any(records == [] for _name, records in reads), "unchanged files were read")
+        self.assertEqual(len({repr(s) for s in shown[:3]}), 1)
+
+    def test_an_unchanged_file_is_not_opened_and_a_grown_one_is_read_once(self):
+        journal = Journal(self.root / "journal")
+        self.addCleanup(journal.close)
+        session = Session(journal=journal)
+        case = release_gate(session)
+        real_open, opened = open, []
+
+        def spy(file, mode="r", *args, **kwargs):
+            opened.append((Path(file).name, mode))
+            return real_open(file, mode, *args, **kwargs)
+
+        with patch("builtins.open", spy):
+            before = session.inspect(case)["events"]
+            session.inspect(case)
+        self.assertEqual([item for item in opened if item[1] == "r+b"], [], "no new bytes: nothing is re-opened")
+        other = Journal(self.root / "journal")
+        self.addCleanup(other.close)
+        Session(journal=other).observe(case, "note", "from another process", "ops", "v1", "engineer")
+        opened.clear()
+        with patch("builtins.open", spy):
+            after = session.inspect(case)["events"]
+        self.assertEqual([item for item in opened if item[1] == "r+b"], [(f"{case}.jsonl", "r+b")])
+        self.assertEqual(after[:-1], before)
+        self.assertEqual(after[-1]["body"]["value"], "from another process")
 
 
 if __name__ == "__main__":
