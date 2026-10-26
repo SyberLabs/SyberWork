@@ -25,8 +25,12 @@ will (``bash_arguments``): words of plain characters and single- or double-quote
 
 - ``not_launcher``: any other command, or a command with no launcher configured;
 - ``shell_syntax``: a control operator, a redirection, an expansion or a substitution anywhere after the launcher
-  (``; & | < > $ ` \\ ( ) { } !``, any control character such as a newline), a glob, tilde or comment character
-  outside quotes, an unterminated quote, or ``run_in_background``.
+  (``; & | < > $ ` \\ ( ) { } !``, any control character such as a newline), a glob, tilde, caret or comment
+  character outside quotes, an unquoted word that a shell reads differently (one that starts with ``=``, which zsh's
+  default EQUALS option expands to a command's path, with ``NAME=``, which bash's ``set -k`` makes an assignment into
+  the launcher's environment, or with ``@``, which PowerShell splats), an unterminated quote, ``run_in_background``,
+  or a ``timeout`` shorter than the Bash tool's default (``MIN_BASH_TIMEOUT_MS``: Claude Code would end the launcher
+  after its request left and before its client writes the record).
 
 The arguments that pass the shape check are the outbound text: each one, and all of them joined by spaces, are
 judged by the rules above, so a launcher query carrying a credential, an email, code or a tree line is blocked as a
@@ -117,6 +121,10 @@ KEY_ENV = "SYBERLABS_GUARD_KEY"
 LAUNCHER_ENV = "SYBERLABS_GUARD_LAUNCHER"  # the GitHits launcher's absolute path: the one Bash command allowed
 POLICY_DIGEST_ENV, TREE_DIGEST_ENV = "SYBERLABS_GUARD_POLICY_DIGEST", "SYBERLABS_GUARD_TREE_DIGEST"
 BLOCK_EXIT = 2  # Claude Code: a PreToolUse hook that exits 2 blocks the call; its stderr is the reason the model sees
+# Claude Code's Bash tool ends a command after 2 minutes unless its ``timeout`` (milliseconds) says otherwise. A
+# launcher call may lengthen that, never shorten it: an early end could come after the lookup left and before the
+# client's record is written.
+MIN_BASH_TIMEOUT_MS = 120000
 
 _EXTRA_SECRET = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/=-]{20,}")
 _URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]*(:[^\s/@]*)?@")
@@ -144,13 +152,20 @@ WHY = {
     "tree_line": "it contains a line copied from this repository",
     NOT_LAUNCHER: "the only command allowed here is the GitHits launcher named in your instructions",
     SHELL_SYNTAX: "the launcher's arguments may hold only plain words and quoted strings, with no shell operators, "
-                  "redirections, substitutions or expansions",
+                  "redirections, substitutions or expansions (quote a word that starts with =, @ or NAME=, or "
+                  "holds ^), and the call may not run in the background or set a timeout under two minutes",
     ERROR: "the guard could not read the call or its policy",
 }
 # What may follow the launcher. Anywhere: none of these (control operators, redirections, expansions, substitution,
-# escapes, grouping, history). Outside quotes: only these word characters (no glob, tilde, comment or brace).
+# escapes, grouping, history). Outside quotes: only these word characters (no glob, tilde, comment or brace; no caret,
+# a glob operator under zsh's EXTENDED_GLOB).
 _SHELL_FORBIDDEN = frozenset(";&|<>$`\\(){}!")
-_PLAIN = re.compile(r"[A-Za-z0-9_./:@=,+%^-]")
+_PLAIN = re.compile(r"[A-Za-z0-9_./:@=,+%-]")
+# The unquoted start of a word that a shell reads as something else: ``=cmd`` (zsh's EQUALS, on by default, expands
+# it to the command's path), ``NAME=...`` (under bash's ``set -k`` an assignment anywhere on the line goes into the
+# command's environment, so ``GITHITS_API_URL=...`` would redirect the client and its token) and ``@name``
+# (PowerShell, judged by this rule under the operator's override, splats the variable ``$name`` into arguments).
+_READ_DIFFERENTLY = re.compile(r"[=@]|[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def query_text(tool_input) -> str:
@@ -205,7 +220,8 @@ def bash_arguments(command, launcher: str | None) -> tuple[str, list[str]]:
     ``not_launcher`` / ``shell_syntax`` and none. The command must be ``launcher`` exactly, alone or followed by a
     space; what follows may hold plain words (``_PLAIN``), ``'single'`` and ``"double"`` quoted strings and spaces,
     and none of ``_SHELL_FORBIDDEN`` or a control character anywhere. A word is the concatenation of its adjacent
-    plain and quoted parts, as the shell reads it."""
+    plain and quoted parts, as the shell reads it; a word whose unquoted start a shell option reads differently
+    (``_READ_DIFFERENTLY``: ``=cmd``, ``NAME=value``) is refused, and passes quoted."""
     if not isinstance(command, str) or not launcher or not (command == launcher or command.startswith(launcher + " ")):
         return NOT_LAUNCHER, []
     rest = command[len(launcher):]
@@ -213,13 +229,17 @@ def bash_arguments(command, launcher: str | None) -> tuple[str, list[str]]:
         return SHELL_SYNTAX, []
     found: list[str] = []
     word: list[str] | None = None
+    lead = ""            # the word's unquoted start, up to its first quote
+    quoted = False
     index = 0
     while index < len(rest):
         ch = rest[index]
         if ch == " ":
             if word is not None:
+                if _READ_DIFFERENTLY.match(lead):
+                    return SHELL_SYNTAX, []
                 found.append("".join(word))
-                word = None
+                word, lead, quoted = None, "", False
             index += 1
             continue
         word = [] if word is None else word
@@ -228,13 +248,17 @@ def bash_arguments(command, launcher: str | None) -> tuple[str, list[str]]:
             if end < 0:
                 return SHELL_SYNTAX, []
             word.append(rest[index + 1:end])
+            quoted = True
             index = end + 1
             continue
         if not _PLAIN.fullmatch(ch):
             return SHELL_SYNTAX, []
         word.append(ch)
+        lead += "" if quoted else ch
         index += 1
     if word is not None:
+        if _READ_DIFFERENTLY.match(lead):
+            return SHELL_SYNTAX, []
         found.append("".join(word))
     return PASS, found
 
@@ -329,6 +353,10 @@ def decide(call: dict, *, max_lines: int = DEFAULT_MAX_LINES, max_chars: int = D
             return NOT_LAUNCHER
         if tool_input.get("run_in_background"):
             return SHELL_SYNTAX  # a background run would outlive the call whose record the host reads
+        timeout = tool_input.get("timeout")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                    or not timeout >= MIN_BASH_TIMEOUT_MS):
+            return SHELL_SYNTAX  # ended early, the launcher's lookup could leave with no record written
         rule, arguments = bash_arguments(tool_input.get("command"), launcher)
         if rule != PASS:
             return rule
