@@ -143,6 +143,50 @@ def verify(public: bytes, message: bytes, signature: bytes) -> bool:
     return _mul(_B, response) == commitment + _mul(point, challenge)
 
 
+KEY_PROBLEMS = ("not_32_bytes", "not_a_point", "small_order", "mixed_order")
+
+
+def key_problem(public: object) -> str | None:
+    """Why ``public`` is not a key only its seed's holder can sign under, or None when it is one.
+
+    ``verify`` takes any 32 bytes, as RFC 8032 does. Under the identity point (``01 00 … 00``) the signature
+    ``R = B, s = 1`` verifies every message; under another point of small order, ``R = B + j·A`` for one of at most
+    eight ``j`` does. Whoever chooses such a key can sign without a seed, so a caller that takes a public key from
+    outside its process checks it here first. A key ``public_from_seed`` derives is a point of the prime-order subgroup: it decodes,
+    ``8·A`` is not the identity, and ``L·A`` is. The answer is one of ``KEY_PROBLEMS``, and stays that word:
+
+    - ``not_32_bytes``: not a ``bytes`` of length 32;
+    - ``not_a_point``: no curve point has this encoding, or it is not the canonical one (``y`` at or above ``p``,
+      or ``x = 0`` with the sign bit set);
+    - ``small_order``: ``8·A`` is the identity, the identity included;
+    - ``mixed_order``: a prime-order point plus a small-order one; no seed derives it.
+    """
+    if not isinstance(public, bytes) or len(public) != 32:
+        return "not_32_bytes"
+    return _point_problem(public)
+
+
+@functools.lru_cache(maxsize=32)
+def _point_problem(public: bytes) -> str | None:
+    """``key_problem`` past the length, kept for the 32 most recent keys: ``L·A`` costs about as much as a third of a
+    ``verify``, and a reader checks the same configured key on every open."""
+    try:
+        point = _decode(public)
+    except ValueError:
+        return "not_a_point"
+    identity = _Point(0, 1)
+    if _mul(point, 8) == identity:
+        return "small_order"
+    if _mul(point, _L) != identity:
+        return "mixed_order"
+    return None
+
+
+def usable_key(public: object) -> bool:
+    """Whether ``public`` is a prime-order Ed25519 point: ``key_problem`` has nothing to say about it."""
+    return key_problem(public) is None
+
+
 def generate() -> tuple[bytes, bytes]:
     """Return ``(seed, public_key)``. The seed is the private key."""
     seed = os.urandom(32)
