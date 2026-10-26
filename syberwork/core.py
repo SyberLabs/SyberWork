@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
+from syberlabs.attest_reconcile_map import attest_artifact
 from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
 from syberlabs.clock import stamp
@@ -749,8 +750,11 @@ class Work:
                     and record.get("request_digest") == digest(proposal["args"])
                     and isinstance(record.get("external_id"), str) and record["external_id"]):
                 matched = True
+            # A matching record that is an Attest artifact is an observation, not the destination's record (G6).
+            if matched and attest_artifact(record):
+                status, reason = "unverified", "attest_artifact_not_proof"
             # A destination that labels its own matching record simulated or sandbox has not reported a live effect.
-            if matched and simulation_labeled(record):
+            elif matched and simulation_labeled(record):
                 status, reason = "unverified", "destination_record_simulated"
             elif matched:
                 status, reason = "verified", "destination_record_matched"
