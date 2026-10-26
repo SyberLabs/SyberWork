@@ -70,6 +70,14 @@ Open `http://127.0.0.1:8766/`. Save the credentials printed by `init` somewhere 
 
 The **Contract & connector studio** accepts immutable contract and policy JSON documents. The compiler produces a dependency-ordered known path when one is not authored, plus inspectable action gates, acceptance queries, and an input form schema. Publish a higher version, then use **Amendment replay** to compare decisions against the recorded history. Replay makes no model calls, destination writes, or live source reads.
 
+## Attest ticket dispatch
+
+`examples/attest_dispatch.py` reads an `attest.ticket/v0` JSON document from stdin and prints only a Git-format unified diff. Its default configuration, `examples/fixtures/workers.example.json`, selects the OpenAI Responses API worker (`gpt-5-mini`); provide `OPENAI_API_KEY` or `SYBERWORK_OPENAI_API_KEY`. OpenAI worker entries may also set `service_tier` and `reasoning: {"effort":"medium"}`; these options are passed through to the Responses API. The worker returns structured complete file contents, and SyberWork generates the diff locally. For CI or development without a key, explicitly opt into the command worker with `--worker command`; the included command fixture appends a blank line as a protocol demonstration and does not implement the ticket's acceptance criteria, so replace it with your harness for useful changes. The accepted ticket and its observation are recorded on stderr in the receipt bridge's unverified observation shape; no SyberWork database is modified by this example.
+
+```sh
+ATTEST_WORKER_CMD="python <abs path>/examples/attest_dispatch.py" attest prove demo/spec.md --app demo/app --loop
+```
+
 ## External planners
 
 To run a planner, set `SYBERWORK_PLANNER_URL` to an HTTPS or loopback endpoint and optionally set `SYBERWORK_PLANNER_TOKEN`. Connect with the `planner` credential and click **Ask configured planner**, or POST to `/api/cases/{id}/suggest`. The endpoint receives JSON containing `objective`, `allowed_actions`, `contract`, `events`, and `acceptance`. It must return JSON shaped like:

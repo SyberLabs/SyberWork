@@ -1,0 +1,16 @@
+{
+  "default": "openai",
+  "workers": {
+    "command": {
+      "type": "command",
+      "cmd": [
+        "{python}",
+        "{config_dir}/command_worker_example.py"
+      ]
+    },
+    "openai": {
+      "type": "openai",
+      "model": "gpt-5-mini"
+    }
+  }
+}
