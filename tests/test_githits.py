@@ -21,6 +21,8 @@ import json
 import os
 import re
 import secrets
+import subprocess
+import sys
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1143,3 +1145,110 @@ class LauncherEntry(FakeCase):
         code, _, _ = run_cli(self.env, "githits", "example", "retry", "--license-mode", "yolo")
         self.assertEqual(code, 0, "the operator's own CLI keeps the option")
         self.assertEqual(json.loads(self.fake.requests[-1]["body"])["license_mode"], "yolo")
+
+
+# Outside cp1252: two box-drawing characters (U+2500) and an emoji (U+1F680). Written as escapes: the file stays ASCII.
+WIDE_TITLE = "box \u2500\u2500 rocket \U0001F680"
+ENTRY = ROOT / "syberlabs" / "githits_cli_entry.py"
+
+
+class _BrokenStream(io.StringIO):
+    """A stdout whose every write fails with ``error``: a closed pipe, a stream gone away, an unencodable character."""
+
+    def __init__(self, error: BaseException):
+        super().__init__()
+        self.error = error
+
+    def write(self, text):
+        raise self.error
+
+
+class LauncherOutput(FakeCase):
+    """launcher-unicode-and-docs, item 1 (#135's verification): the launcher's entry ran ``githits.run`` without
+    ``cli.main``'s unicode reconfiguration, so under ``-I`` on Windows (a piped stdout is cp1252) a result holding a
+    character outside cp1252 raised ``UnicodeEncodeError`` after the client had written an ``ok`` record: the host
+    journaled an ok lookup while the model read a traceback. Now the entry reconfigures first, the client writes with
+    unencodable characters replaced, and it delivers the output before the record, so a failed print is an error."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake.serve("/v1/searches", search_response([search_hit(WIDE_TITLE, "https://github.com/psf/requests")]))
+
+    def entry_subprocess(self, isolated: bool, ioencoding):
+        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHON", "GITHITS_", "SYBERLABS_"))}
+        env.update(self.env)
+        if ioencoding is not None:
+            env["PYTHONIOENCODING"] = ioencoding
+        argv = [sys.executable, *(["-I"] if isolated else []), str(ENTRY), "search", "q", "--target", "pypi:requests"]
+        with TemporaryDirectory() as cwd:  # no checkout in the current directory
+            return subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, timeout=120)
+
+    def test_a_result_outside_cp1252_prints_through_the_entry_on_a_piped_stdout_and_is_recorded_ok_once(self):
+        # -I as the launcher runs it (PYTHONIOENCODING is then ignored: cp1252 on Windows, the locale's elsewhere);
+        # and without -I, PYTHONIOENCODING=cp1252 forces the strict cp1252 pipe on every platform.
+        for isolated, ioencoding in ((True, None), (True, "cp1252"), (False, "cp1252")):
+            with self.subTest(isolated=isolated, PYTHONIOENCODING=ioencoding):
+                before = len(self.records().records)
+                done = self.entry_subprocess(isolated, ioencoding)
+                self.assertEqual(done.returncode, 0, done.stderr.decode("utf-8", "replace"))
+                self.assertEqual(done.stderr, b"", "no traceback")
+                try:
+                    out = done.stdout.decode("utf-8")
+                except UnicodeDecodeError:
+                    out = done.stdout.decode("cp1252")
+                lines = out.splitlines()
+                self.assertEqual(lines[0], "search: 1 results")
+                self.assertIn(" rocket ", lines[1])
+                if not isolated:
+                    self.assertEqual(done.stdout.decode("ascii").splitlines()[1],
+                                     "1. [0.88] github.com/psf/requests src/box ?? rocket ?.py:10-20 box ?? rocket ?",
+                                     "cp1252 cannot hold them: each becomes ?")
+                records = self.records().records
+                self.assertEqual(len(records), before + 1, "one record per lookup")
+                self.assertEqual((records[-1]["op"], records[-1]["status"]), ("search", "ok"))
+
+    def test_the_entry_runs_the_clis_unicode_helper_before_any_output(self):
+        """The same helper ``cli.main`` runs (not a copy), and before the parser or the client prints a thing."""
+        for argv, expected in ((["search", "q", "--target", "pypi:requests"], 0), (["doctor"], 2), (["--help"], 2)):
+            with self.subTest(argv=argv):
+                order = []
+                with mock.patch.object(cli, "survive_unicode", side_effect=lambda: order.append("survive")), \
+                        mock.patch.object(githits, "run", side_effect=lambda args: order.append("run") or 0), \
+                        mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(sys, "stderr", io.StringIO()):
+                    self.assertEqual(githits_cli_entry.main(argv), expected)
+                    printed = sys.stdout.getvalue() + sys.stderr.getvalue()
+                self.assertEqual(order, ["survive", "run"] if expected == 0 else ["survive"])
+                self.assertEqual(printed == "", expected == 0)
+
+    def test_the_client_writes_a_strict_cp1252_stream_with_unencodable_characters_replaced(self):
+        out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict", newline="\n")
+        args = githits.launcher_parser().parse_args(["search", "q", "--target", "pypi:requests"])
+        code = githits.run(args, environ=dict(self.env), stdout=out, stderr=io.StringIO())
+        self.assertEqual(code, 0)
+        self.assertIn(b"box ?? rocket ?", out.buffer.getvalue())
+        [record] = self.records().records
+        self.assertEqual(record["status"], "ok")
+
+    def test_a_forced_output_failure_is_recorded_error_not_ok(self):
+        failures = (BrokenPipeError(32, "Broken pipe"), OSError(22, "Invalid argument"),
+                    ValueError("I/O operation on closed file."),
+                    UnicodeEncodeError("charmap", WIDE_TITLE, 4, 5, "character maps to <undefined>"))
+        for json_flag in ([], ["--json"]):
+            for failure in failures:
+                with self.subTest(error=type(failure).__name__, json=bool(json_flag)):
+                    sent, before = len(self.fake.requests), len(self.records().records)
+                    err = io.StringIO()
+                    with contextlib.redirect_stdout(_BrokenStream(failure)), contextlib.redirect_stderr(err), \
+                            mock.patch.dict(os.environ, self.env):
+                        code = githits_cli_entry.main(["search", "q", "--target", "pypi:requests", *json_flag])
+                    self.assertEqual(code, 1)
+                    self.assertIn("error: output_failed", err.getvalue())
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual(len(self.fake.requests), sent + 1, "the lookup was sent")
+                    records = self.records().records
+                    self.assertEqual(len(records), before + 1, "and recorded once")
+                    self.assertEqual((records[-1]["status"], records[-1]["http_status"], records[-1]["results_returned"]),
+                                     ("error", 200, 1), "as an error: its result never reached the caller")
+                    self.assertIsNotNone(records[-1]["request_id"])
+        self.assertNotIn("ok", [record["status"] for record in self.records().records])
