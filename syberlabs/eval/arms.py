@@ -12,7 +12,8 @@ An arm is an object in the spec's ``arms`` list (``spec.ARM_SCHEMA``). ``kind`` 
 - ``evolve_jev``: the same provider with ``JevPolicy``, its price prior from the contract's price table;
 - ``claude-code``: ``claude_code.ClaudeCodeProvider`` with ``lane``, ``bare``, ``trusted_tree``, ``tools``,
   ``max_turns``, ``mcp_config`` and ``executable`` (a stand-in ``claude`` for tests), and ``githits`` passed through
-  by name to the provider's keyword of that name (refused ``arm_unsupported`` when the installed provider has none).
+  by name to the provider's keyword of that name (refused ``arm_unsupported`` when the installed provider has none);
+  a ``githits`` arm's lookups carry the run's thread and the arm's name (``X-GitHits-Session-ID``, ``-Agent``).
   The runner does not set Claude Code's model: the arm's ``model`` and ``effort`` are the spec's declaration, and the
   model that served is in the candidate's ``signal.harness``.
 
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 import statistics
 import sys
 from contextlib import contextmanager
@@ -88,8 +90,15 @@ def jev_prices(prices: dict | None) -> dict | None:
     return {"mutate": round(statistics.mean(costs), 6), "crossover": 0.0, "evaluate": 0.0}
 
 
-def build(arm: dict, *, repo: Path, budget: dict, prices: dict | None, harness: Path = HARNESS):
-    """The provider for one run of ``arm`` against the repository at ``repo``."""
+def githits_arm(name: str) -> str:
+    """The arm's name as the GitHits client's arm label (``[A-Za-z0-9_-]{1,16}``, ``X-GitHits-Agent``)."""
+    return re.sub(r"[^A-Za-z0-9_-]", "-", name)[:16]
+
+
+def build(arm: dict, *, repo: Path, budget: dict, prices: dict | None, harness: Path = HARNESS,
+          thread_label: str | None = None):
+    """The provider for one run of ``arm`` against the repository at ``repo``. ``thread_label`` (the run's thread
+    id) and the arm's name label a ``githits`` arm's lookups, so each run is its own GitHits session."""
     kind, k = arm["kind"], calls(arm, budget)
     timeout = arm.get("timeout_seconds", 600)
     name = arm["name"] if arm["name"][0].isalpha() else "arm-" + arm["name"]
@@ -120,6 +129,8 @@ def build(arm: dict, *, repo: Path, budget: dict, prices: dict | None, harness: 
         if "githits" not in inspect.signature(ClaudeCodeProvider.__init__).parameters:
             raise Rejected("arm_unsupported", "this ClaudeCodeProvider has no githits option")
         options["githits"] = arm["githits"]
+        if arm["githits"]:
+            options.update(arm=githits_arm(arm["name"]), thread_label=thread_label)
     return ClaudeCodeProvider(repo, **options)
 
 

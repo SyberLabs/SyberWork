@@ -14,7 +14,9 @@ from ``random.Random(order_seed).random()``, whose sequence Python guarantees ac
    run's seed, in the arm's environment (``arms.environment``), the host's governor pricing every call;
 4. the candidate the search recommends (else its last in-scope candidate) is checked by the host
    (``Thread.check``: every check on the exact candidate tree) and accepted only if admission allows it
-   (``Thread.accept``, which moves the thread's branch in the run's own repository and nothing else);
+   (``Thread.accept``, which moves the thread's branch in the run's own repository and nothing else) and the
+   host's copy of the hidden files is still what was staged (else ``not_acceptable``, ``hidden_tampered``: candidate
+   code runs inside the checks with the host's permissions; this detects a rewrite that stays, not one undone);
 5. evidence: the exported journal, the provider's trace, the run contract, a ``git bundle`` of the run's
    repository, and, when the run accepted a candidate and the seed variable is set, a certificate signed with that
    key and verified at once against the repository and the journal (``uncertified`` otherwise);
@@ -23,11 +25,15 @@ from ``random.Random(order_seed).random()``, whose sequence Python guarantees ac
    of the evidence files with every file's SHA-256, and the outcome.
 
 A run's files are written into ``<run_id>.partial`` and renamed when complete, so a run killed midway leaves no
-bundle and is run again; a run with a bundle is skipped (resumable by run id). Before a run starts, the dollars the
-eval's bundles record plus the spec's per-run dollars must fit under ``budget.total_dollars``, or the eval stops
+bundle and is run again; a run with a bundle is skipped (resumable by run id). A bundle is read only when it is the
+evidence of the run its directory names (``EvalRun.verify``; ``bundle_tampered`` otherwise). Before a run starts,
+the dollars the eval's bundles record, plus what every run that raised had spent (``runs/failed.jsonl``, written
+as it raised), plus the spec's per-run dollars must fit under ``budget.total_dollars``, or the eval stops
 ``eval_budget_exhausted``; within a run the governor's bound applies (the call that crosses ``max_dollars`` is
 recorded and the next is refused, ``docs/BUILD_THREAD.md``). A run whose spend names a model the price table does
-not price stops the eval (``eval_spend_unknown``): its cost cannot be counted against the cap.
+not price stops the eval (``eval_spend_unknown``): its cost cannot be counted against the cap. One runner holds an
+eval at a time (``runs/.lock``; a second is refused ``eval_running``), and the preflight gate is asked again before
+every run, so a checkout that moves or changes mid-eval stops it.
 
 ``preflight`` runs the deterministic suites (``scripts/run_shards.py``, ``conformance.run``,
 ``benchmarks/run_scenarios.py``, and this package's tests) from the checkout and records the result for the
@@ -37,6 +43,7 @@ commit in ``evals/<id>/preflight.json``.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import random
@@ -45,15 +52,28 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from syberlabs.errors import Rejected
 from syberlabs.eval import VERSION, arms, spec as specs, tasks
 from syberlabs.eval.spec import HARNESS, harness_state, now_utc, read_json, write_json
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - not Windows
+    msvcrt = None
+
 RUNNER_ACTOR = "syberlabs.eval"
+LOCK = ".lock"                # runs/.lock: one runner per eval at a time
+FAILED = "failed.jsonl"       # runs/failed.jsonl: what each run that raised had spent, counted under the cap
+HIDDEN_TAMPERED = "hidden_tampered"  # the host's copy of the hidden files changed while the run's checks ran
 CONTRACT_ID = "eval-run"
 BUNDLE_SCHEMA_ID = "syberlabs.eval/bundle.v1"
 PREFLIGHT_SCHEMA_ID = "syberlabs.eval/preflight.v1"
@@ -158,6 +178,32 @@ def _git_bundle(repo: Path, out: Path) -> bool:
     return done.returncode == 0 and out.is_file()
 
 
+@contextmanager
+def _exclusive(path: Path) -> Iterator[None]:
+    """Hold ``path`` locked for one runner (``flock``, or ``msvcrt.locking`` on Windows); refused, not waited for,
+    when another process holds it (``eval_running``): two runners would each count only the bundles they found
+    and pass the eval's dollar cap together, and both would start the same run."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+b")
+    locked = False
+    try:
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif msvcrt is not None:
+                os.lseek(handle.fileno(), 0, os.SEEK_SET)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            locked = True
+        except OSError:
+            raise Rejected("eval_running", f"another runner holds {path}; wait for it to finish") from None
+        yield
+    finally:
+        if locked and fcntl is None and msvcrt is not None:
+            os.lseek(handle.fileno(), 0, os.SEEK_SET)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        handle.close()  # releases the flock
+
+
 class EvalRun:
     """One eval: the registered spec, the order, the cap, and the runs."""
 
@@ -176,14 +222,73 @@ class EvalRun:
     # Bundles already written
 
     def bundles(self) -> dict[str, dict]:
+        """Every completed run's bundle, by run id; ``<run>.partial`` directories are runs that did not complete.
+        A bundle under another spec digest is refused (``bundle_mismatch``), and so is one that is not the evidence
+        of the run its directory names (``bundle_tampered``, ``verify``)."""
         found = {}
+        planned = {item.run_id: item for item in plan(self.doc)}
         if self.runs_dir.is_dir():
             for path in sorted(self.runs_dir.glob("*/bundle.json")):
+                if path.parent.name.endswith(".partial"):
+                    continue
                 bundle = read_json(path, "bundle_unreadable")
-                if bundle.get("spec_digest") != self.registration["spec_digest"]:
+                if not isinstance(bundle, dict) or bundle.get("spec_digest") != self.registration["spec_digest"]:
                     raise Rejected("bundle_mismatch", f"{path} was written under another spec digest")
+                reason = self.verify(path.parent, bundle, planned.get(path.parent.name))
+                if reason:
+                    raise Rejected("bundle_tampered", f"{path}: {reason}")
                 found[bundle["run_id"]] = bundle
         return found
+
+    def verify(self, folder: Path, bundle: dict, item: Planned | None) -> str | None:
+        """Why ``bundle`` is not the evidence of the planned run ``item`` its directory names, or None: its identity
+        and digests are the registration's, every file it lists is there with its SHA-256 and nothing else is, and
+        the dollars, unknown models and acceptance it reports are its journal's. Edits are detected, not prevented:
+        nothing signs ``bundle.json``, so a writer who rewrites every digest consistently is not."""
+        from syberlabs.evolution import spend_total
+
+        if item is None:
+            return "its directory names no run of this eval"
+        expected = {"schema": BUNDLE_SCHEMA_ID, "eval": self.eval_id, "run_id": item.run_id, "task": item.task,
+                    "arm": item.arm, "seed": item.seed, "order_index": item.order_index,
+                    "task_digest": self.registration["task_digests"].get(item.task),
+                    "arm_digest": self.registration["arm_digests"].get(item.arm), "journal_path": "journal.json"}
+        wrong = sorted(key for key, value in expected.items() if bundle.get(key) != value)
+        if wrong:
+            return "it is not this run's: " + ", ".join(wrong)
+        files, present = bundle.get("files"), sorted(p.name for p in folder.iterdir() if p.name != "bundle.json")
+        if not isinstance(files, dict) or sorted(files) != present:
+            return "the files beside it are not the files it lists"
+        changed = [name for name in present if not (folder / name).is_file() or _sha256(folder / name) != files[name]]
+        if changed:
+            return "changed since the run: " + ", ".join(changed)
+        journal = read_json(folder / "journal.json", "bundle_unreadable")
+        events = journal.get("events") if isinstance(journal, dict) else None
+        outcome = bundle.get("outcome")
+        if not isinstance(events, list) or not isinstance(outcome, dict):
+            return "no journal events or no outcome"
+        spend = spend_total(events)
+        if (outcome.get("dollars"), outcome.get("unknown_models")) != (spend["dollars"], spend["unknown_models"]):
+            return "its dollars are not its journal's"
+        if (outcome.get("status") == "accepted") != any(e.get("kind") == "effect_succeeded" for e in events):
+            return "its acceptance is not its journal's"
+        return None
+
+    def failed(self) -> list[dict]:
+        """The runs that raised after they started (``failed.jsonl``, ``run_one``): what each had spent."""
+        path = self.runs_dir / FAILED
+        rows = []
+        if path.is_file():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    row = None
+                if not isinstance(row, dict):
+                    raise Rejected("ledger_unreadable", f"{path}: a line is not a record; the spend of a failed run "
+                                   "cannot be counted")
+                rows.append(row)
+        return rows
 
     @staticmethod
     def dollars(bundle: dict) -> float:
@@ -200,10 +305,17 @@ class EvalRun:
                 if not dry:
                     raise
                 gate = {"refused": exc.code}
+        if dry:
+            return self._run(only, True, require_preflight, gate)
+        with _exclusive(self.runs_dir / LOCK):
+            return self._run(only, False, require_preflight, gate)
+
+    def _run(self, only: str | None, dry: bool, require_preflight: bool, gate: dict | None) -> dict:
         planned = select(plan(self.doc), only)
-        done = self.bundles()
+        done, failed = self.bundles(), self.failed()
         budget = self.doc["budget"]
-        spent = sum(self.dollars(b) for b in done.values())
+        # The cap counts what the bundles record and what every run that raised had spent before it raised.
+        spent = sum(self.dollars(b) for b in done.values()) + sum(float(f.get("dollars") or 0.0) for f in failed)
         rows, stopped = [], None
         seed = None
         if not dry and os.environ.get(self.seed_env):
@@ -217,11 +329,22 @@ class EvalRun:
             if dry:
                 rows.append({"run_id": item.run_id, "order_index": item.order_index, "state": "pending"})
                 continue
+            if any(f.get("dollars") is None or f.get("unknown_models") for f in failed):
+                stopped = "eval_spend_unknown"
+                self.log("stop: eval_spend_unknown (a run that raised spent what the price table cannot count)")
+                break
             if spent + budget["dollars"] > budget["total_dollars"]:
                 stopped = "eval_budget_exhausted"
                 self.log(f"stop: eval_budget_exhausted (spent ${spent:.4f}; a run may cost ${budget['dollars']:.4f}; "
                          f"cap ${budget['total_dollars']:.4f})")
                 break
+            if require_preflight:
+                try:  # again before every run: the checkout may have moved or changed since the eval started
+                    preflight_gate(self.root, self.eval_id, self.harness)
+                except Rejected as exc:
+                    stopped = exc.code
+                    self.log(f"stop: {exc.code} ({exc.detail})")
+                    break
             self.log(f"run {item.order_index} {item.run_id}")
             bundle = self.run_one(item, seed)
             spent += self.dollars(bundle)
@@ -257,18 +380,20 @@ class EvalRun:
             shutil.rmtree(partial)
         partial.mkdir(parents=True)
         repo_dir, home, host = work / "repo", work / "kit", work / "host"
-        kit = None
+        kit = thread = None
         try:
             base = tasks.materialize(task, repo_dir)
             staged = tasks.stage_hidden(self.tasks_root, item.task, host / tasks.HIDDEN,
                                         self.registration["task_digests"][item.task])
+            intact = tasks.tree_digests(staged)
             checks, required = tasks.contract_checks(task, staged)
             contract = run_contract(task, checks, required, budget)
             write_json(home / "contracts" / f"{CONTRACT_ID}.v1.json", contract)
             kit = Kit.local(home, repo_dir, actor=RUNNER_ACTOR)
             thread = kit.start(task["objective"], f"{CONTRACT_ID}.v1", paths=task["scope"]["paths"], act_class="R",
                                unattended=True)
-            provider = arms.build(arm, repo=repo_dir, budget=budget, prices=budget["prices"], harness=self.harness)
+            provider = arms.build(arm, repo=repo_dir, budget=budget, prices=budget["prices"], harness=self.harness,
+                                  thread_label=thread.id)
             with arms.environment(arm, task, withheld=(self.seed_env, DEFAULT_SEED_ENV)):
                 thread.propose(provider, seed=item.seed, max_seconds=budget["seconds"])
             events, views = thread.history(), thread._views()
@@ -276,10 +401,16 @@ class EvalRun:
             verdict = receipt = None
             if chosen is not None:
                 verdict = thread.check(chosen)
-                if verdict.acceptable:
-                    receipt = thread.accept(chosen)
+            # Candidate code runs inside the hidden checks with the host's permissions, and the host's copy is an
+            # ordinary directory: a copy that changed while they ran judged nothing, so nothing is accepted on it.
+            changed = tasks.hidden_changes(intact, tasks.tree_digests(staged))
+            if verdict is not None and verdict.acceptable and not changed:
+                receipt = thread.accept(chosen)
             events, views = thread.history(), thread._views()
             outcome = self._summary(events, views, chosen, verdict, receipt, provider, spend_total(events))
+            outcome["hidden_intact"], outcome["hidden_changed"] = not changed, changed[:16]
+            if changed and chosen is not None:
+                outcome.update(status="not_acceptable", reason=HIDDEN_TAMPERED)
             certified = self._certify(kit, thread, chosen, receipt, seed, partial, repo_dir, home)
             outcome["certification"] = certified["state"]
             write_json(partial / "journal.json", kit.export(thread.id))
@@ -312,8 +443,9 @@ class EvalRun:
             }
             bundle["files"] = {p.name: _sha256(p) for p in sorted(partial.iterdir()) if p.is_file()}
             write_json(partial / "bundle.json", bundle)
-        except BaseException:
+        except BaseException as exc:
             shutil.rmtree(partial, ignore_errors=True)
+            self._failed(item, thread, exc)
             raise
         finally:
             if kit is not None:
@@ -325,6 +457,24 @@ class EvalRun:
             shutil.rmtree(final)
         partial.rename(final)
         return bundle
+
+    def _failed(self, item: Planned, thread, exc: BaseException) -> None:
+        """Append what a run that raised had spent to ``failed.jsonl``, which the cap counts as it counts bundles:
+        nothing was spent before its thread started; ``dollars`` is null when its journal cannot be read. A runner
+        killed outright (SIGKILL) writes nothing here (``spec/GAPS.md``)."""
+        from syberlabs.evolution import spend_total
+
+        spend = {"dollars": 0.0, "unknown_models": []}
+        if thread is not None:
+            try:
+                spend = spend_total(thread.history())
+            except Exception:
+                spend = {"dollars": None, "unknown_models": []}
+        row = {"run_id": item.run_id, "dollars": spend["dollars"], "unknown_models": spend["unknown_models"],
+               "error": exc.code if isinstance(exc, Rejected) else type(exc).__name__, "at": now_utc()}
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.runs_dir / FAILED, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
 
     @staticmethod
     def _summary(events, views, chosen, verdict, receipt, provider, spend) -> dict:
