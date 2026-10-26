@@ -1000,6 +1000,25 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertEqual(len(self.fake.requests), 1, "only arm B's launcher call reached GitHits")
         self.assertIn("Permission to use Bash", run_a["bash"][0], "in arm A the same Bash call is denied")
 
+    def test_an_mcp_config_run_without_githits_keeps_the_operators_githits_variables(self):
+        """launcher-unicode-and-docs, item 2 (#135's verification): the GitHits route is ``githits=True`` or an
+        ``--mcp-config``. A GitHits MCP server is Claude Code's child and may read its token from that environment,
+        so an ``--mcp-config`` run without ``--githits`` keeps every GitHits variable, and only arm A (neither) drops
+        them. Narrowing the route to ``githits`` alone fails here."""
+        self.enterContext(mock.patch.dict(os.environ, {**OPERATOR_GITHITS, githits.LICENSES_ENV: "MIT"}))
+        kit = self.kit()
+        config = self.root.parent / "githits-mcp-keep.json"
+        config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
+        operator = {k: v for k, v in os.environ.items() if claude_code.githits_variable(k)}
+        self.assertEqual(set(operator), {githits.TOKEN_ENV, githits.URL_ENV, githits.LICENSES_ENV, *OPERATOR_GITHITS})
+        mcp_only = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config)
+        self.assertFalse(mcp_only.githits, "no --githits: the MCP route only")
+        kept = {k: v for k, v in mcp_only.environment().items() if claude_code.githits_variable(k)}
+        self.assertEqual(kept, operator, "the operator's GitHits variables, the token included, unchanged")
+        arm_a = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY)
+        self.assertEqual([k for k in arm_a.environment() if claude_code.githits_variable(k)], [],
+                         "arm A, with neither route, holds none")
+
     def test_launcher_lookups_become_host_observed_lookup_facts_and_metrics_read_them(self):
         kit = self.kit()
         thread = kit.start("Add a CSV export", paths=["src/", "tests/"])

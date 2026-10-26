@@ -186,6 +186,7 @@ five lookups, `search`, `example`, `read`, `list` and `grep` (`githits.LOOKUPS`,
 `--license-mode`: through the launcher an example always asks for `license_mode: strict`. `doctor`, `--help`, an
 unknown operation and a usage error exit 2 with a usage message before a client exists, so nothing is sent and
 nothing is recorded. The operator keeps `syberlabs githits doctor` and `--license-mode`.
+It prints as `syberlabs` does, unencodable characters replaced, and before the record: a failed print records `error`.
 
 ## The pinned contract
 
