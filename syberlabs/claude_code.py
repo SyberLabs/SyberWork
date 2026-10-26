@@ -880,7 +880,7 @@ class ClaudeCodeProvider(RepairProvider):
             # launcher call in flight when the host ended Claude Code (the session is killed, so its client never
             # records) would leave no trace. Its records are then journaled unguarded (not reconciled), and when it
             # has none, one githits.unrecorded fact stands for each launcher call the guard passed.
-            lost = mismatch == GITHITS_UNRECORDED
+            lost = mismatch == GITHITS_UNRECORDED and failure is not None
             guard = query_guard.UNGUARDED if mismatch == GITHITS_UNEXPECTED or lost else query_guard.PASS
             observed += [record_lookup(record, guard) for record in records.records]
             if lost and not records.records:
@@ -910,6 +910,10 @@ class ClaudeCodeProvider(RepairProvider):
                            "passed with --settings did not run (a version, a setting or a mode that skips it), or "
                            "its record was missing, altered or not the hook's; no further call is made. See "
                            "docs/CLAUDE_CODE.md, the query guard")
+        if self.githits and mismatch == GITHITS_UNRECORDED and not changes:
+            # no_change cannot carry the candidate's mismatch signal. Persist a gap,
+            # without assigning a missing record to a particular concurrent command.
+            self._journal(space, [unrecorded_lookup({})])
         signal = {"lane": self.lane, "cost_basis": self.cost_basis,
                   "harness": {**transcript.harness(), "installed_version": self.version},
                   "guard": {**self.guard, "policy_digest": hook_env[query_guard.POLICY_DIGEST_ENV],

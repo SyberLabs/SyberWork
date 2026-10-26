@@ -30,7 +30,7 @@ Your only command (Bash) is the launcher, typed exactly as here. For a check fai
 
 - Target: `<registry>:<package>@<installed version>` (pypi, npm, crates...). Take the version from the check output, a lockfile or installed metadata in this tree (`*.dist-info/METADATA`, `node_modules/<package>/package.json`). A range like `>=2` is not a version; with none, omit `@<version>` (latest) and trust the check over a result.
 - Query: the package's symbol or error text as the check prints it; nothing from this repository (code, lines, names, paths), no credentials or personal data.
-- Shell: double-quote the query, the pattern and any argument with a space or `' * ? # [ ] ~`. Never `( ) { } < > | & ; $ \ !` or a backtick, even quoted: no pipes or redirections, and `Retry.increment`, not `Retry.increment()`.
+- Shell: double-quote the query, the pattern and any argument with a space or `' * ? # [ ] ~ ^`. Never `( ) { } < > | & ; $ \ !` or a backtick, even quoted: no pipes or redirections, and `Retry.increment`, not `Retry.increment()`.
 - Flags: only those above; this is not the githits CLI.
 
 ## Lean reads
