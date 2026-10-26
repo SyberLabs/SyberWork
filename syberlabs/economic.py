@@ -28,8 +28,10 @@ def units(value):
     return number if number <= MAX_UNITS else None
 
 
-def receipt_matches(record, key, args, request_digest) -> bool:
+def receipt_matches(record, key, args, request_digest, rail) -> bool:
+    """A receipt need not name its rail, but a receipt that names one must name the installed rail."""
     return (isinstance(record, dict) and record.get("state") == "settled"
+            and record.get("rail", rail) == rail
             and record.get("idempotency_key") == key
             and record.get("request_digest") == request_digest
             and record.get("amount_units") == args["amount_units"]

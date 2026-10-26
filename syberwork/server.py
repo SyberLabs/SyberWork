@@ -198,7 +198,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     elif operation == "signoff":
                         result = work.signoff(case_id, name, roles, data["role"])
                     elif operation == "reconcile":
-                        if "success" in data or "evidence" in data:
+                        # Only the proposal is named. Any outcome-shaped field (success, evidence,
+                        # proof, an Attest receipt, ...) is refused rather than ignored.
+                        if set(data) != {"proposal_id"}:
                             raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")
                         result = work.reconcile(case_id, data["proposal_id"], name, roles)
                     elif operation == "candidates":

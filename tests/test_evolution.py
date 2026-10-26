@@ -5,6 +5,7 @@ tests exercise the same records against a real repository.
 """
 
 import copy
+import random
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 from spec.validate import validate_events
 from syberlabs import Rejected, Session
 from syberlabs.contracts import prepare_contract
+from syberlabs.evolution import evaluation_denial, latest_evaluation, settings
 from syberlabs.planner import StaticPlanner
 from syberlabs.search import Candidate
 from syberwork.core import Work
@@ -364,6 +366,58 @@ class Promotion(Fixture):
             result = work.propose(case, "promote", promote_args(1), "developer", ["developer"])
             self.assertEqual(result["decision"]["reason"], "candidate_unknown")
             work.close()
+
+
+
+class IndexedEvaluations(Fixture):
+    """perf-packet-a (efficiency audit 2026-10-26, item 3): ``candidate_views`` finds each candidate's newest evaluation
+    through one index built in a single pass, not a backward scan of the history per candidate (O(candidates x
+    events): 0.4-0.7 s at 1,000 candidates). Every view's ``evaluation`` must equal what the scan gives
+    (``latest_evaluation``, still the admission rule's own lookup)."""
+
+    def scanned(self, case):
+        row = self.session.cases[case]
+        config = settings(self.session.contracts[(row["contract_id"], row["contract_version"])])
+        history, now, found = self.session.history(case), self.clock(), {}
+        for event in history:
+            if event["kind"] != "candidate_registered":
+                continue
+            evaluation = latest_evaluation(history, event["body"])
+            if evaluation is None:
+                state = "none"
+            else:
+                reason = evaluation_denial(config, evaluation, now)
+                state = "passed" if reason is None else "stale" if reason == "candidate_evidence_stale" else "failed"
+            found[event["body"]["id"]] = {"state": state, "checks": evaluation["body"]["checks"] if evaluation else [],
+                                          "hash": evaluation["hash"] if evaluation else None}
+        return found
+
+    def test_views_equal_the_backward_scan_on_random_histories(self):
+        evolution = copy.deepcopy(EVOLUTION)
+        evolution["budget"] = {"max_candidates": 30, "max_evaluations": 80, "max_seconds": 60}
+        doc = contract(evolution=evolution)
+        states = ("passed", "failed", "timed_out")
+        for seed in range(30):
+            rng = random.Random(seed)
+            self.setUp()
+            case = self.open(doc)
+            registered, evaluations = [], 0
+            for _ in range(rng.randint(1, 70)):
+                move = rng.random()
+                if move < 0.3 and len(registered) < 30:
+                    registered.append(len(registered) + 1)
+                    self.session.record_candidate(case, candidate(registered[-1]), "host")
+                elif registered and move < 0.85 and evaluations < 80:
+                    evaluations += 1
+                    self.session.record_evaluation(case, evaluation(rng.choice(registered), rng.choice(states),
+                                                                    rng.choice((None,) + states)), "host")
+                elif registered and move < 0.95:
+                    self.promote(case, rng.choice(registered))
+                else:
+                    self.clock.now += rng.choice((1, 300, 700))
+            views = self.session.candidates(case)
+            self.assertEqual([view["id"] for view in views], [f"c{n}" for n in registered])
+            self.assertEqual({view["id"]: view["evaluation"] for view in views}, self.scanned(case), f"seed {seed}")
 
 
 if __name__ == "__main__":
