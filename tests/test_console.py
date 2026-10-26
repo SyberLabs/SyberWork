@@ -322,7 +322,7 @@ class ConsoleReadScope(CellCase):
         self.assertEqual([item["thread"] for item in self.cell.json(f"/metrics/work_items/{case}")[1]["items"]], [case])
         self.assertEqual(self.cell.json("/metrics/work_items/no-such-case")[0], 404)
         self.assertEqual(self.cell.json("/metrics/work_items", who=None)[0], 401)
-        app = (STATIC / "app.js").read_text()
+        app = read_text(STATIC / "app.js")
         self.assertIn("api('/metrics/work_items')", app)
         for field in ("w.items", "w.opened", "w.delivered.yes", "w.delivered.unknown", "w.cost_basis", "w.cancelled"):
             self.assertIn(field, app)
