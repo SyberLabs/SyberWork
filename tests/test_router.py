@@ -17,6 +17,7 @@ import secrets
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -35,7 +36,8 @@ from tests.test_githits import FakeGitHits, read_code_response, search_hit, sear
 
 PY = sys.executable
 FAKELIB = ('"""fakelib 2.0: fetch_all() became fetch(), and timeout is a keyword-only argument."""\n\n\n'
-           'def fetch(url, *, timeout):\n    return f"fetched {url} in {timeout}s"\n')
+           'def fetch(url, *, timeout):\n    return f"fetched {url} in {timeout}s"\n\n\n'
+           'def each(rows, callback):\n    return [callback(row) for row in rows]\n')
 STUB = "def get(url):\n    raise NotImplementedError('fetch the url with fakelib')\n"
 V1 = "from fakelib import fetch_all\n\n\ndef get(url):\n    return fetch_all(url, 5)\n"  # the 1.x API: ImportError
 POSITIONAL = "import fakelib\n\n\ndef get(url):\n    return fakelib.fetch(url, 5)  # attempt {n}\n"  # TypeError
@@ -70,6 +72,8 @@ if MODE == "empty_first" and calls == 0:
     sys.exit(0)
 if MODE == "positional":
     text = POSITIONAL.format(n=calls)
+elif MODE == "stubborn":  # keeps the 1.x import, in a new tree each time, until the evidence shows the signature
+    text = RIGHT if SIGNATURE in evidence else V1.replace("fetch_all(url, 5)", "fetch_all(url, 5)  # %d" % calls)
 elif MODE == "missing":
     text = RIGHT if "fakelib provides" in evidence else MISSING.replace("timeout=5", "timeout=%d" % (5 + calls))
 elif SIGNATURE in evidence:
@@ -113,15 +117,30 @@ for event in ({"type": "system", "subtype": "init", "claude_code_version": "2.1.
 '''
 
 
+def write_dist(site: Path, name: str, version: str, files: dict, *, top: str | None = None,
+               local: bool = False) -> Path:
+    """One installed distribution in ``site``: its files and a ``dist-info`` with ``RECORD`` (and ``top_level.txt``
+    when ``top`` is given); ``local`` adds PEP 610's ``direct_url.json``, as an install from a local path does."""
+    for path, text in files.items():
+        (site / path).parent.mkdir(parents=True, exist_ok=True)
+        (site / path).write_text(text, encoding="utf-8")
+    info = site / f"{name.replace('-', '_')}-{version}.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8")
+    listed = list(files) + [f"{info.name}/METADATA", f"{info.name}/RECORD"]
+    if top:
+        (info / "top_level.txt").write_text(top + "\n", encoding="utf-8")
+        listed.append(f"{info.name}/top_level.txt")
+    if local:
+        (info / "direct_url.json").write_text('{"url": "file:///work/acme-ledger", "dir_info": {"editable": true}}',
+                                              encoding="utf-8")
+    (info / "RECORD").write_text("".join(f"{path},,\n" for path in listed), encoding="utf-8")
+    return site
+
+
 def write_site(site: Path) -> Path:
     """A ``site-packages`` holding fakelib 2.0.0 and its ``dist-info``."""
-    (site / "fakelib").mkdir(parents=True)
-    (site / "fakelib" / "__init__.py").write_text(FAKELIB, encoding="utf-8")
-    info = site / "fakelib-2.0.0.dist-info"
-    info.mkdir()
-    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: fakelib\nVersion: 2.0.0\n", encoding="utf-8")
-    (info / "top_level.txt").write_text("fakelib\n", encoding="utf-8")
-    return site
+    return write_dist(site, "fakelib", "2.0.0", {"fakelib/__init__.py": FAKELIB}, top="fakelib")
 
 
 def fakelib_hit(repo_url: str = "https://github.com/example/fakelib") -> dict:
@@ -258,8 +277,8 @@ class Diagnosis(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             site = write_site(Path(folder) / "site-packages")
             found = self.diagnose(UNITTEST_IMPORT.format(site=site), versions=router.resolve_version)
-        self.assertEqual((found.check, found.kind, found.error, found.module, found.symbol, found.why),
-                         ("tests", "third_party", "ImportError", "fakelib", "fakelib.fetch_all", "message"))
+        self.assertEqual((found.check, found.kind, found.error, found.module, found.symbol, found.why, found.vouched),
+                         ("tests", "third_party", "ImportError", "fakelib", "fetch_all", "message", "import"))
         self.assertEqual((found.distribution, found.version, found.version_source, found.pin, found.target),
                          ("fakelib", "2.0.0", "traceback_site", "installed", "pypi:fakelib@2.0.0"),
                          "the version is read from the dist-info beside the path the traceback printed")
@@ -267,7 +286,7 @@ class Diagnosis(unittest.TestCase):
         self.assertTrue(found.error_line.startswith("ImportError: cannot import name 'fetch_all'"))
         record = found.record()
         self.assertNotIn("fetch_all", json.dumps(record), "the symbol is journaled as a digest only")
-        self.assertEqual(record["symbol_digest"], router._digest("fakelib.fetch_all"))
+        self.assertEqual((record["symbol_digest"], record["vouched"]), (router._digest("fetch_all"), "import"))
 
     def test_the_host_interpreters_metadata_is_the_fallback_and_says_so(self):
         output = ("Traceback (most recent call last):\n  File \"/tmp/w/src/client.py\", line 4, in get\n"
@@ -278,7 +297,7 @@ class Diagnosis(unittest.TestCase):
             with mock.patch.object(sys, "path", [str(site), *sys.path]):
                 found = self.diagnose(output, versions=router.resolve_version, read=read)
         self.assertEqual((found.kind, found.module, found.symbol, found.why, found.version, found.version_source),
-                         ("third_party", "fakelib", "fakelib.fetch", "imported module in the failing line", "2.0.0",
+                         ("third_party", "fakelib", "fetch", "imported module in the failing line", "2.0.0",
                           "host_metadata"))
         unresolved = self.diagnose(output, read=read)
         self.assertEqual((unresolved.kind, unresolved.module, unresolved.version, unresolved.pin),
@@ -287,31 +306,36 @@ class Diagnosis(unittest.TestCase):
 
     def test_symbols_are_traced_to_their_module_through_the_failing_files_imports(self):
         versions = {"fakelib": ("fakelib", "2.0.0", "host_metadata")}.get
-        resolve = lambda module, _sites: versions(module)  # noqa: E731
+        resolve = lambda module, _sites: versions(module.split(".")[0])  # noqa: E731  (a dotted module comes in)
         read = {"src/client.py": "from fakelib import fetch as get_it\nfrom fakelib.api import Session\n"
                                  "from . import helpers\n"}.get
         frame = '  File "/tmp/w/src/client.py", line 9, in get\n    return get_it(url, retries=3)\n'
         cases = [
-            ("TypeError: fetch() got an unexpected keyword argument 'retries'", "unknown", None),
-            ("TypeError: get_it() got an unexpected keyword argument 'retries'", "third_party", "import binding"),
-            ("AttributeError: type object 'Session' has no attribute 'mount_all'", "third_party", "import binding"),
-            ("AttributeError: 'Session' object has no attribute 'mount_all'", "third_party", "import binding"),
-            ("AttributeError: 'Response' object has no attribute 'jsonn'", "unknown", None),
-            ("AttributeError: module 'helpers' has no attribute 'nope'", "repo", "message"),
-            ("AttributeError: module 'fakelib' has no attribute 'fetch_all'", "third_party", "message"),
+            ("TypeError: fetch() got an unexpected keyword argument 'retries'", "unknown", None, None),
+            ("TypeError: get_it() got an unexpected keyword argument 'retries'", "third_party", "import binding",
+             "fetch"),  # the library's own name, never the repository's alias for it
+            ("AttributeError: type object 'Session' has no attribute 'mount_all'", "third_party", "import binding",
+             "Session.mount_all"),
+            ("AttributeError: 'Session' object has no attribute 'mount_all'", "third_party", "import binding",
+             "Session.mount_all"),
+            ("AttributeError: 'Response' object has no attribute 'jsonn'", "unknown", None, None),
+            ("AttributeError: module 'helpers' has no attribute 'nope'", "repo", "message", None),
+            ("AttributeError: module 'fakelib' has no attribute 'fetch_all'", "third_party", "message", "fetch_all"),
         ]
-        for line, kind, why in cases:
+        for line, kind, why, symbol in cases:
             with self.subTest(line=line):
                 found = self.diagnose("Traceback (most recent call last):\n" + frame + line + "\n", versions=resolve,
                                       read=read)
-                self.assertEqual((found.kind, found.why), (kind, why))
+                self.assertEqual((found.kind, found.why, found.symbol), (kind, why, symbol))
         raised = ('Traceback (most recent call last):\n  File "/tmp/w/src/client.py", line 9, in get\n'
                   '    return fakelib.fetch(url, timeout="5")\n'
                   '  File "/venv/lib/python3.12/site-packages/fakelib/core.py", line 20, in fetch\n'
                   '    raise TypeError("timeout must be a number")\nTypeError: timeout() takes 1 positional argument\n')
         found = self.diagnose(raised, versions=resolve)
-        self.assertEqual((found.kind, found.module, found.why),
-                         ("third_party", "fakelib", "raised in a third-party frame"))
+        self.assertEqual((found.kind, found.module, found.why, found.symbol),
+                         ("third_party", "fakelib", "raised in a third-party frame", None),
+                         "the library raised it: a name is sent only when the library's own files show it, and this "
+                         "resolver gave no files to read")
 
     def test_repo_stdlib_missing_and_unknown_failures(self):
         cases = {
@@ -366,6 +390,19 @@ class Diagnosis(unittest.TestCase):
         self.assertEqual(seen, [["C:\\Users\\dev\\venv\\Lib\\site-packages"]], "the site as printed, for the dist-info")
         frame = router.classify_frame("C:\\Users\\dev\\venv\\Lib\\site-packages\\fakelib\\api.py", 3, "f", "", set())
         self.assertEqual((frame.where, frame.package, frame.path), ("third_party", "fakelib", "fakelib/api.py"))
+        pytest_windows = ("C:\\work\\wt\\src\\client.py:4: in get\n    return fakelib.fetch(url, 5)\n"
+                          "C:\\Users\\dev\\venv\\Lib\\site-packages\\fakelib\\api.py:5: in fetch\n"
+                          "    raise TypeError('timeout')\n"
+                          "E   TypeError: fetch() takes 1 positional argument but 2 were given\n")
+        found = router.parse_failure(pytest_windows)
+        self.assertEqual([(path, line) for path, line, _function, _source in found.frames],
+                         [("C:\\work\\wt\\src\\client.py", 4),
+                          ("C:\\Users\\dev\\venv\\Lib\\site-packages\\fakelib\\api.py", 5)],
+                         "pytest's frames with a drive letter are read as on POSIX")
+        seen = []
+        found = self.diagnose(pytest_windows, versions=lambda module, sites: seen.append((module, list(sites))))
+        self.assertEqual((found.kind, found.why), ("third_party", "raised in a third-party frame"))
+        self.assertEqual(seen, [("fakelib.api", ["C:\\Users\\dev\\venv\\Lib\\site-packages"])])
 
     def test_the_signature_ignores_paths_addresses_and_timings_and_not_the_failure(self):
         first = UNITTEST_IMPORT.format(site="/tmp/a/site-packages").replace("wt-1", "wt-1")
@@ -386,8 +423,114 @@ class Diagnosis(unittest.TestCase):
                          {"a": "a", "e": "c", "i": "f", "j": "f", "l": ".k", "m": "."})
         self.assertEqual(router.import_bindings("import os\nraise SystemExit('never run')\n"), {"os": "os"})
         self.assertEqual(router.import_bindings("def broken(:\n"), {})
+        origins = router.import_origins("import a.b\nimport c.d as e\nfrom f.g import h as i\nfrom . import m\n")
+        self.assertEqual(origins, {"a": ("a", None), "e": ("c.d", None), "i": ("f.g", "h"), "m": (".", "m")})
+        self.assertEqual(router.defined_names("class Ledger:\n    def post(self):\n        self.total = 1\n"
+                                              "async def sync():\n    pass\nLIMIT: int = 3\nx, (y, z) = 1, (2, 3)\n"),
+                         frozenset({"Ledger", "post", "total", "sync", "LIMIT", "x", "y", "z"}))
+        deep = "x = " + "+".join(["1"] * 100000)  # ast.parse raises RecursionError on it (MemoryError for others)
+        self.assertEqual((router.import_bindings(deep), router.import_origins(deep), router.defined_names(deep)),
+                         ({}, {}, frozenset()), "text the parser cannot read is read as nothing, never a crash")
         self.assertEqual(router.repo_modules(["src/pkg/__init__.py", "src/tool.py", "vendor/site-packages/x/y.py",
-                                              "docs/a-b.md"]), frozenset({"src", "pkg", "__init__", "tool", "docs"}))
+                                              "docs/a-b.md", "fixtures/requests/data.json"]),
+                         frozenset({"src", "pkg", "__init__", "tool"}),
+                         "only Python files and the directories on their way make a module")
+
+
+def site_with(folder: Path, **libraries) -> Path:
+    """A ``site-packages`` with fakelib 2.0.0 whose ``__init__.py`` holds ``FAKELIB`` and the given text."""
+    site = folder / "site-packages"
+    write_dist(site, "fakelib", "2.0.0", {"fakelib/__init__.py": FAKELIB + libraries.get("extra", "")},
+               top="fakelib")
+    return site
+
+
+class Privacy(unittest.TestCase):
+    """A query names a published library's API and nothing of the repository's (``router.vouch``)."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+
+    def raised(self, site: Path, message: str) -> str:
+        return ('Traceback (most recent call last):\n  File "/tmp/w/src/client.py", line 9, in get\n'
+                '    return fakelib.each(rows, compute_acme_customer_ssn_hash)\n'
+                f'  File "{site}/fakelib/__init__.py", line 9, in each\n    return [callback(row) for row in rows]\n'
+                f"{message}\n")
+
+    def diagnose(self, output, **kwargs):
+        kwargs.setdefault("files", FILES)
+        return router.diagnose([check("tests", output)], required=["tests"], versions=router.resolve_version,
+                               **kwargs)
+
+    def test_a_name_from_the_failure_is_sent_only_when_it_is_the_librarys(self):
+        site = site_with(self.folder, extra="\n\ndef serialize(entry):\n    return entry.to_dict()\n")
+        callback = self.diagnose(self.raised(site, "TypeError: compute_acme_customer_ssn_hash() takes 0 positional "
+                                                   "arguments but 1 was given"))
+        self.assertEqual((callback.kind, callback.distribution, callback.symbol, callback.why),
+                         ("third_party", "fakelib", None, "raised in a third-party frame"),
+                         "the library raised it on the repository's callback: the callback's name is not sent")
+        entry = self.diagnose(self.raised(site, "AttributeError: 'AcmeInternalLedgerEntry' object has no attribute "
+                                                "'to_dict'"))
+        self.assertEqual((entry.symbol, entry.vouched), ("to_dict", "library"),
+                         "the attribute the library's own code asks for is kept; the caller's class is not")
+        imported = ("Traceback (most recent call last):\n  File \"/tmp/w/src/client.py\", line 1, in <module>\n"
+                    "    from fakelib import compute_acme_customer_ssn_hash\nImportError: cannot import name "
+                    f"'compute_acme_customer_ssn_hash' from 'fakelib' ({site}/fakelib/__init__.py)\n")
+        self.assertEqual(self.diagnose(imported).symbol, "compute_acme_customer_ssn_hash",
+                         "a name the code imports from the library is the library's by the code's own account")
+        defined = self.diagnose(imported, defined={"compute_acme_customer_ssn_hash"})
+        self.assertEqual((defined.kind, defined.symbol), ("third_party", None),
+                         "unless the repository defines that name itself: then it is the repository's")
+        for found in (callback, defined):
+            self.assertEqual(found.target, "pypi:fakelib@2.0.0")
+
+    def test_a_local_install_and_a_missing_module_are_never_named_outward(self):
+        site = self.folder / "site-packages"
+        write_dist(site, "acme-ledger", "0.3.0", {"acme_ledger/__init__.py": "def post():\n    pass\n"},
+                   top="acme_ledger", local=True)
+        local = self.diagnose("Traceback (most recent call last):\n  File \"/tmp/w/src/client.py\", line 1, in "
+                              "<module>\n    from acme_ledger import post_all\nImportError: cannot import name "
+                              f"'post_all' from 'acme_ledger' ({site}/acme_ledger/__init__.py)\n")
+        self.assertEqual((local.kind, local.distribution, local.version, local.symbol, local.target),
+                         ("local", None, None, None, None),
+                         "an install from a local path or a URL is not a published release: possibly private")
+        self.assertEqual(router.resolve_version("acme_ledger", [str(site)]).published, False)
+        missing = self.diagnose("Traceback (most recent call last):\n  File \"/tmp/w/src/client.py\", line 1, in "
+                                "<module>\n    import acme_internal_ledger_v2\n"
+                                "ModuleNotFoundError: No module named 'acme_internal_ledger_v2'\n")
+        self.assertEqual((missing.kind, missing.symbol, missing.distribution), ("missing_dependency", None, None))
+
+    def test_the_distribution_that_installed_the_module_is_the_one_pinned(self):
+        site = self.folder / "site-packages"
+        write_dist(site, "acme-one", "1.0", {"acme/one/__init__.py": "ONE = 1\n"}, top="acme")
+        write_dist(site, "acme-two", "2.0", {"acme/two/__init__.py": "def go():\n    pass\n"}, top="acme")
+        write_dist(site, "fakelib", "2.0.0", {"fakelib/__init__.py": FAKELIB}, top="fakelib")
+        resolved = {module: router.resolve_version(module, [str(site)]) for module in
+                    ("acme.two", "acme.two.sub", "acme.one", "acme", "acme.three", "fakelib.missing_sub")}
+        self.assertEqual({module: (found.distribution, found.version, found.source) if found else None
+                          for module, found in resolved.items()},
+                         {"acme.two": ("acme-two", "2.0", "traceback_site"),
+                          "acme.two.sub": ("acme-two", "2.0", "traceback_site"),
+                          "acme.one": ("acme-one", "1.0", "traceback_site"),
+                          "acme": None, "acme.three": None,
+                          "fakelib.missing_sub": ("fakelib", "2.0.0", "traceback_site")},
+                         "a namespace package shared by two distributions is never guessed to be one of them")
+        self.assertEqual(resolved["acme.two"].files, (str(site / "acme" / "two" / "__init__.py"),))
+
+    def test_a_site_path_outranks_a_repository_module_of_the_same_name(self):
+        files = FILES + ("src/celery.py",)
+        resolve = lambda module, _sites: ("celery", "5.4.0", "traceback_site") \
+            if module.split(".")[0] == "celery" else None  # noqa: E731
+        output = ("Traceback (most recent call last):\n  File \"/tmp/w/src/client.py\", line 1, in <module>\n"
+                  "    from celery import shared_taskz\nImportError: cannot import name 'shared_taskz' from 'celery' "
+                  "(/venv/lib/python3.12/site-packages/celery/__init__.py)\n")
+        found = router.diagnose([check("tests", output)], files=files, versions=resolve)
+        self.assertEqual((found.kind, found.distribution, found.symbol), ("third_party", "celery", "shared_taskz"))
+        bare = output.replace(" (/venv/lib/python3.12/site-packages/celery/__init__.py)", "")
+        self.assertEqual(router.diagnose([check("tests", bare)], files=files, versions=resolve).kind, "repo",
+                         "nothing places it in a site: the repository's own module wins, and it is repaired")
 
 
 # --------------------------------------------------------------------------------------------------- the policy
@@ -409,7 +552,8 @@ class Policy(unittest.TestCase):
             (situation(repeats=2), "lookup", "lookup.third_party"),
             (situation(eligible=("repair", "lookup", "web", "stop")), "lookup", "lookup.third_party"),
             (situation("missing_dependency", eligible=("repair", "web", "stop"), error="ModuleNotFoundError"),
-             "web", "web.missing_dependency"),
+             "repair", "repair.default"),  # a module installed nowhere is never searched for: its name may be private
+            (situation("local", eligible=("repair", "lookup", "web", "stop")), "repair", "repair.default"),
             (situation(eligible=("repair", "web", "stop")), "web", "web.third_party"),
             (situation(eligible=("repair", "stop")), "repair", "repair.default"),
             (situation("missing_dependency", eligible=("repair", "stop")), "repair", "repair.default"),
@@ -430,7 +574,7 @@ class Policy(unittest.TestCase):
 
     def test_a_lookup_query_names_the_package_version_and_symbol_and_nothing_else(self):
         found = router.Diagnosis("tests", "failed", "third_party", error="ImportError", module="fakelib",
-                                 symbol="fakelib.fetch_all", distribution="fakelib", version="2.0.0",
+                                 symbol="fetch_all", distribution="fakelib", version="2.0.0",
                                  version_source="traceback_site")
         need = router.githits_need(found)
         self.assertEqual((need.query, need.target, need.route), (QUERY, "pypi:fakelib@2.0.0", "githits"))
@@ -439,9 +583,13 @@ class Policy(unittest.TestCase):
                                                         module="fakelib", symbol="Session.get", distribution="fakelib"))
         self.assertEqual((unpinned.query, unpinned.target, unpinned.record()["pin"]),
                          ("fakelib Session.get signature parameters", "pypi:fakelib", "unavailable"))
-        web = router.web_need(router.Diagnosis("tests", "failed", "missing_dependency", error="ModuleNotFoundError",
-                                               module="fakelib_two", symbol="fakelib_two"))
-        self.assertEqual((web.query, web.target), ("python package that provides module fakelib_two", None))
+        namespaced = router.githits_need(router.Diagnosis("tests", "failed", "third_party", error="AttributeError",
+                                                          module="acme", symbol="Blob.upload",
+                                                          distribution="acme-two", version="2.0"))
+        self.assertEqual(namespaced.query, "acme-two 2.0 Blob.upload attribute", "the distribution, not 'acme'")
+        web = router.web_need(found)
+        self.assertEqual((web.query, web.target, web.key), (f"python {QUERY}", None, found.need()),
+                         "the web is asked the same question, which the holdout draws once for both routes")
         self.assertEqual(need.key, found.need())
         self.assertNotIn(QUERY, json.dumps(need.record()), "the record holds the query's digest and length only")
         self.assertEqual(need.record()["query_chars"], len(QUERY))
@@ -502,6 +650,8 @@ class Routing(RouterCase):
                                             "guard": "pass"})
         self.assertEqual((lookup["routes"], lookup["score"], lookup["repeats"], lookup["carried"]),
                          ({"githits": "ready", "web": "none"}, [0, 0], 1, []))
+        self.assertEqual((propose["last_outcome"], lookup["last_outcome"]), (None, "failed"))
+        self.assertEqual(lookup["diagnosis"]["vouched"], "import")
         calls = self.facts(thread, router.LOOKUP)
         self.assertEqual([(b["version"], b["value"]["tool"], b["value"]["status"], b["value"]["ok"],
                            b["value"]["guard"], b["value"]["results_returned"]) for b in calls],
@@ -538,11 +688,15 @@ class Routing(RouterCase):
         self.assertEqual((rows[1]["lookups"]["calls"], rows[1]["lookups"]["ok"], rows[1]["lookups"]["results"],
                           rows[1]["lookups"]["tools"]), (2, 2, 2, ["githits.read", "githits.search"]))
         self.assertIsInstance(after["evaluation_ms"], int)
+        self.assertEqual((after["evidence_passed"], after["registered"], after["booked_dollars"], after["calls_booked"],
+                          rows[1]["dollars_to_pass"]), (True, True, None, 1, None),
+                         "an unpriced contract books no dollars")
         found = router.summary(rows)
         self.assertEqual((found["lookup"]["decisions"], found["lookup"]["passed"], found["lookup"]["pass_rate"],
-                          found["lookup"]["githits_calls_per_lookup"], found["lookup"]["with_results"]),
-                         (1, 1, 1.0, 2.0, 1))
-        self.assertEqual((found["by_action"]["propose"]["passed"], found["holdout"]), (0, None))
+                          found["lookup"]["calls_per_lookup"], found["lookup"]["with_results"],
+                          found["lookup"]["evidence_passed"]), (1, 1, 1.0, 2.0, 1, 1))
+        self.assertEqual((found["by_action"]["propose"]["passed"], found["holdout"], found["web"]["decisions"]),
+                         (0, None, 0))
 
     def test_without_the_read_the_summary_alone_did_not_say_enough_and_the_record_shows_it(self):
         kit = self.kit()
@@ -585,16 +739,145 @@ class Routing(RouterCase):
         self.assertEqual(searches, [QUERY, "fakelib 2.0.0 fetch signature parameters"])
         self.assertEqual(router.summary(router.attribution(thread.history()))["lookup"]["passed"], 1)
 
+    def test_a_name_the_repository_defines_never_leaves_the_machine(self):
+        """The library calls the repository's callback with the wrong arity: the failure names the callback, which is
+        the repository's, so neither GitHits nor the web is asked about it."""
+        script = self.folder / "callback.py"
+        script.write_text(textwrap.dedent(f'''\
+            import json, sys
+            from pathlib import Path
+            LOG = {str(self.folder / "callback.log")!r}
+            json.load(sys.stdin)
+            log = Path(LOG)
+            calls = log.read_text().count("\\n") if log.exists() else 0
+            with log.open("a") as f:
+                f.write("x\\n")
+            text = ("import fakelib\\n\\n\\ndef compute_acme_customer_ssn_hash():\\n    return 0\\n\\n\\n"
+                    "def get(url):\\n    return fakelib.each([url], compute_acme_customer_ssn_hash)  # %d\\n" % calls)
+            print(json.dumps({{"candidates": [{{"changes": {{"src/client.py": text}}}}], "usage": {{
+                "input_tokens": 100, "output_tokens": 20, "model": "stand-in", "simulated": True}}}}))
+            '''), encoding="utf-8")
+        queries = []
+
+        class Search:
+            name = "web"
+
+            def search(self, query, *, timeout):
+                queries.append(query)
+                return router.WebAnswer("ok", "anything", 1, "w")
+
+        kit = self.kit()
+        thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+        provider = router.RouterProvider([PY, str(script)], max_calls=2,
+                                         router=router.RouterConfig(githits=self.route(), web=Search()))
+        thread.propose(provider, seed=1)
+        second = [b["value"] for b in self.facts(thread, router.ROUTE)][1]
+        diagnosis = second["diagnosis"]
+        self.assertEqual((diagnosis["kind"], diagnosis["distribution"], diagnosis["error"], diagnosis["why"],
+                          diagnosis["symbol_digest"], diagnosis["vouched"]),
+                         ("third_party", "fakelib", "TypeError", "raised in a third-party frame", None, None))
+        self.assertEqual((second["action"], second["rule"], second["eligible"]),
+                         ("repair", "repair.default", ["repair", "stop"]))
+        self.assertEqual((self.fake.requests, queries), ([], []))
+
     def test_refused_proposals_keep_their_decisions_and_attribution(self):
         kit = self.kit()
         thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
         found = thread.propose(self.routed(mode="empty_first"), seed=1)
         self.assertEqual([c.evaluation for c in found], ["failed", "passed"])
         rows = router.attribution(thread.history())
-        self.assertEqual([(r["rule"], r["after"]["outcome"], r["calls_to_pass"]) for r in rows],
-                         [("propose.first", "refused:no_change", 3), ("propose.again", "failed", 2),
-                          ("lookup.third_party", "passed", 1)])
+        self.assertEqual([(r["rule"], r["after"]["outcome"], r["calls_to_pass"], r["after"]["calls_booked"])
+                          for r in rows],
+                         [("propose.first", "refused:no_change", 3, None), ("propose.again", "failed", 2, 2),
+                          ("lookup.third_party", "passed", 1, 1)],
+                         "the refused call's usage is booked at the next registration, which covers two calls")
         self.assertEqual(validate_events(thread.history(), "router-refused"), [])
+
+    def test_the_attempt_is_the_first_items_and_its_cost_is_what_the_host_booked(self):
+        """Two candidates in one answer: the second is refused ``limit`` before the first is submitted; the first is
+        the attempt, here refused by the host as the parent's own tree. Each call costs $1.00 on a priced contract."""
+        script = self.folder / "pair.py"
+        script.write_text(textwrap.dedent(f'''\
+            import json, sys
+            from pathlib import Path
+            V1, RIGHT, LOG = {V1!r}, {RIGHT!r}, {str(self.folder / "pair.log")!r}
+            json.load(sys.stdin)
+            log = Path(LOG)
+            calls = log.read_text().count("\\n") if log.exists() else 0
+            with log.open("a") as f:
+                f.write("x\\n")
+            items = ([{{"changes": {{"src/client.py": V1}}}}] if calls == 0 else
+                     [{{"changes": {{"src/client.py": V1}}}}, {{"changes": {{"src/client.py": RIGHT}}}}] if calls == 1
+                     else [{{"changes": {{"src/client.py": RIGHT}}}}])
+            print(json.dumps({{"candidates": items, "usage": {{"input_tokens": 100, "output_tokens": 20,
+                                                            "model": "stand-in", "simulated": True}}}}))
+            '''), encoding="utf-8")
+        prices = {"stand-in": {"input_per_million": 10000, "output_per_million": 0}}  # $1.00 per call
+        kit = self.kit(self.contract(prices=prices))
+        thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+        provider = router.RouterProvider([PY, str(script)], router=router.RouterConfig(githits=self.route()))
+        thread.propose(provider, seed=1)
+        refusals = [b["value"]["reason"] for b in self.facts(thread, "proposal_refused")]
+        self.assertEqual(refusals, ["limit", "no_change"])
+        rows = router.attribution(thread.history())
+        self.assertEqual([(r["action"], r["after"]["outcome"], r["after"]["booked_dollars"], r["after"]["calls_booked"],
+                           r["after"]["input_tokens"], r["calls_to_pass"], r["dollars_to_pass"]) for r in rows],
+                         [("propose", "failed", 1.0, 1, 100, 3, 3.0),
+                          ("lookup", "refused:no_change", None, None, None, 2, 2.0),
+                          ("repair", "passed", 2.0, 2, 100, 1, 2.0)],
+                         "the host's refusal, not limit; the refused call's dollar is booked at the next attempt")
+        self.assertEqual(rows[1]["after"]["evidence_passed"], True, "the next attempt carried the lookup and passed")
+        self.assertEqual(rows[2]["carried"], [2])
+        self.assertEqual(router.summary(rows)["lookup"]["evidence_passed"], 1)
+
+    def test_an_attempt_outside_the_scope_is_recorded_as_such(self):
+        script = self.folder / "outside.py"
+        script.write_text(textwrap.dedent(f'''\
+            import json, sys
+            from pathlib import Path
+            V1, RIGHT, LOG = {V1!r}, {RIGHT!r}, {str(self.folder / "outside.log")!r}
+            json.load(sys.stdin)
+            log = Path(LOG)
+            calls = log.read_text().count("\\n") if log.exists() else 0
+            with log.open("a") as f:
+                f.write("x\\n")
+            changes = [{{"src/client.py": V1}}, {{"README.md": "out of scope\\n"}}, {{"src/client.py": RIGHT}}][calls]
+            print(json.dumps({{"candidates": [{{"changes": changes}}], "usage": {{"input_tokens": 100,
+                              "output_tokens": 20, "model": "stand-in", "simulated": True}}}}))
+            '''), encoding="utf-8")
+        contract = self.contract()
+        contract["evolution"]["scope"]["paths"] = ["src/", "tests/"]
+        kit = self.kit(contract)
+        thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+        thread.propose(router.RouterProvider([PY, str(script)], router=router.RouterConfig(githits=self.route())),
+                       seed=1)
+        rows = router.attribution(thread.history())
+        self.assertEqual([(r["action"], r["after"]["outcome"]) for r in rows],
+                         [("propose", "failed"), ("lookup", "out_of_scope"), ("repair", "passed")])
+
+    def test_a_provider_error_is_the_attempts_outcome(self):
+        script = self.folder / "crash.py"
+        script.write_text(textwrap.dedent(f'''\
+            import json, sys
+            from pathlib import Path
+            V1, LOG = {V1!r}, {str(self.folder / "crash.log")!r}
+            json.load(sys.stdin)
+            log = Path(LOG)
+            calls = log.read_text().count("\\n") if log.exists() else 0
+            with log.open("a") as f:
+                f.write("x\\n")
+            if calls:
+                sys.exit(4)
+            print(json.dumps({{"candidates": [{{"changes": {{"src/client.py": V1}}}}], "usage": {{
+                "input_tokens": 100, "output_tokens": 20, "model": "stand-in", "simulated": True}}}}))
+            '''), encoding="utf-8")
+        kit = self.kit()
+        thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+        thread.propose(router.RouterProvider([PY, str(script)], router=router.RouterConfig(githits=self.route())),
+                       seed=1)
+        rows = router.attribution(thread.history())
+        self.assertEqual([(r["action"], r["after"]["outcome"]) for r in rows],
+                         [("propose", "failed"), ("lookup", "provider_error")])
 
 
 class Stops(RouterCase):
@@ -671,6 +954,42 @@ class Stops(RouterCase):
         self.assertEqual([r["path"] for r in self.fake.requests], ["/v1/searches"], "nothing to read")
         self.assertNotIn("evidence", self.requests("model")[1])
 
+    def test_after_a_slow_lookup_the_budget_is_read_again_before_the_model_call(self):
+        class Slow:
+            name = "web"
+
+            def search(self, query, *, timeout):
+                time.sleep(4.2)  # past the search's whole budget, whatever timeout it was given
+                return router.WebAnswer("ok", f"{SIGNATURE}: a keyword-only timeout", 1, "w-slow")
+
+        kit = self.kit(self.contract(max_seconds=4))
+        thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+        provider = router.RouterProvider(self.adapter("model"), router=router.RouterConfig(web=Slow()))
+        thread.propose(provider, seed=1)
+        values = [b["value"] for b in self.facts(thread, router.ROUTE)]
+        self.assertEqual([(v["action"], v["rule"], v["last_outcome"]) for v in values],
+                         [("propose", "propose.first", None), ("web", "web.third_party", "failed"),
+                          ("stop", "stop.budget", "none")])
+        self.assertEqual(len(self.requests("model")), 1, "no model call after the lookup spent the budget")
+        self.assertEqual(router.attribution(thread.history())[1]["after"]["outcome"], "none")
+
+    def test_a_malformed_answer_is_still_journaled_and_never_ends_the_search(self):
+        hit = fakelib_hit()
+        hit["locator"] = "fakelib/__init__.py"  # a string where the contract has an object
+        self.fake.serve("/v1/searches", search_response([hit]))
+        kit = self.kit()
+        thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+        provider = self.routed()
+        provider.max_calls = 2
+        thread.propose(provider, seed=1)
+        self.assertEqual([r["path"] for r in self.fake.requests], ["/v1/searches"])
+        calls = [b["value"] for b in self.facts(thread, router.LOOKUP)]
+        self.assertEqual([(v["tool"], v["status"]) for v in calls], [("githits.search", "ok")],
+                         "the call reached GitHits, so it is journaled even though its answer could not be used")
+        [item] = metrics.work_items(thread.history())
+        self.assertEqual(item.githits_lookups.value, 1)
+        self.assertEqual(len(self.requests("model")), 2, "the search went on")
+
     def test_a_query_the_guard_blocks_is_not_a_lookup(self):
         (self.root / "src" / "notes.txt").write_text(f"{QUERY}\n", encoding="utf-8")  # a line of the repository
         self.commit("notes")
@@ -696,35 +1015,80 @@ class Holdout(RouterCase):
         thread.propose(provider, seed=1)
         second = [b["value"] for b in self.facts(thread, router.ROUTE)][1]
         self.assertEqual((second["action"], second["rule"], second["lookup"]), ("repair", "holdout", None))
-        self.assertEqual(second["holdout"], {"p": 1.0, "chosen": "lookup", "rule": "lookup.third_party",
-                                             "held_out": True})
+        expected = random.Random(f"{router.HOLDOUT_SALT}:{thread.id}:s1:1").random()
+        self.assertEqual(second["holdout"], {"p": 1.0, "u": round(expected, 6), "chosen": "lookup",
+                                             "rule": "lookup.third_party", "held_out": True})
         self.assertEqual(self.fake.requests, [], "a held-out lookup reaches nobody")
-        found = router.summary(router.attribution(thread.history()))["holdout"]
+        found = router.summary(router.attribution(thread.history()))["holdout"]["all"]
         self.assertEqual((found["held_out"]["decisions"], found["held_out"]["evaluated"],
-                          found["looked_up"]["decisions"], found["difference"]), (1, 1, 0, None))
+                          found["looked_up"]["decisions"], found["difference"]["pass_rate"]), (1, 1, 0, None))
 
-    def test_the_draw_is_seeded_so_a_run_can_be_repeated(self):
-        seeds = {}
-        for seed in range(40):
-            held = random.Random(f"{router.HOLDOUT_SALT}:{seed}").random() < 0.5
-            seeds.setdefault(held, seed)
-            if len(seeds) == 2:
-                break
+    def test_a_held_out_question_stays_unasked_on_every_route(self):
+        queries = []
+
+        class Search:
+            name = "web"
+
+            def search(self, query, *, timeout):
+                queries.append(query)
+                return router.WebAnswer("ok", SIGNATURE, 1, "w")
+
         kit = self.kit()
-        for held, seed in seeds.items():
-            with self.subTest(held=held):
-                thread = kit.start(f"Fetch a URL with fakelib (seed {seed})", paths=["src/", "tests/"])
-                provider = self.routed(name=f"model{seed}", holdout=0.5)
-                provider.max_calls = 2
-                thread.propose(provider, seed=seed)
-                second = [b["value"] for b in self.facts(thread, router.ROUTE)][1]
-                self.assertEqual(second["holdout"]["held_out"], held)
-                self.assertEqual(second["action"], "repair" if held else "lookup")
+        thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+        thread.propose(self.routed(mode="stubborn", holdout=1.0, web=Search()), seed=1)
+        values = [b["value"] for b in self.facts(thread, router.ROUTE)]
+        self.assertEqual([(v["action"], v["rule"], bool(v["holdout"]), v["blocked"]) for v in values],
+                         [("propose", "propose.first", False, None), ("repair", "holdout", True, None),
+                          ("repair", "repair.default", False, {"lookup": "holdout", "web": "holdout"}),
+                          ("stop", "stop.no_progress", False, {"lookup": "holdout", "web": "holdout"})],
+                         "one draw for the question; after it, neither GitHits nor the web is asked it")
+        self.assertEqual((self.fake.requests, queries), ([], []))
+
+    def test_each_work_item_draws_its_own_and_a_search_can_be_repeated(self):
+        """``--seed`` is 0 for every item by default: the draw still differs from item to item, because the stream
+        is seeded by the thread and the search too, and the same thread, search and seed draw the same again."""
+        kit = self.kit()
+        drawn = []
+        for item in range(4):
+            thread = kit.start(f"Fetch a URL with fakelib, item {item}", paths=["src/", "tests/"])
+            provider = self.routed(name=f"model{item}", holdout=0.5)
+            provider.max_calls = 2
+            thread.propose(provider, seed=0)
+            [value] = [b["value"] for b in self.facts(thread, router.ROUTE) if b["value"]["holdout"]]
+            expected = random.Random(f"{router.HOLDOUT_SALT}:{thread.id}:s1:0").random()
+            self.assertEqual((value["holdout"]["u"], value["holdout"]["held_out"]),
+                             (round(expected, 6), expected < 0.5))
+            self.assertEqual(value["action"], "repair" if expected < 0.5 else "lookup")
+            drawn.append(value["holdout"]["u"])
+        self.assertEqual(len(set(drawn)), len(drawn), "every item drew its own number")
         rows = router.attribution(e for t in kit.journal.thread_ids() for e in kit.session.history(t))
         found = router.summary(rows)["holdout"]
-        self.assertEqual((found["looked_up"]["decisions"], found["held_out"]["decisions"]), (1, 1))
-        self.assertEqual(found["looked_up"]["passed"], 1)
-        self.assertEqual(found["difference"], 1.0, "looked up: passed next; held out: did not")
+        self.assertEqual(found["all"]["looked_up"]["decisions"] + found["all"]["held_out"]["decisions"], 4)
+        self.assertEqual(found["first_per_thread"], found["all"], "one draw per item here")
+        self.assertEqual(found["all"]["looked_up"]["passed"], found["all"]["looked_up"]["decisions"],
+                         "every lookup here is followed by a pass; no held-out repair is")
+        self.assertEqual(found["all"]["held_out"]["passed"], 0)
+
+    def test_the_comparison_counts_every_drawn_decision(self):
+        """Intention to treat: a refused or unevaluated attempt after a draw is a decision that did not pass, never a
+        row dropped from its group (the reviewer's case: four of ten passed against six of ten, not 1.0 against 0.6)."""
+        def row(thread, held, outcome, decision=2):
+            return {"thread": thread, "decision": decision, "action": "repair" if held else "lookup",
+                    "holdout": {"p": 0.5, "u": 0.1, "chosen": "lookup", "rule": "lookup.third_party", "held_out": held},
+                    "calls_to_pass": 1 if outcome == "passed" else None, "dollars_to_pass": None,
+                    "lookups": {"calls": 0 if held else 2, "results": 0 if held else 1, "latency_ms": 0},
+                    "after": {"outcome": outcome, "trigger_fixed": outcome == "passed", "same_failure": None,
+                              "booked_dollars": None, "evidence_passed": None}}
+        rows = ([row(f"a{i}", False, "passed") for i in range(4)] + [row(f"b{i}", False, "refused:no_change")
+                                                                    for i in range(6)]
+                + [row(f"c{i}", True, "passed") for i in range(6)] + [row(f"d{i}", True, "failed") for i in range(4)]
+                + [row("a0", False, "failed", decision=4)])  # a second draw in one item: not independent
+        found = router.summary(rows)["holdout"]
+        self.assertEqual((found["all"]["looked_up"]["pass_rate"], found["all"]["held_out"]["pass_rate"],
+                          found["all"]["difference"]["pass_rate"]), (round(4 / 11, 6), 0.6, round(4 / 11 - 0.6, 6)))
+        self.assertEqual((found["first_per_thread"]["looked_up"]["pass_rate"],
+                          found["first_per_thread"]["difference"]["pass_rate"]), (0.4, -0.2))
+        self.assertEqual(found["first_per_thread"]["looked_up"]["threads"], 10)
 
 
 class Deciders(RouterCase):
@@ -745,13 +1109,19 @@ class Deciders(RouterCase):
                          "the web is not open here (no route), so the baseline's choice stands")
         self.assertEqual(seen[0].baseline, router.Choice("lookup", "lookup.third_party", seen[0].baseline.reason))
         self.assertEqual([c.evaluation for c in found], ["failed", "passed"], "no second decision was needed")
-        broken = router.FunctionDecider(lambda _found: (_ for _ in ()).throw(ValueError("model offline")), name="b")
-        other = kit.start("Fetch a URL with fakelib (broken decider)", paths=["src/", "tests/"])
-        other.propose(self.routed(name="model2", decider=broken), seed=1)
-        note = [b["value"] for b in self.facts(other, router.ROUTE)][1]
-        self.assertEqual((note["decider"], note["rule"]), ({"name": "b@1", "error": "decider_error"},
-                                                           "lookup.third_party"),
-                         "a decider that fails never ends the search: the baseline decides")
+        for number, error in enumerate((ValueError("model offline"), RuntimeError("anything at all"))):
+            broken = router.FunctionDecider(lambda _found, error=error: (_ for _ in ()).throw(error), name="b")
+            other = kit.start(f"Fetch a URL with fakelib (broken decider {number})", paths=["src/", "tests/"])
+            other.propose(self.routed(name=f"broken{number}", decider=broken), seed=1)
+            note = [b["value"] for b in self.facts(other, router.ROUTE)][1]
+            self.assertEqual((note["decider"], note["rule"]), ({"name": "b@1", "error": "decider_error"},
+                                                               "lookup.third_party"),
+                             "a decider that fails, however, never ends the search: the baseline decides")
+        failing_policy = type("Failing", (), {"name": "failing", "revision": "1",
+                                              "decide": lambda self, situation: 1 / 0})()
+        third = kit.start("Fetch a URL with fakelib (failing policy)", paths=["src/", "tests/"])
+        third.propose(self.routed(name="policy", policy=failing_policy), seed=1)
+        self.assertEqual([b["value"]["rule"] for b in self.facts(third, router.ROUTE)][1], "lookup.third_party")
 
     def test_a_command_decider_reads_the_situation_and_its_usage_is_journaled(self):
         log = self.folder / "decider.log"
@@ -796,7 +1166,7 @@ class Deciders(RouterCase):
 
 
 class Web(RouterCase):
-    def test_a_module_installed_nowhere_is_searched_on_the_web(self):
+    def test_without_githits_the_web_is_asked_the_same_question(self):
         queries = []
 
         class Search:
@@ -804,27 +1174,47 @@ class Web(RouterCase):
 
             def search(self, query, *, timeout):
                 queries.append((query, timeout))
-                return router.WebAnswer("ok", "1. fakelib provides fetch(url, *, timeout); fakelib_two does not exist",
-                                        1, "w-1")
+                return router.WebAnswer("ok", f"1. fakelib 2.0 changelog: fetch_all became {SIGNATURE}", 1, "w-1")
 
         kit = self.kit()
         thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
-        provider = self.routed(mode="missing", web=Search())
+        provider = router.RouterProvider(self.adapter("model"), router=router.RouterConfig(web=Search()))
         found = thread.propose(provider, seed=1)
         self.assertEqual([c.evaluation for c in found], ["failed", "passed"])
-        self.assertEqual([q for q, _t in queries], ["python package that provides module fakelib_two"])
+        self.assertEqual([q for q, _t in queries], [f"python {QUERY}"])
         second = [b["value"] for b in self.facts(thread, router.ROUTE)][1]
-        self.assertEqual((second["action"], second["rule"], second["diagnosis"]["kind"], second["eligible"]),
-                         ("web", "web.missing_dependency", "missing_dependency", ["repair", "web", "stop"]))
+        self.assertEqual((second["action"], second["rule"], second["diagnosis"]["kind"], second["eligible"],
+                          second["routes"]), ("web", "web.third_party", "third_party", ["repair", "web", "stop"],
+                                              {"githits": "none", "web": "ready"}))
         [call] = self.facts(thread, router.LOOKUP)
         self.assertEqual((call["version"], call["value"]["tool"], call["value"]["ok"],
                           call["value"]["results_returned"], call["value"]["request_id"], call["value"]["guard"]),
                          ("s1.r2.1", router.WEB_TOOL, True, 1, "w-1", "pass"))
         [evidence] = self.requests("model")[1]["evidence"]
         self.assertEqual((evidence["route"], evidence["target"]), ("web", None))
-        self.assertEqual(self.fake.requests, [], "GitHits has no installed distribution to target here")
         [item] = metrics.work_items(thread.history())
         self.assertEqual(item.githits_lookups.value, None, "a web search is not a GitHits lookup")
+        self.assertEqual(router.summary(router.attribution(thread.history()))["web"]["evidence_passed"], 1)
+
+    def test_a_module_installed_nowhere_is_repaired_and_its_name_never_leaves(self):
+        queries = []
+
+        class Search:
+            name = "web"
+
+            def search(self, query, *, timeout):
+                queries.append(query)
+                return router.WebAnswer("ok", "anything", 1, "w")
+
+        kit = self.kit()
+        thread = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+        provider = self.routed(mode="missing", web=Search())
+        provider.max_calls = 2
+        thread.propose(provider, seed=1)
+        second = [b["value"] for b in self.facts(thread, router.ROUTE)][1]
+        self.assertEqual((second["action"], second["rule"], second["diagnosis"]["kind"], second["eligible"]),
+                         ("repair", "repair.default", "missing_dependency", ["repair", "stop"]))
+        self.assertEqual((queries, self.fake.requests), ([], []))
 
     def test_the_web_command_seam(self):
         log = self.folder / "web.log"

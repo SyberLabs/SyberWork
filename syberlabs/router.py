@@ -23,8 +23,9 @@ decides, as admission is one ordered list of rules. ``stop.budget`` and ``stop.c
 first. ``Decider`` is the seam for a small decider model: ``CommandDecider`` runs one with JSON on stdin and stdout
 under the host's meter, like any model call, in an environment without the GitHits variables. A decider's choice
 stands only when its action is eligible in the situation; otherwise the baseline's stands and the refusal is
-recorded. ``holdout`` replaces a lookup the policy chose with a repair at a seeded random rate and records it, so
-the value of a lookup can be read against its absence.
+recorded. ``holdout`` replaces a lookup the policy chose with a repair at a random rate, drawn once per question
+from a stream seeded by the thread, the search and the seed, and records the draw, so the value of a lookup can be
+read against its absence.
 
 The diagnosis (``diagnose``) reads the failed checks' output tails as the host recorded them: the last Python
 exception line and the traceback frames before it (CPython's format; pytest's short and long formats in part). A
@@ -32,30 +33,41 @@ frame is the repository's when its path ends with an in-scope file, third-party 
 ``site-packages`` or ``dist-packages`` directory, the standard library's when it lies under the interpreter's
 library. An ``ImportError``, ``ModuleNotFoundError``, ``AttributeError`` or ``TypeError`` names a module, or names a
 symbol that a third-party frame raised or that the failing repository file binds with an import (read with ``ast``,
-never run). That module is the repository's own (``repo``: repair), the standard library's (``stdlib``: repair), an
-installed distribution (``third_party``: a GitHits lookup at its version), installed nowhere (``missing_dependency``:
-a web search), or not known (``unknown``: repair). The installed version comes from the ``*.dist-info`` beside the
-traceback's own ``site-packages`` frames (the environment the check ran in: ``traceback_site``), else from the host
-interpreter's metadata (``host_metadata``), else it is unavailable and GitHits gets no lookup, since an unpinned
+never run). That module is the repository's own (``repo``: repair), the standard library's (``stdlib``: repair), a
+published installed distribution (``third_party``: a GitHits lookup at its version, or a web search when GitHits
+cannot answer), a distribution installed from a local path or a URL (``local``: repair), installed nowhere
+(``missing_dependency``: repair; its name may be private, and no search installs it), or not known (``unknown``:
+repair). The installed version comes from the ``*.dist-info`` of the distribution that installed the module, beside
+the traceback's own ``site-packages`` frames (the environment the check ran in: ``traceback_site``), else from the
+host interpreter's metadata (``host_metadata``), else it is unavailable and nothing is looked up, since an unpinned
 target would answer for another version; the evidence the model reads says where the version came from
 (``CLAUDE.md``: never present another version as the installed one).
+
+What leaves the machine. A query is the published distribution's name, its version, the library's own name for the
+failing symbol and a fixed phrase (``vouch``): a name the repository's readable files define is dropped, and when the
+library raised the failure, a name is kept only if the distribution's own files show it, since the object or
+callback the message names may be the caller's. Then the query guard judges it. Nothing else is sent: no output
+text, no path, no file content.
 
 What is journaled, through ``SearchSpace.observe`` as verified host observations:
 
 - ``route``: one per decision, written before anything it decides runs, versioned ``<search>.r<n>``: the action, the
-  deciding rule, a reason built from a closed vocabulary and package names, the eligible actions, the decider's note,
-  the holdout draw, the diagnosis as names, counts and digests (never output text, query text or file content), the
-  scores and repeats it read, the lookup's target, query digest and length, the evidence the next call carries over
-  from earlier lookups, and the budget left;
-- ``lookup``: one per GitHits call, built from the client's own signed record as the Claude Code route builds it
-  (``claude_code.record_lookup``: tool ``githits.<op>``), versioned ``<search>.r<n>.<k>``, so
-  ``metrics.githits_lookups`` counts the router's lookups as host-observed; one per web search, tool ``router.web``.
+  deciding rule, a reason built from a closed vocabulary and package names, the eligible actions and the routes closed
+  with why (the guard's rule, or ``holdout``), the decider's note, the holdout draw, what became of the attempt before
+  it, the diagnosis as names, counts and digests (never output text, query text or file content), the scores and
+  repeats it read, the lookup's target, query digest and length, the evidence the next call carries over from earlier
+  lookups, and the budget left;
+- ``lookup``: one per GitHits call that left (read back from the client's own signed records whatever happened after
+  the request), built as the Claude Code route builds it (``claude_code.record_lookup``: tool ``githits.<op>``),
+  versioned ``<search>.r<n>.<k>``, so ``metrics.githits_lookups`` counts the router's lookups as host-observed; one per
+  web search, tool ``router.web``.
 
 ``attribution(events)`` is a pure function of the journal, like ``metrics.work_items``: one row per decision with the
-attempt that followed it (passed, the triggering check fixed, the same failure again, the score it gained), what that
-attempt cost (host-observed dollars and tokens of its call, its evaluation time, the lookup's calls and latency) and
-the calls from the decision to the search's first pass. ``summary`` reads the rows per action and per lookup, with
-the randomized holdout comparison when one ran.
+attempt that followed it (passed, the triggering check fixed, the same failure again, the score it gained, whether
+an attempt carrying a lookup's evidence passed), what it cost (the dollars the host booked at its registration, the
+tokens of its call, its evaluation time, the lookup's calls and latency) and the calls and dollars from the decision
+to the search's first pass. ``summary`` reads the rows per decision (every decision in the denominator), per action
+and per lookup, with the randomized holdout comparison when one ran.
 
 Claim ceiling: implemented and tested against stand-ins and a loopback fake GitHits. Nothing here has run against a
 model or the real GitHits API, and nothing is measured.
@@ -64,6 +76,7 @@ model or the real GitHits API, and nothing is measured.
 from __future__ import annotations
 
 import ast
+import functools
 import hashlib
 import importlib.metadata
 import json
@@ -85,6 +98,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from syberlabs import githits, metrics, query_guard
+from syberlabs.build import SearchStopped
 from syberlabs.canonical import canonical
 from syberlabs.claude_code import DROPPED_ENV, githits_variable, record_lookup
 from syberlabs.errors import Rejected
@@ -99,11 +113,13 @@ PROPOSE = "propose"        # the first call of a search: nothing evaluated yet t
 ACTIONS = ("repair", "lookup", "web", "stop")
 LOOKUP_ACTIONS = ("lookup", "web")
 CALL_ACTIONS = (PROPOSE, "repair", "lookup", "web")  # each precedes exactly one model call
-KINDS = ("third_party", "repo", "stdlib", "missing_dependency", "unknown")
+# ``local``: a distribution installed from a local path or a URL (PEP 610 ``direct_url.json``, an editable install
+# included), not a published release: possibly private, so never named outward, and never pinned as a PyPI target.
+KINDS = ("third_party", "repo", "stdlib", "local", "missing_dependency", "unknown")
 LOOKUP_ERRORS = ("ImportError", "ModuleNotFoundError", "AttributeError", "TypeError")
 # The order decisions are taken in: the router's two hard stops, then the baseline policy's rules.
-RULES = ("stop.budget", "stop.calls", "stop.no_progress", "lookup.third_party", "web.missing_dependency",
-         "web.third_party", "repair.repo", "repair.default")
+RULES = ("stop.budget", "stop.calls", "stop.no_progress", "lookup.third_party", "web.third_party", "repair.repo",
+         "repair.default")
 PROTOCOL = "syberlabs.route/v0alpha1"     # a decider command's request
 WEB_PROTOCOL = "syberlabs.web/v0alpha1"   # a web search command's request
 AGENT = "syberfactory/router"             # X-GitHits-Agent of the router's lookups
@@ -114,6 +130,8 @@ MAX_REASON, MAX_NAME, MAX_ERROR_LINE = 200, 64, 300
 MAX_COMMAND_BYTES = 1024 * 1024
 READ_SPAN = 60                            # lines read at the top hit when the hit gives no span
 MAX_TREE_FILES = 500                      # in-scope base files the query guard's tree rule reads per search
+MAX_LIBRARY_FILES = 2000                  # of a distribution's Python files read to vouch for a name as the library's
+MAX_LIBRARY_BYTES = 32 * 1024 * 1024      # read in all, per name
 HOLDOUT_SALT = "syberlabs.router.holdout"
 # The few words a query adds after the package, its version and the symbol, by the failure's class.
 PHRASE = {"ImportError": "import name", "ModuleNotFoundError": "module name", "AttributeError": "attribute",
@@ -125,8 +143,8 @@ _TRACEBACK = re.compile(r"^(?:E\s+)?Traceback \(most recent call last\):\s*$")
 _CHAINED = ("During handling of the above exception", "The above exception was the direct cause")
 _SEPARATOR = re.compile(r"^\s*(?:={5,}|-{5,}|_{5,})")  # unittest's and pytest's section rules
 _FRAME = re.compile(r'^\s*(?:E\s+)?File "(?P<path>[^"]+)", line (?P<line>\d+)(?:, in (?P<func>.+?))?\s*$')
-_PYTEST_FRAME = re.compile(r"^(?P<path>[^\s:][^:]*\.py):(?P<line>\d+):(?: in (?P<func>\S+))?\s*"
-                           r"(?P<error>[A-Za-z_]\w*)?\s*$")
+_PYTEST_FRAME = re.compile(r"^(?P<path>(?:[A-Za-z]:)?[^\s:][^:]*\.py):(?P<line>\d+):(?: in (?P<func>\S+))?\s*"
+                           r"(?P<error>[A-Za-z_]\w*)?\s*$")  # a Windows path starts with its drive
 _PYTEST_SOURCE = re.compile(r"^>\s+(?P<source>\S.*)$")
 _EXCEPTION = re.compile(r"^(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::(?P<message>.*))?$")
 _CARETS = re.compile(r"^\s*[~^\s]+$")
@@ -252,77 +270,234 @@ def classify_frame(path: str, line: int, function: str, source: str, files: froz
 
 
 def repo_modules(paths: Iterable[str]) -> frozenset[str]:
-    """The top-level names the repository's own files make importable: every directory name and every ``.py``
-    file's stem, outside ``site-packages`` and ``dist-packages`` (vendored distributions are third-party)."""
+    """The names the repository's own Python files make importable: every ``.py`` file's stem and every directory
+    on the way to one, outside ``site-packages`` and ``dist-packages`` (vendored distributions are third-party). A
+    directory that holds no Python file (``fixtures/requests/``) makes nothing importable."""
     names: set[str] = set()
     for path in paths:
         parts = [part for part in str(path).replace("\\", "/").split("/") if part]
-        if not parts or any(part in ("site-packages", "dist-packages") for part in parts):
+        if not parts or not parts[-1].endswith(".py") or any(part in ("site-packages", "dist-packages")
+                                                             for part in parts):
             continue
         names.update(part for part in parts[:-1] if part.isidentifier())
-        if parts[-1].endswith(".py") and parts[-1][:-3].isidentifier():
+        if parts[-1][:-3].isidentifier():
             names.add(parts[-1][:-3])
     return frozenset(names)
+
+
+_UNPARSABLE = (SyntaxError, ValueError, RecursionError, MemoryError)  # what ast.parse raises on text it cannot read
 
 
 def import_bindings(text: str | None) -> dict[str, str]:
     """The names a Python file binds by importing them, each to the top-level module it comes from (``"." + name``
     for a relative import). Parsed with ``ast``; nothing is run. Empty for text that does not parse."""
+    return {name: (module if module.startswith(".") else module.split(".")[0])
+            for name, (module, _original) in import_origins(text).items()}
+
+
+def import_origins(text: str | None) -> dict[str, tuple[str, str | None]]:
+    """The names a Python file binds by importing them, each to ``(module, name)``: the module as the import names
+    it (relative imports keep their dots, ``from . import m`` is ``"."``) and the imported name, or None for a module
+    bound by ``import``. An alias maps to the library's own name: ``from fakelib import fetch as get_it`` binds
+    ``get_it`` to ``("fakelib", "fetch")``. Parsed with ``ast``; nothing is run. Empty for text that does not parse."""
     try:
         tree = ast.parse(text or "")
-    except (SyntaxError, ValueError):
+    except _UNPARSABLE:
         return {}
-    found: dict[str, str] = {}
+    found: dict[str, tuple[str, str | None]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                top = alias.name.split(".")[0]
-                found[alias.asname or top] = top
+                if alias.asname:
+                    found[alias.asname] = (alias.name, None)
+                else:
+                    top = alias.name.split(".")[0]
+                    found[top] = (top, None)
         elif isinstance(node, ast.ImportFrom):
-            base = (node.module or "").split(".")[0]
-            top = "." * node.level + base if node.level else base
+            if node.level:
+                base = "." * node.level + (node.module or "").split(".")[0]
+            else:
+                base = node.module or ""
             for alias in node.names:
-                if alias.name != "*" and top:
-                    found[alias.asname or alias.name] = top
+                if alias.name != "*" and base:
+                    found[alias.asname or alias.name] = (base, alias.name)
     return found
 
 
-def _provides(distribution, module: str) -> bool:
+def defined_names(text: str | None) -> frozenset[str]:
+    """The names a Python file defines: its functions, methods and classes, and every name or attribute it assigns.
+    A query never carries one (``vouch``): it is the repository's, not a library's. Parsed with ``ast``; nothing is
+    run. Empty for text that does not parse."""
+    try:
+        tree = ast.parse(text or "")
+    except _UNPARSABLE:
+        return frozenset()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                for part in ast.walk(target):  # what is stored: ``x``, ``self.total``; never the ``self`` it is read on
+                    if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store):
+                        names.add(part.id)
+                    elif isinstance(part, ast.Attribute) and isinstance(part.ctx, ast.Store):
+                        names.add(part.attr)
+    return frozenset(names)
+
+
+@dataclass(frozen=True)
+class Installed:
+    """The installed distribution that provides a module: its name and version, where they were read
+    (``traceback_site`` or ``host_metadata``), whether it is a published release, and its Python files (to vouch for
+    a name as the library's own). Installed from a local path or a URL (PEP 610 ``direct_url.json``, an editable
+    install included), it is not published: possibly private, and no PyPI pin describes it."""
+
+    distribution: str
+    version: str
+    source: str
+    published: bool = True
+    files: tuple[str, ...] = ()
+
+
+def _top_names(distribution) -> list[str]:
     try:
         top = distribution.read_text("top_level.txt")
     except Exception:  # noqa: BLE001  a broken dist-info answers nothing
         top = None
-    if top:
-        return module in top.split()
+    return top.split() if top else []
+
+
+def _record(distribution) -> list[str]:
+    """The distribution's installed files as posix paths relative to its site directory (``RECORD``)."""
     try:
-        files = distribution.files or ()
+        return [str(item).replace("\\", "/") for item in distribution.files or ()]
     except Exception:  # noqa: BLE001
-        files = ()
-    return any(getattr(item, "parts", ()) and item.parts[0] in (module, module + ".py") for item in files)
+        return []
 
 
-def resolve_version(module: str, sites: Sequence[str] = ()) -> tuple[str, str, str] | None:
-    """``(distribution, version, source)`` for the top-level ``module``: from the ``*.dist-info`` in a
+def _holds(paths: Sequence[str], prefix: str) -> bool:
+    return any(path == prefix + ".py" or path.startswith(prefix + "/") for path in paths)
+
+
+def _regular(distribution, paths: Sequence[str], top: str) -> bool:
+    """Whether ``top`` is a regular package or a module of ``distribution`` (its ``__init__.py`` or ``top.py``), read
+    from its ``RECORD``, or from the files beside its metadata when it has none."""
+    names = (f"{top}/__init__.py", f"{top}.py")
+    if paths:
+        return any(name in paths for name in names)
+    try:
+        return any(Path(str(distribution.locate_file(name))).is_file() for name in names)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _owner_of(distributions: Iterable, parts: Sequence[str]):
+    """The one distribution among ``distributions`` that installed the module ``parts`` (``google.cloud.storage``),
+    or None. A regular package or module at the top level is its distribution's alone; a namespace package's
+    (``google``) is shared, so the deepest path the module names decides, and no path or two owners is None."""
+    providers = []
+    for distribution in distributions:
+        paths = _record(distribution)
+        if parts[0] in _top_names(distribution) or _holds(paths, parts[0]):
+            providers.append((distribution, paths))
+    owners = [distribution for distribution, paths in providers if _regular(distribution, paths, parts[0])]
+    if len(owners) == 1:
+        return owners[0]
+    if owners:
+        return None
+    for depth in range(len(parts), 1, -1):
+        owners = [distribution for distribution, paths in providers if _holds(paths, "/".join(parts[:depth]))]
+        if len(owners) == 1:
+            return owners[0]
+        if owners:
+            return None
+    return None
+
+
+def _installed(distribution, source: str) -> Installed | None:
+    name, version = distribution.metadata["Name"], distribution.version
+    if not (isinstance(name, str) and name and isinstance(version, str) and version):
+        return None
+    try:
+        published = distribution.read_text("direct_url.json") is None
+    except Exception:  # noqa: BLE001  unreadable: not shown to be published
+        published = False
+    files = []
+    for path in _record(distribution):
+        if path.endswith(".py") and len(files) < MAX_LIBRARY_FILES:
+            try:
+                files.append(str(distribution.locate_file(path)))
+            except Exception:  # noqa: BLE001
+                continue
+    return Installed(name[:MAX_NAME], version[:MAX_NAME], source, published, tuple(files))
+
+
+def resolve_version(module: str, sites: Sequence[str] = ()) -> Installed | None:
+    """The installed distribution of ``module`` (dotted: ``google.cloud.storage``): from the ``*.dist-info`` in a
     ``site-packages`` directory the traceback ran from (``traceback_site``: the environment the check ran in), else
-    from the host interpreter's metadata (``host_metadata``), else None. Never a declared range, never a guess."""
+    from the host interpreter's metadata (``host_metadata``), else None. The owner is the distribution whose files
+    hold the module (``_owner_of``); a namespace package shared by several is never resolved to one of them by
+    guess. Never a declared range, never a guess."""
+    parts = [part for part in module.split(".") if part]
+    if not parts:
+        return None
     for site in list(dict.fromkeys(site for site in sites if isinstance(site, str)))[:4]:
         if not os.path.isdir(site):
             continue
         try:
-            for distribution in importlib.metadata.distributions(path=[site]):
-                name, version = distribution.metadata["Name"], distribution.version
-                if (isinstance(name, str) and name and isinstance(version, str) and version
-                        and _provides(distribution, module)):
-                    return name[:MAX_NAME], version[:MAX_NAME], "traceback_site"
+            owner = _owner_of(importlib.metadata.distributions(path=[site]), parts)
         except Exception:  # noqa: BLE001  an unreadable site is no answer
             continue
+        if owner is not None:
+            return _installed(owner, "traceback_site")
     try:
-        names = importlib.metadata.packages_distributions().get(module) or []
-        for name in sorted(set(names)):
-            return name[:MAX_NAME], importlib.metadata.version(name)[:MAX_NAME], "host_metadata"
+        names = sorted(set(importlib.metadata.packages_distributions().get(parts[0]) or []))
+        owner = _owner_of([importlib.metadata.distribution(name) for name in names], parts)
     except Exception:  # noqa: BLE001
-        pass
-    return None
+        owner = None
+    return _installed(owner, "host_metadata") if owner is not None else None
+
+
+@functools.lru_cache(maxsize=256)
+def _in_library(files: tuple[str, ...], name: str) -> bool:
+    """Whether ``name`` occurs as an identifier in the distribution's own Python files (bounded)."""
+    pattern = re.compile(rb"(?<![\w])" + re.escape(name.encode("utf-8")) + rb"(?![\w])")
+    budget = MAX_LIBRARY_BYTES
+    for path in files[:MAX_LIBRARY_FILES]:
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read(budget)
+        except OSError:
+            continue
+        if pattern.search(data):
+            return True
+        budget -= len(data)
+        if budget <= 0:
+            break
+    return False
+
+
+def vouch(symbol: str | None, how: str | None, installed: Installed | None, defined: frozenset[str] = frozenset(),
+          modules: frozenset[str] = frozenset()) -> str | None:
+    """The part of a failure's ``symbol`` (the dotted name below the library's module) that a query may name: the
+    library's API, never the repository's. A name the repository's readable files define (``defined_names``), or a
+    module of its own, is dropped. When the library raised the failure (``how`` is ``library``), the owner the
+    message names may be the caller's object or callback, so a name is kept only if it occurs in the distribution's
+    own files. A name the failing code imports from the library (``how`` is ``import``) is the library's by the code's
+    own account. The kept names, joined; None when none is left (and then nothing is looked up)."""
+    if not symbol or installed is None or not installed.published:
+        return None
+    kept = []
+    for part in symbol.split("."):
+        if not part.isidentifier() or part in defined or part in modules:
+            continue
+        if how == "library" and not _in_library(installed.files, part):
+            continue
+        if how not in ("library", "import"):
+            continue
+        kept.append(part)
+    return ".".join(kept)[:MAX_NAME] or None
 
 
 def _digest(text: str | None) -> str | None:
@@ -348,7 +523,9 @@ class Diagnosis:
     kind: str                            # KINDS
     error: str | None = None             # the exception's class, last component
     module: str | None = None            # the top-level module the failure names
-    symbol: str | None = None            # the dotted name it names; held in memory, only its digest is journaled
+    # The library's own dotted name below that module that a query may name (``vouch``): set only for a published
+    # third-party distribution, else None. Held in memory; only its digest is journaled.
+    symbol: str | None = None
     distribution: str | None = None
     version: str | None = None
     version_source: str | None = None    # traceback_site | host_metadata
@@ -357,6 +534,7 @@ class Diagnosis:
     message_digest: str | None = None
     signature: str = ""                  # every failing check's class and normalized message, digested
     error_line: str = ""                 # the exception line, bounded: a decider model may read it; never journaled
+    vouched: str | None = None           # how ``symbol`` is known to be the library's: import | library
 
     @property
     def pin(self) -> str:
@@ -379,7 +557,7 @@ class Diagnosis:
         return {"check": self.check, "state": self.state, "kind": self.kind, "error": self.error,
                 "module": self.module, "distribution": self.distribution, "version": self.version,
                 "version_source": self.version_source, "pin": self.pin if self.module else None, "why": self.why,
-                "frames": dict(self.frames), "symbol_digest": _digest(self.symbol),
+                "frames": dict(self.frames), "symbol_digest": _digest(self.symbol), "vouched": self.vouched,
                 "message_digest": self.message_digest, "signature": self.signature}
 
 
@@ -396,8 +574,31 @@ def _owner(error: str, message: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _dotted(path: str) -> str | None:
+    """A file's module below its site directory: ``google/cloud/storage/blob.py`` is ``google.cloud.storage.blob``."""
+    parts = [part for part in path.replace("\\", "/").split("/") if part]
+    if not parts or not parts[-1].endswith(".py"):
+        return None
+    parts[-1] = parts[-1][:-3]
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts) if parts and all(part.isidentifier() for part in parts) else None
+
+
+def _as_installed(resolved) -> Installed | None:
+    """What a ``versions`` callable answered: an ``Installed``, or ``(distribution, version, source)`` from a
+    caller's own resolver (published, with no files to vouch from)."""
+    if isinstance(resolved, Installed):
+        return resolved
+    if isinstance(resolved, (tuple, list)) and len(resolved) == 3:
+        name, version, source = (_name(value) for value in resolved)
+        return Installed(name, version, source) if name and version and source else None
+    return None
+
+
 def _check_diagnosis(check: CheckResult, *, files: frozenset[str], modules: frozenset[str],
-                     read: Callable[[str], str | None], versions: Callable) -> Diagnosis:
+                     read: Callable[[str], str | None], versions: Callable,
+                     defined: frozenset[str] = frozenset()) -> Diagnosis:
     failure = parse_failure(check.output_tail) if check.state in ("failed", "error", "timed_out") else None
     if failure is None:
         return Diagnosis(check.name, check.state, "unknown", why="no Python exception in the output")
@@ -406,39 +607,49 @@ def _check_diagnosis(check: CheckResult, *, files: frozenset[str], modules: froz
                                                                                      "unknown")}
     error, message = failure.error, failure.message
     sites = [item.site for item in reversed(frames) if item.site]
-    module = symbol = why = None
+    # ``how``: what makes the symbol's names the library's (``vouch``): the failing code imports them from it
+    # (``import``), or the library raised the failure and its own files must show them (``library``).
+    module = symbol = why = how = None
+    on_site = False  # the output places the module's own file under a site-packages directory
     if error in ("ImportError", "ModuleNotFoundError"):
         found = _NO_MODULE.match(message)
         if found:
-            module, symbol, why = found["module"], found["module"], "message"
+            module, symbol, why, how = found["module"], found["module"], "message", "import"
         else:
             found = _CANNOT_IMPORT.match(message)
             if found:
-                module, symbol, why = found["module"], f"{found['module']}.{found['name']}", "message"
+                module, symbol, why, how = found["module"], f"{found['module']}.{found['name']}", "message", "import"
                 site = _SITE.match((found["path"] or "").replace("\\", "/"))
                 if site:
                     sites.insert(0, found["path"][:len(site["site"])])
+                    on_site = True
     elif error == "AttributeError" and _MODULE_ATTR.match(message):
         found = _MODULE_ATTR.match(message)
-        module, symbol, why = found["module"], f"{found['module']}.{found['name']}", "message"
+        module, symbol, why, how = found["module"], f"{found['module']}.{found['name']}", "message", "import"
     elif error in ("AttributeError", "TypeError"):
-        owner, symbol = _owner(error, message)
+        owner, named = _owner(error, message)
         if owner:
             raised = frames[-1] if frames else None
             if raised is not None and raised.where == "third_party" and raised.package:
-                module, why = raised.package, "raised in a third-party frame"
+                # The library raised it: the object or callback the message names may be the caller's own.
+                module, symbol = _dotted(raised.path) or raised.package, named
+                why, how, on_site = "raised in a third-party frame", "library", True
             else:
                 at = next((item for item in reversed(frames) if item.where == "repo"), None)
-                bindings = import_bindings(read(at.path)) if at is not None else {}
-                attribute = symbol.rsplit(".", 1)[-1] if symbol else ""
+                origins = import_origins(read(at.path)) if at is not None else {}
+                attribute = named.rsplit(".", 1)[-1] if named else ""
                 used = re.search(rf"(?<![\w.])([A-Za-z_]\w*)\.{re.escape(attribute)}\s*\(", at.source) \
                     if at is not None and attribute else None
-                if owner in bindings:
-                    module, why = bindings[owner], "import binding"
-                elif used and used[1] in bindings:
-                    module, symbol = bindings[used[1]], f"{used[1]}.{attribute}"
-                    why = "imported module in the failing line"
-    distribution = version = source = None
+                if owner in origins:
+                    source, original = origins[owner]
+                    # the library's own name for what the repository imported, never the repository's alias
+                    module, symbol = source, ".".join(([original] if original else []) + named.split(".")[1:])
+                    why, how = "import binding", "import"
+                elif used and used[1] in origins:
+                    source, original = origins[used[1]]
+                    module, symbol = source, f"{original}.{attribute}" if original else attribute
+                    why, how = "imported module in the failing line", "import"
+    distribution = version = version_source = installed = None
     if module is None:
         # A lookup-class error whose module could not be traced may be a library's or the repository's: unknown.
         kind = "repo" if counts["repo"] and error not in LOOKUP_ERRORS else "unknown"
@@ -446,25 +657,35 @@ def _check_diagnosis(check: CheckResult, *, files: frozenset[str], modules: froz
         kind = "repo"
     else:
         top = module.split(".")[0]
-        module = top
-        if top in modules:
-            kind = "repo"
+        on_site = on_site or any(item.where == "third_party" and item.package == top for item in frames)
+        if top in modules and not on_site:
+            kind = "repo"  # a name the repository's own files make importable, and nothing places it in a site
         elif top in getattr(sys, "stdlib_module_names", ()):
             kind = "stdlib"
         else:
-            resolved = versions(top, sites)
-            if resolved:
+            installed = _as_installed(versions(module, sites))
+            if installed is not None and not installed.published:
+                kind = "local"
+            elif installed is not None:
                 kind = "third_party"
-                distribution, version, source = (_name(value) for value in resolved)
-            elif any(item.where == "third_party" and item.package == top for item in frames):
+                distribution, version, version_source = installed.distribution, installed.version, installed.source
+            elif on_site:
                 kind = "third_party"
             elif error == "ModuleNotFoundError":
                 kind = "missing_dependency"
             else:
                 kind = "unknown"
+        if symbol and symbol.split(".")[0] == top:
+            symbol = ".".join(symbol.split(".")[1:])  # below the module: ``fetch_all``, ``api.fetch_all``
+        module = top
+    if kind == "third_party":
+        symbol = vouch(symbol, how, installed, defined, modules)
+    else:
+        symbol = None
     return Diagnosis(check.name, check.state, kind, error=error, module=_name(module), symbol=symbol,
-                     distribution=distribution, version=version, version_source=source, why=why, frames=counts,
-                     message_digest=_digest(_normal(message)), error_line=failure.line)
+                     distribution=distribution, version=version, version_source=version_source, why=why,
+                     frames=counts, message_digest=_digest(_normal(message)), error_line=failure.line,
+                     vouched=how if symbol else None)
 
 
 def failure_signature(checks: Sequence[CheckResult], found: Sequence[Diagnosis]) -> str:
@@ -476,11 +697,13 @@ def failure_signature(checks: Sequence[CheckResult], found: Sequence[Diagnosis])
 
 
 def diagnose(checks: Sequence[CheckResult], *, required: Sequence[str] = (), files: Iterable[str] = (),
-             read: Callable[[str], str | None] | None = None, versions: Callable = resolve_version) -> Diagnosis:
+             read: Callable[[str], str | None] | None = None, versions: Callable = resolve_version,
+             defined: Iterable[str] = ()) -> Diagnosis:
     """The router's reading of one evaluation. Every failing check is read (required checks first, then by name);
     the primary one is the first whose failure is a third-party library's, else the first with a Python exception,
     else the first. ``files`` are the in-scope repository paths (frames are matched against them), ``read`` gives a
-    repository file's text (for its imports), ``versions`` resolves a module's installed distribution."""
+    repository file's text (for its imports), ``versions`` resolves a module's installed distribution, and
+    ``defined`` holds the names the repository's readable files define, which a query never carries."""
     failing = sorted((check for check in checks if check.state != "passed"),
                      key=lambda check: (check.name not in required, check.name))
     if not failing:
@@ -488,7 +711,7 @@ def diagnose(checks: Sequence[CheckResult], *, required: Sequence[str] = (), fil
     paths = frozenset(str(path) for path in files)
     modules = repo_modules(paths)
     found = [_check_diagnosis(check, files=paths, modules=modules, read=read or (lambda _path: None),
-                              versions=versions) for check in failing]
+                              versions=versions, defined=frozenset(defined)) for check in failing]
     primary = next((item for item in found if item.kind == "third_party"), None) \
         or next((item for item in found if item.error), None) or found[0]
     return replace(primary, signature=failure_signature(failing, found))
@@ -569,13 +792,15 @@ class BaselinePolicy:
     """The deterministic baseline. In order, the first rule that holds decides (the router's ``stop.budget`` and
     ``stop.calls`` come before it):
 
-    1. ``stop.no_progress``: the same failure with the same score came back more than ``patience`` times in a row;
-    2. ``lookup.third_party``: the failure is a third-party library's and a GitHits lookup is eligible;
-    3. ``web.missing_dependency``: the failure names a module installed nowhere and a web search is eligible;
-    4. ``web.third_party``: the failure is a third-party library's, GitHits cannot answer it here (no route, no
-       installed distribution, already asked, or the guard blocked the query) and a web search is eligible;
-    5. ``repair.repo``: the failure is in the repository's own code;
-    6. ``repair.default``: anything else (the standard library, an unknown failure, no lookup left).
+    1. ``stop.no_progress``: the same failure with the same score came back ``patience`` times in a row (with the
+       default 2, the third identical failed attempt ends the search);
+    2. ``lookup.third_party``: the failure is a published third-party library's and a GitHits lookup is eligible;
+    3. ``web.third_party``: the same, GitHits cannot answer it here (no route, already asked, or the guard blocked
+       the query) and a web search is eligible;
+    4. ``repair.repo``: the failure is in the repository's own code;
+    5. ``repair.default``: anything else: the standard library, a local install, a module installed nowhere (a web
+       search for its name could send a private name out, and no search installs it), an unknown failure, no lookup
+       left.
     """
 
     name, revision = "baseline", "1"
@@ -588,20 +813,18 @@ class BaselinePolicy:
     def decide(self, situation: Situation) -> Choice:
         found = situation.diagnosis
         if situation.repeats > self.patience:
-            return Choice("stop", "stop.no_progress",
-                          f"the same failure came back {situation.repeats} times in a row with no better score")
+            return Choice("stop", "stop.no_progress", f"the same failure came back {situation.repeats - 1} times in "
+                                                      "a row with no better score")
         if found is None:
             return Choice("repair", "repair.default", "no evaluation to read: repair")
         error = found.error or found.state or "failure"
+        library = found.distribution or found.module
         if "lookup" in situation.eligible and found.kind == "third_party":
             return Choice("lookup", "lookup.third_party",
-                          f"{error} on {found.module} {found.version or '(version unavailable)'}, a third-party "
+                          f"{error} on {library} {found.version or '(version unavailable)'}, a third-party "
                           "library: look it up in GitHits at the installed version")
-        if "web" in situation.eligible and found.kind == "missing_dependency":
-            return Choice("web", "web.missing_dependency",
-                          f"{error}: {found.module} is neither installed nor in the repository: search the web")
         if "web" in situation.eligible and found.kind == "third_party":
-            return Choice("web", "web.third_party", f"{error} on {found.module}, a third-party library GitHits "
+            return Choice("web", "web.third_party", f"{error} on {library}, a third-party library GitHits "
                                                     "cannot answer here: search the web")
         if found.kind == "repo":
             return Choice("repair", "repair.repo",
@@ -739,6 +962,9 @@ class GitHitsRoute:
         return None
 
     def lookup(self, need: Need, directory: Path, *, timeout: float) -> Looked:
+        """One search of the pinned target and, with ``read_top``, one read of the top hit. Whatever happens after a
+        request left (a refusal, an error, a malformed answer the renderer cannot read), the client's records of
+        every call are read back, so each call that reached GitHits is journaled."""
         directory.mkdir(parents=True, exist_ok=True)
         key = secrets.token_hex(32)
         texts, error = [], None
@@ -758,8 +984,15 @@ class GitHitsRoute:
                         texts.append(githits.render(read))
         except githits.GitHitsError as exc:
             error = exc.code
-        records = githits.read_records(directory, key)
-        return Looked("\n\n".join(text for text in texts if text.strip()), records.records, records.ignored, error)
+        except Exception:  # noqa: BLE001  a malformed answer never ends the search; its calls are still journaled
+            error = "router_lookup_error"
+        finally:
+            try:
+                records = githits.read_records(directory, key)
+                found_records, ignored = records.records, records.ignored
+            except Exception:  # noqa: BLE001
+                found_records, ignored = [], 0
+        return Looked("\n\n".join(text for text in texts if text.strip()), found_records, ignored, error)
 
 
 def _top_hit(found: githits.Result, target: str) -> tuple[str, dict] | None:
@@ -830,30 +1063,24 @@ class CommandWeb:
         return WebAnswer("ok", "\n".join(lines), count, request_id[:128] if isinstance(request_id, str) else None)
 
 
+def _words(found: Diagnosis) -> list[str]:
+    """A query's words: the published distribution, its version, the library's own name ``vouch`` kept, and a
+    phrase for the failure's class. Nothing else: no output text, no path, no name the repository defines."""
+    words = [found.distribution or found.module or "", found.version or "", found.symbol or "",
+             PHRASE.get(found.error or "", "API")]
+    return [word for word in words if word]
+
+
 def githits_need(found: Diagnosis) -> Need:
     """The GitHits lookup for a third-party failure: a few words naming the package, its version and the symbol, as
     the GitHits skill asks (``skills/githits/SKILL.md``), against the pinned target."""
-    name = found.symbol or ""
-    if found.module and name.startswith(found.module + "."):
-        name = name[len(found.module) + 1:]
-    words = [found.module or ""] + ([found.version] if found.version else []) + ([name] if name else []) \
-        + [PHRASE.get(found.error or "", "API")]
-    return Need("githits", found.need(), " ".join(word for word in words if word), found.target, found.version,
-                found.version_source)
+    return Need("githits", found.need(), " ".join(_words(found)), found.target, found.version, found.version_source)
 
 
 def web_need(found: Diagnosis) -> Need:
-    """The web search for a failure that names a module: which package provides it, or what its API is."""
-    if found.kind == "missing_dependency":
-        query = f"python package that provides module {found.module}"
-    else:
-        name = found.symbol or ""
-        if found.module and name.startswith(found.module + "."):
-            name = name[len(found.module) + 1:]
-        words = ["python", found.module or ""] + ([found.version] if found.version else []) + ([name] if name else []) \
-            + [PHRASE.get(found.error or "", "API")]
-        query = " ".join(word for word in words if word)
-    return Need("web", found.need(), query, None, found.version, found.version_source)
+    """The web search for the same question: the same words after ``python``. Only a published third-party
+    distribution's question is ever searched (``_eligible``); a module installed nowhere is not."""
+    return Need("web", found.need(), " ".join(["python"] + _words(found)), None, found.version, found.version_source)
 
 
 # ---------------------------------------------------------------------------------------------------------- the loop
@@ -869,7 +1096,8 @@ class RouterConfig:
     policy: Decider = field(default_factory=BaselinePolicy)
     max_lookups: int = DEFAULT_MAX_LOOKUPS
     holdout: float = 0.0
-    versions: Callable[[str, Sequence[str]], tuple[str, str, str] | None] = resolve_version
+    # (dotted module, the traceback's site-packages directories) -> Installed, or (distribution, version, source)
+    versions: Callable[[str, Sequence[str]], Installed | tuple[str, str, str] | None] = resolve_version
 
 
 class _State:
@@ -880,11 +1108,13 @@ class _State:
         self.decisions = self.lookups = 0
         self.looked_up: set[str] = set()
         self.searched: set[str] = set()
+        self.drawn: dict[str, bool] = {}  # holdout: a question's one draw (Diagnosis.need()), True when held out
         self.current: Diagnosis | None = None
         self.attempts: list[tuple[str, tuple[int, int]]] = []   # (signature, score) of each failed evaluation
         self.history: list[dict] = []
         self.evidence: list[dict] = []
         self.lines: dict[str, set[str]] = {}  # the query guard's tree digests, by "base" or candidate id
+        self.defined: dict[str, frozenset[str]] = {}  # names the repository's readable files define, by ref
 
     def observe(self, found: Diagnosis, score: tuple[int, int]) -> None:
         self.current = found
@@ -968,10 +1198,14 @@ class RouterMixin:
 
     def search(self, space: SearchSpace) -> Sequence[str]:
         rng = random.Random(space.seed)  # the repair loop's request seeds, draw for draw
-        draws = random.Random(f"{HOLDOUT_SALT}:{space.seed}")  # the holdout's own stream
+        search_id = getattr(space, "search_id", "s0")
+        # The holdout's own stream, separate from the request seeds: seeded by the thread and the search as well as
+        # the seed, so every work item draws its own sequence (``--seed`` is 0 for all of them by default) and a
+        # search on the same thread with the same seed draws the same again.
+        draws = random.Random(f"{HOLDOUT_SALT}:{getattr(space, 'thread_id', '')}:{search_id}:{space.seed}")
         limit = space.budget.max_candidates if self.max_calls is None else self.max_calls
         self.trace, self.decisions = [], []
-        state = _State(getattr(space, "search_id", "s0"), self._routes())
+        state = _State(search_id, self._routes())
         previous: str | None = None  # the last evaluated candidate: the parent of the next repair
         best: tuple[str, tuple[int, int]] | None = None
         stopped, made_calls = "calls", 0
@@ -989,13 +1223,16 @@ class RouterMixin:
                                     "nothing evaluated yet: propose")
                 else:
                     situation = self._situation(space, state, made_calls, limit, previous)
-                    choice, note, holdout = self._choose(situation, draws)
+                    choice, note, holdout = self._choose(situation, draws, state)
                 number = self._decide(space, state, choice, situation, note, holdout, previous, made_calls, limit)
                 if choice.action == "stop":
                     stopped = choice.rule
                     break
                 if choice.action in LOOKUP_ACTIONS:
                     self._look(space, state, number, situation.needs[choice.action], folder)
+                    if not self._room(space):
+                        state.outcome("none")
+                        continue  # the next decision is stop.budget: a lookup never runs a call past the budget
                 request = self._request(space, rng, previous)
                 attached = [{key: value for key, value in item.items() if key != "signature"}
                             for item in state.carried()]
@@ -1063,7 +1300,7 @@ class RouterMixin:
                     stopped = "passing"
                     break
                 previous = made.id
-                state.observe(self._diagnose(space, made.id, found), score)
+                state.observe(self._diagnose(space, state, made.id, found), score)
         finally:
             shutil.rmtree(folder, ignore_errors=True)
         self.trace.append({"stopped": stopped, "calls": made_calls,
@@ -1078,11 +1315,27 @@ class RouterMixin:
         return {"githits": "none" if route is None else (route.ready() or "ready"),
                 "web": "none" if web is None else "ready"}
 
-    def _diagnose(self, space: SearchSpace, candidate: str, found) -> Diagnosis:
+    def _diagnose(self, space: SearchSpace, state: _State, candidate: str, found) -> Diagnosis:
         view = space.candidate(candidate)
         files = set(space.files()) | set(view.changed_paths)
         return diagnose(found.checks, required=found.required, files=files,
-                        read=lambda path: space.read(candidate, path), versions=self.router.versions)
+                        read=lambda path: space.read(candidate, path), versions=self.router.versions,
+                        defined=self._defined(space, state, candidate))
+
+    def _defined(self, space: SearchSpace, state: _State, candidate: str) -> frozenset[str]:
+        """The names the repository's readable Python files define (``defined_names``): the first ``MAX_TREE_FILES``
+        in-scope files at the base, read once per search, and the failed candidate's changed files. A query never
+        names one of them."""
+        def names(ref: str, paths: Iterable[str]) -> frozenset[str]:
+            found: set[str] = set()
+            for path in [path for path in paths if str(path).endswith(".py")][:MAX_TREE_FILES]:
+                found |= defined_names(space.read(ref, path))
+            return frozenset(found)
+        if "base" not in state.defined:
+            state.defined["base"] = names("base", space.files())
+        if candidate not in state.defined:
+            state.defined[candidate] = names(candidate, space.candidate(candidate).changed_paths)
+        return state.defined["base"] | state.defined[candidate]
 
     def _tree_lines(self, space: SearchSpace, state: _State, candidate: str | None) -> set[str]:
         """The query guard's tree rule over the failed candidate's changed files and the first ``MAX_TREE_FILES``
@@ -1104,19 +1357,24 @@ class RouterMixin:
         return state.lines["base"] | state.lines.get(candidate, set())
 
     def _eligible(self, space: SearchSpace, state: _State, candidate: str | None) -> tuple[tuple[str, ...], dict, dict]:
-        """The actions open after this failure, the lookups they would make, and the routes whose query the guard
-        blocked. ``repair`` and ``stop`` are always open; a lookup needs a ready route, a failure it can answer (a
-        GitHits lookup an installed distribution), the search's lookup budget, a question not asked before on that
-        route, and a query the guard passes."""
+        """The actions open after this failure, the lookups they would make, and the routes closed for it with why
+        (the guard's rule, or ``holdout``). ``repair`` and ``stop`` are always open; a lookup needs a ready route, a
+        failure it can answer (a published third-party distribution and a name ``vouch`` kept), the search's lookup
+        budget, a question not asked before on that route nor held out, and a query the guard passes."""
         found, config = state.current, self.router
         eligible, needs, blocked = {"repair", "stop"}, {}, {}
         options = []
-        if found is not None and state.lookups < config.max_lookups:
-            if (config.githits is not None and state.routes.get("githits") == "ready" and found.kind == "third_party"
-                    and found.distribution):
-                options.append(("lookup", githits_need(found), state.looked_up))
-            if config.web is not None and found.kind in ("third_party", "missing_dependency") and found.module:
-                options.append(("web", web_need(found), state.searched))
+        if (found is not None and found.kind == "third_party" and found.distribution and found.symbol
+                and state.lookups < config.max_lookups):
+            held = state.drawn.get(found.need()) is True  # a held-out question stays unasked, on every route
+            for action, route, need, done in (("lookup", config.githits, githits_need, state.looked_up),
+                                               ("web", config.web, web_need, state.searched)):
+                if route is None or (action == "lookup" and state.routes.get("githits") != "ready"):
+                    continue
+                if held:
+                    blocked[action] = "holdout"
+                else:
+                    options.append((action, need(found), done))
         options = [(action, need, done) for action, need, done in options if need.key not in done]
         tree = self._tree_lines(space, state, candidate) if options else set()
         for action, need, _done in options:
@@ -1152,11 +1410,18 @@ class RouterMixin:
         rule = proposed.rule if isinstance(proposed.rule, str) and proposed.rule.isprintable() else "decider"
         return Choice(proposed.action, rule[:MAX_NAME], reason[:MAX_REASON] or f"chose {proposed.action}"), None
 
-    def _choose(self, situation: Situation, draws: random.Random) -> tuple[Choice, dict | None, dict | None]:
-        """The policy's choice (the baseline's when a custom policy answers with an action that is not eligible), a
-        decider's when it is eligible, then the holdout draw."""
+    def _choose(self, situation: Situation, draws: random.Random,
+                state: _State | None = None) -> tuple[Choice, dict | None, dict | None]:
+        """The policy's choice (the baseline's when a custom policy fails or answers with an action that is not
+        eligible), a decider's when it is eligible, then the holdout draw: once per question (``Diagnosis.need()``),
+        at the first decision that would ask it, so a question is either asked or held out for the whole search."""
         config = self.router
-        choice, _why = self._valid(config.policy.decide(situation), situation)
+        try:
+            choice, _why = self._valid(config.policy.decide(situation), situation)
+        except SearchStopped:
+            raise
+        except Exception:  # noqa: BLE001  a failing custom policy never ends the search: the baseline decides
+            choice = None
         if choice is None:
             choice = BaselinePolicy().decide(situation)
         note = None
@@ -1177,20 +1442,27 @@ class RouterMixin:
                     note["refused"] = why
                 else:
                     choice = accepted
-            # A decider that fails never ends the search: the baseline decides. A budget stop is not a failure and
-            # is not caught here: it ends the search as it would at the model call.
+            # A budget or deadline stop (the host meter's, raised before a decider model's call) is not a failure:
+            # it ends the search as it would at the model call. Any other failure never does: the baseline decides.
+            except SearchStopped:
+                raise
             except Rejected as exc:
                 note["error"] = exc.code[:MAX_NAME]
-            except (ValueError, TypeError, KeyError, AttributeError, OSError):
+            except Exception:  # noqa: BLE001
                 note["error"] = "decider_error"
             usage = getattr(decider, "last_usage", None)
             if isinstance(usage, dict) and usage:
                 note["usage"] = usage
         holdout = None
-        if choice.action in LOOKUP_ACTIONS and config.holdout > 0:
-            held = draws.random() < config.holdout
-            holdout = {"p": float(config.holdout), "chosen": choice.action, "rule": choice.rule, "held_out": held}
-            if held:
+        need = situation.needs.get(choice.action) if choice.action in LOOKUP_ACTIONS else None
+        if need is not None and config.holdout > 0:
+            drawn = state.drawn if state is not None else {}
+            if need.key not in drawn:
+                value = draws.random()
+                drawn[need.key] = value < config.holdout
+                holdout = {"p": float(config.holdout), "u": round(value, 6), "chosen": choice.action,
+                           "rule": choice.rule, "held_out": drawn[need.key]}
+            if drawn[need.key]:
                 choice = Choice("repair", "holdout", f"held out: {choice.action} was chosen ({choice.rule}); "
                                                      "repaired instead, so the lookup's value can be measured")
         return choice, note, holdout
@@ -1208,6 +1480,10 @@ class RouterMixin:
             "call": made_calls, "after": previous, "action": choice.action, "rule": choice.rule[:MAX_NAME],
             "reason": choice.reason[:MAX_REASON], "eligible": list(situation.eligible) if situation else None,
             "decider": note, "holdout": holdout,
+            # What became of the attempt after the previous decision, as this loop saw it: ``failed``,
+            # ``out_of_scope``, ``unevaluated``, ``refused:<reason>``, or ``none`` (a lookup ran and no call
+            # followed); None on the first decision. The journal alone cannot tell the middle two apart.
+            "last_outcome": state.history[-1]["outcome"] if state.history else None,
             # The failure being repaired, read on every decision after one (a budget stop included), so the attempt
             # before it can be told apart from a new failure.
             "diagnosis": state.current.record() if state.current else None,
@@ -1231,7 +1507,9 @@ class RouterMixin:
         """Run the lookup the decision chose, journal each call, and keep what came back for the next calls."""
         state.lookups += 1
         version = f"{state.search}.r{number}"
-        timeout = float(max(1, min(githits.DEFAULT_TIMEOUT, space.remaining().max_seconds)))
+        # Each call may take a quarter of the seconds left (a GitHits lookup is two calls), so the model call keeps
+        # its time; the loop checks the budget again before that call.
+        timeout = float(max(1, min(githits.DEFAULT_TIMEOUT, space.remaining().max_seconds / 4)))
         text = ""
         if need.route == "githits":
             state.looked_up.add(need.key)
@@ -1356,11 +1634,19 @@ def attribution(events: Iterable[Mapping], contracts: Mapping | None = None) -> 
 
     A decision's window is its events up to the next decision of the same search, or that search's end. In it: the
     lookup facts it made (versions ``<search>.r<n>.*``), the registration of the call that followed, its evaluation,
-    or the refusal that took its place. ``after.outcome`` is ``passed``, ``failed``, ``unevaluated``,
-    ``refused:<reason>``, ``none`` (no attempt is recorded: the call failed), or None for a ``stop``.
-    ``trigger_fixed`` is whether the check the decision read passed in that evaluation; ``same_failure`` whether the
-    next decision read the same failure signature; ``calls_to_pass`` the model calls from this decision to the
-    search's first passing candidate, this decision's own call included (None when none passed after it)."""
+    or the refusal that took its place. ``after.outcome`` is ``passed``, ``failed``, ``out_of_scope``, ``unevaluated``,
+    ``refused:<reason>`` (the first item's refusal; ``limit`` refusals of the items after it are not the attempt's),
+    ``provider_error``, ``none`` (no attempt is recorded), or None for a ``stop``. ``trigger_fixed`` is whether the
+    check the decision read passed in that evaluation; ``same_failure`` whether the next decision read the same failure
+    signature; ``evidence_passed`` (a lookup or web search that returned results) whether an attempt that carried its
+    evidence passed: its own, or a later one that listed it in ``carried``.
+
+    Cost. ``after.booked_dollars`` is the spend the host booked at the attempt's registration (its ``spend``): that
+    call, plus every metered call since the previous registration that registered nothing (a refused answer, a decider
+    model's call); ``after.calls_booked`` counts the model calls of this search it covers. Tokens are the call's own.
+    ``calls_to_pass`` is the model calls from this decision to the search's first passing candidate, its own call
+    included, and ``dollars_to_pass`` the dollars booked over the same attempts (None when none passed after it, or a
+    booking is unknown)."""
     threads: dict[str, list[dict]] = {}
     for event in events:
         threads.setdefault(event["case_id"], []).append(dict(event))
@@ -1373,8 +1659,8 @@ def attribution(events: Iterable[Mapping], contracts: Mapping | None = None) -> 
         thread_rows: list[dict] = []
         for position, (index, value) in enumerate(routes):
             search, number = value["search"], value["decision"]
-            later = [i for i, v in routes[position + 1:] if v["search"] == search]
-            end = later[0] if later else next(
+            later = [(i, v) for i, v in routes[position + 1:] if v["search"] == search]
+            end = later[0][0] if later else next(
                 (i for i in range(index + 1, len(found)) if found[i]["kind"] == "search_finished"
                  and found[i]["body"].get("id") == search), len(found))
             window = found[index + 1:end]
@@ -1386,7 +1672,7 @@ def attribution(events: Iterable[Mapping], contracts: Mapping | None = None) -> 
                        if fact is not None]
             registration = next((e["body"] for e in window if e["kind"] == "candidate_registered"), None)
             refused = [fact for fact in (metrics.fact(e, "proposal_refused") for e in window)
-                       if fact is not None and fact.get("search") == search]
+                       if fact is not None and fact.get("search") == search and fact.get("reason") != "limit"]
             evaluation = None
             if registration is not None:
                 evaluation = next((e["body"] for e in window if e["kind"] == "candidate_evaluated"
@@ -1397,9 +1683,11 @@ def attribution(events: Iterable[Mapping], contracts: Mapping | None = None) -> 
             elif evaluation is not None:
                 outcome = "passed" if passed else "failed"
             elif registration is not None:
-                outcome = "unevaluated"
+                noted = later[0][1].get("last_outcome") if later else None
+                outcome = noted if noted in ("out_of_scope", "unevaluated") else "unevaluated"
             elif refused:
-                outcome = "refused:" + str(refused[0].get("reason"))
+                reason = str(refused[0].get("reason"))
+                outcome = "provider_error" if reason == "provider_error" else "refused:" + reason
             else:
                 outcome = "none"
             diagnosis = value.get("diagnosis") if isinstance(value.get("diagnosis"), dict) else {}
@@ -1409,7 +1697,7 @@ def attribution(events: Iterable[Mapping], contracts: Mapping | None = None) -> 
             signal = (registration or {}).get("signal") if isinstance((registration or {}).get("signal"), dict) else {}
             usage = signal.get("model_usage") if isinstance(signal.get("model_usage"), dict) else {}
             spend = (registration or {}).get("spend") if isinstance((registration or {}).get("spend"), dict) else {}
-            dollars = spend.get("dollars") if isinstance(spend.get("dollars"), (int, float)) else None
+            booked = spend.get("dollars") if isinstance(spend.get("dollars"), (int, float)) else None
             thread_rows.append({
                 "thread": case_id, "search": search, "decision": number, "action": value["action"],
                 "rule": value.get("rule"), "router": value.get("router"), "decider": value.get("decider"),
@@ -1430,29 +1718,54 @@ def attribution(events: Iterable[Mapping], contracts: Mapping | None = None) -> 
                           "gained": (score_after[0] - score_before[0]) if score_after and score_before else None,
                           "trigger_fixed": (states.get(trigger) == "passed")
                           if evaluation is not None and trigger else None,
-                          "same_failure": None, "dollars": dollars,
+                          "same_failure": None, "evidence_passed": None,
+                          "registered": registration is not None, "booked_dollars": booked, "calls_booked": None,
                           "input_tokens": _count(usage.get("input_tokens")),
                           "output_tokens": _count(usage.get("output_tokens")),
                           "evaluation_ms": sum(c.get("duration_ms") or 0 for c in (evaluation or {}).get("checks") or []
                                                if isinstance(c, dict) and type(c.get("duration_ms")) is int)
                           if evaluation is not None else None},
-                "calls_to_pass": None,
+                "calls_to_pass": None, "dollars_to_pass": None,
             })
-        for position, row in enumerate(thread_rows):
-            same = [other for other in thread_rows[position + 1:] if other["search"] == row["search"]]
-            if row["after"]["outcome"] == "passed":
-                row["after"]["same_failure"] = False
-            elif row["after"]["outcome"] == "failed" and same and same[0]["signature"] and row["signature"]:
-                row["after"]["same_failure"] = same[0]["signature"] == row["signature"]
-            if row["action"] in CALL_ACTIONS:
-                count = 0
-                for other in [row] + same:
-                    count += 1 if other["action"] in CALL_ACTIONS else 0
-                    if other["after"]["outcome"] == "passed":
-                        row["calls_to_pass"] = count
-                        break
+        _follow(thread_rows)
         rows += thread_rows
     return rows
+
+
+def _follow(rows: list[dict]) -> None:
+    """Fill what a row learns from the rows after (and before) it in its search: the same failure, the evidence that
+    passed, the calls a booking covers, and the calls and dollars to the first pass."""
+    for position, row in enumerate(rows):
+        before = [other for other in rows[:position] if other["search"] == row["search"]]
+        same = [other for other in rows[position + 1:] if other["search"] == row["search"]]
+        after = row["after"]
+        if after["outcome"] == "passed":
+            after["same_failure"] = False
+        elif after["outcome"] == "failed" and same and same[0]["signature"] and row["signature"]:
+            after["same_failure"] = same[0]["signature"] == row["signature"]
+        if row["action"] in LOOKUP_ACTIONS and row["lookups"]["results"] > 0:
+            after["evidence_passed"] = after["outcome"] == "passed" or any(
+                other["after"]["outcome"] == "passed" for other in same if row["decision"] in other["carried"])
+        if after["registered"]:
+            covered = 1
+            for other in reversed(before):
+                if other["after"]["registered"]:
+                    break
+                covered += 1 if other["action"] in CALL_ACTIONS else 0
+            after["calls_booked"] = covered
+        if row["action"] in CALL_ACTIONS:
+            calls, dollars, known = 0, 0.0, True
+            for other in [row] + same:
+                calls += 1 if other["action"] in CALL_ACTIONS else 0
+                if other["after"]["registered"]:
+                    if other["after"]["booked_dollars"] is None:
+                        known = False
+                    else:
+                        dollars += other["after"]["booked_dollars"]
+                if other["after"]["outcome"] == "passed":
+                    row["calls_to_pass"] = calls
+                    row["dollars_to_pass"] = round(dollars, 6) if known else None
+                    break
 
 
 def _count(value) -> int | None:
@@ -1468,40 +1781,66 @@ def _mean(values: Iterable) -> float | None:
     return round(statistics.fmean(found), 6) if found else None
 
 
+def _difference(a: float | None, b: float | None) -> float | None:
+    return round(a - b, 6) if a is not None and b is not None else None
+
+
 def _group(rows: Sequence[Mapping]) -> dict:
-    evaluated = [row for row in rows if row["after"]["outcome"] in ("passed", "failed")]
-    passed = sum(1 for row in evaluated if row["after"]["outcome"] == "passed")
-    return {"decisions": len(rows), "evaluated": len(evaluated), "passed": passed,
-            "pass_rate": _rate(passed, len(evaluated)),
-            "trigger_fixed": sum(1 for row in evaluated if row["after"]["trigger_fixed"] is True),
-            "same_failure": sum(1 for row in evaluated if row["after"]["same_failure"] is True),
+    """Outcomes per decision: every decision counts in the denominator, so an attempt that was refused, went
+    unevaluated or failed is a decision that did not pass (intention to treat), never a row dropped after the fact."""
+    passed = sum(1 for row in rows if row["after"]["outcome"] == "passed")
+    reached = sum(1 for row in rows if row["calls_to_pass"] is not None)
+    return {"decisions": len(rows), "threads": len({row["thread"] for row in rows}),
+            "evaluated": sum(1 for row in rows if row["after"]["outcome"] in ("passed", "failed")),
+            "passed": passed, "pass_rate": _rate(passed, len(rows)),
+            "search_passed": reached, "search_pass_rate": _rate(reached, len(rows)),
+            "trigger_fixed": sum(1 for row in rows if row["after"]["trigger_fixed"] is True),
+            "same_failure": sum(1 for row in rows if row["after"]["same_failure"] is True),
             "calls_to_pass_mean": _mean(row["calls_to_pass"] for row in rows),
-            "dollars_mean": _mean(row["after"]["dollars"] for row in evaluated)}
+            "dollars_to_pass_mean": _mean(row["dollars_to_pass"] for row in rows),
+            "booked_dollars_mean": _mean(row["after"]["booked_dollars"] for row in rows)}
+
+
+def _compare(rows: Sequence[Mapping]) -> dict:
+    ran = [row for row in rows if row["holdout"].get("held_out") is False]
+    held = [row for row in rows if row["holdout"].get("held_out") is True]
+    a, b = _group(ran), _group(held)
+    return {"looked_up": a, "held_out": b,
+            "difference": {"pass_rate": _difference(a["pass_rate"], b["pass_rate"]),
+                           "search_pass_rate": _difference(a["search_pass_rate"], b["search_pass_rate"])}}
 
 
 def summary(rows: Sequence[Mapping]) -> dict:
     """The rows read per action, per lookup, and, when the holdout ran, as a randomized comparison.
 
-    ``by_action``: decisions, the attempts that followed and were evaluated, how many passed, fixed the triggering
-    check or failed the same way, the mean calls to the first pass and the mean dollars of the attempt. ``lookup``:
-    the same for GitHits lookups, with the GitHits calls, results and latency per lookup. ``holdout`` (None when no
-    decision drew one): the lookups the policy chose that ran against those it chose and the draw held out, each
-    group's next-attempt pass rate, and the difference (looked up minus held out). Only the holdout comparison is free
-    of the policy's own selection: ``by_action`` compares lookups with repairs of other failures."""
+    Every rate is per decision (``_group``): ``pass_rate`` the attempts right after the decisions that passed,
+    ``search_pass_rate`` the decisions after which their search passed at all. ``by_action``: decisions per action.
+    ``lookup`` and ``web``: the same for the lookups that ran, with their calls, results and latency, and how many
+    lookups' evidence an attempt that passed carried. ``holdout`` (None when no decision drew one): each question's
+    one draw, the decisions that looked up against those the draw held out, and the differences (looked up minus
+    held out), over ``all`` draws, over the ``first_per_thread`` (one per work item: the draws of one item are not
+    independent, and this sample is), and ``by_route``. Only the holdout comparison is free of the policy's own
+    selection: ``by_action`` compares lookups with repairs of other failures."""
     by_action = {action: _group([row for row in rows if row["action"] == action]) for action in (PROPOSE,) + ACTIONS}
-    looked = [row for row in rows if row["action"] == "lookup"]
-    lookup = {**_group(looked),
-              "githits_calls": sum(row["lookups"]["calls"] for row in looked),
-              "githits_calls_per_lookup": _rate(sum(row["lookups"]["calls"] for row in looked), len(looked)),
-              "with_results": sum(1 for row in looked if row["lookups"]["results"] > 0),
-              "latency_ms_mean": _mean(row["lookups"]["latency_ms"] for row in looked)}
-    drawn = [row for row in rows if isinstance(row.get("holdout"), dict) and row["holdout"].get("chosen") == "lookup"]
+    routes = {}
+    for action in LOOKUP_ACTIONS:
+        ran = [row for row in rows if row["action"] == action]
+        routes[action] = {**_group(ran),
+                          "calls": sum(row["lookups"]["calls"] for row in ran),
+                          "calls_per_lookup": _rate(sum(row["lookups"]["calls"] for row in ran), len(ran)),
+                          "with_results": sum(1 for row in ran if row["lookups"]["results"] > 0),
+                          "evidence_passed": sum(1 for row in ran if row["after"]["evidence_passed"] is True),
+                          "latency_ms_mean": _mean(row["lookups"]["latency_ms"] for row in ran)}
+    drawn = [row for row in rows if isinstance(row.get("holdout"), dict)
+             and row["holdout"].get("chosen") in LOOKUP_ACTIONS and isinstance(row["holdout"].get("held_out"), bool)]
     holdout = None
     if drawn:
-        ran = [row for row in drawn if row["holdout"].get("held_out") is False]
-        held = [row for row in drawn if row["holdout"].get("held_out") is True]
-        a, b = _group(ran), _group(held)
-        holdout = {"looked_up": a, "held_out": b,
-                   "difference": round(a["pass_rate"] - b["pass_rate"], 6)
-                   if a["pass_rate"] is not None and b["pass_rate"] is not None else None}
-    return {"decisions": len(rows), "by_action": by_action, "lookup": lookup, "holdout": holdout}
+        first: dict[str, Mapping] = {}
+        for row in drawn:
+            first.setdefault(row["thread"], row)
+        holdout = {"all": _compare(drawn), "first_per_thread": _compare(list(first.values())),
+                   "by_route": {action: _compare([row for row in drawn if row["holdout"]["chosen"] == action])
+                                for action in LOOKUP_ACTIONS if any(row["holdout"]["chosen"] == action
+                                                                    for row in drawn)}}
+    return {"decisions": len(rows), "by_action": by_action, "lookup": routes["lookup"], "web": routes["web"],
+            "holdout": holdout}

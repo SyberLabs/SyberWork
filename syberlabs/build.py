@@ -253,6 +253,7 @@ class GitSearchSpace:
     def __init__(self, thread: "Thread", provider: SearchProvider, budget: Budget, excerpts: list[Excerpt], seed: int,
                  prior_dollars: float = 0.0, search_id: str = "s0"):
         self._thread, self._provider, self.search_id = thread, provider, search_id
+        self.thread_id = thread.id  # read by the opt-in lookup router to seed its holdout per work item (router.py)
         self.refused: dict[str, int] = {}  # proposals discarded before registration in this search, counted by reason
         self.objective, self.base = thread.objective, thread.base
         self.scope = tuple(thread.read_scope()["paths"])
