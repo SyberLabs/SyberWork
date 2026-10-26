@@ -9,10 +9,10 @@ syberlabs experiment report --name githits-pilot --markdown         # the table 
 syberlabs experiment report --name githits-pilot --json             # every item, its threads, values and checks
 syberlabs experiment report --name githits-pilot --csv              # one row per item
 syberlabs experiment report --name githits-pilot --from-export receipts/*.json   # records from syberlabs export
-python examples/githits_ab.py                                       # the whole pipeline, a stand-in instead of a model
+python examples/githits_ab.py [--route api|mcp]                     # the whole pipeline, a stand-in instead of a model
 ```
 
-An experiment runs the same work items through the factory more than once and changes one thing between the runs. Each run is a Build Thread; each thread is in one **arm**. The first consumer is the owner-approved GitHits pilot (2026-10-23), whose arms differ only in the Claude Code proposer's `--mcp-config` (`docs/CLAUDE_CODE.md`, "GitHits A/B").
+An experiment runs the same work items through the factory more than once and changes one thing between the runs. Each run is a Build Thread; each thread is in one **arm**. The first consumer is the owner-approved GitHits pilot (2026-10-23), whose arms differ only in whether the Claude Code proposer has GitHits: since SyberWork #134 through the host's API client, `--githits` (`docs/CLAUDE_CODE.md`, "GitHits through the launcher"; `docs/GITHITS.md`, "The A/B report"), and before it through an MCP server, `--mcp-config` (`docs/CLAUDE_CODE.md`, "GitHits A/B through MCP"). The report reads both routes.
 
 ## The label
 
@@ -72,16 +72,18 @@ Each item is checked against the record. The first nine take the item out of eve
 | `unequal_repeats` | excluded | the arms ran the item a different number of times, so a mean of several runs would face one run |
 | `base_mismatch` | excluded | the arms started from different commits (the `base` observation) |
 | `objective_mismatch` | excluded | the arms were given different objectives |
-| `arm_conflict` | excluded | the record contradicts the label: the server (`--server`, default `githits`) was connected in a baseline call, or not connected in the treatment, as the proposer recorded it in `signal.harness.mcp_servers` |
-| `contaminated` | excluded | the baseline made GitHits lookups |
+| `arm_conflict` | excluded | the record contradicts the label: GitHits (`--server`, default `githits`) was there in a baseline call, or in none of a treatment thread's calls (below, "How the arm is read"). On the API route: arm B run without `--githits`, or arm A with it or with a GitHits `--mcp-config` |
+| `contaminated` | excluded | the baseline shows a GitHits lookup: its GitHits count is above zero, or the host observed one (below) |
 | `labelled_late` | excluded | a thread's label in force, in any arm, is not the one that stood before its first candidate |
 | `unregistered` | excluded | `--items` was given and does not list the item |
 | `registration_mismatch` | excluded | the item's threads carry other tags than `--items` gives it |
 | `base_unknown` | kept | a thread has no recorded base commit |
-| `arm_unverified` | kept | no call recorded its MCP servers, so only the label says which arm ran |
-| `server_mixed` | kept | the server was connected in some of a treatment thread's calls and not in others |
-| `unused` | kept | the treatment made no GitHits lookups |
-| `contamination_unknown` | kept | the baseline did not record its GitHits lookups, so it cannot be shown clean |
+| `arm_unverified` | kept | no call recorded its MCP servers or the GitHits launcher, so only the label says which arm ran |
+| `server_mixed` | kept | GitHits was there in some of a treatment thread's calls and not in others |
+| `two_routes` | kept | a treatment thread had GitHits by both routes: the API launcher and a connected GitHits MCP server, usually a `--mcp-config` left in arm B by mistake. It is still the treatment, but not the single route the pilot registers, and where the thread has client records its GitHits count is those records only, without the MCP server's lookups (`spec/GAPS.md` 59). What to do: take the GitHits server out of arm B's `--mcp-config` before the next item; read this item's GitHits count as a floor, and say in the write-up that it ran with both routes |
+| `unused` | kept | the treatment shows no GitHits lookup, and its count is known to be zero |
+| `use_unknown` | kept | the treatment shows no GitHits lookup, but its count is unknown, so it can be shown neither to have used GitHits nor not to. The count is unknown when a call declared none, or, where `syberlabs metrics` says so (SyberWork #139), when the record cannot say how many lookups reached GitHits: a call's `signal.githits.mismatch` (a launcher call the guard passed left no client record) or an `unguarded` client record. What to do: `syberlabs metrics --thread <id> --json` gives the reason in the count's note; fix the cause (a client that failed before recording, a proposer that declares no lookups) before the next item, and do not read the item as one where GitHits went unused |
+| `contamination_unknown` | kept | the baseline shows no GitHits lookup, but its count is unknown, so it cannot be shown clean |
 | `relabelled` | kept | a thread's labels disagree, but the one in force stood before its first candidate |
 | `model_mismatch` | kept | the arms were served by different models |
 | `cost_basis_mismatch` | kept, cost not compared | the arms' cost was recorded on different bases or credential lanes |
@@ -93,7 +95,18 @@ Each item is checked against the record. The first nine take the item out of eve
 
 Two lines are about the experiment as a whole. `not_run` names the registered items that never ran. `forgotten` names the forget tombstones written since the experiment's first thread started, because a forgotten thread leaves nothing else behind; under the default retention policy a thread with an accepted change is kept for 365 days, so a tombstone here is usually a run that was not accepted and was removed. Exported records carry no tombstones, so a report `--from-export` says it cannot see forgotten threads. `--from-export` also refuses a record whose hash chain does not verify (`export_unverified`): an edited export is not counted.
 
-The Claude Code proposer leaves `mcp_servers` out of `signal.harness` when its session started with none, so a call whose harness recorded its session's start (a `version` or `model`) and lists no servers had none connected; a call whose harness recorded nothing of its start is not read. `--server none` turns off the server checks for an experiment that does not switch an MCP server. `contaminated`, `contamination_unknown` and `unused` read GitHits lookups and apply only with `--server githits`.
+### How the arm is read
+
+The report does not take the label's word for the arm. It reads, call by call, the host's record of whether the call had GitHits, by either route:
+
+- **The API route** (`--githits`, the pilot's since SyberWork #134): the candidate carries `signal.githits`, the ledger the Claude Code proposer writes on the candidate of every call it gave the host's GitHits launcher, and of no other. It holds the host's own count of the client records it verified under the call's key (`records`), and it is there whether or not the model used the launcher, so a treatment that looked nothing up is `unused`, not in conflict. What the model drove (`signal.tool_usage`, `signal.githits.launcher_calls`), the skill text it was shown (`signal.harness.skill`) and the operator's name for the arm (`signal.githits.arm`, from `--githits-arm`) are not read for the arm.
+- **The MCP route** (`--mcp-config`, the pilot's before #134): `signal.harness.mcp_servers` lists the server `connected`, as Claude Code's `init` event said. The proposer leaves `mcp_servers` out when its session started with none, so a call whose harness recorded its session's start (a `version` or `model`) and lists no servers had none connected; a call that recorded neither the ledger nor anything of its start is not read.
+
+A thread whose calls all had GitHits is the treatment's; one where none did is the baseline's; anything else is `server_mixed` in the treatment and `arm_conflict` in the baseline. A treatment thread with both routes is `two_routes`.
+
+A GitHits lookup is shown by the thread's GitHits count (`syberlabs metrics`' `githits_lookups`; on the API route, the number of the host's `lookup` facts from authentic client records) above zero, or by a `lookup` fact the host observed and can vouch for: a GitHits MCP call (`mcp__githits__*`), or a client record that a guarded launcher call stands behind (`githits.<op>`, guard `pass`; a `githits.doctor` readiness check is not a lookup). That includes the lookups of a call that failed before its candidate, which no registration counts. An unknown count is never read as zero: it shows no baseline clean (`contamination_unknown`) and no treatment unused (`use_unknown`).
+
+`--server none` turns these checks off for an experiment that does not switch GitHits; another `--server` name reads that MCP server only, never the launcher. `contaminated`, `contamination_unknown`, `unused`, `use_unknown` and `two_routes` read GitHits lookups and routes, and apply only with `--server githits`.
 
 ## Statistics, stated plainly
 
@@ -123,24 +136,28 @@ The pilot itself runs a real model with a paid key: Class X (`AGENTS.md`). A nam
 1. The item list, as the `--items` file: each work item's id and its tag, `needs_lookup` when the work depends on a library or API the agent is unlikely to know well (new, niche, or changed since the model's training), else `routine`; beside it, each item's objective and scope.
 2. The primary metric and the group the decision rests on (for example: the delivery rule on `needs_lookup` items, with `--delivered review`).
 3. The exclusion rules: the nine excluded checks above, and nothing else.
-4. The frozen setup: the SyberWork commit, Claude Code version, model, effort, `--allowed-tools`, `--max-turns`, the query guard's thresholds, and the credential lane. Use the `api` lane (`--bare`) in both arms: it is the lane whose cost is billed and known, and in bare mode the tree's `CLAUDE.md` is not read in either arm. The contract prices every model the runs report (`evolution.budget.prices`); a run that used a model the contract does not price has an unknown cost. Anything that learns from runs stays off for the week. AutoSkill is a design (`docs/AUTOSKILL.md`) and is in no proposer path; the `jev` and `empirical` branch policies belong to `--evolve`, which the pilot does not use.
+4. The frozen setup: the SyberWork commit, Claude Code version, model, effort, `--allowed-tools`, `--max-turns`, the query guard's thresholds, the credential lane, and arm B's GitHits route (`--githits`) with its license policy (`SYBERLABS_GITHITS_LICENSES`, recorded as `signal.githits.license_policy`). Use the `api` lane (`--bare`) in both arms: it is the lane whose cost is billed and known, and in bare mode the tree's `CLAUDE.md` is not read in either arm. The contract prices every model the runs report (`evolution.budget.prices`); a run that used a model the contract does not price has an unknown cost. Anything that learns from runs stays off for the week. AutoSkill is a design (`docs/AUTOSKILL.md`) and is in no proposer path; the `jev` and `empirical` branch policies belong to `--evolve`, which the pilot does not use.
+
+**Before the week, the dry run** (Class X as well, a few dollars): `python scripts/pilot_dry_run.py --plan plan.json` runs this protocol on 3 to 5 items on the API route (`--githits`, `docs/GITHITS.md`, "The A/B report"), in a home of its own: a preflight that refuses to start on any failure, one canary call that shows the query guard fires under `--bare`, both arms per item from one `HEAD` in a seeded order, the blind review and this report under a hard budget cap (default $8). It passes when the nine metrics are known for every thread and the report compares every item; its docstring says how to run it, and its `receipt.json` and `report.md` are what to send.
 
 **Each item, each arm, from the same `HEAD`** (accepting moves only the thread's own branch, so `HEAD` stays put):
 
 ```bash
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__githits
+syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
 syberlabs run --once                     # one safe step per thread; here, accepting the passing candidate
 
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm on --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__githits \
-    --mcp-config githits.json            # the only difference between the arms
+syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
+    --githits --githits-arm on           # the only difference between the arms: the launcher and the skill
 syberlabs run --once
 ```
 
-`--claude-code` is the proposer of SyberWork #80 and the query guard of #82; this report works with any proposer, and needs them for the server check and for the lookups to be counted (`arm_unverified` and unknown lookups otherwise). Alternate which arm runs first from item to item, so drift in the model or the network during the week does not fall on one arm. Accept on the host's checks (`--unattended`), or have a person accept without being told the arm: the label is in the journal, not in the diff or the pull request. Then have a person who is not told the arm review **both** arms' accepted commits, and record each verdict on its thread:
+Arm B needs `GITHITS_API_TOKEN` in the environment (the proposer refuses `--githits` without it, and never writes it down). Arm A drops every GitHits variable before Claude Code starts (#135), so both arms can run from the same shell. Pass no GitHits `--mcp-config` in either arm: in arm A it is `arm_conflict`, in arm B `two_routes`. Before #134 the pilot's route was an MCP server: `--mcp-config githits.json` in arm B, with `mcp__githits` in both arms' `--allowed-tools`. The report still reads an experiment run that way.
+
+`--claude-code` is the proposer of SyberWork #80, with the query guard of #82 and the GitHits launcher of #134. This report works with any proposer, but needs those to read the arm and count the lookups (`arm_unverified` and unknown lookups otherwise). Alternate which arm runs first from item to item, so drift in the model or the network during the week does not fall on one arm. Accept on the host's checks (`--unattended`), or have a person accept without being told the arm: the label is in the journal, not in the diff or the pull request. Then have a person who is not told the arm review **both** arms' accepted commits, and record each verdict on its thread:
 
 ```bash
 syberlabs review --record --verdict pass --reviewer blind-1 --revision 3f9c2ab
@@ -163,6 +180,6 @@ What leaves the factory is the report and the CSV. The journal, the prompts and 
 
 - The report compares what the record holds. A lookup the proposer did not declare, a model call outside the host, or a person's message to an agent outside the CLI is unknown or missing to it, as it is to `syberlabs metrics` (`docs/METRICS.md`, section 4).
 - The checks catch a label settled after the work began, an item outside the registered list, an unlabelled run of the same objective from the same commit, and a forgotten thread. They cannot catch a run made in another home, or one whose objective was reworded.
-- The server check reads what the proposer recorded about its own MCP servers. It catches a GitHits server that failed to connect; it cannot catch a proposer that misreports.
+- The arm check reads what the proposer recorded: the GitHits launcher's ledger and its MCP servers. It catches a treatment run without `--githits` (or whose GitHits server failed to connect), and a baseline given GitHits by either route. It cannot catch a proposer that misreports: a search-protocol adapter writes its own `signal`, so it could declare a ledger or a server it never had.
 - One week of items is a small sample. The report says how small, metric by metric; it does not turn a small sample into a finding.
-- `examples/githits_ab.py` runs every step with a stand-in instead of a model. Its numbers are invented to exercise the report and say nothing about GitHits.
+- `examples/githits_ab.py` runs every step with a stand-in instead of a model. On its default route (`--route api`), that is the real Claude Code proposer with a stand-in `claude` and a loopback GitHits; `--route mcp` uses a search-protocol stand-in that declares its MCP servers. Its numbers are invented to exercise the report and say nothing about GitHits.

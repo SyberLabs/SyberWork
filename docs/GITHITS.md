@@ -217,6 +217,77 @@ print(hashlib.sha256(fixture_bytes(json.load(open(sys.argv[1], encoding='utf-8')
 
 The same digest means the five operations are unchanged.
 
+## The A/B report
+
+The pilot runs each work item through the same Claude Code proposer twice and compares the arms with
+`syberlabs experiment` (`docs/EXPERIMENTS.md`): arm A without GitHits, arm B with the launcher. Label each thread
+before its first candidate and keep everything else equal, `--allowed-tools` included:
+
+```bash
+syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
+syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup
+syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
+syberlabs run --once
+
+syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
+syberlabs experiment label --name githits-pilot --item LIB-1 --arm on --tag needs_lookup
+syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
+    --githits --githits-arm on          # the only difference: the launcher and the skill
+syberlabs run --once
+
+syberlabs experiment report --name githits-pilot --items items.txt --delivered review
+```
+
+The report does not take the label's word for the arm; it reads the host's record of each call. On this route a
+call had GitHits when its candidate carries `signal.githits`, the ledger `ClaudeCodeProvider` writes on the
+candidate of every call it gave the launcher, and of no other: `{arm, launcher_calls, launcher_passed, records,
+records_ignored, bash_refused, license_policy[, mismatch]}`, where `records` is the host's own count of the client
+records whose MAC verified under the call's key. That is the strongest host-owned evidence the provider records
+for a call: the host writes it only after writing that call's launcher and record directory and reading them back,
+and its presence does not depend on anything the model did, so a treatment whose model never touched the launcher
+still carries it and is `unused`, not in conflict. What the model drove (`signal.tool_usage`, `launcher_calls`),
+the skill text it was shown (`signal.harness.skill`) and the operator's name for the arm (`signal.githits.arm`,
+from `--githits-arm`) are not read for the arm. GitHits use is read from the host's `lookup` facts, one per
+authentic client record (tool `githits.<op>`), which `syberlabs metrics` counts as `githits_lookups`; a
+`githits.doctor` record is a readiness check, not a lookup, and counts for neither.
+
+| Check | Effect | On this route |
+|---|---|---|
+| `arm_conflict` | excluded | a baseline call carries the ledger (`--githits` was passed in arm A), or a treatment thread's calls carry none (it was forgotten) |
+| `contaminated` | excluded | the baseline shows a GitHits lookup: its `githits_lookups` is above zero, or its thread holds a verified `lookup` fact the host observed, an MCP call (`mcp__githits__*`) or a client record a guarded launcher call stands behind (`githits.<op>` but `doctor`, guard `pass`), a call that failed before its candidate included |
+| `contamination_unknown` | kept | the baseline shows no lookup but its `githits_lookups` is unknown, so it cannot be shown clean |
+| `server_mixed` | kept | some of a treatment thread's calls carry the ledger and some do not |
+| `two_routes` | kept | a treatment thread had GitHits by both routes, the ledger and a connected GitHits MCP server (one left in arm B by mistake): still the treatment, but not one route alone, and where it has client records `githits_lookups` counts only those, leaving the MCP lookups out (`spec/GAPS.md` 59) |
+| `unused` | kept | the treatment shows no GitHits lookup and its count is known to be zero (a launcher call the guard refused never reached GitHits) |
+| `use_unknown` | kept | the treatment shows no GitHits lookup but its count is unknown, so it cannot be shown to have used GitHits (nor not to) |
+| `arm_unverified` | kept | no call recorded its MCP servers or the ledger |
+
+An unknown `githits_lookups` is never read as zero. It is unknown when a call declared no count, and, with the
+metrics of SyberWork #139, when the record cannot say how many lookups reached GitHits: a call's
+`signal.githits.mismatch` (a launcher call the guard passed left no record) or an `unguarded` client record (no
+guarded launcher call behind it). The report then reads only what the host observed: a lookup fact it can vouch for
+makes the baseline `contaminated` and shows the treatment used; without one the baseline is `contamination_unknown`
+and the treatment `use_unknown`, and the item's paired GitHits count is unknown, counted beside the comparison and
+never imputed. The arm itself is read from the ledger's presence, not from any count, so an unknown count never moves
+an item between arms or into `arm_conflict`.
+
+The MCP route is read as before (`signal.harness.mcp_servers` listing `githits:connected`), and a call counts as
+having GitHits by either route: a stray GitHits MCP server in arm A is `arm_conflict`, one beside the launcher in
+arm B is `two_routes`. Before the report read the ledger, every arm-B item of an API-route pilot was
+excluded as `arm_conflict` (the server "not connected in the treatment"), so nothing was compared and the delivery
+rule could not be read. `--server none` still turns these checks off; another `--server` name reads that MCP server
+only, never the launcher.
+
+`python examples/githits_ab.py` rehearses the whole pipeline on this route (its default, `--route api`; `--route
+mcp` is the route before it): seven items through both arms of the real provider with a stand-in `claude` and a
+loopback GitHits, item `LIB-4`'s treatment run without `--githits` and excluded. `tests/test_experiment_githits_api.py`
+runs both arms end to end through the provider, the query guard, the launcher and the client, labels and reports
+them with the CLI, and prints the paired result and the rule's verdict.
+
+The report trusts the proposer's record. A search-protocol adapter writes its own `signal`, so it could declare a
+ledger it never had, as it could declare an MCP server; the check catches a misconfigured run, not a proposer that
+misreports. Claim ceiling: implemented and tested with stand-ins; no pilot has run on it.
+
 ## Environment
 
 | Variable | Meaning |
