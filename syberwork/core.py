@@ -22,7 +22,8 @@ from syberlabs.contracts import check_case_inputs, compile_path, prepare_contrac
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
-from syberlabs.evidence import acceptance_results, signer_is_effect_actor, verified_reconciliation
+from syberlabs.evidence import (AmbiguousRecord, acceptance_results, destination_record, signer_is_effect_actor,
+                                simulation_labeled, verified_reconciliation)
 from syberlabs.evolution import (AUTOMATION_ROLES, candidate_record, candidate_views, evaluation_record, registered,
                                  search_record)
 from syberlabs.jcs import envelope_jcs
@@ -678,10 +679,12 @@ class Work:
                 raw = response.read(65537)
                 if len(raw) > 65536:
                     raise ValueError("status response exceeds 64 KB")
-                record = json.loads(raw)
+                record = destination_record(raw)
         except urllib.error.HTTPError as exc:
             status, reason = ("pending", "not_found_not_proof") if exc.code == 404 else ("pending", "status_unavailable")
             record = None
+        except AmbiguousRecord:
+            status, reason, record = "unverified", "destination_record_ambiguous", None
         except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
             status, reason, record = "pending", "status_unavailable", None
         except StatusNotAuthoritative:
@@ -689,13 +692,16 @@ class Work:
         else:
             matched = False
             if config.get("kind") == "economic_http":
-                matched = receipt_matches(record, proposal_id, proposal["args"], digest(proposal["args"]))
+                matched = receipt_matches(record, proposal_id, proposal["args"], digest(proposal["args"]), config["rail"])
             elif (isinstance(record, dict) and record.get("state") == "committed"
                     and record.get("idempotency_key") == proposal_id
                     and record.get("request_digest") == digest(proposal["args"])
                     and isinstance(record.get("external_id"), str) and record["external_id"]):
                 matched = True
-            if matched:
+            # A destination that labels its own matching record simulated or sandbox has not reported a live effect.
+            if matched and simulation_labeled(record):
+                status, reason = "unverified", "destination_record_simulated"
+            elif matched:
                 status, reason = "verified", "destination_record_matched"
             else:
                 status, reason = "unverified", "destination_record_mismatch"
@@ -912,8 +918,8 @@ class Work:
                 raise ValueError("settlement receipt status is not a completed write")
             raw = response.read(32768)
             if action["kind"] == "economic_http":
-                record = json.loads(raw)
-                if not receipt_matches(record, key, args, digest(args)):
+                record = destination_record(raw)
+                if not receipt_matches(record, key, args, digest(args), action["rail"]) or simulation_labeled(record):
                     raise ValueError("settlement receipt does not match the authorized intent")
                 return {"settlement": record}
             return {"status": response.status, "body": raw.decode("utf-8", errors="replace")}
