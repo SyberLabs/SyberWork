@@ -381,7 +381,8 @@ TRIPS = {
         "def setUpModule():\n    raise KeyboardInterrupt\n",
         "def tearDownModule():\n    quit()\n",
     ],
-    "harness_override": [HARNESS_CLASS.format(name=name) for name in ("run", "__call__", "debug", "id", "_callTestMethod")]
+    "harness_override": [HARNESS_CLASS.format(name=name) for name in ("run", "__call__", "debug", "id", "_callTestMethod",
+                                                                        "_addExpectedFailure", "_addUnexpectedSuccess")]
     + ["from unittest import TestCase as Base\n\nclass T(Base):\n    def _callSetUp(self):\n        pass\n",
        "class T:\n    def test_a(self):\n        pass\n    run = None\n"],
     "load_tests": ["def load_tests(loader, tests, pattern):\n    return tests\n", "load_tests = None\n"],
@@ -391,6 +392,8 @@ TRIPS = {
         "import unittest\n\nclass T(unittest.TestCase):\n    def test_a(self):\n        self._outcome.result.stop()\n",
         "from unittest import mock\nmock.patch('unittest.TestCase.run').start()\n",
         "import unittest\nsetattr(unittest.TestCase, 'run', None)\n",
+        "import unittest.case\nunittest.case._addError = lambda result, test, exc_info: None\n",
+        "def helper(test):\n    setattr(type(test), '_addUnexpectedSuccess', lambda self, result: result.addSuccess(self))\n",
         "def helper(result):\n    result.startTest = print\n",
         "def helper(result):\n    return result.shouldStop\n",
         "def helper(test):\n    test._testMethodName = 'test_other'\n",
@@ -555,7 +558,7 @@ class IntegrityBeyondTests(unittest.TestCase):
         self.assertEqual(self.rules(document, "tests/test_forge.py"), set())
         self.assertEqual(sorted(f["line"] for f in document["findings"]), [1, 2, 6, 7])
         self.assertTrue(all("a test can import this file" in f["claim"] for f in document["findings"]))
-        self.assertEqual(document["reviewer"], {"name": "rules", "revision": "2"})
+        self.assertEqual(document["reviewer"], {"name": "rules", "revision": "3"})
 
     def test_the_harness_families_apply_to_any_python_file(self):
         write_side = ("os.write", "syberlabs-")  # the runner_reach snippets that stay test-scoped (next test)

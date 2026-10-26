@@ -101,6 +101,13 @@ def _serial(folder: Path) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, timeout=300)
 
 
+def _serial_suite(extra: dict) -> str:
+    """Serial ``unittest discover`` of the synthetic suite plus ``extra``: its output."""
+    with tempfile.TemporaryDirectory() as folder:
+        _write_suite(Path(folder), extra)
+        return _serial(Path(folder)).stderr
+
+
 def _summary(text: str) -> tuple:
     """(tests run, final status line) from unittest-shaped output."""
     ran = re.findall(r"^Ran (\d+) tests? in ", text, re.MULTILINE)
@@ -211,6 +218,17 @@ class EndToEnd(unittest.TestCase):
                     @classmethod
                     def setUpClass(cls): raise RuntimeError("deliberate fixture error")
                     def test_never(self): pass
+
+                class Parts(unittest.TestCase):  # each reports through a path other than add<Outcome>(self)
+                    def test_only_subtests_fail(self):
+                        for i in range(2):
+                            with self.subTest(i=i):
+                                self.fail("deliberate subtest")
+                    def test_a_subtest_skips(self):
+                        with self.subTest(i=0):
+                            self.skipTest("deliberate subtest skip")
+                    def test_cleanup_errors(self):
+                        self.addCleanup(lambda: 1 / 0)
             """})
             serial = _serial(Path(folder))
             sharded = _shards(Path(folder), "--shards", "4")
@@ -221,7 +239,8 @@ class EndToEnd(unittest.TestCase):
             self.assertIn("ERROR: test_errors (test_delta.Broken", sharded.stdout)
             self.assertIn("deliberate error", sharded.stdout)
             self.assertIn("ERROR: setUpClass (test_delta.BrokenFixture)", sharded.stdout)
-            self.assertNotIn("shard_incomplete", sharded.stdout)  # the fixture accounts for test_never
+            # The fixture accounts for test_never; every Parts test reported an outcome before it stopped.
+            self.assertNotIn("shard_incomplete", sharded.stdout)
 
     def test_a_module_that_cannot_import_fails_the_run(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -389,6 +408,17 @@ class Stream(unittest.TestCase):
                 found = self.account(events)
                 self.assertTrue(any(expected in problem for problem in found["problems"]), found["problems"])
 
+    def test_a_test_that_stops_without_an_outcome_is_a_problem(self):
+        silent = [{"ev": "start", "id": "m.A.test_2"}, {"ev": "stop", "id": "m.A.test_2"}]
+        found = self.account(_ran("m.A.test_1") + silent + [self.FIXTURE_SKIP, _done(2, skipped=1)])
+        self.assertEqual(found["problems"], ["stopped 1 tests that reported no outcome: m.A.test_2"])
+        # A failed subtest is an outcome: unittest then reports no addFailure for the test itself.
+        subtests = [{"ev": "start", "id": "m.A.test_2"}, {"ev": "outcome", "id": "m.A.test_2", "kind": "subfailure"},
+                    {"ev": "stop", "id": "m.A.test_2"}]
+        found = self.account(_ran("m.A.test_1") + subtests + [self.FIXTURE_SKIP,
+                                                              _done(2, skipped=1, failures=[{"id": "m.A.test_2"}])])
+        self.assertEqual(found["problems"], [])
+
     def test_a_stream_without_done_is_a_crash_with_its_last_started_test(self):
         found = self.account(_ran("m.A.test_1") + [{"ev": "start", "id": "m.A.test_2"}])
         self.assertTrue(found["crashed"])
@@ -452,6 +482,34 @@ CHANNEL_GARBAGE = """
             channel = next(o for o in gc.get_objects() if isinstance(o, __main__._Channel))
             channel._out.write(b'{"ev": "done"}' + bytes([10]))
         def test_1(self): pass
+"""
+MUTES_ERRORS = """
+    import unittest
+    import unittest.case
+
+    class AAMute(unittest.TestCase):
+        @classmethod
+        def setUpClass(cls): pass
+        def test_0_mute(self):
+            unittest.case._addError = lambda result, test, exc_info: None
+        def test_1_failure_vanishes(self): raise AssertionError("must fail")
+"""
+REPORTS_XPASS_AS_PASS = """
+    import unittest
+
+    class Xpass(unittest.TestCase):
+        def _addUnexpectedSuccess(self, result):
+            result.addSuccess(self)
+        @unittest.expectedFailure
+        def test_passes_unexpectedly(self): pass
+"""
+DROPS_ITS_RESULT = """
+    import unittest
+
+    class Drop(unittest.TestCase):
+        def test_fails_unreported(self):
+            self._outcome.result = None
+            raise AssertionError("must fail")
 """
 PRINTS_PROTOCOL = """
     import unittest
@@ -572,6 +630,43 @@ class Integrity(unittest.TestCase):
         self.assertEqual(ran.returncode, 1, ran.stdout)
         self.assertIn("ran test_patch.AAPatch.test_1_body_never_runs after test code changed "
                       "TestCase._callTestMethod", ran.stdout)
+
+    def test_a_test_that_mutes_how_unittest_reports_an_error_fails_the_shard(self):
+        """``TestCase.run`` reports errors and skips through functions of ``unittest.case``; a no-op there makes
+        every later failure vanish, and serial ``unittest`` says OK."""
+        ran = self.run_suite({"test_mute.py": MUTES_ERRORS})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertIn("ran test_mute.AAMute.test_1_failure_vanishes after test code changed "
+                      "unittest.case._addError", ran.stdout)
+        self.assertIn("stopped 1 tests that reported no outcome: test_mute.AAMute.test_1_failure_vanishes",
+                      ran.stdout)
+        self.assertTrue(_summary(_serial_suite({"test_mute.py": MUTES_ERRORS}))[1].startswith("OK"))  # serial unittest is fooled
+
+    def test_a_test_that_reports_its_own_unexpected_success_as_a_pass_is_refused_before_anything_runs(self):
+        ran = self.run_suite({"test_xpass.py": REPORTS_XPASS_AS_PASS})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertIn("run_shards: harness_override: test_xpass.Xpass.test_passes_unexpectedly takes "
+                      "_addUnexpectedSuccess from outside unittest", ran.stdout)
+        self.assertEqual(_summary(ran.stdout), (0, "FAILED (harness_override=1)"))
+        self.assertTrue(_summary(_serial_suite({"test_xpass.py": REPORTS_XPASS_AS_PASS}))[1].startswith("OK"))  # serial unittest is fooled
+
+    def test_a_test_that_stops_without_reporting_an_outcome_fails_the_shard(self):
+        """No watched function changes here: the test drops the result its failure is reported to. The stream
+        shows a start and a stop and nothing between, which unittest never sends for a test it ran."""
+        ran = self.run_suite({"test_drop.py": DROPS_ITS_RESULT})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertIn("stopped 1 tests that reported no outcome: test_drop.Drop.test_fails_unreported", ran.stdout)
+        self.assertNotIn("after test code changed", ran.stdout)
+        self.assertTrue(_summary(_serial_suite({"test_drop.py": DROPS_ITS_RESULT}))[1].startswith("OK"))  # serial unittest is fooled
+
+    def test_the_critic_flags_each_way_of_misreporting_an_outcome(self):
+        for name, body, rule in (("test_mute.py", MUTES_ERRORS, "unittest_patch"),
+                                 ("test_xpass.py", REPORTS_XPASS_AS_PASS, "harness_override"),
+                                 ("test_drop.py", DROPS_ITS_RESULT, "unittest_patch")):
+            with self.subTest(name=name):
+                findings = critic_rules.integrity_findings(f"tests/{name}", textwrap.dedent(body).lstrip(), None)
+                self.assertEqual({f["claim"].split("(")[1].split(")")[0] for f in findings}, {rule})
+                self.assertTrue(all(f["severity"] == "high" for f in findings))
 
     def test_bytes_on_the_channel_without_the_nonce_discard_the_shard(self):
         ran = self.run_suite({"test_garbage.py": CHANNEL_GARBAGE})

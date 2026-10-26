@@ -41,8 +41,9 @@ import subprocess
 import sys
 
 # Revision 2: the integrity rule (test files, then every changed Python file) changed what this reviewer
-# refuses, so a Reviewed-by line naming revision 1 would misdescribe it.
-REVIEWER = {"name": "rules", "revision": "2"}
+# refuses, so a Reviewed-by line naming revision 1 would misdescribe it. Revision 3: harness_override
+# also names the two methods through which a test reports an expected failure or an unexpected success.
+REVIEWER = {"name": "rules", "revision": "3"}
 TEST_MARKERS = ("tests/", "test/", "/test_", "_test.", "spec/")
 SOURCE_SUFFIXES = (".py", ".js", ".ts", ".go", ".rs", ".java", ".rb", ".c", ".h", ".cs", ".mjs")
 MAX_INTEGRITY_FINDINGS = 40  # per candidate; the summary counts the rest
@@ -73,7 +74,7 @@ QUIT_CALLS = {"sys.exit", "exit", "quit", "os._exit", "unittest.main"}
 QUIT_RAISES = {"SystemExit", "KeyboardInterrupt", "GeneratorExit", "BaseException"}
 FIXTURES = {"setUpModule", "tearDownModule", "setUpClass", "tearDownClass"}
 HARNESS = {"run", "__call__", "debug", "id", "_callTestMethod", "_callSetUp", "_callTearDown", "_callCleanup",
-           "countTestCases", "__getattribute__"}
+           "_addExpectedFailure", "_addUnexpectedSuccess", "countTestCases", "__getattribute__"}
 RESULT_CALLBACKS = {"startTest", "stopTest", "startTestRun", "stopTestRun", "addSuccess", "addError", "addFailure",
                     "addSkip", "addSubTest", "addExpectedFailure", "addUnexpectedSuccess", "addDuration",
                     "wasSuccessful", "testsRun", "shouldStop", "stop"}

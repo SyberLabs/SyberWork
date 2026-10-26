@@ -90,9 +90,10 @@ SHARD_TIMEOUT_FLOOR = 300.0
 MAX_CHANNEL_BYTES = 64 * 1024 * 1024
 # The TestCase methods that start a test and report it. A discovered test whose class (or instance)
 # takes one of these from outside the ``unittest`` package is refused: it could report a test that
-# never ran.
+# never ran, or report its own outcome as another (``_addUnexpectedSuccess`` that calls ``addSuccess``
+# turns an expected failure that passed, which fails a run, into a pass).
 HARNESS_METHODS = ("run", "__call__", "debug", "id", "_callTestMethod", "_callSetUp", "_callTearDown",
-                   "_callCleanup")
+                   "_callCleanup", "_addExpectedFailure", "_addUnexpectedSuccess")
 # What a shard's stream may say about a test, and which ``unittest`` count it adds to.
 OUTCOMES = {"success": None, "failure": "failures", "error": "errors", "skip": "skipped",
             "xfail": "expected_failures", "xpass": "unexpected", "subfailure": "failures", "suberror": "errors"}
@@ -102,6 +103,11 @@ RESULT_METHODS = ("startTest", "stopTest", "addSuccess", "addError", "addFailure
                   "addExpectedFailure", "addUnexpectedSuccess", "wasSuccessful", "stop")
 SUITE_METHODS = ("run", "__call__", "__iter__", "_handleClassSetUp", "_handleModuleFixture", "_tearDownPreviousClass",
                  "_handleModuleTearDown")
+# Also watched at run time, not refused in a test's class: the rest of a test's run (its cleanups and
+# subtests), and the functions of ``unittest.case`` through which ``TestCase.run`` reports a skip or an
+# error. A test that replaced ``_addError`` with a no-op would have every later failure vanish.
+RUN_METHODS = ("doCleanups", "subTest")
+CASE_FUNCTIONS = ("_addSkip", "_addError")
 # Files Python could import: one of these, untracked, anywhere in the worktree, is a change a test run sees.
 IMPORTABLE = (".py", ".pyc", ".pyo", ".pyd", ".pth", ".so", ".dll")
 
@@ -435,15 +441,17 @@ class _Child:
 
 
 def _watched() -> dict:
-    return {unittest.TestCase: HARNESS_METHODS, unittest.TestSuite: SUITE_METHODS,
+    return {unittest.TestCase: HARNESS_METHODS + RUN_METHODS, unittest.case: CASE_FUNCTIONS,
+            unittest.TestSuite: SUITE_METHODS,
             unittest.suite.BaseTestSuite: SUITE_METHODS, unittest.TestResult: RESULT_METHODS,
             unittest.TextTestResult: RESULT_METHODS, _ShardResult: RESULT_METHODS + ("_send", "_report"),
             _Channel: ("send",), unittest.case._Outcome: ("testPartExecutor",)}
 
 
 def _harness_snapshot() -> dict:
-    """The harness functions by identity, as the classes hold them now."""
-    return {(cls.__qualname__, name): vars(cls).get(name) for cls, names in _watched().items() for name in names}
+    """The harness functions by identity, as the classes (and ``unittest.case``) hold them now."""
+    return {(getattr(owner, "__qualname__", owner.__name__), name): vars(owner).get(name)
+            for owner, names in _watched().items() for name in names}
 
 
 class _ShardResult(unittest.TextTestResult):
@@ -572,7 +580,9 @@ def account(messages: list, assigned: list, multiplicity: dict, records: dict) -
     starts: collections.Counter = collections.Counter()
     fixtures: list = []
     problems: list = []
+    silent: list = []  # tests that started and stopped with no outcome between
     open_id = last_started = done = None
+    reported = False
     for message in messages:
         event, test_id = message.get("ev"), message.get("id")
         if done is not None:
@@ -582,12 +592,14 @@ def account(messages: list, assigned: list, multiplicity: dict, records: dict) -
             if open_id is not None:
                 problems.append(f"started {test_id} while {open_id} was running")
             open_id = last_started = test_id
+            reported = False
             starts[test_id] += 1
             found["tests_run"] += 1
         elif event == "outcome":
             if test_id != open_id or message.get("kind") not in OUTCOMES:
                 problems.append(f"reported an outcome for {test_id} outside its start and stop")
                 continue
+            reported = True
             counter = OUTCOMES[message["kind"]]
             if counter:
                 found[counter] += 1
@@ -603,6 +615,10 @@ def account(messages: list, assigned: list, multiplicity: dict, records: dict) -
         elif event == "stop":
             if test_id != open_id:
                 problems.append(f"stopped {test_id} while {open_id} was running")
+            elif not reported:
+                # unittest reports every test it starts: a success, failure, error, skip, expected failure,
+                # unexpected success, or a failed subtest. A test that stops with none was not reported.
+                silent.append(test_id)
             open_id = None
         elif event == "harness_changed":
             problems.append(f"ran {test_id} after test code changed {', '.join(map(str, message.get('what') or []))}")
@@ -610,6 +626,8 @@ def account(messages: list, assigned: list, multiplicity: dict, records: dict) -
             done = message
         else:
             problems.append(f"sent an unknown event {event!r}")
+    if silent:
+        problems.append(f"stopped {len(silent)} tests that reported no outcome: " + ", ".join(silent[:10]))
     crashed = done is None
     if not crashed:
         if open_id is not None:
