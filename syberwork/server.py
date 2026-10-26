@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from syberlabs.planner import HttpPlanner
 
@@ -33,6 +33,23 @@ def _version(text: str) -> int:
     if not text.isdecimal() or len(text) > 9:
         raise Rejected("not_found", "contract version must be a positive integer")
     return int(text)
+
+
+def _explanation(work: Work, case_id: str, proposal_id: str, when: str) -> dict:
+    """Work.explain_admission for an HTTP reader, plus the decision as recorded. Appends nothing.
+
+    The rule's module is a path relative to the package or the working directory. When provenance
+    could only name an absolute path (a rule loaded from elsewhere), the module is withheld rather
+    than disclose this host's filesystem layout.
+    """
+    explained = work.explain_admission(case_id, proposal_id, when=when)
+    found = explained.get("provenance") or {}
+    module = found.get("module")
+    if not isinstance(module, str) or module.startswith("/") or ":" in module or ".." in module.split("/"):
+        module = None
+    return {"proposal_id": proposal_id, "when": when, "status": explained["status"], "reason": explained["reason"],
+            "rule": explained["rule"], "provenance": {"module": module, "symbol": found.get("symbol"), "line": found.get("line")},
+            "recorded": work.recorded_decision(case_id, proposal_id)}
 
 
 def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
@@ -131,6 +148,10 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._json(work.candidates(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
                     self._json({"valid": work.verify_chain(parts[2])})
+                elif len(parts) == 6 and parts[:2] == ["api", "cases"] and parts[3] == "proposals" and parts[5] == "explain":
+                    # The deciding rule for a stored proposal: ?when=recorded (the original decision) or now (the default).
+                    when = parse_qs(urlsplit(self.path).query).get("when", ["now"])[-1]
+                    self._json(_explanation(work, unquote(parts[2]), unquote(parts[4]), when))
                 elif parts[:2] == ["api", "builder"]:
                     outcome = dispatch_get(work, user, parts, urlsplit(self.path).query, self.headers.get("Last-Event-ID"))
                     if isinstance(outcome, dict):

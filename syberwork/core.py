@@ -1028,6 +1028,23 @@ class Work:
                 raise Rejected("invalid_explain", "when must be now or recorded")
             return explain(self._context(contract, policy, history, proposal, now, db))
 
+    def recorded_decision(self, case_id: str, proposal_id: str) -> dict | None:
+        """The proposal's first decision as stored, with the rule id written beside it.
+
+        ``rule`` comes from the side channel and is None for a decision written before that table
+        existed. None overall when the proposal has no decision. Read only.
+        """
+        with self.tx() as db:
+            self._case(db, case_id)
+            history = self._events(db, case_id)
+            self._proposal(history, proposal_id)
+            decision = next((e for e in history if e["kind"] == "decision" and e["body"].get("proposal_id") == proposal_id), None)
+            if decision is None:
+                return None
+            side = next((row for row in EventStore(db).side(case_id) if row["seq"] == decision["seq"]), None)
+            return {"seq": decision["seq"], "status": decision["body"]["status"], "reason": decision["body"]["reason"],
+                    "phase": decision["body"].get("phase", "propose"), "rule": side["rule"] if side else None}
+
     def bind_organization(self, organization: str) -> dict:
         """Bind this database to one organization. A second organization is refused."""
         if not isinstance(organization, str) or not organization.strip():

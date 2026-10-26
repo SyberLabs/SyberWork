@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -62,7 +63,8 @@ class Cell:
     """The included example installed as ``init`` installs it, with sources and actions on ``reference_port``."""
 
     def __init__(self, folder: Path, reference_port: int = 8999):
-        self.work = Work(folder / "work.sqlite3")
+        self.database = folder / "work.sqlite3"
+        self.work = Work(self.database)
         self.tokens = {name: "token-" + name for name in IDENTITIES}
         users = {name: {"hash": hashlib.sha256(self.tokens[name].encode()).hexdigest(), "roles": roles, "sources": sources}
                  for name, (roles, sources) in IDENTITIES.items()}
@@ -192,6 +194,116 @@ class ConsoleRoutes(CellCase):
         self.assertTrue(self.cell.work.verify_chain(case))
 
 
+class ConsoleExplain(CellCase):
+    """GET /api/cases/{id}/proposals/{p}/explain: Work.explain_admission over HTTP, read only."""
+
+    def proposal(self, action="issue_order", args=None, who="operator"):
+        case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        status, made = self.cell.json(f"/api/cases/{case}/proposals", {"action": action, "args": args or {}}, who=who)
+        self.assertEqual(status, 200, made)
+        return case, made
+
+    def dump(self):
+        with sqlite3.connect(self.cell.database) as db:
+            return list(db.iterdump())
+
+    def test_explain_requires_a_bearer_token(self):
+        case, made = self.proposal()
+        for when in ("", "?when=recorded", "?when=now"):
+            with self.subTest(when):
+                status, body = self.cell.json(f"/api/cases/{case}/proposals/{made['proposal']['id']}/explain{when}", who=None)
+                self.assertEqual((status, body["error"]), (401, "unauthorized"))
+
+    def test_explain_returns_the_rule_written_with_the_decision(self):
+        case, made = self.proposal()
+        pid = made["proposal"]["id"]
+        self.assertEqual(made["decision"], {"status": "denied", "reason": "amount_required"})
+        status, recorded = self.cell.json(f"/api/cases/{case}/proposals/{pid}/explain?when=recorded", who="manager")
+        self.assertEqual(status, 200)
+        self.assertEqual({k: recorded[k] for k in ("proposal_id", "when", "status", "reason", "rule")},
+                         {"proposal_id": pid, "when": "recorded", "status": "denied", "reason": "amount_required", "rule": "limits.amount"})
+        self.assertEqual(recorded["provenance"]["module"], "syberlabs/admission.py")
+        self.assertEqual(recorded["provenance"]["symbol"], "limits_amount")
+        self.assertIsInstance(recorded["provenance"]["line"], int)
+        side = {row["seq"]: row["rule"] for row in self.cell.work.side_channel(case)}
+        self.assertEqual(recorded["recorded"], {"seq": recorded["recorded"]["seq"], "status": "denied", "reason": "amount_required",
+                                                "phase": "propose", "rule": "limits.amount"})
+        self.assertEqual(side[recorded["recorded"]["seq"]], "limits.amount", "the rule written beside the decision event")
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/proposals/{pid}/explain")[1]["when"], "now", "now is the default, as in Work")
+        self.assertEqual({k: v for k, v in recorded.items() if k != "when"},
+                         {k: v for k, v in self.cell.json(f"/api/cases/{case}/proposals/{pid}/explain?when=now")[1].items() if k != "when"})
+
+    def test_explain_now_and_recorded_differ_once_history_moves(self):
+        """An approved issue_order: recorded says approval was required; now says commit would be admitted."""
+        case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        work = self.cell.work
+        work.observe(case, "part_number", "P-104", "inventory", "inventory-v1", "operator", verified=True)
+        work.observe(case, "quote", {"id": "Q-7", "price": 10, "part_number": "P-104", "supplier": "s"}, "supplier", "supplier-v1", "operator", verified=True)
+        status, made = self.cell.json(f"/api/cases/{case}/compiled", {}, who="scheduler")
+        self.assertEqual((status, made["proposal"]["action"]), (200, "record_review"), made)
+        self.cell.json(f"/api/cases/{case}/commit", {"proposal_id": made["proposal"]["id"]}, who="scheduler")
+        made = self.cell.json(f"/api/cases/{case}/compiled", {}, who="scheduler")[1]
+        self.assertEqual(made["decision"]["status"], "needs_approval", made)
+        pid = made["proposal"]["id"]
+        path = f"/api/cases/{case}/proposals/{pid}/explain"
+        self.assertEqual(self.cell.json(path + "?when=recorded")[1]["rule"], "approval.required")
+        self.assertEqual(self.cell.json(path + "?when=now")[1]["rule"], "approval.required")
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/approve", {"proposal_id": pid}, who="manager")[0], 200)
+        recorded, now = self.cell.json(path + "?when=recorded")[1], self.cell.json(path + "?when=now")[1]
+        self.assertEqual((recorded["rule"], recorded["status"], recorded["recorded"]["rule"]), ("approval.required", "needs_approval", "approval.required"))
+        self.assertEqual(now["status"], "allowed")
+        self.assertEqual(now["rule"], "admission.passed")
+
+    def test_explain_appends_nothing_and_writes_no_row(self):
+        case, made = self.proposal()
+        pid = made["proposal"]["id"]
+        before, events = self.dump(), self.cell.work.inspect(case)["events"]
+        for path in (f"/api/cases/{case}/proposals/{pid}/explain", f"/api/cases/{case}/proposals/{pid}/explain?when=recorded",
+                     f"/api/cases/{case}/proposals/{pid}/explain?when=now", f"/api/cases/{case}/proposals/missing/explain",
+                     f"/api/cases/{case}/proposals/{pid}/explain?when=later"):
+            for who in ("operator", "manager", "planner", "supplier", None):
+                self.cell.call(path, who=who)
+        self.assertEqual(self.cell.work.inspect(case)["events"], events)
+        self.assertEqual(self.dump(), before, "no table changed, including event_side and reservations")
+        self.assertTrue(self.cell.work.verify_chain(case))
+
+    def test_unknown_or_malformed_explain_is_refused_not_crashed(self):
+        case, made = self.proposal()
+        pid = made["proposal"]["id"]
+        for path, code in ((f"/api/cases/{case}/proposals/missing/explain", "unknown_proposal"),
+                           (f"/api/cases/no-such-case/proposals/{pid}/explain", "unknown_case"),
+                           (f"/api/cases/{case}/proposals/{pid}/explain?when=later", "invalid_explain")):
+            with self.subTest(path):
+                status, body = self.cell.json(path)
+                self.assertEqual((status, body["error"]), (409, code))
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/proposals/{pid}")[0], 404)
+
+    def test_explain_discloses_no_path_secret_or_planner_url(self):
+        case, made = self.proposal()
+        path = f"/api/cases/{case}/proposals/{made['proposal']['id']}/explain?when=recorded"
+        os.environ["SYBERWORK_PLANNER_URL"] = "http://127.0.0.1:9/plan?secret=abc"
+        os.environ["SYBERWORK_PLANNER_TOKEN"] = "planner-token-value"
+        self.addCleanup(os.environ.pop, "SYBERWORK_PLANNER_URL", None)
+        self.addCleanup(os.environ.pop, "SYBERWORK_PLANNER_TOKEN", None)
+        status, _, raw = self.cell.call(path)
+        self.assertEqual(status, 200)
+        for leak in (b"127.0.0.1:9", b"secret=abc", b"planner-token-value", self.cell.tokens["operator"].encode(), str(ROOT).encode()):
+            self.assertNotIn(leak, raw)
+        # A rule whose source is outside the package and the working directory has only an absolute
+        # path: the module is withheld, the rule and symbol are still answered.
+        real = self.cell.work.explain_admission
+        def outside(*args, **kwargs):
+            found = real(*args, **kwargs)
+            return {**found, "provenance": {**found["provenance"], "module": "/home/someone/rules/custom.py"}}
+        self.cell.work.explain_admission = outside
+        self.addCleanup(vars(self.cell.work).pop, "explain_admission", None)
+        status, _, raw = self.cell.call(path)
+        body = json.loads(raw)
+        self.assertEqual((status, body["rule"], body["provenance"]["module"]), (200, "limits.amount", None))
+        self.assertEqual(body["provenance"]["symbol"], "limits_amount")
+        self.assertNotIn(b"/home/someone", raw)
+
+
 class ConsoleStatic(CellCase):
     def test_console_files_are_served_with_the_content_security_policy(self):
         for name, kind in (("", "text/html"), ("app.js", "text/javascript"), ("model.js", "text/javascript"), ("style.css", "text/css")):
@@ -228,10 +340,14 @@ class ConsoleStatic(CellCase):
                 "/api/contracts/purchase-order/1", "/api/contracts/purchase-order/1/artifacts", "/api/policies",
                 "/api/actions", "/api/sources", "/metrics/cases_open", "/metrics/effects_pending", "/metrics/queue_depth",
                 "/metrics/proposals_denied_total"]
+        proposal = self.cell.json(f"/api/cases/{case}/proposals", {"action": "record_review", "args": {}}, who="admin")[1]["proposal"]["id"]
+        gets += [f"/api/cases/{case}/proposals/{proposal}/explain?when={when}" for when in ("recorded", "now")]
         for path in gets:
             with self.subTest(path):
                 self.assertEqual(self.cell.call(path, who="admin")[0], 200, path)
         app = (STATIC / "app.js").read_text()
+        self.assertIn("'/proposals/' + encodeURIComponent(p.id) + '/explain?when=' + when", app)
+        self.assertNotIn("not exposed over HTTP", app)
         for operation in ("refresh", "facts", "proposals", "compiled", "suggest", "approve", "commit", "signoff", "reconcile",
                           "replay", "cancel", "resolution-request", "resolution-resolve", "resolution-escalate", "candidates", "evaluations"):
             with self.subTest(operation):
@@ -240,7 +356,7 @@ class ConsoleStatic(CellCase):
                 self.assertNotEqual(body.get("error"), "unknown_route", operation)
 
 
-class ConsoleModel(unittest.TestCase):
+class ConsoleModel(CellCase):
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_projections_match_the_python_rules(self):
         contract = json.loads((EXAMPLES / "contract.json").read_text())
@@ -265,6 +381,11 @@ class ConsoleModel(unittest.TestCase):
                          for a in ("record_review", "issue_order", "absent")],
         }
         self.assertEqual([c["expected"] for c in parity["reconciliation"]], [True] + [False] * 10)
+        # What this server answers for a denied proposal, read by model.js as the console reads it.
+        case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        denied = self.cell.json(f"/api/cases/{case}/proposals", {"action": "issue_order", "args": {}})[1]["proposal"]["id"]
+        parity["explain"] = [{"body": self.cell.json(f"/api/cases/{case}/proposals/{denied}/explain?when={when}")[1], "when": when,
+                              "rule": "limits.amount", "provenance": "syberlabs/admission.py:"} for when in ("recorded", "now")]
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -300,6 +421,19 @@ class ConsoleBrowser(CellCase):
         self.assertTrue(any("destination acknowledged HTTP 201" in row for row in report["effects"]), report["effects"])
         self.assertTrue(any("recorded locally" in row for row in report["effects"]), report["effects"])
         self.assertIn("No external planner configured", report["planner"])
+        # The deciding rule is the server's: GET .../explain, written beside each decision.
+        self.assertEqual(len(report["flow_rules"]), 2, report["flow_rules"])
+        self.assertIn("admission.passed", report["flow_rules"][0])
+        self.assertIn("approval.required", report["flow_rules"][1])
+        self.assertTrue(all("Deciding rule" in row and "written with decision #" in row for row in report["flow_rules"]), report["flow_rules"])
+        self.assertIn("syberlabs/admission.py:", report["flow_rules"][1])
+        self.assertEqual(sorted(row.split(" ")[0] for row in report["propose_rules"]), ["admission.passed", "approval.required"], report["propose_rules"])
+        self.assertIn("allowed", report["now_rule"])
+        self.assertIn("admission.passed", report["now_rule"])
+        self.assertEqual(report["placeholder"], 0)
+        self.assertTrue(report["mismatch_rules"] and all("unknown" in row for row in report["mismatch_rules"]), report["mismatch_rules"])
+        self.assertFalse(any("invented.rule" in row for row in report["mismatch_rules"]), "a rule that does not reproduce the decision is never shown")
+        self.assertTrue(report["refused_rules"] and all("unavailable" in row and "unknown_case" in row for row in report["refused_rules"]), report["refused_rules"])
         self.assertIn("amount_exceeds_limit", report["replay"])
         self.assertEqual(len(report["manual"]), 2)
         self.assertTrue(all("unverified" in row for row in report["manual"]))
