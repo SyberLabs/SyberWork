@@ -122,10 +122,38 @@ class Journal:
             return None
         return json.loads(line)["row"]
 
+    def records(self, case_id: str):
+        """A thread's complete records from its first line, read lazily, without the lock and without loading the
+        thread, as ``first`` reads its case row. A torn final line ends the reading; nothing is repaired here."""
+        path = self.thread_path(case_id)
+        try:
+            handle = open(path, "rb")
+        except FileNotFoundError:
+            return
+        with handle:
+            while True:
+                line = handle.readline(MAX_LINE_BYTES + 1)
+                if not line.endswith(b"\n"):
+                    return
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    raise Rejected("journal_corrupt", f"{path.name}: unreadable record") from None
+                yield record
+
     def read_new(self, path: Path) -> list[dict]:
-        """Records appended since the last read. Truncates a torn final line."""
+        """Records appended since the last read. Truncates a torn final line.
+
+        A file whose size equals the offset already read has nothing new and is not opened. On Windows, opening a
+        file this process has just written waits on the file-system filter, and every guarded session operation
+        reads the registry and each loaded thread. Writers append and close under the lock before a reader holds
+        it, and ``_write`` trusts the same size to detect another writer."""
         offset = self._offsets.get(path, 0)
-        if not path.exists():
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            return []
+        if size == offset:
             return []
         with open(path, "r+b") as handle:
             handle.seek(offset)

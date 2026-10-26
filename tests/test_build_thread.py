@@ -16,7 +16,7 @@ from spec.validate import validate_events
 from syberlabs.events import verify_events
 from syberlabs import Rejected
 from syberlabs import checks as runner
-from syberlabs.build import GitRefEffect, Kit, default_contract, detect_checks
+from syberlabs.build import GitRefEffect, Kit, default_contract, detect_checks, latest_observation
 from syberlabs.cli import main as cli
 from syberlabs.providers import CommandProvider, FunctionProvider
 
@@ -768,6 +768,35 @@ class CommandLine(RepoCase):
         code, out, _ = self.run_cli("start", "A change with no class")
         self.assertEqual(code, 0)
         self.assertNotIn("act class", out)
+
+
+
+class ThreadListing(RepoCase):
+    """perf-packet-a (efficiency audit 2026-10-26, item 8): ``Kit.threads`` reads each thread's records from the first
+    line until its base observation, as ``Journal.first`` reads the case row, instead of loading every history; a
+    runner or settlement pass lists threads first. The states must equal what a full load gives."""
+
+    def test_states_equal_a_full_load_and_listing_loads_no_thread(self):
+        kit = self.kit()
+        started = kit.start("Add a CSV export", paths=["src", "tests"])
+        started.context()
+        partial = died_after_case_created(kit, "Rename the report module")
+        unattended = kit.start("Document the report module", unattended=True)
+        torn = died_after_case_created(kit, "Split the report module")
+        with open(kit.journal.thread_path(torn), "ab") as handle:
+            handle.write(b'{"t":"event","event":{"case_id"')  # died while writing the base observation
+        kit.close()
+        listing = self.kit()
+        rows = listing.threads()
+        self.assertEqual(listing.session.events, {}, "listing loaded no thread")
+        full = self.kit()  # the listing as it was: each history loaded, then its base looked up
+        expected = {row["id"]: "incomplete" if latest_observation(full.session.history(row["id"]), "base") is None
+                    else "started" for row in rows}
+        self.assertEqual({row["id"]: row["state"] for row in rows}, expected)
+        self.assertEqual(expected, {started.id: "started", partial: "incomplete", unattended.id: "started",
+                                    torn: "incomplete"})
+        self.assertEqual(listing.threads(), rows)
+        self.assertEqual(self.kit().threads(), rows, "after the full load repaired the torn record")
 
 
 if __name__ == "__main__":
