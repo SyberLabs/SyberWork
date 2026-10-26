@@ -15,10 +15,11 @@ end reconciled. This file does not count toward the REC floor; its two REC
 cases cover only the theme of a terminal outcome racing the lookup.
 
 ``CASES`` tags each test with one primary category and its rubric lines.
-``MISSING_HOOK`` lists the expected failures, each with the invariant the product
+``MISSING_HOOK`` lists any expected failures, each with the invariant the product
 does not yet enforce. They run under ``unittest.expectedFailure``, so they start
-failing as unexpected successes the day the product hook lands. All destinations
-are loopback simulators; nothing leaves the machine.
+failing as unexpected successes the day the product hook lands. It is empty: the
+simulation-label, rail and duplicate-key hooks have landed and those cases are
+active. All destinations are loopback simulators; nothing leaves the machine.
 """
 
 import hashlib
@@ -70,17 +71,7 @@ CASES = {
     "test_concurrent_reconciliation_appends_one_proof": ("REC", ("R1", "R8")),
 }
 # Expected failures: the invariant holds in the rubric, but no product hook enforces it yet.
-MISSING_HOOK = {
-    "test_committed_record_labeled_simulated_does_not_verify":
-        "the status match ignores fields other than state, key, digest and external_id, "
-        "so a record the destination itself labels simulated or sandbox still verifies",
-    "test_settlement_record_on_another_rail_does_not_verify":
-        "receipt_matches does not compare the record's rail with the installed rail, "
-        "and the proof then claims the installed rail",
-    "test_status_body_with_duplicate_keys_fails_closed":
-        "the status body is parsed with json.loads, which keeps the last duplicate key, "
-        "so a body that is both pending and committed verifies",
-}
+MISSING_HOOK: dict[str, str] = {}
 FLOORS = {"DS": 3, "SIM": 2, "SCH": 4, "COST": 1}
 
 
@@ -340,12 +331,28 @@ class SimulatedEvidence(BridgeFloor):
                 self.assert_not_verified(self.reconcile(key), "unverified", "destination_record_mismatch")
         self.assert_unresolved(key)
 
-    @unittest.expectedFailure
     def test_committed_record_labeled_simulated_does_not_verify(self):
         key = self.unknown()
-        labeled = {**self.dest.records[key], "simulated": True, "mode": "simulation", "environment": "sandbox"}
-        self.dest.status = reply(labeled)
-        self.assert_not_verified(self.reconcile(key), "unverified")
+        record = self.dest.records[key]
+        labels = {
+            "all_three": {"simulated": True, "mode": "simulation", "environment": "sandbox"},
+            "simulated_flag": {"simulated": True},
+            "sandbox_flag": {"sandbox": "yes"},
+            "test_flag_null": {"test": None},
+            "dry_run_flag": {"dry_run": 1},
+            "testnet_flag": {"testnet": True},
+            "livemode_false": {"livemode": False},
+            "livemode_string": {"livemode": "true"},
+            "mode_simulation": {"mode": "simulation"},
+            "environment_sandbox": {"environment": "sandbox"},
+            "environment_capitalized_live": {"environment": "Production"},
+            "env_staging": {"env": "staging"},
+            "env_list": {"env": ["production"]},
+        }
+        for name, label in labels.items():
+            with self.subTest(label=name):
+                self.dest.status = reply({**record, **label})
+                self.assert_not_verified(self.reconcile(key), "unverified", "destination_record_simulated")
         self.assert_unresolved(key)
 
 
@@ -382,13 +389,19 @@ class Schema(BridgeFloor):
                 self.assert_not_verified(result, result["status"])
         self.assert_unresolved(key)
 
-    @unittest.expectedFailure
     def test_status_body_with_duplicate_keys_fails_closed(self):
         key = self.unknown()
         record = self.dest.records[key]
-        body = json.dumps({**record, "state": "pending"})[:-1] + ', "state": "committed"}'
-        self.dest.status = lambda _k: (200, body.encode(), {})
-        self.assert_not_verified(self.reconcile(key), "unverified")
+        bodies = {
+            "pending_then_committed": json.dumps({**record, "state": "pending"})[:-1] + ', "state": "committed"}',
+            "same_value_twice": json.dumps(record)[:-1] + ', "state": "committed"}',
+            "nested_duplicate": json.dumps({**record, "meta": {}})[:-3] + '{"a": 1, "a": 2}}',
+        }
+        for name, body in bodies.items():
+            with self.subTest(body=name):
+                self.assertEqual(json.loads(body)["state"], "committed")  # last-wins would read it as committed
+                self.dest.status = lambda _k, body=body: (200, body.encode(), {})
+                self.assert_not_verified(self.reconcile(key), "unverified", "destination_record_ambiguous")
         self.assert_unresolved(key)
 
     def test_hostile_adapter_timeout_fails_closed(self):
@@ -561,12 +574,16 @@ class EconomicFloors(unittest.TestCase):
                 self.assertFalse(verified_reconciliation(result["event"]))
                 self.assert_budget_held(case, evidence, key)
 
-    @unittest.expectedFailure
     def test_settlement_record_on_another_rail_does_not_verify(self):
         case, evidence, key = self.lost()
-        self.records[key] = {**self.records[key], "rail": "simulated"}
-        self.assertEqual(self.work.reconcile(case, key, "manager", ["manager"])["status"], "unverified")
-        self.assert_budget_held(case, evidence, key)
+        record = self.records[key]
+        for rail in ("simulated", "usdc_service_sandbox", "USDC_SERVICE", "usdc_service ", "", None, ["usdc_service"]):
+            with self.subTest(rail=rail):
+                self.records[key] = {**record, "rail": rail}
+                result = self.work.reconcile(case, key, "manager", ["manager"])
+                self.assertEqual((result["status"], result["reason"]), ("unverified", "destination_record_mismatch"))
+                self.assertFalse(verified_reconciliation(result["event"]))
+                self.assert_budget_held(case, evidence, key)
 
     def test_budget_held_through_every_unresolved_path(self):
         case, evidence, key = self.lost()
@@ -605,6 +622,17 @@ class PositiveControl(BridgeFloor):
         self.assertTrue(self.work.inspect(self.case)["complete"])
         self.assertEqual(self.dest.auth, ["Bearer " + TOKEN] * 2)
         self.assertEqual(self.dest.posts, 1)
+
+    def test_record_labeled_live_still_reconciles(self):
+        """The simulation-label and duplicate-key checks do not refuse a live record with unique fields."""
+        key = self.unknown()
+        live = {**self.dest.records[key], "simulated": False, "livemode": True, "mode": "live",
+                "environment": "production", "env": "mainnet", "meta": {"region": "eu"}}
+        self.dest.status = reply(live)
+        result = self.reconcile(key)
+        self.assertEqual((result["status"], result["reason"]), ("verified", "destination_record_matched"))
+        self.assertEqual(result["event"]["body"]["proof"]["response_digest"], digest(live))
+        self.assertTrue(self.work.inspect(self.case)["complete"])
 
 
 class QuotaFloor(unittest.TestCase):
