@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 from syberlabs.canonical import canonical
 from syberlabs.dsse import CHECKPOINT_TYPE, sign_dsse, verified_payload, verify_chain_head
-from syberlabs.ed25519 import public_from_seed
+from syberlabs.ed25519 import key_problem, public_from_seed
 from syberlabs.errors import Rejected
 
 
@@ -114,9 +114,15 @@ class TransparencyLog:
 
     @classmethod
     def open_readonly(cls, path: str | Path, public: bytes) -> "TransparencyLog":
-        """Open a log for inclusion checks. This object cannot append, and it has no signing seed."""
+        """Open a log for inclusion checks. This object cannot append, and it has no signing seed.
+
+        ``public`` is the witness's key, from outside this process. One ``ed25519.key_problem`` names a problem for is
+        refused: under a small-order key anyone can sign a chain head or a checkpoint, with no seed."""
         if not isinstance(public, bytes) or len(public) != 32:
             raise Rejected("invalid_witness", "witness public key must be 32 bytes")
+        problem = key_problem(public)
+        if problem is not None:
+            raise Rejected("invalid_witness", f"witness public key is not a key only a seed's holder can sign under: {problem}")
         log = cls.__new__(cls)
         log.path = str(path)
         log._lock = threading.Lock()
