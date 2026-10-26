@@ -24,7 +24,6 @@ import unittest.mock
 import urllib.error
 import urllib.request
 from contextlib import closing
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -39,9 +38,10 @@ from syberlabs.jcs import envelope_jcs
 from syberlabs.metrics import METRICS, UNKNOWN, Metric, _cell
 from syberlabs.tlog import TransparencyLog, merkle_root
 from syberlabs.witness import Witness, WitnessClient, WitnessServer
-from syberwork.cli import _witness_log
+from syberwork.cli import _witness_log, _witness_request
 from syberwork.core import Work
 from syberwork.server import POLICY_READERS, make_server
+from syberwork.trace import TraceLog
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "syberwork" / "examples"
@@ -128,7 +128,7 @@ def playwright_root() -> str | None:
 class Cell:
     """The included example installed as ``init`` installs it, with sources and actions on ``reference_port``."""
 
-    def __init__(self, folder: Path, reference_port: int = 8999, witness_log=None):
+    def __init__(self, folder: Path, reference_port: int = 8999, witness_log=None, witness_client=None, witness_role=None):
         self.database = folder / "work.sqlite3"
         self.work = Work(self.database)
         self.tokens = {name: "token-" + name for name in IDENTITIES}
@@ -141,7 +141,7 @@ class Cell:
             self.work.install_action(name, retarget(doc))
         for name, doc in json.loads(read_text(EXAMPLES / "sources.json")).items():
             self.work.install_source(name, retarget(doc))
-        self.server = make_server(self.work, users, port=0, witness_log=witness_log)
+        self.server = make_server(self.work, users, port=0, witness_log=witness_log, witness_client=witness_client, witness_role=witness_role)
         self.server.RequestHandlerClass.log_message = lambda *args: None
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"
@@ -170,8 +170,10 @@ class Cell:
 
 class CellCase(unittest.TestCase):
     reference = False
-    # True: an in-process Witness writes the log serve reads. "server": a loopback WitnessServer on witness_port.
+    # True: an in-process Witness writes the log serve reads. "server": a loopback WitnessServer on witness_port, which
+    # serve may ask to sign for witness_role.
     witness = False
+    witness_role = "manager"
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -186,7 +188,7 @@ class CellCase(unittest.TestCase):
                  "--database", str(Path(folder.name) / "reference.sqlite3"), "--port", str(port)])
             self.addCleanup(stop_process, proc)
             wait_until_listening(port, proc)
-        reader = None
+        reader = client = None
         if self.witness:
             self.seed, self.public = generate()
             self.log_path = Path(folder.name) / "witness.sqlite3"
@@ -202,7 +204,10 @@ class CellCase(unittest.TestCase):
                 self.attest, self.witness_log = writer.attest, writer._log
             reader = TransparencyLog.open_readonly(self.log_path, self.public)
             self.addCleanup(reader.close)
-        self.cell = Cell(Path(folder.name), port, reader)
+            if self.witness == "server":
+                client = WitnessClient(self.witness_port, self.public, str(self.log_path))
+                self.addCleanup(client.close)
+        self.cell = Cell(Path(folder.name), port, reader, client, self.witness_role if client else None)
         self.addCleanup(self.cell.close)
 
 
@@ -219,7 +224,7 @@ class ConsoleRoutes(CellCase):
         previous = os.environ.pop("SYBERWORK_PLANNER_URL", None)
         self.addCleanup(lambda: os.environ.__setitem__("SYBERWORK_PLANNER_URL", previous) if previous is not None else os.environ.pop("SYBERWORK_PLANNER_URL", None))
         status, body = self.cell.json("/api/console")
-        self.assertEqual((status, body), (200, {"planner_configured": False, "effects": "inline"}))
+        self.assertEqual((status, body), (200, {"planner_configured": False, "effects": "inline", "witness": {"log": False, "request_role": None}}))
         os.environ["SYBERWORK_PLANNER_URL"] = url
         status, raw = self.cell.call("/api/console")[0], self.cell.call("/api/console")[2]
         self.assertEqual(json.loads(raw)["planner_configured"], True)
@@ -717,6 +722,214 @@ class ConsoleWitness(CellCase):
         self.assertNotIn("entries", body)
 
 
+class ConsoleWitnessRequest(CellCase):
+    """POST /api/cases/{id}/witness: Work.request_witness asks a loopback WitnessServer, for the role serve was given."""
+
+    witness = "server"
+
+    def open_case(self, *, decided=True):
+        case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        if decided:
+            self.cell.json(f"/api/cases/{case}/proposals", {"action": "issue_order", "args": {}})
+        return case
+
+    def leaves(self) -> int:
+        with closing(sqlite3.connect(self.log_path)) as db:
+            return db.execute("SELECT COUNT(*) FROM leaves").fetchone()[0]
+
+    def dump(self) -> list:
+        with closing(sqlite3.connect(self.cell.database)) as db:
+            return list(db.iterdump())
+
+    def test_only_the_configured_role_may_ask_and_the_case_gets_nothing(self):
+        case = self.open_case()
+        events = self.cell.work.inspect(case)["events"]
+        self.cell.work.register_principal("agent-1", "agent", "agent", "local", ["manager", "model"], token="token-agent")
+        self.cell.tokens["agent"] = "token-agent"
+        before = self.dump()
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who=None)[1]["error"], "unauthorized")
+        for who in ("operator", "scheduler", "planner", "admin", "supplier"):
+            with self.subTest(who):
+                self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who=who),
+                                 (409, {"error": "forbidden", "detail": "manager role required to ask the witness, without an automation role"}))
+        # An agent principal that holds the role and an automation role is refused, as for policy bodies.
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who="agent")[1]["error"], "forbidden")
+        self.assertEqual(self.leaves(), 0, "a refused request reaches no witness")
+        status, body = self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")
+        self.assertEqual(status, 200, body)
+        self.assertEqual((body["case_id"], body["count"], body["head"], body["written"]), (case, len(events), events[-1]["hash"], False))
+        self.assertEqual(self.leaves(), 1)
+        self.assertEqual(self.dump(), before, "the case database is unchanged: no event, no side row")
+        # The envelope is the witness's, in its log, under the configured key; the read route now counts it.
+        reader = TransparencyLog.open_readonly(self.log_path, self.public)
+        self.addCleanup(reader.close)
+        self.assertTrue(reader.verify_witnessed(body["envelope"], events))
+        read = self.cell.json(f"/api/cases/{case}/witness")[1]
+        self.assertEqual((read["witnessed_through"], [e["verdict"] for e in read["entries"]]), (len(events), ["included"]))
+
+    def test_a_covered_head_is_not_signed_again_and_a_later_one_is(self):
+        case = self.open_case()
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")[0], 200)
+        count = len(self.cell.work.inspect(case)["events"])
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who="manager"),
+                         (409, {"error": "already_witnessed", "detail": f"a signed head in the log already covers #1 to #{count}"}))
+        self.assertEqual(self.leaves(), 1)
+        self.cell.json(f"/api/cases/{case}/proposals", {"action": "record_review", "args": {}}, who="scheduler")
+        status, body = self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")
+        self.assertEqual((status, self.leaves()), (200, 2))
+        self.assertGreater(body["count"], count)
+        read = self.cell.json(f"/api/cases/{case}/witness")[1]
+        self.assertEqual([(e["count"], e["verdict"]) for e in read["entries"]], [(count, "included"), (body["count"], "included")])
+        self.assertEqual(read["witnessed_through"], body["count"])
+
+    def test_presses_at_once_append_one_head(self):
+        case = self.open_case()
+        answers = []
+        threads = [threading.Thread(target=lambda: answers.append(self.cell.json(f"/api/cases/{case}/witness", {}, who="manager"))) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(status for status, _ in answers), [200, 409, 409, 409])
+        self.assertEqual({body["error"] for status, body in answers if status == 409}, {"already_witnessed"})
+        self.assertEqual(self.leaves(), 1)
+
+    def test_a_log_that_holds_a_head_this_history_does_not_have_is_refused(self):
+        case = self.open_case()
+        events = self.cell.work.inspect(case)["events"]
+        self.witness_log.append(sign_chain_head(case, [*events[:-1], dict(events[-1], hash="0" * 64)], self.seed))
+        status, body = self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")
+        self.assertEqual((status, body["error"]), (409, "witness_conflict"))
+        self.assertIn("head_differs", body["detail"])
+        self.assertEqual(self.leaves(), 1, "the witness was not asked to sign beside the conflicting head")
+        # A history changed after signing: the stored head still matches, the bodies no longer hash into it.
+        other = self.open_case()
+        self.assertEqual(self.cell.json(f"/api/cases/{other}/witness", {}, who="manager")[0], 200)
+        self.cell.json(f"/api/cases/{other}/proposals", {"action": "record_review", "args": {}}, who="scheduler")
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            db.execute("UPDATE events SET body=? WHERE case_id=? AND seq=1", (canonical({"tampered": True}), other))
+        self.assertEqual(self.cell.json(f"/api/cases/{other}/witness", {}, who="manager")[1]["error"], "witness_conflict")
+        self.assertEqual(self.leaves(), 2)
+
+    def test_the_events_judged_are_the_events_sent(self):
+        """One read: an append between the judgement and the send is neither judged nor signed."""
+        case = self.open_case()
+        count = len(self.cell.work.inspect(case)["events"])
+        judge = Work._witness_judgement
+        def judged_then_appended(case_id, events, log):
+            found = judge(case_id, events, log)
+            self.cell.work.propose(case_id, "record_review", {}, "scheduler", ["operator", "compiled"])
+            return found
+        with unittest.mock.patch.object(Work, "_witness_judgement", staticmethod(judged_then_appended)):
+            body = self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")[1]
+        self.assertEqual(body["count"], count)
+        self.assertGreater(len(self.cell.work.inspect(case)["events"]), count)
+
+    def test_a_broken_chain_is_refused_by_this_server_before_the_witness(self):
+        case = self.open_case()
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            db.execute("UPDATE events SET body=? WHERE case_id=? AND seq=1", (canonical({"tampered": True}), case))
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")[1]["error"], "invalid_chain")
+        self.assertEqual(self.leaves(), 0)
+
+    def test_unknown_cases_and_a_silent_witness_are_refused_not_crashed(self):
+        for path in ("/api/cases/no-such-case/witness", "/api/cases/%2e%2e/witness"):
+            with self.subTest(path):
+                self.assertEqual(self.cell.json(path, {}, who="manager"), (409, {"error": "unknown_case", "detail": "no-such-case" if "no-such" in path else ".."}))
+        reader = TransparencyLog.open_readonly(self.log_path, self.public)
+        self.addCleanup(reader.close)
+        silent = WitnessClient(free_port(), self.public, str(self.log_path))
+        self.addCleanup(silent.close)
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.log_path.parent)), 8999, reader, silent, "manager")
+        self.addCleanup(cell.close)
+        case = cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        self.assertEqual(cell.json(f"/api/cases/{case}/witness", {}, who="manager"),
+                         (409, {"error": "witness_unavailable", "detail": "the witness did not answer on its port"}))
+        # Something on the port that answers a frame that is not JSON text.
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+        def answer_garbage():
+            conn, _ = listener.accept()
+            with conn:
+                size = int.from_bytes(conn.recv(4), "big")
+                while size > 0:
+                    size -= len(conn.recv(min(size, 65536)) or b"x" * size)
+                conn.sendall((2).to_bytes(4, "big") + b"\xff\xfe")
+        threading.Thread(target=answer_garbage, daemon=True).start()
+        garbled = WitnessClient(listener.getsockname()[1], self.public, str(self.log_path))
+        self.addCleanup(garbled.close)
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.log_path.parent)), 8999, reader, garbled, "manager")
+        self.addCleanup(cell.close)
+        case = cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        self.assertEqual(cell.json(f"/api/cases/{case}/witness", {}, who="manager"),
+                         (409, {"error": "witness_unavailable", "detail": "the witness's answer was unreadable"}))
+        # No answer within the client's timeout: the witness may have signed, and the refusal says so.
+        with unittest.mock.patch.object(garbled, "submit", side_effect=TimeoutError()):
+            self.assertEqual(cell.json(f"/api/cases/{case}/witness", {}, who="manager"),
+                             (409, {"error": "witness_unavailable", "detail": "the witness did not answer in time; it may still have signed, so read its log again"}))
+
+    def test_each_request_is_counted_and_traced_with_its_actor(self):
+        self.cell.work.trace = TraceLog(self.log_path.parent / "traces.jsonl")
+        case = self.open_case()
+        self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")
+        self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")
+        self.cell.json(f"/api/cases/{case}/witness", {}, who="operator")
+        self.cell.json("/api/cases/no-such-case/witness", {}, who="manager")
+        self.cell.work.register_principal("person-1", "human", "lead", "local", ["manager"], token="token-lead")
+        self.cell.tokens["lead"] = "token-lead"
+        self.cell.json(f"/api/cases/{case}/witness", {}, who="lead")
+        rows = [r for r in self.cell.work.trace.read() if r["name"] == "witness_request"]
+        self.assertEqual([(r["case_id"], r["actor"], r["principal"], r["status"]) for r in rows],
+                         [(case, "manager", None, "signed"), (case, "manager", None, "already_witnessed"),
+                          ("no-such-case", "manager", None, "unknown_case"), (case, "lead", "person-1", "already_witnessed")],
+                         "a role refusal never reaches Work")
+        self.assertEqual(rows[0]["head"], self.cell.work.inspect(case)["events"][-1]["hash"])
+        self.assertEqual(self.cell.work.metrics["witness_request"], 4)
+
+    def test_the_console_is_told_who_may_ask(self):
+        self.assertEqual(self.cell.json("/api/console", who="supplier")[1]["witness"], {"log": True, "request_role": "manager"})
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.log_path.parent)), 8999)
+        self.addCleanup(cell.close)
+        self.assertEqual(cell.json("/api/console")[1]["witness"], {"log": False, "request_role": None})
+        case = cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        self.assertEqual(cell.json(f"/api/cases/{case}/witness", {}, who="manager")[1]["error"], "witness_not_configured")
+
+    def test_serve_asks_only_when_both_variables_name_a_witness_beside_its_log(self):
+        parser = argparse.ArgumentParser()
+        log = TransparencyLog.open_readonly(self.log_path, self.public)
+        self.addCleanup(log.close)
+        def configured(reader, **names):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_WITNESS_")}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _witness_request(parser, reader)
+        self.assertEqual(configured(log), (None, None))
+        self.assertEqual(configured(None), (None, None))
+        port = str(self.witness_port)
+        for reader, names in ((log, {"SYBERWORK_WITNESS_PORT": port}), (log, {"SYBERWORK_WITNESS_ROLE": "manager"}),
+                              (None, {"SYBERWORK_WITNESS_PORT": port, "SYBERWORK_WITNESS_ROLE": "manager"}),
+                              (log, {"SYBERWORK_WITNESS_PORT": "0", "SYBERWORK_WITNESS_ROLE": "manager"}),
+                              (log, {"SYBERWORK_WITNESS_PORT": "70000", "SYBERWORK_WITNESS_ROLE": "manager"}),
+                              (log, {"SYBERWORK_WITNESS_PORT": "-1", "SYBERWORK_WITNESS_ROLE": "manager"}),
+                              (log, {"SYBERWORK_WITNESS_PORT": port, "SYBERWORK_WITNESS_ROLE": "manager admin"}),
+                              (log, {"SYBERWORK_WITNESS_PORT": port, "SYBERWORK_WITNESS_ROLE": "model"})):
+            with self.subTest(sorted(names), log=reader is not None), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(reader, **names)
+        client, role = configured(log, SYBERWORK_WITNESS_PORT=port, SYBERWORK_WITNESS_ROLE="manager")
+        self.addCleanup(client.close)
+        self.assertEqual((client.port, client.public, role), (self.witness_port, self.public, "manager"))
+        # make_server holds the same rule for a caller that builds it directly.
+        users = {"m": {"hash": "x", "roles": ["manager"]}}
+        for kwargs in ({"witness_client": client}, {"witness_role": "manager"}, {"witness_client": client, "witness_role": "manager"},
+                       {"witness_log": log, "witness_client": client, "witness_role": ""},
+                       {"witness_log": log, "witness_client": client, "witness_role": "compiled"}):
+            with self.subTest(sorted(kwargs)), self.assertRaises(Rejected):
+                make_server(self.cell.work, users, port=0, **kwargs)
+        other = TransparencyLog.open_readonly(self.log_path, generate()[1])
+        self.addCleanup(other.close)
+        with self.assertRaises(Rejected):
+            make_server(self.cell.work, users, port=0, witness_log=other, witness_client=client, witness_role="manager")
+
+
 class ConsolePreview(CellCase):
     """POST /api/cases/{id}/preview: what proposing would record now (Work.preview_admission). It records nothing."""
 
@@ -917,8 +1130,10 @@ class ConsoleStatic(CellCase):
         self.assertIn("headRead('witness', id => '/api/cases/' + encodeURIComponent(id) + '/witness', info)", app)
         self.assertIn("headRead('work_item', id => '/metrics/work_items/' + encodeURIComponent(id), info)", app)
         self.assertIn("api(route(info.case.id))", app)
-        # The admission preview posts to the case being drawn, like the History reads.
+        # The admission preview and the witness request post to the case being drawn, like the History reads.
         self.assertIn("api('/api/cases/' + encodeURIComponent(info.case.id) + '/preview', body)", app)
+        self.assertIn("api('/api/cases/' + encodeURIComponent(info.case.id) + '/witness', {})", app)
+        self.assertNotEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who="admin")[1].get("error"), "unknown_route")
         self.assertEqual(self.cell.json(f"/api/cases/{case}/preview", {"action": "record_review", "args": {}}, who="admin")[0], 200)
         for operation in ("refresh", "facts", "proposals", "compiled", "suggest", "approve", "commit", "signoff", "reconcile",
                           "replay", "cancel", "resolution-request", "resolution-resolve", "resolution-escalate", "candidates", "evaluations"):
@@ -929,7 +1144,7 @@ class ConsoleStatic(CellCase):
 
 
 class ConsoleModel(CellCase):
-    witness = True
+    witness = "server"
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_projections_match_the_python_rules(self):
@@ -975,8 +1190,10 @@ class ConsoleModel(CellCase):
         bound = self.cell.json(f"/api/cases/{fresh}/preview", {"action": "record_review"})[1]
         parity["preview"] = [{"body": unbound, "expected": ["denied", "amount_required", "limits.amount", False, 1]},
                              {"body": bound, "expected": ["allowed", "all_checks_passed", "admission.passed", True, 2]}]
-        # What GET .../witness answers once the witness signed this case's head and one event came after it.
-        self.attest(self.cell.json(f"/api/cases/{fresh}")[1]["events"])
+        # What GET .../witness answers once the witness signed this case's head and one event came after it, and what
+        # GET /api/console says about asking it.
+        self.assertEqual(self.cell.json(f"/api/cases/{fresh}/witness", {}, who="manager")[0], 200)
+        parity["console"] = self.cell.json("/api/console")[1]
         self.cell.json(f"/api/cases/{fresh}/proposals", {"action": "record_review", "args": {}}, who="scheduler")
         parity["witness"] = {"events": self.cell.json(f"/api/cases/{fresh}")[1]["events"], "body": self.cell.json(f"/api/cases/{fresh}/witness")[1]}
         self.assertEqual(parity["witness"]["body"]["witnessed_through"], len(parity["witness"]["events"]) - 2)
@@ -998,34 +1215,6 @@ class ConsoleBrowser(CellCase):
     reference = True
     witness = "server"
 
-    def witness_hook(self) -> str:
-        """A loopback URL whose POST /{case} runs Work.submit_witness against the witness server, outside the console."""
-        client = WitnessClient(self.witness_port, self.public, str(self.log_path))
-        self.addCleanup(client.close)
-        work = self.cell.work
-
-        class Hook(BaseHTTPRequestHandler):
-            def do_POST(self):
-                try:
-                    status, answer = 200, {"envelope": work.submit_witness(unquote(self.path.rsplit("/", 1)[-1]), client)}
-                except Rejected as exc:
-                    status, answer = 409, {"error": exc.code, "detail": exc.detail}
-                body = json.dumps(answer).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *args):
-                pass
-
-        hook = ThreadingHTTPServer(("127.0.0.1", 0), Hook)
-        threading.Thread(target=hook.serve_forever, daemon=True).start()
-        self.addCleanup(hook.server_close)
-        self.addCleanup(hook.shutdown)
-        return f"http://127.0.0.1:{hook.server_port}/witness/"
-
     def test_the_purchase_order_path_completes_in_a_browser(self):
         # The strict suite allows only the inspector's exact reasons for a missing browser tool.
         if shutil.which("node") is None:
@@ -1035,8 +1224,7 @@ class ConsoleBrowser(CellCase):
             if shutil.which("npm") is None:
                 self.skipTest("npm is not installed")
             self.skipTest("playwright for node is not installed")
-        env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens),
-               "WITNESS_HOOK": self.witness_hook()}
+        env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens)}
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
             env.setdefault("CHROMIUM", "/opt/pw-browsers/chromium")
@@ -1065,8 +1253,19 @@ class ConsoleBrowser(CellCase):
         # Before the witness signs, the log holds nothing for the case; after, every event up to the head is witnessed.
         self.assertIn("not witnessed", report["witness_before"])
         self.assertIn("No leaf in the log names this case", report["witness_before"])
-        self.assertIs(report["witness_signed"], True, report["witness_signed"])
+        # Asking is the manager's, as this server was configured: the operator sees why and a switch; the manager arms
+        # the button and the second press asks. One leaf is appended, for this head.
+        self.assertEqual(report["witness_ask_operator"][0], True, report["witness_ask_operator"])
+        self.assertIn("manager role required to ask the witness", report["witness_ask_operator"][1])
+        self.assertIn("switch to manager", report["witness_ask_operator"][1])
+        for text in ("Ask the witness to sign this history", "A leaf cannot be removed", "Nothing is written to this case", "manager role"):
+            self.assertIn(text, report["witness_confirm"])
+        self.assertIn("Witness signed #1–#", report["witness_toast"])
         events = report["history_events"]
+        with closing(sqlite3.connect(self.log_path)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM leaves").fetchone()[0], 1)
+        self.assertEqual(report["witness_ask_after"][0], True, "a covered head is not offered again")
+        self.assertIn(f"already covers #1–#{events}", report["witness_ask_after"][1])
         self.assertIn(f"witnessed through #{events}", report["witness_after"])
         self.assertNotIn("not witnessed", report["witness_after"])
         self.assertIn(self.public.hex()[:16], report["witness_after"])

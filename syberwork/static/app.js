@@ -990,28 +990,29 @@ function workItemView(entry) {
   ];
 }
 // Witness: what the witness's transparency log holds for this case, judged by the server under the witness's public
-// key. The log moves without the case, so a read is kept for a case and head only until r asks again. Certificate:
-// the server reads none, so it is named as missing instead of drawn.
+// key. The log moves without the case, so a read is kept for a case and head only until r asks again. Asking the
+// witness to sign is a POST to the case being drawn, for the one role serve names. Certificate: the server reads none,
+// so it is named as missing instead of drawn.
 function witnessPanel(info) {
   const read = headRead('witness', id => '/api/cases/' + encodeURIComponent(id) + '/witness', info)
     .then(entry => entry.error ? entry : {witness: M.witnessView(entry.body, info.events)});
   return h('div', {class: 'grid-2'},
-    section('Witness', h('span', {class: 'muted mono-s'}, 'GET …/witness'), fillSlot(h('div', {class: 'witness'}), read, witnessSummary)),
+    section('Witness', h('span', {class: 'muted mono-s'}, 'GET · POST …/witness'), fillSlot(h('div', {class: 'witness'}), read, entry => witnessSummary(entry, info))),
     section('Certificate', badge('idle', 'none shown'),
       h('div', {class: 'witness-missing'}, h('div', {class: 'act'},
         h('button', {type: 'button', class: 'btn', disabled: true}, 'Show certificate'),
         h('span', {class: 'why'}, 'no read route: needs ', mono('GET /api/cases/{id}/certificate'), ' · admission certificates are written by ',
           mono('syberlabs certify'), ' for a Build Thread as files under ', mono('<home>/certificates'), '; a case here has none')))));
 }
-function witnessSummary(entry) {
+function witnessSummary(entry, info) {
   if (!entry) return h('span', {class: 'muted'}, 'reading from the server…');
-  if (entry.error) return readFailed(entry);
+  if (entry.error) return [readFailed(entry), witnessAsk(null, info)];
   const v = entry.witness;
   const signs = h('p', {class: 'hint'}, 'Verify history is the server recomputing its own chain. A witness is another process holding its own key: it signs a chain head (', mono('python -m syberlabs.witness'),
-    ') and appends it to its log. This console asks for no signature; ', mono('Work.submit_witness'), ' does, outside it.');
+    ') and appends it to its log. ', h('b', {}, 'Ask witness to sign'), ' has serve check the log, then send it this history (', mono('Work.request_witness'), '). A script can call ', mono('Work.submit_witness'), ' directly, without that check.');
   if (v.state === 'off') return [h('p', {}, badge('idle', 'not configured'), ' ', h('span', {class: 'why'}, v.text)),
-    h('p', {class: 'hint'}, 'Nothing on this page is witnessed.'), signs];
-  if (v.state === 'unknown') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text)];
+    h('p', {class: 'hint'}, 'Nothing on this page is witnessed.'), witnessAsk(v, info), signs];
+  if (v.state === 'unknown') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text), witnessAsk(v, info)];
   const headline = v.state === 'conflict' ? [badge('denied', 'history differs'), ' the witness signed a head this history does not have. Do not treat this case as witnessed.']
     : v.state === 'witnessed' ? [badge('verified', 'witnessed through #' + v.through), ' events #1–#' + v.through + ' are the ones the witness signed.']
     : [badge('idle', 'not witnessed'), ' the log holds no head that matches this history and its newest checkpoint covers.'];
@@ -1029,8 +1030,29 @@ function witnessSummary(entry) {
     v.checkpoint ? null : h('p', {class: 'why warn'}, 'The log\'s newest signed checkpoint does not cover the log as read, so no head counts as witnessed now.'),
     h('p', {class: 'muted mono-s'}, 'witness key ', v.publicKey ? M.short(v.publicKey, 16) + '…' : 'not returned'),
     h('p', {class: 'hint'}, 'The server checked each signature and the checkpoint under the configured public key; the console checks none. A signed head covers events #1 to its count only.'),
+    witnessAsk(v, info),
     signs,
   ];
+}
+// Ask the witness to sign the head the server holds now. The witness appends a leaf to its own log, which nothing removes,
+// so the button arms first; the case gets no event. The server refuses a head already covered and a log that conflicts.
+function witnessAsk(v, info) {
+  const head = info.events.length ? info.events[info.events.length - 1] : null;
+  const role = state.console && state.console.witness && state.console.witness.request_role;
+  return h('div', {class: 'witness-ask'}, action({label: 'Ask witness to sign', op: 'witness_request', ctx: {console: state.console, view: v},
+    confirm: {title: 'Ask the witness to sign this history', lines: [
+      head ? 'The server sends events #1–#' + head.seq + ' (head ' + M.short(head.hash, 12) + ') as it holds them now; events added before it asks are signed too.' : 'The server sends the events it holds now.',
+      'The witness checks the links, signs the head and appends it to its own log. A leaf cannot be removed.',
+      'Nothing is written to this case. Allowed for the ' + (role || '…') + ' role, as serve was configured.']},
+    run: async () => {
+      try {
+        const result = await api('/api/cases/' + encodeURIComponent(info.case.id) + '/witness', {});
+        state.lastResponse = {path: 'POST …/witness', result: {case_id: result.case_id, count: result.count, head: result.head, written: result.written}, at: Date.now()};
+        toast('Witness signed #1–#' + result.count, 'ok', 'head ' + M.short(result.head, 12) + ' · appended to the witness\'s log, nothing written to this case');
+      } finally {
+        await refreshAll();
+      }
+    }}));
 }
 
 // Replay: the recorded proposals re-admitted under another contract or policy version.

@@ -8,7 +8,9 @@ import secrets
 from pathlib import Path
 
 from syberlabs.errors import Rejected
+from syberlabs.evolution import AUTOMATION_ROLES
 from syberlabs.tlog import TransparencyLog
+from syberlabs.witness import WitnessClient
 
 from .backup import export_cell, restore_cell
 from .core import Work
@@ -34,6 +36,30 @@ def _witness_log(parser):
         parser.error("SYBERWORK_WITNESS_PUBLIC must be the witness public key in hex")
     except Rejected as exc:
         parser.error(f"witness log: {exc.code}: {exc.detail}")
+
+
+def _witness_request(parser, log):
+    """A ``WitnessClient`` and the role that may use it, when SYBERWORK_WITNESS_PORT and SYBERWORK_WITNESS_ROLE are set.
+
+    The port is the one the witness prints; the client reads the same log under the same key as ``_witness_log``.
+    Which role may ask the witness to sign is the deployment's decision, so serve takes it from the environment and
+    names no default. Half a configuration, or one without the log, stops serve.
+    """
+    port, role = os.getenv("SYBERWORK_WITNESS_PORT"), os.getenv("SYBERWORK_WITNESS_ROLE")
+    if not port and not role:
+        return None, None
+    if not port or not role:
+        parser.error("set both SYBERWORK_WITNESS_PORT and SYBERWORK_WITNESS_ROLE, or neither")
+    if log is None:
+        parser.error("asking the witness needs its log: set SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC too")
+    if not port.isdecimal() or not 0 < int(port) < 65536:
+        parser.error("SYBERWORK_WITNESS_PORT must be the witness's loopback port")
+    if any(c.isspace() for c in role) or role in AUTOMATION_ROLES:
+        parser.error("SYBERWORK_WITNESS_ROLE must be one role name, not an automation role (" + ", ".join(sorted(AUTOMATION_ROLES)) + ")")
+    try:
+        return WitnessClient(int(port), log.public, log.path), role
+    except Rejected as exc:
+        parser.error(f"witness: {exc.code}: {exc.detail}")
 
 
 def main():
@@ -101,8 +127,10 @@ def main():
     elif args.command == "serve":
         if not userfile.exists():
             parser.error("run init first")
+        log = _witness_log(parser)
+        client, role = _witness_request(parser, log)
         serve(db, json.loads(userfile.read_text()), host=os.getenv("SYBERWORK_BIND", "127.0.0.1"), port=args.port,
-              witness_log=_witness_log(parser))
+              witness_log=log, witness_client=client, witness_role=role)
     elif args.command == "backup":
         print(json.dumps(export_cell(db, args.directory)))
     elif args.command == "restore":

@@ -1,7 +1,7 @@
 // Drives the operator console in headless Chromium through the included purchase-order path and prints a
 // JSON report on its last line. Run by tests/test_console.py with NODE_PATH pointing at a playwright
-// install, CONSOLE_URL at a served cell, CONSOLE_TOKENS as {"operator": "...", ...} and WITNESS_HOOK at a
-// loopback endpoint that asks the witness, whose log the cell reads, to sign a case. SHOTS, when set, is a directory for screenshots.
+// install, CONSOLE_URL at a served cell that reads a witness's log and may ask it to sign for the manager role, and
+// CONSOLE_TOKENS as {"operator": "...", ...}. SHOTS, when set, is a directory for screenshots.
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -51,12 +51,6 @@ async function press(label, { confirm = false, scope = '.next' } = {}) {
     await page.locator('.btn.armed').click();
   }
   await page.waitForFunction(() => !document.querySelector('.btn.busy'));
-}
-
-// Have the witness sign a case's head outside the console: WITNESS_HOOK is a loopback endpoint of the test that runs
-// Work.submit_witness with a WitnessClient, as an operator's own script would. The console has no such button.
-async function witnessCase(caseId) {
-  return (await fetch(process.env.WITNESS_HOOK + encodeURIComponent(caseId), { method: 'POST' })).json();
 }
 
 try {
@@ -169,12 +163,25 @@ report.work_item = await page.locator('.work-item tbody tr').evaluateAll(rows =>
 report.certificate_buttons = await page.locator('.witness-missing button').evaluateAll(bs => bs.map(b => [b.textContent, b.disabled]));
 report.certificate_text = await page.textContent('.witness-missing');
 report.witness_before = await page.textContent('.witness');
-// The witness signs the completed case outside the console; r asks its log again.
-const caseId = decodeURIComponent(new URL(page.url()).hash.split('/')[2]);
-const signed = await witnessCase(caseId);
-report.witness_signed = signed.envelope ? true : signed;
-await page.keyboard.press('r');
+// Asking the witness is the manager's here. The operator is told why and offered the switch.
+const askState = () => page.locator('.witness-ask').evaluate(el => [el.querySelector('button.btn').disabled, el.textContent]);
+await switchTo('operator');
+await page.keyboard.press('5');
+await rulesSettled('.witness');
+report.witness_ask_operator = await askState();
+await switchTo('manager');
+await page.keyboard.press('5');
+await rulesSettled('.witness');
+await page.locator('.witness-ask button.btn').click();
+await page.waitForSelector('.witness-ask .btn.armed');
+report.witness_confirm = await page.textContent('.witness-ask .confirm-note');
+await page.locator('.witness').scrollIntoViewIfNeeded();
+await shot('09b-witness-confirm');
+await page.locator('.witness-ask .btn.armed').click();
 await page.waitForSelector('.witness .witness-state[data-state="witnessed"]', { timeout: 30000 });
+report.witness_toast = (await page.locator('.toast').allTextContents()).join(' | ');
+await rulesSettled('.witness');
+report.witness_ask_after = await askState();
 report.witness_after = await page.textContent('.witness');
 report.witness_rows = await page.locator('.witness tbody tr').evaluateAll(rows => rows.map(r => [r.dataset.verdict, r.textContent]));
 report.history_events = await page.locator('.timeline > li').count();
