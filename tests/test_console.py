@@ -26,6 +26,8 @@ from pathlib import Path
 from syberlabs.admission import approval_roles
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import AUTOMATION_ROLES
+from syberlabs.jcs import envelope_jcs
+from syberlabs.metrics import METRICS, UNKNOWN, Metric, _cell
 from syberwork.core import Work
 from syberwork.server import POLICY_READERS, make_server
 
@@ -176,7 +178,8 @@ class CellCase(unittest.TestCase):
 
 class ConsoleRoutes(CellCase):
     def test_every_new_route_requires_a_bearer_token(self):
-        for path in ("/api/console", "/api/contracts", "/api/contracts/purchase-order/1", "/api/policies", "/api/actions", "/api/sources"):
+        for path in ("/api/console", "/api/contracts", "/api/contracts/purchase-order/1", "/api/policies", "/api/actions", "/api/sources",
+                     "/api/cases/any/side"):
             with self.subTest(path):
                 status, body = self.cell.json(path, who=None)
                 self.assertEqual((status, body["error"]), (401, "unauthorized"))
@@ -242,7 +245,7 @@ class ConsoleRoutes(CellCase):
         case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
         before = self.cell.work.inspect(case)["events"]
         for path in ("/api/console", "/api/contracts", "/api/contracts/purchase-order/1", "/api/policies", "/api/sources",
-                     "/metrics/work_items", f"/metrics/work_items/{case}"):
+                     "/metrics/work_items", f"/metrics/work_items/{case}", f"/api/cases/{case}/side"):
             self.cell.call(path)
         for path in ("/api/actions", "/api/sources", "/api/policies"):
             self.cell.call(path, who="admin")
@@ -475,6 +478,81 @@ class ConsoleExplain(CellCase):
                 self.assertNotIn(str(ROOT).strip("/").encode(), raw)
 
 
+class ConsoleSideRecords(CellCase):
+    """GET /api/cases/{id}/side: Work.side_channel over HTTP, read only. Witness and certificate have no read route."""
+
+    def case_with_decision(self):
+        case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        made = self.cell.json(f"/api/cases/{case}/proposals", {"action": "issue_order", "args": {}})[1]
+        self.assertEqual(made["decision"]["reason"], "amount_required")
+        return case
+
+    def test_side_records_are_work_side_channel_for_any_principal(self):
+        case = self.case_with_decision()
+        events = self.cell.work.inspect(case)["events"]
+        expected = self.cell.work.side_channel(case)
+        for who in ("operator", "manager", "supplier", "planner"):
+            with self.subTest(who):
+                self.assertEqual(self.cell.json(f"/api/cases/{case}/side", who=who), (200, expected))
+        self.assertEqual([row["seq"] for row in expected], [e["seq"] for e in events], "every new event has its row")
+        self.assertEqual([row["jcs"] for row in expected], [envelope_jcs(e) for e in events])
+        rules = {row["seq"]: row["rule"] for row in expected}
+        self.assertEqual([rules[e["seq"]] for e in events if e["kind"] == "decision"], ["limits.amount"])
+        self.assertTrue(all(rules[e["seq"]] is None for e in events if e["kind"] != "decision"))
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/side", who=None)[0], 401)
+
+    def test_side_read_appends_nothing_and_an_unknown_case_is_refused(self):
+        case = self.case_with_decision()
+        with connect_db(self.cell.database) as db:
+            before = list(db.iterdump())
+        self.cell.call(f"/api/cases/{case}/side")
+        with connect_db(self.cell.database) as db:
+            self.assertEqual(list(db.iterdump()), before)
+        for path in ("/api/cases/no-such-case/side", "/api/cases/%2e%2e/side"):
+            with self.subTest(path):
+                status, body = self.cell.json(path)
+                self.assertNotEqual(status, 500)
+                self.assertEqual(body["error"], "unknown_case")
+
+    def test_the_route_reports_a_stored_digest_as_stored_and_verify_judges_it(self):
+        """The route is a read, not a check: an altered row comes back as written, and only verify refuses it."""
+        case = self.case_with_decision()
+        with connect_db(self.cell.database) as db:
+            db.execute("UPDATE event_side SET jcs=? WHERE case_id=? AND seq=1", ("0" * 64, case))
+        rows = self.cell.json(f"/api/cases/{case}/side")[1]
+        self.assertEqual(rows[0]["jcs"], "0" * 64)
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify"), (200, {"valid": False}))
+        with connect_db(self.cell.database) as db:
+            db.execute("DELETE FROM event_side WHERE case_id=? AND seq=1", (case,))
+        self.assertEqual([row["seq"] for row in self.cell.json(f"/api/cases/{case}/side")[1]][:1], [2])
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True},
+                         "verify cannot notice a missing row, which is why the console says so instead of calling it legacy")
+        # Nor does verify check a row with no digest, or a rule id: the console presents neither as checked.
+        decision = next(e["seq"] for e in self.cell.work.inspect(case)["events"] if e["kind"] == "decision")
+        with connect_db(self.cell.database) as db:
+            db.execute("UPDATE event_side SET jcs=NULL, rule='invented.rule' WHERE case_id=? AND seq=?", (case, decision))
+        row = next(r for r in self.cell.json(f"/api/cases/{case}/side")[1] if r["seq"] == decision)
+        self.assertEqual((row["jcs"], row["rule"]), (None, "invented.rule"))
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True})
+        app = read_text(STATIC / "app.js")
+        for wording in ("it cannot notice a missing row", "Verify history does not check a row without a digest",
+                        "the rule ids are in no hash and nothing checks them", "only Verify history tells them apart"):
+            self.assertIn(wording, app)
+
+    def test_witness_and_certificate_are_named_as_missing_not_drawn(self):
+        case = self.case_with_decision()
+        for operation in ("witness", "certificate"):
+            with self.subTest(operation):
+                self.assertEqual(self.cell.json(f"/api/cases/{case}/{operation}"), (404, {"error": "not_found"}))
+        app = read_text(STATIC / "app.js")
+        for route in ("GET /api/cases/{id}/witness", "GET /api/cases/{id}/certificate"):
+            self.assertIn(route, app)
+        self.assertNotIn("casePath('witness')", app)
+        self.assertNotIn("casePath('certificate')", app)
+        self.assertIn("h('button', {type: 'button', class: 'btn', disabled: true}, label)", app)
+        self.assertIn("Nothing on this page is witnessed or certified.", app)
+
+
 class ConsoleStatic(CellCase):
     def test_console_files_are_served_with_the_content_security_policy(self):
         for name, kind in (("", "text/html"), ("app.js", "text/javascript"), ("model.js", "text/javascript"), ("style.css", "text/css")):
@@ -510,7 +588,7 @@ class ConsoleStatic(CellCase):
         gets = ["/api/me", "/api/console", "/api/cases", f"/api/cases/{case}", f"/api/cases/{case}/verify", "/api/contracts",
                 "/api/contracts/purchase-order/1", "/api/contracts/purchase-order/1/artifacts", "/api/policies",
                 "/api/actions", "/api/sources", "/metrics/cases_open", "/metrics/effects_pending", "/metrics/queue_depth",
-                "/metrics/proposals_denied_total", "/metrics/work_items"]
+                "/metrics/proposals_denied_total", "/metrics/work_items", f"/api/cases/{case}/side", f"/metrics/work_items/{case}"]
         proposal = self.cell.json(f"/api/cases/{case}/proposals", {"action": "record_review", "args": {}}, who="admin")[1]["proposal"]["id"]
         gets += [f"/api/cases/{case}/proposals/{proposal}/explain?when={when}" for when in ("recorded", "now")]
         for path in gets:
@@ -519,6 +597,10 @@ class ConsoleStatic(CellCase):
         app = read_text(STATIC / "app.js")
         self.assertIn("'/proposals/' + encodeURIComponent(p.id) + '/explain?when=' + when", app)
         self.assertNotIn("not exposed over HTTP", app)
+        # Both History reads build their URL from the case being drawn (headRead), not from the selection.
+        self.assertIn("headRead('side', id => '/api/cases/' + encodeURIComponent(id) + '/side', info)", app)
+        self.assertIn("headRead('work_item', id => '/metrics/work_items/' + encodeURIComponent(id), info)", app)
+        self.assertIn("api(route(info.case.id))", app)
         for operation in ("refresh", "facts", "proposals", "compiled", "suggest", "approve", "commit", "signoff", "reconcile",
                           "replay", "cancel", "resolution-request", "resolution-resolve", "resolution-escalate", "candidates", "evaluations"):
             with self.subTest(operation):
@@ -558,6 +640,13 @@ class ConsoleModel(CellCase):
         denied = self.cell.json(f"/api/cases/{case}/proposals", {"action": "issue_order", "args": {}})[1]["proposal"]["id"]
         parity["explain"] = [{"body": self.cell.json(f"/api/cases/{case}/proposals/{denied}/explain?when={when}")[1], "when": when,
                               "rule": "limits.amount", "provenance": "syberlabs/admission.py:"} for when in ("recorded", "now")]
+        # The side records and the work item of the same case, as GET .../side and /metrics/work_items/{case} answer them.
+        parity["work_metrics"] = list(METRICS)
+        parity["side"] = {"events": self.cell.json(f"/api/cases/{case}")[1]["events"], "rows": self.cell.json(f"/api/cases/{case}/side")[1]}
+        item_body = self.cell.json(f"/metrics/work_items/{case}")[1]
+        item = item_body["items"][0]
+        cells = [[name, _cell(Metric(None if item[name]["value"] == UNKNOWN else item[name]["value"]), money=name == "cost")] for name in METRICS]
+        parity["work_item"] = {"case": case, "body": item_body, "cells": cells}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -599,6 +688,18 @@ class ConsoleBrowser(CellCase):
         self.assertTrue(report["self_approval_blocked"])
         self.assertIn("Complete", report["status"])
         self.assertIn("intact", report["verify"])
+        # History: the JCS side records and this case's work item, read from the server; witness and certificate missing.
+        self.assertRegex(report["side_summary"], r"(\d+) of \1 events carry a side record · 2 of 2 decisions name their deciding rule", report["side_summary"])
+        self.assertNotIn("have no side record", report["side_summary"])
+        self.assertIn("JCS", report["side_row"])
+        self.assertIn("same as the chain hash", report["side_row"])
+        cells = dict(report["work_item"])
+        self.assertEqual(list(cells), list(METRICS), report["work_item"])
+        self.assertIn("unknown", cells["cost"], "no model call is metered for a purchase order")
+        self.assertIn("no pull request opened", cells["delivered"])
+        self.assertEqual(report["witness_buttons"], [["Show witness", True], ["Show certificate", True]])
+        self.assertIn("GET /api/cases/{id}/witness", report["witness_text"])
+        self.assertIn("GET /api/cases/{id}/certificate", report["witness_text"])
         self.assertTrue(any("destination acknowledged HTTP 201" in row for row in report["effects"]), report["effects"])
         self.assertTrue(any("recorded locally" in row for row in report["effects"]), report["effects"])
         self.assertIn("No external planner configured", report["planner"])

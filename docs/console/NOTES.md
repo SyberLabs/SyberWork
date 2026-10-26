@@ -70,8 +70,12 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
      deciding rule and, while it has not been executed and was not denied, what admission answers now.
   4. *Effects*: every claimed effect with its outcome, idempotency key, destination response or proof,
      and status checks. Attest observations on the case are called out as reconciling nothing.
-  5. *History*: the hash chain, head first. Each row shows its hash; expanded, its predecessor hash and
-     body. A link-break check runs in the page, but only the server's verification counts.
+  5. *History*: the hash chain, head first. Each row shows its hash; expanded, its predecessor hash,
+     its JCS side record (digest, and the deciding rule for a decision) and body. A link-break check runs
+     in the page, but only the server's verification counts. Above the timeline: the side-record coverage
+     (`GET /api/cases/{id}/side`), this case's work item (`GET /metrics/work_items/{id}`: each metric's
+     value, the events it came from and the server's note), and **Witness and certificate**, two disabled
+     buttons that name the read route each one lacks.
   6. *Replay*: choose a contract and a policy version. The table shows each changed decision as recorded
      and as replayed, and each acceptance clause before and after. The server's note (no re-read, no
      mutation) is shown verbatim.
@@ -113,7 +117,8 @@ refreshes and proposals act at once, because they are either read-only or pass t
 ## Routes added
 
 All are `GET`, require a bearer token, and append nothing (`tests/test_console.py`
-`test_reads_append_nothing`, `test_explain_appends_nothing_and_writes_no_row`).
+`test_reads_append_nothing`, `test_explain_appends_nothing_and_writes_no_row`,
+`test_side_read_appends_nothing_and_an_unknown_case_is_refused`).
 
 | Route | Who | Returns |
 |---|---|---|
@@ -123,6 +128,7 @@ All are `GET`, require a bearer token, and append nothing (`tests/test_console.p
 | `/api/policies` | `admin` or `manager`, holding no automation role (`model`, `compiled`, `search`); others `403 forbidden` | `[{version, body, digest}]` |
 | `/api/actions` | admin; others `403 forbidden` | installed definitions by name. They contain credential variable names, never values. |
 | `/api/sources` | admin: installed definitions, as above. Any other principal: read roles only | `{name: {roles}}`. `roles` is what `refresh_fact` checks (`["operator"]` when the definition names none; `null` when the stored value is not a list of names, and the console then says the server decides). No URL, credential variable, value path or kind. |
+| `/api/cases/{id}/side` | any principal, like `/api/cases/{id}` | `Work.side_channel` unchanged: `[{seq, jcs, rule}]`, the RFC 8785 SHA-256 of the fields each event's hash covers and, for a decision, the deciding rule id. Events written before the side table have no row. An unknown case answers `unknown_case`. |
 | `/api/cases/{id}/proposals/{proposal}/explain?when=recorded\|now` | any principal, like `/api/cases/{id}` | `Work.explain_admission` (`status`, `reason`, `rule`, `provenance: {module, symbol, line}`) and `recorded`: the proposal's first decision as stored, with the rule id written beside it on the side channel (`null` for rows older than that table). `when` defaults to `now`, as in `Work`. |
 
 A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 not_found` instead of
@@ -131,8 +137,8 @@ A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 n
 `403` is new: a `GET` the principal's roles do not cover (`/api/policies`, `/api/actions`, admin
 `/api/sources`) now answers `403 forbidden` (it was `409`). `POST` refusals, such as an operator-only
 `POST /api/cases`, still answer `409`, and `/api/builder/*` keeps its own statuses. The console also reads
-`GET /metrics/work_items`, which already existed (`Work.work_items`, docs/METRICS.md); this branch adds no
-metrics route.
+`GET /metrics/work_items` and `GET /metrics/work_items/{id}`, which already existed (`Work.work_items`,
+docs/METRICS.md); no branch in this stack adds a metrics route.
 
 ## Completed capabilities and gaps
 
@@ -154,11 +160,11 @@ Gaps from #95, closed or still open:
 | Gap | State | Where |
 |---|---|---|
 | Deciding rule | **Closed** (#98) | `GET /api/cases/{id}/proposals/{p}/explain`, see below |
-| Per-work-item metrics (`/metrics/work_items`) | **Closed** for the top bar: the route already existed and is now read. Per-item rows (cost, turns, delivered per case) are not drawn. | `workItemCounters` in `app.js`; `test_work_item_summary_carries_what_the_top_bar_reads` |
+| Per-work-item metrics (`/metrics/work_items`) | **Closed**: the top bar reads the summary, and History draws the case's own row (all nine metrics with value, basis events and note) from the existing per-case route | `workItemCounters`, `workItemView` in `app.js`; `M.workItemRows`; `test_work_item_summary_carries_what_the_top_bar_reads`; the History panels render only in the browser walkthrough, which skips without node `playwright` |
 | Source read roles for non-admins | **Closed**: every credential reads each source's read roles (only); the refresh button names the missing role and offers a switch; a source that is not installed is said so | `GET /api/sources`; `test_other_credentials_see_each_sources_read_roles_and_nothing_else`, `test_listed_read_roles_are_the_ones_refresh_enforces` |
 | `/api/policies` read scope | **Closed**: admin or manager, without an automation role; `model`, `compiled`, `operator` and observer credentials get `403` | `POLICY_READERS` in `server.py`; `ConsoleReadScope` |
-| JCS side records (`Work.side_channel`) | Open | not shown in the console |
-| Witness and certificate | Open | not shown in the console |
+| JCS side records (`Work.side_channel`) | **Closed**: a read-only route returns `Work.side_channel` as stored; History shows coverage and each event's digest and rule. The console does not recompute digests | `GET /api/cases/{id}/side`; `M.sideRecords`; `ConsoleSideRecords` |
+| Witness and certificate | **Open, shown as missing**: no read path exists. History has two disabled buttons naming `GET /api/cases/{id}/witness` and `GET /api/cases/{id}/certificate` and why neither exists | `witnessPanel` in `app.js`; `test_witness_and_certificate_are_named_as_missing_not_drawn` |
 | Builder API (`/api/builder/*`) | Open | a separate surface, not part of this console |
 | Push updates | Open | there is no push: press `r` to reload |
 
@@ -190,8 +196,35 @@ Gaps from #95, closed or still open:
   is recorded.
   There is still no scalar `work_items.*` key under `GET /metrics/<key>` (`spec/GAPS.md` #52): the
   console reads the `{items, summary}` route instead, and no storage or key was added for it.
-- **JCS side records**, **witness and certificate**, the **Builder API** and **push updates** remain
-  open as listed. No backend for them was added here.
+- **JCS side records** (closed): `GET /api/cases/{id}/side` returns `Work.side_channel` as stored, under
+  the same read scope as `GET /api/cases/{id}` (the digests can be computed from the events, and the rule
+  ids are already in the explain route). History shows *n of n events carry a side record* and *n of n
+  decisions name their deciding rule*, and lists the events with no row. It does not call those legacy.
+  `verify` (`Work.chain_ok`) compares a row's digest with its event only when the digest is a string. It
+  does not notice a missing row or a row whose digest is null, and no check reads the rule id. So the
+  console says *written before the side table existed, or the row is absent*, describes a null digest as
+  *not checked by verify*, and labels a rule *as written, in no hash*. An expanded event shows its digest,
+  marked *same as the chain hash* when the canonical and RFC 8785 bytes agree. In the included path, the
+  supplier quote and the `issue_order` proposal give different bytes, so their digests differ from the
+  chain hash. The console lists such events and says only `verify` can tell an encoding difference from a
+  changed digest. A changed row comes back from the route unchanged. `verify` refuses a digest changed to
+  another string, and accepts a nulled digest or a changed rule
+  (`test_the_route_reports_a_stored_digest_as_stored_and_verify_judges_it`).
+- **Witness and certificate** (open, shown as missing): `syberwork serve` configures no witness.
+  `Work.submit_witness` asks a loopback `python -m syberlabs.witness` process to sign the chain head and
+  returns the DSSE envelope to its caller; nothing stores it in the case database, and no HTTP route reads
+  it or the transparency log. Admission certificates (`syberlabs certify`, docs/CERTIFICATE.md) belong to
+  Build Threads and are files under `<home>/certificates`; a case here has none. So the console draws
+  nothing as witnessed or certified. It shows two disabled buttons, *Show witness* and *Show certificate*,
+  each naming the GET it would need. The routes are not served (`404 not_found`). Closing this needs a
+  stored witness envelope, or a read-only log reader configured in `serve`, before any route can exist.
+- **Work item per case** (closed): History reads `GET /metrics/work_items/{id}` (an existing route) and
+  shows each of the nine metrics (`syberlabs.metrics.METRICS`, with a parity test) as `_cell` writes it.
+  *unknown* stays a badge, a boolean is yes or no, cost has four decimals. One exception: a whole-number
+  float such as `2.0` reads as `2`, because JSON does not keep the difference. Each row also lists the events
+  it was computed from and the server's note. For a purchase order the cost and turns are *unknown* (no
+  metered model call) and delivered is *no · no pull request opened*, as the metrics define it.
+- The **Builder API** and **push updates** remain open as listed. No backend for them was added.
 - **Still readable by any principal, unchanged here**: contract budgets (`evolution.budget`, `prices`)
   through `GET /api/contracts/{id}/{v}` and `GET /api/cases/{id}`, and `POST /api/cases/{id}/replay`
   with any `policy_version`, which answers how that version would decide (decisions and reasons, not
