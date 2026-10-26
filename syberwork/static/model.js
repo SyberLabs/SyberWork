@@ -148,6 +148,15 @@ export function missingApprovals(contract, policy, proposal) {
 }
 
 const has = (me, role) => !!me && (me.roles || []).includes(role);
+
+// syberwork/server.py POLICY_READERS and syberlabs/evolution.py AUTOMATION_ROLES: GET /api/policies answers
+// a credential that holds a reader role and no automation role. The console only uses this to name the role
+// and suggest a saved identity; the server's 403 is what decides.
+export const POLICY_READERS = ['admin', 'manager'];
+export const AUTOMATION_ROLES = ['model', 'compiled', 'search'];
+export function policyReader(me) {
+  return POLICY_READERS.some(r => has(me, r)) && !AUTOMATION_ROLES.some(r => has(me, r));
+}
 const allow = () => ({ok: true});
 const deny = (reason, roles = [], actor = null, exclude = null) => ({ok: false, reason, roles, actor, exclude});
 
@@ -163,6 +172,7 @@ export function can(me, op, ctx = {}) {
       return (me.sources || []).includes(ctx.source) ? allow()
         : deny(`this credential may not attest source "${ctx.source || '…'}"`);
     case 'refresh': {
+      if (ctx.sourceMissing) return deny(`source "${ctx.source}" is not installed`);
       const roles = ctx.sourceRoles || null;
       if (!roles) return {ok: true, note: 'the source read role is checked by the server'};
       return roles.some(r => has(me, r)) ? allow() : deny('source read role required: ' + roles.join(' or '), roles);

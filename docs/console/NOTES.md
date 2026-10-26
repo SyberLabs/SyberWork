@@ -46,17 +46,23 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
 ## Where things are
 
 - **Top bar**: views (Cases `g c`, Studio `g s`), cell counters from `GET /metrics/<key>` (open cases,
-  effects pending, worker queue in worker mode, denied proposals), and the identity switcher with role
-  chips.
+  effects pending, worker queue in worker mode, denied proposals), the work-item count from
+  `GET /metrics/work_items` (with *merged · unknown* once any pull request was opened; an unsettled
+  delivery is counted as unknown, never as no; *work items unavailable* with the error code if the read
+  fails), and the identity switcher with role chips.
 - **Case list**: status per case, plus *effect unknown* and *needs approval* flags. `/` filters,
   `j`/`k` move.
 - **Case tabs** (`1`–`8`):
   1. *Flow*: the compiled path as steps, each with its required facts, proposal, decision, deciding
      rule, approvals and effect, and a **Next** banner that names the move and the role that can make it.
+     A credential that cannot read the global policy is told so under the banner, with the reader roles
+     and a switch to a saved identity that holds one; its approval forecast then comes from the contract
+     only.
   2. *Evidence*: required facts per action, refresh from a configured source, observations newest
      first (superseded rows dimmed), and a collapsed, amber **Manual assertion** form. A typed value is
      stored `verified: false` and labelled *unverified*. An Attest receipt is labelled *Attest claim ·
-     unverified · not destination proof*.
+     unverified · not destination proof*. Under the refresh form, each source the case's facts name is
+     listed with its read role and whether this credential holds it.
   3. *Propose*: the compiled step, a proposal by hand (origins the credential does not hold are
      disabled), and the external planner. When `SYBERWORK_PLANNER_URL` is unset the planner panel is an
      empty state naming the variable; when set, **Ask configured planner** is enabled for a `model`
@@ -75,7 +81,9 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
 - **Studio**: published contracts and policies (immutable, with digest and pinned case count),
   compiled artifacts (path, input form schema, action gates, acceptance), a **Draft vN+1** editor
   that validates JSON, refuses an existing version, and lists the changed paths before **Publish**.
-  Actions and sources are listed and registered by administrators only.
+  Actions and sources are listed and registered by administrators only. Other credentials see each
+  source's read role and whether they hold it, and *admin or manager role required* in place of the policy
+  list.
 
 ## Visual system
 
@@ -112,8 +120,13 @@ All are `GET`, require a bearer token, and append nothing (`tests/test_console.p
 | `/api/console` | any principal | `{planner_configured, effects}`. The planner URL is not disclosed. |
 | `/api/contracts` | any principal | `[{id, version, title, compiled_path, digest}]` |
 | `/api/contracts/{id}/{version}` | any principal | the stored contract (the same document `GET /api/cases/{id}` already returns for a case) |
-| `/api/policies` | any principal | `[{version, body, digest}]` |
-| `/api/actions`, `/api/sources` | admin | installed definitions by name. They contain credential variable names, never values. |
+| `/api/policies` | `admin` or `manager`, holding no automation role (`model`, `compiled`, `search`); others `403 forbidden` | `[{version, body, digest}]` |
+| `/api/actions` | admin; others `403 forbidden` | installed definitions by name. They contain credential variable names, never values. |
+| `/api/sources` | admin: installed definitions, as above. Any other principal: read roles only | `{name: {roles}}`. `roles` is what `refresh_fact` checks (`["operator"]` when the definition names none). No URL, credential variable, value path or kind. |
+
+`403` is new: a console read the principal's roles do not cover now answers `403 forbidden` (it was `409`).
+`/api/builder/*` keeps its own statuses. The console also reads `GET /metrics/work_items`, which already
+existed (`Work.work_items`, docs/METRICS.md); this branch adds no metrics route.
 | `/api/cases/{id}/proposals/{proposal}/explain?when=recorded\|now` | any principal, like `/api/cases/{id}` | `Work.explain_admission` (`status`, `reason`, `rule`, `provenance: {module, symbol, line}`) and `recorded`: the proposal's first decision as stored, with the rule id written beside it on the side channel (`null` for rows older than that table). `when` defaults to `now`, as in `Work`. |
 
 A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 not_found` instead of
@@ -134,7 +147,18 @@ A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 n
 | 9 | Keyboard, contrast, states, responsive | Done for keyboard, contrast and loading/empty/error/success states. Responsive layout is checked at 820 px only. |
 | 10 | Tests | `tests/test_console.py` (routes, static safety, the node projection tests with Python parity, the browser walkthrough). |
 
-Known gaps, stated rather than faked:
+Gaps from #95, closed or still open:
+
+| Gap | State | Where |
+|---|---|---|
+| Deciding rule | **Closed** (#98) | `GET /api/cases/{id}/proposals/{p}/explain`, see below |
+| Per-work-item metrics (`/metrics/work_items`) | **Closed** for the top bar: the route already existed and is now read. Per-item rows (cost, turns, delivered per case) are not drawn. | `workItemCounters` in `app.js`; `test_work_item_summary_carries_what_the_top_bar_reads` |
+| Source read roles for non-admins | **Closed**: every credential reads each source's read roles (only); the refresh button names the missing role and offers a switch; a source that is not installed is said so | `GET /api/sources`; `test_other_credentials_see_each_sources_read_roles_and_nothing_else`, `test_listed_read_roles_are_the_ones_refresh_enforces` |
+| `/api/policies` read scope | **Closed**: admin or manager, without an automation role; `model`, `compiled`, `operator` and observer credentials get `403` | `POLICY_READERS` in `server.py`; `ConsoleReadScope` |
+| JCS side records (`Work.side_channel`) | Open | not shown in the console |
+| Witness and certificate | Open | not shown in the console |
+| Builder API (`/api/builder/*`) | Open | a separate surface, not part of this console |
+| Push updates | Open | there is no push: press `r` to reload |
 
 - **Deciding rule** (closed): the Flow step and the Propose card read
   `GET /api/cases/{id}/proposals/{p}/explain`. The rule shown is the one the server wrote beside the
@@ -146,21 +170,28 @@ Known gaps, stated rather than faked:
   other cases' reservations, so each render asks again and shows when the server answered. The route
   names the rule's module relative to the installed packages, whatever directory `serve` runs from, and
   withholds a module outside them, so it never discloses the host's filesystem layout.
-- **JCS side records** (`Work.side_channel`), **witness and certificate**, and **per-work-item metrics**
-  (`/metrics/work_items`) are not shown in the console.
-- **Builder API** (`/api/builder/*`) is a separate surface and is not part of this console.
-- **Source read roles** are only visible to administrators (`GET /api/sources`). For other
-  credentials, refresh says *the source read role is checked by the server*.
+- **Policy read scope** (closed): an economic policy carries budget limits, so `GET /api/policies`
+  answers `admin` or `manager` credentials that hold no automation role (`AUTOMATION_ROLES` in
+  `syberlabs/evolution.py`, the same exclusion promotion and evaluation already apply). The code has no
+  policy-read role, so none was invented. `manager` is included because the console reads the policy's
+  `approval_role` to forecast approvals, and the manager is the approver. `operator` is not: an operator,
+  scheduler or planner credential sees the Flow note and an approval forecast from the contract alone.
+  Admission is unchanged and still applies the policy for everyone. Replay then offers the policy versions
+  recorded in the case's decisions. `model.js` mirrors `POLICY_READERS` and `AUTOMATION_ROLES` only to
+  name the role and suggest an identity; a parity test checks both against Python.
+- **Source read roles** (closed): non-admins get `{name: {roles}}` from `GET /api/sources`. The roles
+  are authorization metadata the server enforces anyway; contracts already name the sources. URLs,
+  credential variable names, value paths and timeouts stay admin only. `/api/actions` stays admin only.
+- **Work items** (closed for the top bar): `delivered` in docs/METRICS.md means a merged pull request,
+  so for purchase-order cases the console shows only the item count, with opened, cancelled and cost
+  basis in the tooltip. The *merged · unknown* counter appears once a pull request was opened.
+  There is still no scalar `work_items.*` key under `GET /metrics/<key>` (`spec/GAPS.md` #52): the
+  console reads the `{items, summary}` route instead, and no storage or key was added for it.
+- **JCS side records**, **witness and certificate**, the **Builder API** and **push updates** remain
+  open as listed. No backend for them was added here.
 - **Attest detection** is a display rule (value `schema` starting with `attest.`, or a source named
   like `attest`). It only adds a warning label; it cannot make anything verified.
 - **Case statuses** in the list come from one `GET /api/cases/{id}` per case, four at a time, capped
-  at 60 cases. There is no push: press `r` to reload.
-- **Read scope of the new routes** is a decision for the reviewer: contract and policy bodies are
-  readable by any authenticated principal, including `model` and `compiled` credentials. Contract
-  bodies were already readable through `GET /api/cases/{id}`. Policy bodies are new to non-admins,
-  and an economic policy carries budget limits. Restricting `/api/policies` to admin and operator
-  roles is one line on the server, but the console reads the policy's `approval_role` to forecast who
-  may approve, and the `manager` identity (the approver) holds neither role. The restriction therefore
-  also needs a policy-free approval forecast for that identity. It is not made here.
+  at 60 cases.
 - The README's API list does not mention the new read routes. README wording is a public claim
   (Class P in `AGENTS.md`), so that line is left for a human key.

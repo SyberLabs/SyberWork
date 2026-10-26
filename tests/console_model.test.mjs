@@ -23,6 +23,8 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   const cases = JSON.parse(readFileSync(process.env.PARITY, 'utf8'));
   for (const c of cases.reconciliation) assert.equal(M.verifiedReconciliation(c.event), c.expected, JSON.stringify(c.event));
   for (const c of cases.approval) assert.deepEqual(M.approvalRoles(c.contract, c.policy, c.action), c.expected);
+  assert.deepEqual([...M.POLICY_READERS].sort(), cases.read_scope.policy_readers);
+  assert.deepEqual([...M.AUTOMATION_ROLES].sort(), cases.read_scope.automation_roles);
   assert.ok(cases.explain.length);
   for (const c of cases.explain) {
     const view = c.when === 'now' ? M.admissionNow(c.body) : M.decidingRule(c.body);
@@ -245,4 +247,23 @@ test('a missing, malformed or wrong-kind answer is unknown rather than guessed',
 test('provenance text omits a withheld module', () => {
   assert.equal(M.provenanceText({ module: null, symbol: 'custom_rule', line: 4 }), 'custom_rule');
   assert.equal(M.provenanceText(null), '');
+});
+
+test('policy bodies are offered to admin or manager credentials without an automation role', () => {
+  assert.equal(M.policyReader(ME('manager', ['manager'])), true);
+  assert.equal(M.policyReader(ME('admin', ['admin', 'operator'])), true);
+  for (const roles of [['operator'], ['operator', 'compiled'], ['operator', 'model'], ['manager', 'model'], ['observer'], []]) {
+    assert.equal(M.policyReader(ME('x', roles)), false, roles.join(','));
+  }
+});
+
+test('a refresh names the source read role it needs, or says the source is not installed', () => {
+  const op = ME('operator', ['operator']);
+  const mgr = ME('manager', ['manager']);
+  assert.equal(M.can(op, 'refresh', { source: 'supplier', sourceRoles: ['operator'] }).ok, true);
+  const denied = M.can(mgr, 'refresh', { source: 'supplier', sourceRoles: ['operator'] });
+  assert.deepEqual([denied.ok, denied.reason, denied.roles], [false, 'source read role required: operator', ['operator']]);
+  const missing = M.can(op, 'refresh', { source: 'crm', sourceRoles: null, sourceMissing: true });
+  assert.deepEqual([missing.ok, missing.reason], [false, 'source "crm" is not installed']);
+  assert.equal(M.can(op, 'refresh', {}).note, 'the source read role is checked by the server');
 });

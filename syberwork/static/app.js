@@ -14,11 +14,11 @@ const state = {
   identities: [], active: null, me: null, console: null,
   view: 'cases', tab: 'flow', selected: null, info: null, loadingCase: false, caseError: null,
   cases: null, casesError: null, meta: new Map(), filter: '',
-  contracts: null, policies: null, registry: {actions: null, sources: null},
+  contracts: null, policies: null, policiesError: null, registry: {actions: null, sources: null},
   verifications: new Map(), replay: null, lastResponse: null, focusProposal: null,
   explaining: new Map(), explained: new Map(),
   studio: {kind: 'contract', id: null, version: null, tab: 'document', artifacts: null, draft: null, error: null},
-  metrics: null,
+  metrics: null, workItems: null, workItemsError: null,
 };
 
 // ---------- small DOM kit ----------
@@ -212,7 +212,7 @@ function action({label, op, ctx = {}, run, confirm, tone = 'secondary', keys}) {
 // ---------- loading ----------
 async function refreshAll() {
   if (!state.me) { render(); return; }
-  await Promise.all([loadCases(), loadPolicies(), loadContracts(), loadMetrics()]);
+  await Promise.all([loadCases(), loadPolicies(), loadContracts(), loadRegistry(), loadMetrics()]);
   if (state.selected) await loadCase(state.selected);
   render();
 }
@@ -231,26 +231,43 @@ async function loadCases() {
     renderRail();
   }
 }
+// Policies and the registry depend on the credential, so an answer for an identity switched away from is dropped.
 async function loadPolicies() {
-  try { state.policies = await api('/api/policies'); } catch { state.policies = null; }
+  const who = state.active;
+  try {
+    const policies = await api('/api/policies');
+    if (state.active === who) Object.assign(state, {policies, policiesError: null});
+  } catch (error) { if (state.active === who) Object.assign(state, {policies: null, policiesError: error}); }
 }
 async function loadContracts() {
   try { state.contracts = await api('/api/contracts'); } catch { state.contracts = null; }
 }
 async function loadRegistry() {
-  if (!(state.me && state.me.roles.includes('admin'))) { state.registry = {actions: null, sources: null}; return; }
+  if (!state.me) { state.registry = {actions: null, sources: null}; return; }
+  const who = state.active;
+  const admin = state.me.roles.includes('admin');
   try {
-    const [actions, sources] = await Promise.all([api('/api/actions'), api('/api/sources')]);
+    // An administrator reads whole definitions; any other credential reads each source's read roles only.
+    const [actions, sources] = await Promise.all([admin ? api('/api/actions') : null, api('/api/sources')]);
+    if (state.active !== who) return;
     state.registry = {actions, sources};
     state.registryError = null;
-  } catch (error) { state.registry = {actions: null, sources: null}; state.registryError = error; }
+  } catch (error) {
+    if (state.active !== who) return;
+    state.registry = {actions: null, sources: null};
+    state.registryError = error;
+  }
 }
 async function loadMetrics() {
   const keys = ['cases_open', 'effects_pending', 'queue_depth', 'proposals_denied_total'];
+  // The work-item summary is read on its own so that a failure there leaves the cell counters standing.
+  const items = api('/metrics/work_items').then(r => Object.assign(state, {workItems: r.summary, workItemsError: null}),
+    error => Object.assign(state, {workItems: null, workItemsError: error}));
   try {
     const values = await Promise.all(keys.map(k => api('/metrics/' + k)));
     state.metrics = Object.fromEntries(values.map(v => [v.key, v.value]));
   } catch { state.metrics = null; }
+  await items;
   renderMetrics();
 }
 async function loadCase(id) {
@@ -340,7 +357,24 @@ function renderMetrics() {
     h('span', {class: m.effects_pending ? 'attention' : '', title: 'Claimed effects without a settled outcome'}, h('b', {}, m.effects_pending), ' effects pending'),
     state.console && state.console.effects === 'worker' ? h('span', {title: 'Worker obligations queued or leased'}, h('b', {}, m.queue_depth), ' queued') : null,
     h('span', {title: 'Proposals refused by admission'}, h('b', {}, m.proposals_denied_total), ' denied'),
+    workItemCounters(),
   ]);
+}
+// GET /metrics/work_items (docs/METRICS.md). Delivered means a merged pull request, so it is shown only once a
+// pull request was opened; an item whose delivery the record does not settle is counted as unknown, never as no.
+function workItemCounters() {
+  const w = state.workItems;
+  if (!w) {
+    const code = state.workItemsError ? state.workItemsError.code : 'not read';
+    return h('span', {class: 'muted', title: 'GET /metrics/work_items: ' + code}, 'work items unavailable');
+  }
+  const basis = Object.entries(w.cost_basis || {}).map(([k, n]) => k + ' ' + n).join(', ');
+  const title = `Per-work-item metrics over every case. Opened pull requests: ${w.opened}. Cancelled: ${w.cancelled}. Cost basis: ${basis || 'none'}.`;
+  return [
+    h('span', {title}, h('b', {}, w.items), ' work items'),
+    w.opened ? h('span', {class: w.delivered.unknown ? 'attention' : '', title: 'Delivered: a pr_merged fact is in the record. Unknown: a pull request is open with no merge recorded.'},
+      h('b', {}, w.delivered.yes), ' merged', w.delivered.unknown ? [' · ', h('b', {}, w.delivered.unknown), ' unknown'] : null) : null,
+  ];
 }
 
 // ---------- rail ----------
@@ -483,9 +517,20 @@ function tabFlow(info) {
   const list = h('ol', {class: 'path'}, steps.map((step, i) => h('li', {class: 'step s-' + step.state},
     h('div', {class: 'step-num', 'aria-hidden': 'true'}, String(i + 1).padStart(2, '0')),
     step.kind === 'action' ? stepAction(step, info) : stepSignoff(step, info))));
-  return h('div', {class: 'flow'}, nextBox,
+  return h('div', {class: 'flow'}, nextBox, policyNotice(),
     steps.length ? list : empty('No compiled path', 'This contract has no compiled path. Propose actions by hand from the Propose tab.'),
     lastResponse());
+}
+// Without the global policy the approval forecast comes from the contract alone. The server still applies the policy.
+function policyNotice() {
+  const e = state.policiesError;
+  if (!e) return null;
+  const other = e.code === 'forbidden' ? state.identities.find(i => i.name !== state.active && M.policyReader(i)) : null;
+  return h('div', {class: 'act policy-note'},
+    h('span', {class: 'why'}, e.code === 'forbidden'
+      ? `The global policy is not readable by this credential (${M.POLICY_READERS.join(' or ')} role required). Approval roles here come from the contract only; the server still applies the policy.`
+      : `The global policy could not be read (${e.code}). Approval roles here come from the contract only.`),
+    other ? h('button', {type: 'button', class: 'link', onclick: () => activate(other.name)}, '⇄ switch to ' + other.name) : null);
 }
 const STEP_LABEL = {done: ['applied', 'Done'], next: ['pending', 'Next'], todo: ['idle', 'To do'], approval: ['pending', 'Awaiting approval'],
   ready: ['pending', 'Ready to execute'], unknown: ['unknown', 'Outcome unknown']};
@@ -608,11 +653,12 @@ function refreshButton(f, info) {
   let inputs = {};
   try { inputs = JSON.parse(info.case.inputs); } catch { inputs = {}; }
   const record = inputs[f.key];
-  const roles = state.registry.sources && state.registry.sources[f.source] ? state.registry.sources[f.source].roles || ['operator'] : null;
+  const listed = state.registry.sources;
+  const roles = listed && listed[f.source] ? listed[f.source].roles || ['operator'] : null;
   if (record === undefined) {
     return h('button', {type: 'button', class: 'btn', onclick: () => { state.tab = 'evidence'; state.prefill = {key: f.key, source: f.source}; updateHash(); renderMain(); }}, `Refresh ${f.key} from ${f.source}…`);
   }
-  return action({label: `Refresh ${f.key} from ${f.source} (${record})`, op: 'refresh', ctx: {sourceRoles: roles},
+  return action({label: `Refresh ${f.key} from ${f.source} (${record})`, op: 'refresh', ctx: {source: f.source, sourceRoles: roles, sourceMissing: !!listed && !listed[f.source]},
     run: () => mutate(casePath('refresh'), {key: f.key, source: f.source, record_key: String(record)}, r => `${r.body.key} verified at ${r.body.version}`)});
 }
 function approveButton(p, info) {
@@ -690,7 +736,7 @@ function tabEvidence(info) {
         h('tbody', {}, needs.flatMap(([actionName, list]) => list.map((f, i) => h('tr', {}, h('td', {}, i ? '' : actionName), h('td', {}, f.key), h('td', {}, factChip(f)))))))) : null,
     h('div', {class: 'grid-2'},
       section('Refresh from a configured source', badge('verified', 'produces verified'),
-        h('p', {class: 'hint'}, 'SyberWork reads the source itself and stores its ETag or X-Record-Version with the value.'), form, refresh),
+        h('p', {class: 'hint'}, 'SyberWork reads the source itself and stores its ETag or X-Record-Version with the value.'), form, refresh, sourceAccess(sources)),
       h('details', {class: 'panel warn-panel', open: state.manualOpen || undefined, ontoggle: e => { state.manualOpen = e.target.open; }},
         h('summary', {}, badge('unverified', 'Manual assertion'), ' Record a typed observation'),
         h('p', {class: 'hint'}, 'A typed value is stored with ', mono('verified: false'), '. It never satisfies a fact a contract requires to be verified, and it is never evidence of an effect.'),
@@ -809,7 +855,9 @@ function tabHistory(info) {
 // Replay: the recorded proposals re-admitted under another contract or policy version.
 function tabReplay(info) {
   const versions = (state.contracts || []).filter(c => c.id === info.case.contract_id).map(c => c.version);
-  const policies = (state.policies || []).map(p => p.version);
+  // Without the policy list, offer the versions this case's decisions were made under.
+  const recorded = [...new Set(info.events.filter(e => e.kind === 'decision' && Number.isInteger(e.body.policy_version)).map(e => e.body.policy_version))].sort((a, b) => a - b);
+  const policies = state.policies ? state.policies.map(p => p.version) : recorded;
   const form = h('form', {class: 'inline-form', onsubmit: e => e.preventDefault()},
     h('label', {}, 'Contract version', versions.length ? h('select', {name: 'contract'}, versions.map(v => h('option', {value: v, selected: v === Math.max(...versions) || undefined}, 'v' + v + (v === info.case.contract_version ? ' (case)' : ''))))
       : h('input', {name: 'contract', type: 'number', value: info.case.contract_version})),
@@ -836,7 +884,9 @@ function tabReplay(info) {
         h('tbody', {}, rows.clauses.map(c => h('tr', {class: c.changed ? 'changed' : ''}, h('td', {}, c.id), h('td', {}, c.before), h('td', {}, c.after, c.changed ? ' ◀' : ''))))));
   }
   return h('div', {class: 'replay'}, section('Amendment replay', badge('idle', 'no model calls · no writes · no live reads'),
-    h('p', {class: 'hint'}, 'Each recorded proposal is re-admitted against the history before it, at its recorded time. Nothing is appended to the case.'), form, run), section('Result', null, result));
+    h('p', {class: 'hint'}, 'Each recorded proposal is re-admitted against the history before it, at its recorded time. Nothing is appended to the case.'),
+    state.policies ? null : h('p', {class: 'hint'}, 'Policy versions offered are those recorded in this case; the published list needs the ', M.POLICY_READERS.join(' or '), ' role.'),
+    form, run), section('Result', null, result));
 }
 
 // Closure: resolution tasks and cancellation.
@@ -919,12 +969,15 @@ function renderStudio() {
     h('div', {class: 'group'}, 'Contracts'),
     state.contracts === null ? h('p', {class: 'muted pad'}, 'Listing unavailable') : contracts.map(c => item('contract', c.id, c.version, `${c.id} v${c.version}`, c.title)),
     h('div', {class: 'group'}, 'Global policy'),
-    (state.policies || []).map(p => item('policy', 'policy', p.version, `policy v${p.version}`, Object.keys(p.body.actions || {}).length + ' actions')),
+    state.policiesError ? h('p', {class: 'muted pad'}, state.policiesError.code === 'forbidden' ? M.POLICY_READERS.join(' or ') + ' role required' : 'Listing unavailable')
+      : (state.policies || []).map(p => item('policy', 'policy', p.version, `policy v${p.version}`, Object.keys(p.body.actions || {}).length + ' actions')),
     h('div', {class: 'group'}, 'Connectors'),
     item('actions', 'actions', 0, 'Actions', admin ? Object.keys(state.registry.actions || {}).length + ' installed' : 'admin only'),
-    item('sources', 'sources', 0, 'Sources', admin ? Object.keys(state.registry.sources || {}).length + ' installed' : 'admin only'));
+    item('sources', 'sources', 0, 'Sources', state.registry.sources ? Object.keys(state.registry.sources).length + ' installed' + (admin ? '' : ' · read roles') : '…'));
   let body;
   if (s.kind === 'contract' && s.id) body = studioContract(contracts.find(c => c.id === s.id && c.version === s.version));
+  else if (s.kind === 'policy' && state.policiesError) body = empty('Policy not readable', state.policiesError.code === 'forbidden'
+    ? `GET /api/policies requires the ${M.POLICY_READERS.join(' or ')} role, without an automation role. An economic policy carries budget limits.` : state.policiesError.message);
   else if (s.kind === 'policy') body = studioPolicy((state.policies || []).find(p => p.version === s.version));
   else if (s.kind === 'actions' || s.kind === 'sources') body = studioConnectors(s.kind);
   else body = empty('Nothing published', 'Publish a contract to begin.');
@@ -1038,9 +1091,37 @@ function diffPaths(a, b, prefix = '') {
   const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])];
   return keys.flatMap(k => k === 'version' && !prefix ? [] : diffPaths(a[k], b[k], prefix ? prefix + '.' + k : k));
 }
+// The read role of each source this case's facts name, and whether the active credential holds it.
+function sourceAccess(names) {
+  if (!names.length) return null;
+  const docs = state.registry.sources;
+  if (!docs) return h('p', {class: 'hint'}, 'Source read roles ', state.registryError ? 'unavailable (' + state.registryError.code + ')' : 'loading', '; the server checks them.');
+  return h('p', {class: 'hint'}, 'Read role: ', names.map((n, i) => {
+    const roles = docs[n] ? docs[n].roles || ['operator'] : null;
+    const held = roles && roles.some(r => state.me.roles.includes(r));
+    return [i ? ' · ' : '', mono(n), ' ', !roles ? 'not installed' : roles.join(' or '), roles && !held ? ' (not held by this credential)' : ''];
+  }));
+}
+// What a non-administrator may see of the sources: who can read each one. Definitions stay admin only.
+function sourceRoles() {
+  const docs = state.registry.sources;
+  if (state.registryError) return empty('Could not read source roles', state.registryError.message);
+  if (!docs) return skeleton(4);
+  const target = canSwitchTo({ok: false, roles: ['admin']});
+  return h('div', {},
+    h('div', {class: 'doc-head'}, h('h2', {}, 'Sources'), badge('idle', 'read roles only'),
+      h('span', {class: 'muted'}, 'URL, credential variable and value path are shown to administrators')),
+    Object.keys(docs).length ? h('table', {class: 'grid'}, h('thead', {}, h('tr', {}, ['Source', 'Read role', 'This credential'].map(t => h('th', {}, t)))),
+      h('tbody', {}, Object.entries(docs).map(([n, d]) => {
+        const ok = (d.roles || []).some(r => state.me.roles.includes(r));
+        return h('tr', {}, h('td', {}, mono(n)), h('td', {}, (d.roles || []).join(' or ')), h('td', {}, ok ? badge('applied', 'may refresh') : badge('denied', 'no read role')));
+      }))) : empty('Nothing registered', null),
+    target ? h('button', {type: 'button', class: 'link', onclick: () => activate(target.name)}, '⇄ switch to ' + target.name + ' to inspect or register sources') : null);
+}
 function studioConnectors(kind) {
   const admin = state.me.roles.includes('admin');
   const label = kind === 'actions' ? 'Actions' : 'Sources';
+  if (!admin && kind === 'sources') return sourceRoles();
   if (!admin) return empty(label + ' are visible to administrators', `GET /api/${kind} requires the admin role. Switch to an admin credential to inspect or register ${kind}.`,
     ...(canSwitchTo({ok: false, roles: ['admin']}) ? [h('button', {type: 'button', class: 'btn', onclick: () => activate(canSwitchTo({ok: false, roles: ['admin']}).name)}, '⇄ switch to admin')] : []));
   const docs = state.registry[kind];
@@ -1127,6 +1208,7 @@ async function openNewCase() {
       dialog.close();
       toast('Case opened');
       await loadCases();
+      loadMetrics();
       await openCase(result.id);
     } catch (error) { fail(error.code ? error : {code: 'input_schema', detail: error.message}); }
   };

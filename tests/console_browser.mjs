@@ -69,6 +69,13 @@ await page.waitForSelector('.case-head');
 await waitNext('Refresh part_number');
 step('case_opened');
 await shot('03-flow-start');
+// The operator cannot read the global policy: the Flow says so, names the role and offers a reader.
+await page.waitForSelector('.flow .policy-note');
+report.policy_note = await page.textContent('.flow .policy-note');
+// Every credential reads the source read roles, so a refresh it may make carries no "checked by the server" note.
+report.refresh_notes = await page.locator('.next .why').allTextContents();
+await page.waitForFunction(() => /work items/.test(document.querySelector('#metrics').textContent));
+report.metrics = await page.textContent('#metrics');
 
 await press('Refresh part_number');
 await waitNext('Propose record_review');
@@ -101,6 +108,7 @@ await shot('06-awaiting-approval');
 // The proposer cannot approve its own proposal.
 report.self_approval_blocked = await page.locator('.next button.btn', { hasText: 'Approve' }).isDisabled();
 await switchTo('manager');
+report.manager_policy_note = await page.locator('.flow .policy-note').count();
 await page.locator('.next button.btn', { hasText: 'Approve' }).click();
 await page.waitForSelector('.btn.armed');
 await shot('07-confirm-approve');
@@ -215,6 +223,14 @@ await shot('15-unverified');
 await page.keyboard.press('4');
 await page.waitForSelector('.effects .notice.warn');
 report.attest_notice = await page.textContent('.effects .notice.warn');
+
+// The supplier holds no source read role; in the Studio it sees the read roles, not the definitions.
+await page.click('[data-view="studio"]');
+await page.locator('.studio-item', { hasText: 'Sources' }).click();
+await page.waitForSelector('.studio-body table.grid');
+report.source_roles = await page.locator('.studio-body tbody tr').allTextContents();
+report.policy_nav = await page.textContent('.studio-nav');
+await shot('23-studio-source-roles');
 
 } catch (error) {
   report.failure = String(error).split('\n')[0];

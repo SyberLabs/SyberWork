@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from syberlabs.evolution import AUTOMATION_ROLES
 from syberlabs.planner import HttpPlanner
 
 from .builder_http import dispatch_get, dispatch_post
@@ -20,6 +21,10 @@ STATIC = Path(__file__).parent / "static"
 PACKAGES = Path(__file__).resolve().parents[1]
 # The console's files. Anything else under static/ is not served.
 ASSETS = {"app.js": "text/javascript", "model.js": "text/javascript", "style.css": "text/css"}
+# Who may read published policy bodies (GET /api/policies). An economic policy carries budget limits, so the
+# reader is an administrator or the approver role, and not an automation credential (model, compiled, search).
+# There is no separate policy-read role; model.js mirrors this to suggest an identity that can read them.
+POLICY_READERS = frozenset({"admin", "manager"})
 
 
 def _planner_configured() -> bool:
@@ -29,6 +34,15 @@ def _planner_configured() -> bool:
         return True
     except Rejected:
         return False
+
+
+def _policy_reader(roles) -> bool:
+    return bool(POLICY_READERS.intersection(roles)) and not AUTOMATION_ROLES.intersection(roles)
+
+
+def _source_roles(work: Work) -> dict:
+    """Each installed source's read roles, as refresh_fact checks them, and nothing else of its definition."""
+    return {name: {"roles": doc.get("roles", ["operator"])} for name, doc in work.registry("sources").items()}
 
 
 def _version(text: str) -> int:
@@ -155,7 +169,12 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 elif len(parts) == 5 and parts[:2] == ["api", "contracts"] and parts[4] == "artifacts":
                     self._json(work.artifacts(unquote(parts[2]), _version(parts[3])))
                 elif parts == ["api", "policies"]:
+                    if not _policy_reader(user.get("roles", [])):
+                        raise Rejected("forbidden", "admin or manager role required, without an automation role")
                     self._json(work.list_policies())
+                elif parts == ["api", "sources"] and "admin" not in user.get("roles", []):
+                    # Anyone else sees only the read roles, so a refusal can name the role it needs.
+                    self._json(_source_roles(work))
                 elif parts in (["api", "actions"], ["api", "sources"]):
                     if "admin" not in user.get("roles", []):
                         raise Rejected("forbidden", "admin role required")
@@ -180,6 +199,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._json({"error": "not_found"}, 404)
             except Rejected as e:
                 status = {"unauthorized": 401, "not_found": 404, "unknown_metric": 404}.get(e.code, 409)
+                if e.code == "forbidden" and self._parts()[:2] != ["api", "builder"]:
+                    status = 403  # a console read the principal's roles do not cover; the builder keeps its statuses
                 self._json({"error": e.code, "detail": e.detail}, status)
             except Exception:
                 self._json({"error": "internal_error"}, 500)

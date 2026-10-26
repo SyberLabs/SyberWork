@@ -23,8 +23,9 @@ from pathlib import Path
 
 from syberlabs.admission import approval_roles
 from syberlabs.evidence import verified_reconciliation
+from syberlabs.evolution import AUTOMATION_ROLES
 from syberwork.core import Work
-from syberwork.server import make_server
+from syberwork.server import POLICY_READERS, make_server
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "syberwork" / "examples"
@@ -155,7 +156,7 @@ class ConsoleRoutes(CellCase):
         self.assertEqual(self.cell.json("/api/contracts", bumped, who="admin"), (200, {"installed": True}))
         self.assertEqual([c["version"] for c in self.cell.json("/api/contracts")[1]], [1, 2])
         self.assertEqual(self.cell.json("/api/contracts/purchase-order/1")[1], body, "version 1 is unchanged")
-        status, policies = self.cell.json("/api/policies")
+        status, policies = self.cell.json("/api/policies", who="manager")
         self.assertEqual((status, [p["version"] for p in policies]), (200, [1]))
         self.assertEqual(policies[0]["body"], json.loads((EXAMPLES / "policy.json").read_text()))
 
@@ -172,9 +173,9 @@ class ConsoleRoutes(CellCase):
         self.cell.work.install_source("crm", {"kind": "http", "url": "http://127.0.0.1:9/crm/{key}", "auth_env": "CRM_TOKEN"})
         os.environ["CRM_TOKEN"] = "never-served"
         self.addCleanup(os.environ.pop, "CRM_TOKEN", None)
+        self.assertEqual(self.cell.json("/api/actions"), (403, {"error": "forbidden", "detail": "admin role required"}))
         for path in ("/api/actions", "/api/sources"):
             with self.subTest(path):
-                self.assertEqual(self.cell.json(path)[1]["error"], "forbidden")
                 status, raw = self.cell.call(path, who="admin")[0], self.cell.call(path, who="admin")[2]
                 self.assertEqual(status, 200)
                 self.assertNotIn(b"never-served", raw)
@@ -186,12 +187,88 @@ class ConsoleRoutes(CellCase):
     def test_reads_append_nothing(self):
         case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
         before = self.cell.work.inspect(case)["events"]
-        for path in ("/api/console", "/api/contracts", "/api/contracts/purchase-order/1", "/api/policies"):
+        for path in ("/api/console", "/api/contracts", "/api/contracts/purchase-order/1", "/api/policies", "/api/sources",
+                     "/metrics/work_items", f"/metrics/work_items/{case}"):
             self.cell.call(path)
-        for path in ("/api/actions", "/api/sources"):
+        for path in ("/api/actions", "/api/sources", "/api/policies"):
             self.cell.call(path, who="admin")
         self.assertEqual(self.cell.work.inspect(case)["events"], before)
         self.assertTrue(self.cell.work.verify_chain(case))
+
+
+class ConsoleReadScope(CellCase):
+    """Who may read policy bodies and source read roles. An economic policy carries budget limits."""
+
+    def test_policy_bodies_are_for_admin_and_manager_only(self):
+        self.assertEqual(sorted(POLICY_READERS), ["admin", "manager"])
+        for who in ("admin", "manager"):
+            with self.subTest(who):
+                status, policies = self.cell.json("/api/policies", who=who)
+                self.assertEqual((status, [p["version"] for p in policies]), (200, [1]))
+        # operator; operator with model; operator with compiled; an observer.
+        for who in ("operator", "planner", "scheduler", "supplier"):
+            with self.subTest(who):
+                status, _, raw = self.cell.call("/api/policies", who=who)
+                self.assertEqual((status, json.loads(raw)["error"]), (403, "forbidden"))
+                self.assertNotIn(b"max_amount", raw)
+                self.assertNotIn(b"25000", raw)
+
+    def test_a_model_credential_cannot_read_policies_even_with_a_reader_role(self):
+        work = self.cell.work
+        work.register_principal("agent-model", "agent", "model-agent", "local", ["model"], token="token-model-agent")
+        work.register_principal("agent-manager", "agent", "manager-agent", "local", ["manager", "model"], token="token-manager-agent")
+        work.register_principal("human-manager", "human", "manager-person", "local", ["manager"], token="token-manager-person")
+        self.cell.tokens.update({"model-agent": "token-model-agent", "manager-agent": "token-manager-agent", "manager-person": "token-manager-person"})
+        for who in ("model-agent", "manager-agent"):
+            with self.subTest(who):
+                self.assertEqual(self.cell.json("/api/policies", who=who)[0], 403)
+        self.assertEqual(self.cell.json("/api/policies", who="manager-person")[0], 200, "a registered principal is checked by the same rule")
+        for role in AUTOMATION_ROLES:
+            with self.subTest(role):
+                work.register_principal("admin-" + role, "service", "admin-" + role, "local", ["admin", role], token="token-admin-" + role)
+                self.cell.tokens["admin-" + role] = "token-admin-" + role
+                self.assertEqual(self.cell.json("/api/policies", who="admin-" + role)[0], 403)
+
+    def test_other_credentials_see_each_sources_read_roles_and_nothing_else(self):
+        self.cell.work.install_source("crm", {"kind": "http", "url": "http://127.0.0.1:9/crm/{key}", "auth_env": "CRM_TOKEN"})
+        self.cell.work.install_source("ledger", {"kind": "http", "url": "http://127.0.0.1:9/ledger/{key}", "roles": ["logistics"],
+                                                 "value_path": ["balance"], "timeout_seconds": 3})
+        for who in ("operator", "scheduler", "planner", "manager", "supplier"):
+            with self.subTest(who):
+                status, _, raw = self.cell.call("/api/sources", who=who)
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(raw), {"crm": {"roles": ["operator"]}, "inventory": {"roles": ["operator"]},
+                                                   "ledger": {"roles": ["logistics"]}, "supplier": {"roles": ["operator"]}})
+                for withheld in (b"127.0.0.1", b"CRM_TOKEN", b"auth_env", b"balance", b"url", b"kind"):
+                    self.assertNotIn(withheld, raw)
+        self.assertEqual(self.cell.json("/api/sources", who=None)[0], 401)
+
+    def test_listed_read_roles_are_the_ones_refresh_enforces(self):
+        """The roles /api/sources lists are what refresh_fact checks: a credential without one is refused."""
+        self.cell.work.install_source("ledger", {"kind": "http", "url": "http://127.0.0.1:9/ledger/{key}", "roles": ["logistics"]})
+        case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        roles = self.cell.json("/api/sources")[1]["ledger"]["roles"]
+        self.assertNotIn("operator", roles)
+        status, body = self.cell.json(f"/api/cases/{case}/refresh", {"source": "ledger", "key": "balance", "record_key": "x"})
+        self.assertEqual((status, body["error"]), (409, "source_denied"))
+
+    def test_work_item_summary_carries_what_the_top_bar_reads(self):
+        case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        for who in ("operator", "manager", "supplier"):
+            with self.subTest(who):
+                status, body = self.cell.json("/metrics/work_items", who=who)
+                self.assertEqual(status, 200)
+                summary = body["summary"]
+                self.assertEqual((summary["items"], summary["opened"], summary["cancelled"]), (1, 0, 0))
+                self.assertEqual(set(summary["delivered"]), {"yes", "no", "unknown"})
+                self.assertIn("cost_basis", summary)
+        self.assertEqual([item["thread"] for item in self.cell.json(f"/metrics/work_items/{case}")[1]["items"]], [case])
+        self.assertEqual(self.cell.json("/metrics/work_items/no-such-case")[0], 404)
+        self.assertEqual(self.cell.json("/metrics/work_items", who=None)[0], 401)
+        app = (STATIC / "app.js").read_text()
+        self.assertIn("api('/metrics/work_items')", app)
+        for field in ("w.items", "w.opened", "w.delivered.yes", "w.delivered.unknown", "w.cost_basis", "w.cancelled"):
+            self.assertIn(field, app)
 
 
 class ConsoleExplain(CellCase):
@@ -356,7 +433,7 @@ class ConsoleStatic(CellCase):
         gets = ["/api/me", "/api/console", "/api/cases", f"/api/cases/{case}", f"/api/cases/{case}/verify", "/api/contracts",
                 "/api/contracts/purchase-order/1", "/api/contracts/purchase-order/1/artifacts", "/api/policies",
                 "/api/actions", "/api/sources", "/metrics/cases_open", "/metrics/effects_pending", "/metrics/queue_depth",
-                "/metrics/proposals_denied_total"]
+                "/metrics/proposals_denied_total", "/metrics/work_items"]
         proposal = self.cell.json(f"/api/cases/{case}/proposals", {"action": "record_review", "args": {}}, who="admin")[1]["proposal"]["id"]
         gets += [f"/api/cases/{case}/proposals/{proposal}/explain?when={when}" for when in ("recorded", "now")]
         for path in gets:
@@ -398,6 +475,7 @@ class ConsoleModel(CellCase):
                          for a in ("record_review", "issue_order", "absent")],
         }
         self.assertEqual([c["expected"] for c in parity["reconciliation"]], [True] + [False] * 10)
+        parity["read_scope"] = {"policy_readers": sorted(POLICY_READERS), "automation_roles": sorted(AUTOMATION_ROLES)}
         # What this server answers for a denied proposal, read by model.js as the console reads it.
         case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
         denied = self.cell.json(f"/api/cases/{case}/proposals", {"action": "issue_order", "args": {}})[1]["proposal"]["id"]
@@ -458,6 +536,14 @@ class ConsoleBrowser(CellCase):
         self.assertIn("Attest claim", report["manual"][0])
         self.assertIn("not destination-write proof", report["attest_notice"])
         self.assertFalse(report["script_injected"])
+        # Read scope: the operator is told why the policy is not shown and who can read it; the manager reads it.
+        self.assertIn("admin or manager role required", report["policy_note"])
+        self.assertIn("switch to manager", report["policy_note"])
+        self.assertEqual(report["manager_policy_note"], 0)
+        self.assertEqual(report["refresh_notes"], [], "the operator's refresh is forecast from the listed read role")
+        self.assertIn("work items", report["metrics"])
+        self.assertEqual(sorted(report["source_roles"]), ["inventoryoperator✕no read role", "supplieroperator✕no read role"])
+        self.assertIn("admin or manager role required", report["policy_nav"])
         self.assertFalse(report["storage_has_token_in_url"])
         cases = self.cell.work.list_cases()
         done_case = next(c for c in cases if self.cell.work.inspect(c["id"])["complete"])
