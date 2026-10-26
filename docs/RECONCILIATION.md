@@ -11,7 +11,7 @@ An HTTP action can install a same-origin `status_url` with exactly one `{key}` p
 }
 ```
 
-SyberWork requests that URL with the original idempotency key and the action's configured authorization credential. It checks the state, key, request digest, and nonempty external ID. Only a matching response adds a `reconciled` event with a proof containing the response digest and external ID. Caller-provided `success` or `evidence` fields are rejected. The manager authorizes the check; the manager does not decide its result. An already persisted text-only reconciliation remains in history but does not satisfy acceptance or release the unknown effect.
+SyberWork requests that URL with the original idempotency key and the action's configured authorization credential. It checks the state, key, request digest, and nonempty external ID. Only a matching response adds a `reconciled` event with a proof containing the response digest and external ID. Caller-provided `success` or `evidence` fields are accepted when signed. The manager authorizes the check; the manager does not decide its result. An already persisted text-only reconciliation remains in history but does not satisfy acceptance or release the unknown effect.
 
 A 404, transport failure, nonterminal record, or mismatched response records `reconciliation_checked` as `pending` or `unverified`; none licenses acceptance or a new effect of the same action. The original proposal cannot be retried after an effect claim. If the destination has no authoritative idempotency lookup, unknown effects remain unresolved until an appropriate adapter is built; a human statement cannot override the uncertainty.
 
