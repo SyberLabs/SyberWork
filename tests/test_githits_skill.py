@@ -171,6 +171,32 @@ class SkillCommands(api.FakeCase):
         dropped = githits.Result("search", githits.OK, api.search_response([]), 200, None, 0, 1, False, None, 1)
         self.assertIn("1 dropped (excluded owner), 1 dropped (license)", githits.render(dropped))
 
+    def test_finding_nothing_proves_nothing(self):
+        """"If search and grep both find nothing, that proves nothing (the version may not be indexed)": the skill's
+        grep on a target GitHits has not prepared yet prints exactly what a grep for a name the target lacks prints,
+        because the compact text shows neither the traversal nor the unavailable targets. So the stop rule sends the
+        agent back to the check's output instead of letting it declare the name absent."""
+        stop = self.template.split("\n## Stop\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("that proves nothing (the version may not be indexed): stop and fix from the check's output",
+                      stop)
+        self.assertNotRegex(stop, r"\babsent\b", "no empty result proves a name absent")
+        [grep] = [words_of(c) for c in self.commands if words_of(c)[0] == "grep"]
+        target = grep[grep.index("--target") + 1]
+        unprepared = {**api.grep_response([]), "unavailable_targets": [{
+            "input_index": 0, "target": target, "reason": "indexing", "retryable": True, "progress_ref": "prep_1",
+            "message": "The package is still being prepared; retry with wait_timeout_ms.",
+            "suggested_site_targets": None, "repo_url": "https://github.com/urllib3/urllib3",
+            "requested_version": target.rsplit("@", 1)[1], "suggested_refs": None, "available_refs": None,
+            "available_versions": None}]}
+        self.assertEqual(api.problems(api.load_spec(), {"$ref": "#/components/schemas/GrepResponse"}, unprepared), [])
+        printed = []
+        for answer in (api.grep_response([]), unprepared):
+            self.fake.serve("/v1/grep", answer)
+            code, out, err = api.run_entry(self.env, *grep)
+            self.assertEqual((code, err), (0, ""))
+            printed.append(out)
+        self.assertEqual(printed[0], printed[1], "the agent cannot tell an unprepared target from a missing name")
+
     def test_the_githits_clis_own_flags_are_usage_errors_here(self):
         """"Flags: only those above; this is not the githits CLI": forms from the upstream skill
         (githits-com/githits-cli skills/githits-code/SKILL.md at the pinned commit) exit 2, send and record nothing."""

@@ -41,7 +41,7 @@ Your only command (Bash) is the launcher, typed exactly as here. For a check fai
 ## Stop
 
 - At most three launcher commands per task, none repeated.
-- A name neither search nor grep finds is absent from that version: stop and fix from that.
+- If search and grep both find nothing, that proves nothing (the version may not be indexed): stop and fix from the check's output.
 - Stop at a `refused:` or `error:` line or a second query-guard block. Results the host drops (license, excluded owner) stay dropped.
 
 ## Apply and cite
