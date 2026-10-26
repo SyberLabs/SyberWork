@@ -9,6 +9,11 @@ destination and moves no funds. Positive controls show the same fixtures still r
 A plain ``http`` write counts as done only from a 200, 201 or 204. A 202 Accepted ("processing has not been
 completed"), a 203, a 205-226 or a response without a status leaves the effect ``unknown``
 (``destination_not_completed``): acceptance stays unmet and only a 200 status lookup can resolve it.
+
+A completed write whose body names an ``idempotency_key`` or ``request_digest`` other than this write's
+acknowledged a different write (``destination_record_mismatch``), and a body with no single meaning cannot say
+which (``destination_record_ambiguous``). Either leaves the effect ``unknown``. A body that names neither
+field, or is not a JSON object, is not judged.
 """
 
 import io
@@ -39,11 +44,15 @@ class Destination:
         self.record_for = record_for
         self.records, self.posts, self.lookups = {}, 0, 0
         self.write_code, self.lookup_code, self.drop_ack = 200, 200, False
+        self.ack = None  # (key, args, record) -> the write reply body, when it differs from the stored record
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
             def reply(self, code, record):
-                data = b"" if record is None or code in EMPTY else json.dumps(record).encode()
+                if record is None or code in EMPTY:
+                    data = b""
+                else:
+                    data = record if isinstance(record, bytes) else json.dumps(record).encode()
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
@@ -58,7 +67,8 @@ class Destination:
                 if owner.drop_ack:
                     self.connection.shutdown(2)
                     return
-                self.reply(owner.write_code, owner.records[key])
+                body = owner.ack(key, args, owner.records[key]) if owner.ack else owner.records[key]
+                self.reply(owner.write_code, body)
 
             def do_GET(self):
                 owner.lookups += 1
@@ -288,8 +298,8 @@ class SettlementAck(Cell):
                 self.assert_budget_held()
 
 
-class WriteAck(Cell):
-    """Plain ``http`` write: only 200, 201 or 204 says the write completed; anything else is an unknown effect."""
+class Ship(Cell):
+    """A plain ``http`` write action ``ship``, with or without a status lookup."""
 
     action = "ship"
     status_lookup = True
@@ -313,17 +323,23 @@ class WriteAck(Cell):
     def propose(self, case):
         return self.work.propose(case, "ship", {"order_id": "O-1"}, "operator", ["operator"])
 
-    def assert_not_completed(self, case, key, result):
+    def assert_unknown(self, case, key, result, error):
         """The destination wrote, but the write is ``unknown``: not succeeded, not applied, not accepted."""
         self.assertEqual(result["status"], "unknown")
         self.assertIn(key, self.dest.records)
         kinds = [e["kind"] for e in self.history(case)]
         self.assertNotIn("effect_succeeded", kinds)
-        self.assertEqual(next(e for e in self.history(case) if e["kind"] == "effect_unknown")["body"]["error"],
-                         "destination_not_completed")
+        self.assertEqual(next(e for e in self.history(case) if e["kind"] == "effect_unknown")["body"]["error"], error)
         self.assertEqual(self.work.metric("effects_settled_applied_total"), 0)
         self.assertEqual(self.work.metric("effects_pending"), 1)
         self.assert_unresolved(case, key, lambda: self.propose(case))
+
+
+class WriteAck(Ship):
+    """Plain ``http`` write: only 200, 201 or 204 says the write completed; anything else is an unknown effect."""
+
+    def assert_not_completed(self, case, key, result):
+        self.assert_unknown(case, key, result, "destination_not_completed")
 
     def test_write_accepted_but_not_completed_is_unknown(self):
         for code in NOT_COMPLETED:
@@ -383,6 +399,135 @@ class WriteAckWithoutLookup(WriteAck):
             self.work.reconcile(case, key, "manager", ["manager"])
         self.assert_unresolved(case, key, lambda: self.propose(case))
         self.assertEqual(self.dest.lookups, 0)
+
+
+def named(**fields):
+    """A write reply: the stored record with ``fields`` replaced."""
+    return lambda _key, _args, record: {**record, **fields}
+
+
+# Write replies that name another write. Each is acknowledged with a completion status.
+OTHER_WRITE = {
+    "another key": lambda key, _args, record: {**record, "idempotency_key": "other-" + key},
+    "key in another case": lambda key, _args, record: {**record, "idempotency_key": key.upper()},
+    "null key": named(idempotency_key=None),
+    "key in a list": lambda key, _args, record: {**record, "idempotency_key": [key]},
+    "another request digest": named(request_digest=digest({"order_id": "O-2"})),
+    "digest of the arguments with a field added": lambda _key, args, record: {
+        **record, "request_digest": digest({**args, "note": "rewritten"})},
+    "only a key, another one": lambda key, _args, _record: {"id": "SHIP-1", "idempotency_key": "other-" + key},
+    "only a digest, another one": lambda _key, _args, _record: {"id": "SHIP-1", "request_digest": "0" * 64},
+}
+
+# Write replies with no single meaning (RFC 8259 sections 4, 6 and 8.2). The first one reads as this write's
+# key under last-wins and as another write's under first-wins.
+AMBIGUOUS = {
+    "key named twice": lambda key, _args, _record:
+        ('{"idempotency_key": "other-%s", "idempotency_key": "%s"}' % (key, key)).encode(),
+    "unrelated field named twice": lambda key, _args, _record:
+        ('{"id": "SHIP-1", "id": "SHIP-2", "idempotency_key": "%s"}' % key).encode(),
+    "number overflows a double": lambda key, _args, _record:
+        ('{"idempotency_key": "%s", "amount": 1e400}' % key).encode(),
+    "unpaired surrogate": lambda key, _args, _record:
+        ('{"idempotency_key": "%s", "note": "\\udc80"}' % key).encode(),
+}
+
+# Write replies that do not name another write: no identity field, the same identity, or no JSON object.
+NAMES_NOTHING_ELSE = {
+    "matching record": None,
+    "reference ERP reply": lambda _key, _args, _record: {"id": "SHIP-1", "replayed": False},
+    "replayed reply": lambda _key, _args, _record: {"id": "SHIP-1", "replayed": True},
+    "this key only": lambda key, _args, _record: {"id": "SHIP-1", "idempotency_key": key},
+    "this digest only": lambda _key, args, _record: {"request_digest": digest(args)},
+    "JSON array": lambda key, _args, _record: [{"idempotency_key": "other-" + key}],
+    "JSON string": lambda _key, _args, _record: "ok",
+    "plain text": lambda _key, _args, _record: b"accepted and written",
+    "nested identity fields": lambda key, _args, _record: {"data": {"idempotency_key": "other-" + key}},
+}
+
+
+class WriteAckIdentity(Ship):
+    """A completed write whose own body names another key or digest did not acknowledge this write."""
+
+    def committed_with(self, ack, code=200):
+        case, key = self.proposed()
+        self.dest.write_code, self.dest.ack = code, ack
+        return case, key, self.work.commit(case, key, "operator")
+
+    def test_write_ack_naming_another_write_is_unknown(self):
+        for index, (name, ack) in enumerate(OTHER_WRITE.items()):
+            code = (200, 201)[index % 2]  # both completion statuses that carry a body
+            with self.subTest(ack=name, code=code):
+                self.fresh()
+                case, key, result = self.committed_with(ack, code)
+                self.assert_unknown(case, key, result, "destination_record_mismatch")
+                self.assertEqual(self.dest.posts, 1)
+                self.resolved_only_by_lookup(case, key)
+
+    def test_ambiguous_write_ack_is_unknown(self):
+        for name, ack in AMBIGUOUS.items():
+            with self.subTest(ack=name):
+                self.fresh()
+                case, key, result = self.committed_with(ack)
+                self.assert_unknown(case, key, result, "destination_record_ambiguous")
+                self.resolved_only_by_lookup(case, key)
+
+    def resolved_only_by_lookup(self, case, key):
+        """The destination's own 200 record of this write resolves it; the write is not repeated."""
+        self.assert_verified(case, key, self.work.reconcile(case, key, "manager", ["manager"]))
+        self.assertEqual(self.work.metric("effects_settled_applied_total"), 1)
+        self.assertEqual(self.dest.posts, 1)
+
+    def test_destination_that_recorded_another_request_stays_unresolved(self):
+        # A proxy rewrote the body: the destination wrote a request nobody approved and says so in both replies.
+        self.dest.record_for = lambda key, args: committed(key, {**args, "order_id": "O-2"})
+        case, key, result = self.committed_with(None)
+        self.assert_unknown(case, key, result, "destination_record_mismatch")
+        result = self.work.reconcile(case, key, "manager", ["manager"])
+        self.assertEqual((result["status"], result["reason"]), ("unverified", "destination_record_mismatch"))
+        self.assert_unresolved(case, key, lambda: self.propose(case))
+        self.assertEqual(self.dest.posts, 1)
+
+    def test_worker_settles_a_write_ack_naming_another_write_as_unknown(self):
+        self.fresh(effects="worker")
+        case, key = self.proposed()
+        self.dest.ack = OTHER_WRITE["another key"]
+        self.assertEqual(self.work.commit(case, key, "operator")["status"], "queued")
+        self.assert_unknown(case, key, run_once(self.work), "destination_record_mismatch")
+        self.assertEqual(self.work.metric("queue_depth"), 0)
+
+    def test_positive_control_write_ack_naming_nothing_else_succeeds(self):
+        for index, (name, ack) in enumerate(NAMES_NOTHING_ELSE.items()):
+            code = (200, 201)[index % 2]
+            with self.subTest(ack=name, code=code):
+                self.fresh()
+                case, key, result = self.committed_with(ack, code)
+                self.assertEqual(result["status"], "succeeded")
+                self.assertEqual(result["event"]["body"]["output"]["status"], code)
+                self.assertTrue(self.work.inspect(case)["complete"])
+                self.assertEqual(self.work.metric("effects_settled_applied_total"), 1)
+                self.assertEqual(self.dest.posts, 1)
+        # 204 carries no body, so it names nothing.
+        self.fresh()
+        self.assertEqual(self.committed_with(OTHER_WRITE["another key"], 204)[2]["status"], "succeeded")
+
+
+class WriteAckIdentityWithoutLookup(WriteAckIdentity):
+    """Without a status lookup, a write acknowledged as another write stays unresolved; nobody can declare it done."""
+
+    status_lookup = False
+
+    def resolved_only_by_lookup(self, case, key):
+        with self.assertRaisesRegex(Rejected, "reconciliation_unavailable"):
+            self.work.reconcile(case, key, "manager", ["manager"])
+        self.assert_unresolved(case, key, lambda: self.propose(case))
+        self.assertEqual((self.dest.posts, self.dest.lookups), (1, 0))
+
+    def test_destination_that_recorded_another_request_stays_unresolved(self):
+        self.dest.record_for = lambda key, args: committed(key, {**args, "order_id": "O-2"})
+        case, key, result = self.committed_with(None)
+        self.assert_unknown(case, key, result, "destination_record_mismatch")
+        self.resolved_only_by_lookup(case, key)
 
 
 if __name__ == "__main__":
