@@ -151,8 +151,11 @@ class NegativeControls(Trees):
                                 "docs/RECONCILIATION.md", "Only a matching response")
 
     def test_dropping_a_rule_fails(self):
-        policy = (FIXTURES / "policy.yaml").read_bytes().replace(
-            b'  - match: "Every value is passed through `html.escape`"\n', b"")
+        # Line by line, so a CRLF checkout (the Windows job) drops the rule too.
+        lines = (FIXTURES / "policy.yaml").read_bytes().splitlines(keepends=True)
+        kept = [line for line in lines if b'match: "Every value is passed through `html.escape`"' not in line]
+        self.assertEqual(len(lines) - len(kept), 1)
+        policy = b"".join(kept)
         self.assertOneViolation(self.tree(policy=policy), "docs/DASHBOARD.md", "html.escape")
 
     def test_deleting_the_policy_fails_for_every_unit(self):
