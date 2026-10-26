@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from syberlabs import _patterns, metrics
 from syberlabs import query_guard as guard
 
 SECRET = "zq91 retry with token ghp_" + "Z" * 30
@@ -245,6 +246,48 @@ class Process(unittest.TestCase):
         (self.dir / guard.DECISIONS / "y.json").write_text(json.dumps({"rule": "made_up", "tool": "t", "query_digest": "d",
                                                                        "tool_use_id": None}), encoding="utf-8")
         self.assertEqual(self.decisions(), [])
+
+    def test_the_hook_loads_two_leaf_modules_and_not_the_package(self):
+        """perf-packet-a (efficiency audit 2026-10-26, item 6): the hook imported ``syberlabs.metrics`` for the
+        credential pattern, and any ``syberlabs.*`` import runs the package ``__init__``, which imports the whole SDK:
+        ~200 of a lookup's ~220 ms. It now loads ``canonical.py`` and ``_patterns.py`` from beside itself by path."""
+        done = subprocess.run([self.hook["command"], "-X", "importtime", *self.hook["args"]],
+                              input=self.call("WebSearch", {"query": "pydantic v2 model_validator usage"}),
+                              capture_output=True, timeout=120, cwd=self.dir.parent, env=self.env)
+        self.assertEqual(done.returncode, 0, done.stderr[-500:])
+        imported = [line.rsplit("|", 1)[-1].strip() for line in done.stderr.decode("utf-8").splitlines()
+                    if line.startswith("import time:")]
+        self.assertIn("json", imported, "the import list was read")
+        self.assertEqual([name for name in imported if name == "syberlabs" or name.startswith("syberlabs.")], [])
+        [decision] = self.decisions()
+        self.assertEqual(decision["rule"], "pass")
+        self.assertTrue(guard.authentic(decision, KEY), "the hook's canonical JSON is the host's")
+
+    def test_one_credential_pattern_object_and_the_same_policy(self):
+        self.assertIs(guard.CREDENTIAL, _patterns.SECRET)
+        self.assertIs(metrics._SECRET, _patterns.SECRET)
+        self.assertEqual(_patterns.SECRET.pattern,
+                         r"(ghp_|gho_|ghs_|github_pat_|sk-ant-|sk-|xox[abprs]-|AKIA)[A-Za-z0-9_\-]{8,}")
+        # the digest of the default policy file, as the host computed it before perf-packet-a
+        self.assertEqual(hashlib.sha256(json.dumps(guard.policy(3, 400)).encode()).hexdigest(),
+                         "e6b17cc24a93c21aa3a3e1a29d1287494d80034844f219202767567d2150262d")
+        self.assertEqual(guard.file_digest(self.dir / guard.POLICY_FILE),
+                         hashlib.sha256(json.dumps(guard.policy()).encode()).hexdigest())
+
+    def test_the_hook_decides_as_the_host_does(self):
+        texts = ["pydantic v2 model_validator usage", SECRET, "key AKIA" + "Q" * 16, "slack xoxb-" + "1" * 12,
+                 "use sk-ant-" + "a" * 24, "risk-assessment library", "\u0430KIA" + "Q" * 16,
+                 "ask jane.doe@example.com", "x" * 500, PRIVATE_LINE, "a\nb\nc\nd"]
+        for use_id, text in enumerate(texts):
+            payload = {"tool_name": "WebSearch", "tool_input": {"query": text}, "tool_use_id": f"toolu_{use_id}"}
+            expected = guard.decide(payload, max_lines=guard.DEFAULT_MAX_LINES, max_chars=guard.DEFAULT_MAX_CHARS,
+                                    tree={guard.line_digest(PRIVATE_LINE)})
+            done = self.run_hook(self.call("WebSearch", {"query": text}, f"toolu_{use_id}"))
+            self.assertEqual(done.returncode, 0 if expected == guard.PASS else guard.BLOCK_EXIT, text[:20])
+        decided = {d["tool_use_id"]: d["rule"] for d in self.decisions()}
+        self.assertEqual([decided[f"toolu_{i}"] for i in range(len(texts))],
+                         [guard.decide({"tool_name": "WebSearch", "tool_input": {"query": text}},
+                                       tree={guard.line_digest(PRIVATE_LINE)}) for text in texts])
 
 
 if __name__ == "__main__":
