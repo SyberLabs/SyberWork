@@ -137,7 +137,7 @@ class G6StaticLint(unittest.TestCase):
          'result = work.reconcile(case_id, data["proposal_id"], name, roles, evidence=data.get("evidence"))',
          "forwards keyword evidence"),
         ("server guard removed", "syberwork/server.py",
-         '                        if "success" in data or "evidence" in data:\n'
+         '                        if set(data) != {"proposal_id"}:\n'
          '                            raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")\n',
          "", "without first raising"),
         # A second writer of reconciled, direct or through a variable.
@@ -175,10 +175,10 @@ class G6StaticLint(unittest.TestCase):
         self.assertEqual(lint_module.lint(self.copy_tree()), [])
 
     def test_allowlist_route_guard_still_passes(self):
-        # Refusing every field but proposal_id (the shape open PR #94 proposes) is stricter, not a violation.
+        # The route refuses every field but proposal_id. That stricter shape is not a violation.
         root = self.copy_tree()
-        self.mutate(root, "syberwork/server.py", 'if "success" in data or "evidence" in data:',
-                    'if set(data) != {"proposal_id"}:')
+        source = (root / "syberwork" / "server.py").read_text(encoding="utf-8")
+        self.assertIn('if set(data) != {"proposal_id"}:', source)
         self.assertEqual(lint_module.lint(root), [])
 
 
