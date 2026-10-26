@@ -761,6 +761,35 @@ class Work:
         with self.tx() as db:
             return [dict(row) for row in CaseStore(db).list_all()]
 
+    # Read-only views of the published documents, for the console's studio. Each body is the stored,
+    # immutable document; nothing here compiles, installs or changes one.
+
+    def list_contracts(self) -> list[dict]:
+        with self.tx() as db:
+            rows = ContractStore(db).list_all()
+        listed = []
+        for row in rows:
+            body = json.loads(row["body"])
+            listed.append({"id": row["id"], "version": row["version"], "title": body.get("title"),
+                           "compiled_path": body.get("compiled_path", []), "digest": digest(body)})
+        return listed
+
+    def contract(self, contract_id: str, version: int) -> dict:
+        with self.tx() as db:
+            return self._contract(db, contract_id, version)
+
+    def list_policies(self) -> list[dict]:
+        with self.tx() as db:
+            rows = PolicyStore(db).list_all()
+        return [{"version": row["version"], "body": json.loads(row["body"]), "digest": digest(json.loads(row["body"]))}
+                for row in rows]
+
+    def registry(self, kind: str) -> dict:
+        """Installed action or source definitions by name. They name credential variables, never hold them."""
+        with self.tx() as db:
+            store = ActionRegistry(db) if kind == "actions" else SourceRegistry(db)
+            return {name: json.loads(body) for name, body in sorted(store.documents().items())}
+
     def metric(self, key: str) -> int:
         """One number about this cell, counted from the store in one transaction. Read only.
 
