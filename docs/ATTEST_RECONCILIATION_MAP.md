@@ -40,10 +40,14 @@ after SyberWork calls the installed action's `status_url` and matches the
 committed state, original idempotency key, exact request digest, and nonempty
 destination external ID. The resulting
 proof includes the destination response digest. Caller-provided success or
-evidence is refused. A 404 is recorded as pending (`not_found_not_proof`): it
+evidence is refused, and the HTTP reconcile route refuses any field other than
+`proposal_id`. The receipt example labels Kane's `proven` re-check as
+`app_claim_recheck` with `destination_proof: false`; it never calls it
+destination verification. A 404 is recorded as pending (`not_found_not_proof`): it
 never proves that no write occurred, since a destination may be eventually
 consistent. A 404 therefore cannot release the unresolved effect or satisfy
-acceptance.
+acceptance. Adversarial cases for this boundary live in
+[`tests/test_bridge_redteam.py`](../tests/test_bridge_redteam.py).
 
 See the [destination reconciliation contract](RECONCILIATION.md) and the
 [reconciliation event schema](../spec/reconciliation.schema.json). In
