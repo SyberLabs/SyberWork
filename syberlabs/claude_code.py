@@ -195,6 +195,7 @@ SKILL_PATH = Path(__file__).resolve().parents[1] / "skills" / "githits" / "SKILL
 SKILL_NAME = "skills/githits/SKILL.md"
 LAUNCHER_PLACEHOLDER = "{launcher}"
 CLIENT_TOOL = "githits."                  # a lookup fact from a client record: ``githits.<op>``
+UNRECORDED_OP = "unrecorded"              # ``githits.unrecorded``: a failed call's launcher call that left no record
 GITHITS_UNRECORDED = "githits_unrecorded"           # a launcher call passed the guard and left no authentic record
 GITHITS_UNEXPECTED = "githits_unexpected_records"   # more authentic records than launcher calls the guard passed
 GITHITS_VARIABLES = ("GITHITS_", "SYBERLABS_GITHITS_")  # prefixes arm A never passes (compared ignoring case)
@@ -322,7 +323,8 @@ def is_launcher_call(use: dict, launcher: str | None) -> bool:
 
 
 def record_lookup(record: dict, guard: str) -> dict:
-    """A ``lookup`` fact from one authentic client record: ``githits.<op>`` and the record's counts, never text."""
+    """A ``lookup`` fact from one authentic client record: ``githits.<op>`` and the record's counts, never text.
+    ``sent`` is the record's: whether the request was written to GitHits (null: not known)."""
     op = record.get("op") if isinstance(record.get("op"), str) and re.fullmatch(r"[a-z]{1,16}", record["op"]) else "unknown"
     found = {"tool": CLIENT_TOOL + op}
     for field in ("query_digest", "request_id", "status", "at"):
@@ -330,9 +332,18 @@ def record_lookup(record: dict, guard: str) -> dict:
     for field in ("results_returned", "results_dropped", "results_dropped_license", "latency_ms"):
         found[field] = _count(record.get(field))
     found["contamination_blocked"] = record.get("contamination_blocked") is True
+    found["sent"] = record.get("sent") if isinstance(record.get("sent"), bool) else None
     found["ok"] = found["status"] == githits_client.OK and guard == query_guard.PASS
     found["guard"] = guard
     return found
+
+
+def unrecorded_lookup(call: dict) -> dict:
+    """A ``lookup`` fact standing for a launcher call the guard passed that left no client record, in a call that
+    registers no candidate to carry ``signal.githits.mismatch`` (it failed or timed out): tool ``githits.unrecorded``,
+    the digest of the command line, ``guard: unguarded`` (the host cannot reconcile it), never text."""
+    return record_lookup({"op": UNRECORDED_OP, "query_digest": call.get("query_digest"), "at": call.get("at"),
+                          "sent": None}, query_guard.UNGUARDED)
 
 
 def _short(value, limit: int = 64) -> str | None:
@@ -764,8 +775,12 @@ class ClaudeCodeProvider(RepairProvider):
                 githits_client.EXCLUDE_ENV: ",".join("/".join(entry) for entry in exclude.entries)}
 
     def _session(self, space: SearchSpace) -> str:
-        """``X-GitHits-Session-ID``: ``<thread>-<arm>`` (GitHits allows ``[A-Za-z0-9_-]{1,64}``, so no ``/``)."""
-        label = self.thread_label or getattr(space, "thread_id", None) or getattr(space, "search_id", None) or "s0"
+        """``X-GitHits-Session-ID``: ``<thread>-<arm>`` (GitHits allows ``[A-Za-z0-9_-]{1,64}``, so no ``/``). The
+        thread is ``thread_label`` (the CLI passes the thread's id), else the space's thread: ``GitSearchSpace`` keeps
+        it as ``_thread``, so a provider built in Python names its thread too, and two threads never share ``s1-b``."""
+        thread = getattr(space, "_thread", None)
+        label = (self.thread_label or getattr(space, "thread_id", None) or getattr(thread, "id", None)
+                 or getattr(space, "search_id", None) or "s0")
         return re.sub(r"[^A-Za-z0-9_-]", "-", f"{label}-{self.arm}")[:64]
 
     def _instructions_changed(self, space: SearchSpace, parents: list[str]) -> list[str]:
@@ -861,8 +876,16 @@ class ClaudeCodeProvider(RepairProvider):
             # journaled through its client record, which is the host's evidence that a lookup left.
             observed += [{k: v for k, v in call.items() if k != "launcher"} for call in bash
                          if call["guard"] != query_guard.PASS]
-            guard = query_guard.UNGUARDED if mismatch == GITHITS_UNEXPECTED else query_guard.PASS
+            # A failed or timed-out call registers no candidate, so no signal.githits.mismatch reaches the journal: a
+            # launcher call in flight when the host ended Claude Code (the session is killed, so its client never
+            # records) would leave no trace. Its records are then journaled unguarded (not reconciled), and when it
+            # has none, one githits.unrecorded fact stands for each launcher call the guard passed.
+            lost = mismatch == GITHITS_UNRECORDED and failure is not None
+            guard = query_guard.UNGUARDED if mismatch == GITHITS_UNEXPECTED or lost else query_guard.PASS
             observed += [record_lookup(record, guard) for record in records.records]
+            if lost and not records.records:
+                observed += [unrecorded_lookup(call) for call in bash
+                             if call["launcher"] and call["guard"] == query_guard.PASS]
             githits_signal = {"arm": self.arm, "launcher_calls": sum(1 for call in bash if call["launcher"]),
                               "launcher_passed": passed, "records": len(records.records),
                               "records_ignored": records.ignored, "bash_refused": sum(
