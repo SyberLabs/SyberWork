@@ -678,7 +678,7 @@ class Timeout(unittest.TestCase):
                           "its process tree", ran.stdout)
             self.assertEqual(_summary(ran.stdout), (0, "FAILED (discovery_failed=1)"))
 
-    def test_the_default_budget_is_three_times_the_plan_and_at_least_five_minutes(self):
+    def test_the_default_budget_is_a_multiple_of_the_plan_and_at_least_five_minutes(self):
         with tempfile.TemporaryDirectory() as folder:
             _write_suite(Path(folder), durations={"test_gamma.Gamma.test_00": 120.0, "test_alpha.Plain.test_one": 2.0})
             ran = _shards(Path(folder), "--shards", "2")
@@ -688,9 +688,10 @@ class Timeout(unittest.TestCase):
             budgets = budgets.split(" (")[0]
             planned = [float(x) for x in planned.split(", ")]
             self.assertEqual([float(x) for x in budgets.split(", ")],
-                             [float(f"{max(300.0, 3 * x):.0f}") for x in planned])
+                             [float(f"{max(run_shards.SHARD_TIMEOUT_FLOOR, run_shards.SHARD_TIMEOUT_FACTOR * x):.0f}")
+                              for x in planned])
             self.assertTrue(any(x > 100 for x in planned), line)  # the 120 s test makes one budget exceed the floor
-            self.assertIn("(3x planned, at least 300)", line)
+            self.assertIn(f"({run_shards.SHARD_TIMEOUT_FACTOR:g}x planned, at least 300)", line)
         with tempfile.TemporaryDirectory() as folder:
             _write_suite(Path(folder))
             for bad in ("0", "-5"):
