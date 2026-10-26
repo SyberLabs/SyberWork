@@ -452,7 +452,8 @@ export function seqRanges(seqs) {
 // row holds the RFC 8785 SHA-256 of the fields the chain hashes and, for a decision, the deciding rule id;
 // neither is inside the event hash. This only lines them up: the server's verify route is what checks each
 // stored digest against its event, and it cannot notice a row that is absent, so an event without a row is
-// reported as such and never called legacy for certain. A null digest is a value RFC 8785 cannot encode.
+// reported as such and never called legacy for certain. Verify skips a row whose digest is null (a value RFC 8785
+// cannot encode, or a changed row), and the rule id is in no hash, so neither is presented as checked.
 export function sideRecords(events, rows) {
   if (!Array.isArray(rows)) return {state: 'unknown', text: 'not returned by the server'};
   const bySeq = new Map();
@@ -472,7 +473,7 @@ export function sideRecords(events, rows) {
     noJcs: entries.filter(r => r.present && r.jcs === null).map(r => r.seq),
     differs: entries.filter(r => r.jcs !== null && r.present && !r.sameAsHash).map(r => r.seq),
     decisions: decisions.length, ruled: decisions.filter(r => r.rule).length,
-    // Rows for events this case read does not hold yet (appended after it): not drawn, only counted.
+    // Rows for events this case read does not hold (appended since, or a row with no event): not drawn, only counted.
     newer: [...bySeq.keys()].filter(s => !known.has(s)).length,
   };
 }
@@ -483,7 +484,7 @@ const METRIC_UNIT = {cost: '$', turns: 'calls', agent_time: 'hours'};
 
 // One case's work item from GET /metrics/work_items/{id} (Work.work_items, docs/METRICS.md). A value is shown
 // as syberlabs/metrics.py _cell writes it: "unknown" stays unknown, a boolean is yes or no, cost has four
-// decimals. Each number's basis (event hashes) is mapped to the event numbers this case read holds.
+// decimals. A whole-number float (2.0) reaches the page as 2, since JSON does not keep the difference. Each number's basis (event hashes) is mapped to the event numbers this case read holds.
 export function workItemRows(body, events, caseId) {
   const items = body && Array.isArray(body.items) ? body.items : null;
   if (!items) return {state: 'unknown', text: 'not returned by the server'};

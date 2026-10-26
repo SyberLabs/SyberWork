@@ -835,8 +835,8 @@ function tabHistory(info) {
   const links = M.chainLinks(info.events);
   const runs = (state.verifications.get(info.case.id) || []).slice().reverse();
   const verifyBtn = h('button', {type: 'button', class: 'btn primary', 'aria-keyshortcuts': 'v', onclick: verify}, 'Verify history ', h('kbd', {}, 'v'));
-  const side = headRead('side', casePath('side'), info).then(entry => entry.error ? entry : {side: M.sideRecords(info.events, entry.body)});
-  const item = headRead('work_item', '/metrics/work_items/' + encodeURIComponent(info.case.id), info)
+  const side = headRead('side', id => '/api/cases/' + encodeURIComponent(id) + '/side', info).then(entry => entry.error ? entry : {side: M.sideRecords(info.events, entry.body)});
+  const item = headRead('work_item', id => '/metrics/work_items/' + encodeURIComponent(id), info)
     .then(entry => entry.error ? entry : {item: M.workItemRows(entry.body, info.events, info.case.id)});
   return h('div', {class: 'history'},
     h('div', {class: 'grid-2'},
@@ -863,12 +863,13 @@ function tabHistory(info) {
 }
 
 // Reads folded from a case's events up to its head (the side records, the work item). Events are append-only,
-// so one answer per case and head is kept and a re-render does not ask again; a failed read is not kept.
-function headRead(name, path, info) {
+// so one answer per case and head is kept and a re-render does not ask again; a failed read is not kept. The
+// key and the URL both come from the case being drawn, never from the selection, which a late load can outrun.
+function headRead(name, route, info) {
   const head = info.events.length ? info.events[info.events.length - 1].seq : 0;
   const key = [name, info.case.id, head].join('|');
   if (!state.headReads.has(key)) {
-    const read = api(path).then(body => ({body}), error => ({error}));
+    const read = api(route(info.case.id)).then(body => ({body}), error => ({error}));
     state.headReads.set(key, read);
     read.then(entry => { if (entry.error) state.headReads.delete(key); });
   }
@@ -878,7 +879,8 @@ function headRead(name, path, info) {
 function fillSlot(el, promise, view) {
   const fill = entry => el.replaceChildren(...[view(entry)].flat(Infinity).filter(Boolean).map(k => k instanceof Node ? k : document.createTextNode(String(k))));
   fill(null);
-  promise.then(fill);
+  // An answer of an unexpected shape fails here, not as an unhandled rejection with a slot left reading.
+  promise.then(fill).catch(error => fill({error: {code: 'unreadable_answer', detail: String(error && error.message || error)}}));
   return el;
 }
 function readFailed(entry) {
@@ -892,10 +894,10 @@ function sideSummary(entry) {
   return [
     h('p', {}, h('b', {}, v.covered), ' of ', h('b', {}, v.total), ' events carry a side record · ', h('b', {}, v.ruled), ' of ', v.decisions, ' decisions name their deciding rule'),
     v.bare.length ? h('p', {class: 'why'}, M.seqRanges(v.bare), ' have no side record: written before the side table existed, or the row is absent. Verify history checks each stored digest; it cannot notice a missing row.') : null,
-    v.noJcs.length ? h('p', {class: 'why'}, M.seqRanges(v.noJcs), ' have no JCS digest: a value RFC 8785 cannot encode.') : null,
-    v.differs.length ? h('p', {class: 'why'}, M.seqRanges(v.differs), ': the JCS digest differs from the chain hash (the chain\'s canonical form and RFC 8785 give different bytes for this event).') : null,
-    v.newer ? h('p', {class: 'muted'}, v.newer + ' newer row' + (v.newer > 1 ? 's' : '') + ' for events appended after this case was read · ', h('kbd', {}, 'r')) : null,
-    h('p', {class: 'hint'}, 'Each digest is the RFC 8785 SHA-256 of the fields the chain hashes, stored beside the event and outside its hash. Expand a row below to see its record. The console lines them up; it does not recompute them.'),
+    v.noJcs.length ? h('p', {class: 'why'}, M.seqRanges(v.noJcs), ' have a row with no digest: a value RFC 8785 cannot encode, or a changed row. Verify history does not check a row without a digest.') : null,
+    v.differs.length ? h('p', {class: 'why'}, M.seqRanges(v.differs), ': the JCS digest differs from the chain hash. That is expected where the chain\'s canonical form and RFC 8785 give different bytes, and it is also what a changed digest looks like: only Verify history tells them apart.') : null,
+    v.newer ? h('p', {class: 'muted'}, v.newer + ' row' + (v.newer > 1 ? 's' : '') + ' for events not in this read (appended since, or a row with no event) · ', h('kbd', {}, 'r')) : null,
+    h('p', {class: 'hint'}, 'Each digest is the RFC 8785 SHA-256 of the fields the chain hashes, stored beside the event and outside its hash. Verify history checks each stored digest; the rule ids are in no hash and nothing checks them. The console lines them up; it does not recompute them.'),
   ];
 }
 function sideRow(entry, e) {
@@ -903,8 +905,8 @@ function sideRow(entry, e) {
   const row = entry.side.bySeq.get(e.seq);
   if (!row || !row.present) return kv([['JCS', h('span', {class: 'muted'}, 'no side record')]]);
   return kv([
-    ['JCS', row.jcs ? [mono(row.jcs), row.sameAsHash ? h('span', {class: 'muted'}, ' · same as the chain hash') : null] : h('span', {class: 'muted'}, 'no digest · not encodable under RFC 8785')],
-    e.kind === 'decision' ? ['rule', row.rule ? mono(row.rule, 'rule-name') : h('span', {class: 'muted'}, 'none written')] : null,
+    ['JCS', row.jcs ? [mono(row.jcs), row.sameAsHash ? h('span', {class: 'muted'}, ' · same as the chain hash') : null] : h('span', {class: 'muted'}, 'no digest · not checked by verify')],
+    e.kind === 'decision' ? ['rule', row.rule ? [mono(row.rule, 'rule-name'), h('span', {class: 'muted'}, ' · as written, in no hash')] : h('span', {class: 'muted'}, 'none written')] : null,
   ]);
 }
 // One case's work item (docs/METRICS.md). Delivered means a merged pull request; unknown is a value, never zero.
@@ -920,7 +922,7 @@ function workItemView(entry) {
       h('tbody', {}, v.rows.map(r => h('tr', {'data-metric': r.name},
         h('td', {}, r.name.replace(/_/g, ' '), r.unit ? h('span', {class: 'muted'}, ' (' + r.unit + ')') : null),
         h('td', {}, r.known ? h('b', {}, r.text) : badge('unknown', 'unknown')),
-        h('td', {class: 'mono-s'}, r.basis.length ? M.seqRanges(r.basis) : h('span', {class: 'muted'}, '—'), r.unmatched ? h('span', {class: 'muted'}, ' +' + r.unmatched + ' newer') : null),
+        h('td', {class: 'mono-s'}, r.basis.length ? M.seqRanges(r.basis) : h('span', {class: 'muted'}, '—'), r.unmatched ? h('span', {class: 'muted', title: 'event hashes not in this case read'}, ' +' + r.unmatched + ' not in this read') : null),
         h('td', {class: 'why'}, r.note))))),
   ];
 }

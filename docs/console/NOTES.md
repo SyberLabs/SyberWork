@@ -160,7 +160,7 @@ Gaps from #95, closed or still open:
 | Gap | State | Where |
 |---|---|---|
 | Deciding rule | **Closed** (#98) | `GET /api/cases/{id}/proposals/{p}/explain`, see below |
-| Per-work-item metrics (`/metrics/work_items`) | **Closed**: the top bar reads the summary, and History draws the case's own row (all nine metrics with value, basis events and note) from the existing per-case route | `workItemCounters`, `workItemView` in `app.js`; `M.workItemRows`; `test_work_item_summary_carries_what_the_top_bar_reads`, the browser walkthrough |
+| Per-work-item metrics (`/metrics/work_items`) | **Closed**: the top bar reads the summary, and History draws the case's own row (all nine metrics with value, basis events and note) from the existing per-case route | `workItemCounters`, `workItemView` in `app.js`; `M.workItemRows`; `test_work_item_summary_carries_what_the_top_bar_reads`; the History panels render only in the browser walkthrough, which skips without node `playwright` |
 | Source read roles for non-admins | **Closed**: every credential reads each source's read roles (only); the refresh button names the missing role and offers a switch; a source that is not installed is said so | `GET /api/sources`; `test_other_credentials_see_each_sources_read_roles_and_nothing_else`, `test_listed_read_roles_are_the_ones_refresh_enforces` |
 | `/api/policies` read scope | **Closed**: admin or manager, without an automation role; `model`, `compiled`, `operator` and observer credentials get `403` | `POLICY_READERS` in `server.py`; `ConsoleReadScope` |
 | JCS side records (`Work.side_channel`) | **Closed**: a read-only route returns `Work.side_channel` as stored; History shows coverage and each event's digest and rule. The console does not recompute digests | `GET /api/cases/{id}/side`; `M.sideRecords`; `ConsoleSideRecords` |
@@ -199,13 +199,17 @@ Gaps from #95, closed or still open:
 - **JCS side records** (closed): `GET /api/cases/{id}/side` returns `Work.side_channel` as stored, under
   the same read scope as `GET /api/cases/{id}` (the digests can be computed from the events, and the rule
   ids are already in the explain route). History shows *n of n events carry a side record* and *n of n
-  decisions name their deciding rule*, and lists the events with no row. It does not call those legacy:
-  `verify` checks each stored digest against its event, but it cannot notice a row that is missing, so the
-  console says *written before the side table existed, or the row is absent*. An expanded event shows its
-  digest, marked *same as the chain hash* when the canonical and RFC 8785 bytes agree. Events whose bytes
-  differ (in the included path, the supplier quote and the `issue_order` proposal) are listed as such;
-  that difference is expected and is not a failure. A changed row comes back from the route unchanged and
-  only `verify` refuses it (`test_the_route_reports_a_stored_digest_as_stored_and_verify_judges_it`).
+  decisions name their deciding rule*, and lists the events with no row. It does not call those legacy.
+  `verify` (`Work.chain_ok`) compares a row's digest with its event only when the digest is a string. It
+  does not notice a missing row or a row whose digest is null, and no check reads the rule id. So the
+  console says *written before the side table existed, or the row is absent*, describes a null digest as
+  *not checked by verify*, and labels a rule *as written, in no hash*. An expanded event shows its digest,
+  marked *same as the chain hash* when the canonical and RFC 8785 bytes agree. In the included path, the
+  supplier quote and the `issue_order` proposal give different bytes, so their digests differ from the
+  chain hash. The console lists such events and says only `verify` can tell an encoding difference from a
+  changed digest. A changed row comes back from the route unchanged. `verify` refuses a digest changed to
+  another string, and accepts a nulled digest or a changed rule
+  (`test_the_route_reports_a_stored_digest_as_stored_and_verify_judges_it`).
 - **Witness and certificate** (open, shown as missing): `syberwork serve` configures no witness.
   `Work.submit_witness` asks a loopback `python -m syberlabs.witness` process to sign the chain head and
   returns the DSSE envelope to its caller; nothing stores it in the case database, and no HTTP route reads
@@ -216,7 +220,8 @@ Gaps from #95, closed or still open:
   stored witness envelope, or a read-only log reader configured in `serve`, before any route can exist.
 - **Work item per case** (closed): History reads `GET /metrics/work_items/{id}` (an existing route) and
   shows each of the nine metrics (`syberlabs.metrics.METRICS`, with a parity test) as `_cell` writes it.
-  *unknown* stays a badge, a boolean is yes or no, cost has four decimals. Each row also lists the events
+  *unknown* stays a badge, a boolean is yes or no, cost has four decimals. One exception: a whole-number
+  float such as `2.0` reads as `2`, because JSON does not keep the difference. Each row also lists the events
   it was computed from and the server's note. For a purchase order the cost and turns are *unknown* (no
   metered model call) and delivered is *no · no pull request opened*, as the metrics define it.
 - The **Builder API** and **push updates** remain open as listed. No backend for them was added.

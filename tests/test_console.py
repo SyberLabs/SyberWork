@@ -473,8 +473,17 @@ class ConsoleSideRecords(CellCase):
         self.assertEqual([row["seq"] for row in self.cell.json(f"/api/cases/{case}/side")[1]][:1], [2])
         self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True},
                          "verify cannot notice a missing row, which is why the console says so instead of calling it legacy")
+        # Nor does verify check a row with no digest, or a rule id: the console presents neither as checked.
+        decision = next(e["seq"] for e in self.cell.work.inspect(case)["events"] if e["kind"] == "decision")
+        with sqlite3.connect(self.cell.database) as db:
+            db.execute("UPDATE event_side SET jcs=NULL, rule='invented.rule' WHERE case_id=? AND seq=?", (case, decision))
+        row = next(r for r in self.cell.json(f"/api/cases/{case}/side")[1] if r["seq"] == decision)
+        self.assertEqual((row["jcs"], row["rule"]), (None, "invented.rule"))
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True})
         app = (STATIC / "app.js").read_text()
-        self.assertIn("it cannot notice a missing row", app)
+        for wording in ("it cannot notice a missing row", "Verify history does not check a row without a digest",
+                        "the rule ids are in no hash and nothing checks them", "only Verify history tells them apart"):
+            self.assertIn(wording, app)
 
     def test_witness_and_certificate_are_named_as_missing_not_drawn(self):
         case = self.case_with_decision()
@@ -534,8 +543,10 @@ class ConsoleStatic(CellCase):
         app = (STATIC / "app.js").read_text()
         self.assertIn("'/proposals/' + encodeURIComponent(p.id) + '/explain?when=' + when", app)
         self.assertNotIn("not exposed over HTTP", app)
-        self.assertIn("casePath('side')", app)
-        self.assertIn("'/metrics/work_items/' + encodeURIComponent(info.case.id)", app)
+        # Both History reads build their URL from the case being drawn (headRead), not from the selection.
+        self.assertIn("headRead('side', id => '/api/cases/' + encodeURIComponent(id) + '/side', info)", app)
+        self.assertIn("headRead('work_item', id => '/metrics/work_items/' + encodeURIComponent(id), info)", app)
+        self.assertIn("api(route(info.case.id))", app)
         for operation in ("refresh", "facts", "proposals", "compiled", "suggest", "approve", "commit", "signoff", "reconcile",
                           "replay", "cancel", "resolution-request", "resolution-resolve", "resolution-escalate", "candidates", "evaluations"):
             with self.subTest(operation):
