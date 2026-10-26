@@ -79,6 +79,26 @@ def _destination_code(exc: BaseException) -> str:
     return "destination_error"
 
 
+def _acknowledged_other_write(raw: bytes, key: str, request_digest: str) -> str | None:
+    """Code for a write acknowledgement whose body names another write, or None.
+
+    A body that names ``idempotency_key`` or ``request_digest`` at its top level must name this write's.
+    A body with no single meaning is ambiguous; a body that is not strict JSON or not an object names nothing.
+    """
+    try:
+        record = destination_record(raw)
+    except AmbiguousRecord:
+        return "destination_record_ambiguous"
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    if (("idempotency_key" in record and record["idempotency_key"] != key) or
+            ("request_digest" in record and record["request_digest"] != request_digest)):
+        return "destination_record_mismatch"
+    return None
+
+
 def _decoded(payload) -> bytes | None:
     try:
         return base64.standard_b64decode(payload) if isinstance(payload, str) else None
@@ -1086,6 +1106,10 @@ class Work:
                 if not receipt_matches(record, key, args, digest(args), action["rail"]) or simulation_labeled(record):
                     raise ValueError("settlement receipt does not match the authorized intent")
                 return {"settlement": record}
+            # A completion that names another idempotency key or request digest acknowledged a different write.
+            conflict = _acknowledged_other_write(raw, key, digest(args))
+            if conflict:
+                raise Rejected(conflict, "write acknowledgement names another write")
             return {"status": response.status, "body": raw.decode("utf-8", errors="replace")}
 
     @staticmethod
