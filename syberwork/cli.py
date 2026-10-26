@@ -8,6 +8,7 @@ import secrets
 from pathlib import Path
 
 from syberlabs.errors import Rejected
+from syberlabs.evolution import AUTOMATION_ROLES
 from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import WitnessClient
 
@@ -53,8 +54,8 @@ def _witness_request(parser, log):
         parser.error("asking the witness needs its log: set SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC too")
     if not port.isdecimal() or not 0 < int(port) < 65536:
         parser.error("SYBERWORK_WITNESS_PORT must be the witness's loopback port")
-    if any(c.isspace() for c in role):
-        parser.error("SYBERWORK_WITNESS_ROLE must be one role name")
+    if any(c.isspace() for c in role) or role in AUTOMATION_ROLES:
+        parser.error("SYBERWORK_WITNESS_ROLE must be one role name, not an automation role (" + ", ".join(sorted(AUTOMATION_ROLES)) + ")")
     try:
         return WitnessClient(int(port), log.public, log.path), role
     except Rejected as exc:

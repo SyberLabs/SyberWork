@@ -253,6 +253,7 @@ export function can(me, op, ctx = {}) {
       if (typeof role !== 'string' || !role) return deny('serve was given no witness to ask: SYBERWORK_WITNESS_PORT and SYBERWORK_WITNESS_ROLE, beside the log and its key');
       if (view.state === 'conflict') return deny('the log holds a head this history does not have; the server will not ask the witness to sign this one');
       if (view.state === 'witnessed' && !view.moved && view.through === view.shown) return deny('a signed head in the log already covers #1–#' + view.through);
+      if (AUTOMATION_ROLES.some(r => has(me, r))) return deny('an automation credential cannot ask the witness', [role]);
       return has(me, role) ? allow() : deny(role + ' role required to ask the witness', [role]);
     }
     default:

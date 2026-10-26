@@ -947,6 +947,11 @@ class Work:
         with self.tx() as db:
             self._case(db, case_id)
             events = self._events(db, case_id)
+        return self._witness_judgement(case_id, events, log)
+
+    @staticmethod
+    def _witness_judgement(case_id: str, events: list, log) -> dict:
+        """``witness_status`` for events already read: each leaf naming the case, judged against exactly these events."""
         head = {"seq": events[-1]["seq"], "hash": events[-1]["hash"]} if events else None
         if log is None:
             return {"case_id": case_id, "configured": False, "count": len(events), "head": head,
@@ -981,35 +986,48 @@ class Work:
                 "checkpoint": covered, "entries": judged, "witnessed_through": through,
                 "note": "Read from the witness's log under its public key. The witness holds the seed; this read appends nothing"}
 
-    def request_witness(self, case_id: str, client, log, actor: str) -> dict:
+    def request_witness(self, case_id: str, client, log, actor: str, principal: str | None = None) -> dict:
         """Ask the witness to sign this case's head, judged first against what its log already holds. Writes nothing to the case.
 
         ``client`` is a ``WitnessClient`` on the witness's loopback port and ``log`` the read-only reader
-        ``witness_status`` takes, under the same public key. ``witness_conflict``: the log holds a head this history
-        does not have (``head_differs``, ``chain_broken``, ``beyond_history``), and the witness, which checks only the
-        links it is sent, would sign the changed history beside it. ``already_witnessed``: a covered head already names
-        every event. ``witness_unavailable``: nothing answered on the port. Requests are made one at a time, so two
-        presses cannot append the same head twice. The log does not record who asked, so each request is counted and
-        traced with its actor and outcome.
+        ``witness_status`` takes, under the same public key. The events are read once, in one transaction: the log is
+        judged against them, ``verify`` is run on them, and exactly they are sent, so no rewrite between the check and
+        the send can be signed unchecked. ``witness_conflict``: the log holds a head this history does not have
+        (``head_differs``, ``chain_broken``, ``beyond_history``), and the witness, which checks only the links it is
+        sent, would sign the changed history beside it. ``already_witnessed``: a covered head already names every event.
+        ``invalid_chain``: this server's own ``verify`` fails. ``witness_unavailable``: nothing answered, no answer came
+        in time (the witness may still have signed), or the answer was unreadable. Requests are made one at a time, so
+        two presses cannot append the same head twice. The log does not record who asked, so each request is counted
+        and traced with its actor, principal and outcome.
         """
         with self._witness_lock:
-            status = self.witness_status(case_id, log)
             try:
+                with self.tx() as db:
+                    self._case(db, case_id)
+                    events = self._events(db, case_id)
+                    intact = self.chain_ok(db, case_id)
+                status = self._witness_judgement(case_id, events, log)
                 conflict = next((e for e in status["entries"] if e["verdict"] in WITNESS_CONFLICTS), None)
                 if conflict:
                     raise Rejected("witness_conflict", f"log leaf #{conflict['index']} is {conflict['verdict']}: the witness signed a head this history does not have")
                 if status["witnessed_through"] == status["count"]:
                     raise Rejected("already_witnessed", f"a signed head in the log already covers #1 to #{status['count']}")
+                if not intact:
+                    raise Rejected("invalid_chain", "case history does not verify")
                 try:
-                    envelope = self.submit_witness(case_id, client)
+                    envelope = client.submit(events)
+                except TimeoutError:
+                    raise Rejected("witness_unavailable", "the witness did not answer in time; it may still have signed, so read its log again") from None
                 except OSError:
                     raise Rejected("witness_unavailable", "the witness did not answer on its port") from None
+                except ValueError:
+                    raise Rejected("witness_unavailable", "the witness's answer was unreadable") from None
             except Rejected as error:
-                self._emit("witness_request", case_id=case_id, actor=actor, status=error.code)
+                self._emit("witness_request", case_id=case_id, actor=actor, principal=principal, status=error.code)
                 raise
         # WitnessClient.submit returned only after the signature matched the events sent and the log's checkpoint covered it.
         signed = _head_document(verified_payload(envelope, client.public, CHAIN_HEAD_TYPE))
-        self._emit("witness_request", case_id=case_id, actor=actor, status="signed", count=signed["count"], head=signed["head"])
+        self._emit("witness_request", case_id=case_id, actor=actor, principal=principal, status="signed", count=signed["count"], head=signed["head"])
         return {"case_id": case_id, "count": signed["count"], "head": signed["head"], "envelope": envelope, "written": False,
                 "note": "The witness signed this head and appended it to its own log; nothing was written to the case"}
 

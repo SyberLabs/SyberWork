@@ -162,7 +162,7 @@ token (`unauthorized`) and a role the caller lacks (`forbidden`).
 | `/api/cases/{id}/side` | any principal, like `/api/cases/{id}` | `Work.side_channel` unchanged: `[{seq, jcs, rule}]`, the RFC 8785 SHA-256 of the fields each event's hash covers and, for a decision, the deciding rule id. Events written before the side table have no row. An unknown case answers `unknown_case`. |
 | `POST /api/cases/{id}/preview` with `{action, args?, origin?}` | any principal, like `POST /api/cases/{id}/proposals` | `Work.preview_admission`: `status`, `reason`, `rule`, `provenance` (named as the explain route names it), the `args` admitted (`bound: true` when the body had no `args` key and the server bound them from the contract, as the compiled step does; any value present, `null` included, is admitted as given), `origin`, `policy_version`, `head: {seq, hash}`, `written: false` and a note. The origin is checked as propose checks it (`invalid_origin`, `origin_denied`). Binding refuses `missing_fact`, `missing_fact_field`, `invalid_binding` or `action_not_in_contract`. |
 | `/api/cases/{id}/witness` | any principal, like `/api/cases/{id}` | `Work.witness_status`. Without a log: `{case_id, configured: false, count, head, note}`. With one: also `public_key`, `checkpoint` (the newest signed checkpoint covers the log as read), `witnessed_through`, and `entries: [{index, count, head, verdict}]`, one per leaf naming this case. Verdicts: `included`, `not_included`, `head_differs`, `chain_broken`, `beyond_history`, `bad_signature`, `malformed`. `witnessed_through` is the largest `included` count above zero, and `null` while any leaf is `head_differs`, `chain_broken` or `beyond_history`. An unknown case answers `unknown_case`. |
-| `POST /api/cases/{id}/witness` with `{}` | holders of `SYBERWORK_WITNESS_ROLE` only; others `forbidden`. Without that configuration, everyone gets `witness_not_configured` | `Work.request_witness`: `{case_id, count, head, envelope, written: false, note}`, the head the witness signed and its DSSE envelope, after `WitnessClient.submit` checked the signature against the events sent and the log's checkpoint covering it. Refusals: `unknown_case`, `witness_conflict` (the log holds a `head_differs`, `chain_broken` or `beyond_history` leaf for this case), `already_witnessed` (a covered head already names every event), `invalid_chain` (this server's own `verify` fails), `witness_unavailable` (nothing answered on the port), and any refusal the witness returns. |
+| `POST /api/cases/{id}/witness` with `{}` | holders of `SYBERWORK_WITNESS_ROLE` that hold no automation role; others `forbidden`. Without that configuration, everyone gets `witness_not_configured` | `Work.request_witness`: `{case_id, count, head, envelope, written: false, note}`, the head the witness signed and its DSSE envelope, after `WitnessClient.submit` checked the signature against the events sent and the log's checkpoint covering it. Refusals: `unknown_case`, `witness_conflict` (the log holds a `head_differs`, `chain_broken` or `beyond_history` leaf for this case), `already_witnessed` (a covered head already names every event), `invalid_chain` (this server's own `verify` fails), `witness_unavailable` (nothing answered, the answer was unreadable, or none came in time), and any refusal the witness returns. |
 | `/api/cases/{id}/proposals/{proposal}/explain?when=recorded\|now` | any principal, like `/api/cases/{id}` | `Work.explain_admission` (`status`, `reason`, `rule`, `provenance: {module, symbol, line}`) and `recorded`: the proposal's first decision as stored, with the rule id written beside it on the side channel (`null` for rows older than that table). `when` defaults to `now`, as in `Work`. |
 
 A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 not_found` instead of
@@ -297,33 +297,49 @@ Gaps from #95, closed or still open:
     still does not choose that role in code. `serve` takes it from `SYBERWORK_WITNESS_ROLE`, beside
     `SYBERWORK_WITNESS_PORT` (the `port` the witness prints): both or neither, and only with the log and key, or
     `serve` stops (`_witness_request` in `syberwork/cli.py`; `make_server` refuses the same half configurations).
-    It is one role name, matched exactly against the caller's roles. The rationale is the precedent of
+    It is one role name, matched exactly against the caller's roles, and a caller that also holds an automation role
+    (`model`, `compiled`, `search`) is refused, as for policy bodies; an automation role cannot be configured. The
+    rationale is the precedent of
     `SYBERWORK_PLANNER_URL`: an operator setting of the deployment, with the console naming the variables while it
     is unset. The walkthrough and its tests use `manager`, the role that signs off the purchase order. That is a test
     choice, not a recommendation.
-    - **What a request does.** `POST /api/cases/{id}/witness` runs `Work.request_witness`. It first judges the log
-      as the read route does (`witness_status`). It refuses `witness_conflict` when any leaf for this case is
-      `head_differs`, `chain_broken` or `beyond_history`: the witness checks only the links it is sent, so it would
-      sign a changed history beside the head it signed before. It refuses `already_witnessed` when a covered head
-      already names every event. Otherwise it calls `Work.submit_witness`, unchanged. That re-verifies this
-      server's chain (side digests included) and sends every event, and `WitnessClient.submit` accepts the
-      envelope only if it verifies over those events and the log's newest checkpoint covers it. A port where nothing
-      listens answers `witness_unavailable` instead of `500`. Requests run one at a time in a process, so four
+    - **What a request does.** `POST /api/cases/{id}/witness` runs `Work.request_witness`. It reads the events once,
+      in one transaction, and uses that one read for everything: it judges the log against it as the read route
+      does, runs `verify` (side digests included) on it, and sends exactly those events. An append between the
+      check and the send is neither judged nor signed (`test_the_events_judged_are_the_events_sent`). It refuses
+      `witness_conflict` when any leaf for this case is `head_differs`, `chain_broken` or `beyond_history`: the
+      witness checks only the links it is sent, so it would sign a changed history beside the head it signed
+      before. It refuses `already_witnessed` when a covered head already names every event, and `invalid_chain`
+      when `verify` fails. `WitnessClient.submit` accepts the envelope only if it verifies over the events sent and
+      the log's newest checkpoint covers it. `witness_unavailable` replaces a `500` in three cases, each with its
+      own detail: nothing listens on the port; the answer is unreadable; or no answer came within the client's
+      30 s. In the last case the witness may still have signed, and the detail says to read the log again (the
+      console does). `Work.submit_witness` is unchanged and still serves scripts. Requests run one at a time in a process, so four
       presses at once append one head (`test_presses_at_once_append_one_head`). Two `serve` processes over one
       database could still both append the same head; that costs a duplicate leaf, not a wrong verdict.
     - **Nothing is written to the case.** The test compares a full dump of the case database before and after. The
       witness appends one leaf and one checkpoint to its own log. A leaf cannot be removed through any API, so the
       button arms first and its note says so.
     - **Who asked.** The log records no requester. Each request that reaches `Work` is counted
-      (`witness_request` in `Work.metrics`) and written to the trace when one is configured, with the case, actor
-      and outcome (`signed` with count and head, or the refusal code). A role refusal is answered by the server
-      before `Work` and is not traced, like the other role checks in `server.py`.
+      (`witness_request` in `Work.metrics`) and written to the trace when one is configured. Each record has the
+      case, the actor's name, its `principal_id` for a database principal (`null` for a `users.json` identity) and
+      the outcome: `signed` with count and head, or the refusal code, `unknown_case` included. A role refusal is
+      answered by the server before `Work` and is not traced, like the other role checks in `server.py`.
     - **The console.** It forecasts with `can(me, 'witness_request', {console, view})`: disabled with the variables
       named when `/api/console` gives no `request_role`; disabled for another role with a switch to an identity
       that holds it; disabled while the last read shows *history differs* or a head covering every event shown. When
       the read failed or the server read more events than the page shows, it lets the server decide. The POST goes
       to the case being drawn, not the selection, as the preview does. Afterwards `refreshAll` drops every cached
       witness read and reads again, whether the request succeeded or not.
+    - **Independent review.** A Claude session that did not write the change reviewed it and found no blocking
+      defect. All five of its findings are fixed:
+      - The log was judged on one read of the events and a later read was sent, so a rewrite between the two
+        could be signed unchecked. There is now one read.
+      - `unknown_case` and an unreadable witness answer were not traced. The second also came back as a generic
+        `invalid_request`.
+      - A timeout was reported as "nothing answered", though the witness may have signed.
+      - Automation credentials could ask, and the trace did not name the principal.
+      - `make_server` accepted a client whose key differs from the log's.
     - **Not done.** The console still verifies no signature itself. No rate limit applies beyond one request at a
       time and the `already_witnessed` refusal: a holder of the role can ask once per new event. The witness's own
       protocol, `syberlabs/witness.py`, `syberlabs/tlog.py` and `spec/` are unchanged.

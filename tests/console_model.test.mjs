@@ -421,6 +421,8 @@ test('asking the witness is for the role serve names, and not for a head already
   assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console, view: none }).ok, true);
   const operator = M.can(ME('operator', ['operator']), 'witness_request', { console, view: none });
   assert.deepEqual([operator.ok, operator.reason, operator.roles], [false, 'manager role required to ask the witness', ['manager']]);
+  const agent = M.can(ME('agent', ['manager', 'model']), 'witness_request', { console, view: none });
+  assert.deepEqual([agent.ok, agent.reason], [false, 'an automation credential cannot ask the witness']);
   // Not configured: no role is named, so no identity is suggested.
   for (const settings of [null, {}, { witness: { log: true, request_role: null } }, { witness: { log: false, request_role: '' } }]) {
     const off = M.can(ME('manager', ['manager']), 'witness_request', { console: settings, view: none });

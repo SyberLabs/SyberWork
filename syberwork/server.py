@@ -127,8 +127,11 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
         raise Rejected("unsafe_bind", "the operator service must bind to loopback")
     if (witness_client is None) != (witness_role is None) or (witness_client is not None and witness_log is None):
         raise Rejected("invalid_runtime", "a witness client needs a role and the witness log, and a role needs a client")
-    if witness_role is not None and (not isinstance(witness_role, str) or not witness_role or any(c.isspace() for c in witness_role)):
-        raise Rejected("invalid_runtime", "the witness role must be one role name")
+    if witness_role is not None and (not isinstance(witness_role, str) or not witness_role or any(c.isspace() for c in witness_role)
+                                     or witness_role in AUTOMATION_ROLES):
+        raise Rejected("invalid_runtime", "the witness role must be one role name, not an automation role")
+    if witness_client is not None and witness_client.public != witness_log.public:
+        raise Rejected("invalid_runtime", "the witness client and the witness log must be under the same public key")
     started = time.monotonic()
 
     class Handler(BaseHTTPRequestHandler):
@@ -351,9 +354,10 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                         # Ask the witness to sign this head. It appends to its own log; the case gets nothing.
                         if witness_client is None:
                             raise Rejected("witness_not_configured", "serve has no witness to ask; set SYBERWORK_WITNESS_PORT and SYBERWORK_WITNESS_ROLE")
-                        if witness_role not in roles:
-                            raise Rejected("forbidden", f"{witness_role} role required to ask the witness")
-                        result = work.request_witness(unquote(case_id), witness_client, witness_log, name)
+                        # An automation credential never asks, as it never reads policies: a leaf cannot be removed.
+                        if witness_role not in roles or AUTOMATION_ROLES.intersection(roles):
+                            raise Rejected("forbidden", f"{witness_role} role required to ask the witness, without an automation role")
+                        result = work.request_witness(unquote(case_id), witness_client, witness_log, name, user.get("principal_id"))
                     elif operation == "replay":
                         result = work.replay(case_id, data["contract_version"], data["policy_version"])
                     else:

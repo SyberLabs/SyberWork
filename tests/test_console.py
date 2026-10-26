@@ -744,12 +744,16 @@ class ConsoleWitnessRequest(CellCase):
     def test_only_the_configured_role_may_ask_and_the_case_gets_nothing(self):
         case = self.open_case()
         events = self.cell.work.inspect(case)["events"]
+        self.cell.work.register_principal("agent-1", "agent", "agent", "local", ["manager", "model"], token="token-agent")
+        self.cell.tokens["agent"] = "token-agent"
         before = self.dump()
         self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who=None)[1]["error"], "unauthorized")
         for who in ("operator", "scheduler", "planner", "admin", "supplier"):
             with self.subTest(who):
                 self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who=who),
-                                 (409, {"error": "forbidden", "detail": "manager role required to ask the witness"}))
+                                 (409, {"error": "forbidden", "detail": "manager role required to ask the witness, without an automation role"}))
+        # An agent principal that holds the role and an automation role is refused, as for policy bodies.
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", {}, who="agent")[1]["error"], "forbidden")
         self.assertEqual(self.leaves(), 0, "a refused request reaches no witness")
         status, body = self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")
         self.assertEqual(status, 200, body)
@@ -807,6 +811,20 @@ class ConsoleWitnessRequest(CellCase):
         self.assertEqual(self.cell.json(f"/api/cases/{other}/witness", {}, who="manager")[1]["error"], "witness_conflict")
         self.assertEqual(self.leaves(), 2)
 
+    def test_the_events_judged_are_the_events_sent(self):
+        """One read: an append between the judgement and the send is neither judged nor signed."""
+        case = self.open_case()
+        count = len(self.cell.work.inspect(case)["events"])
+        judge = Work._witness_judgement
+        def judged_then_appended(case_id, events, log):
+            found = judge(case_id, events, log)
+            self.cell.work.propose(case_id, "record_review", {}, "scheduler", ["operator", "compiled"])
+            return found
+        with unittest.mock.patch.object(Work, "_witness_judgement", staticmethod(judged_then_appended)):
+            body = self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")[1]
+        self.assertEqual(body["count"], count)
+        self.assertGreater(len(self.cell.work.inspect(case)["events"]), count)
+
     def test_a_broken_chain_is_refused_by_this_server_before_the_witness(self):
         case = self.open_case()
         with closing(sqlite3.connect(self.cell.database)) as db, db:
@@ -827,6 +845,28 @@ class ConsoleWitnessRequest(CellCase):
         case = cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
         self.assertEqual(cell.json(f"/api/cases/{case}/witness", {}, who="manager"),
                          (409, {"error": "witness_unavailable", "detail": "the witness did not answer on its port"}))
+        # Something on the port that answers a frame that is not JSON text.
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+        def answer_garbage():
+            conn, _ = listener.accept()
+            with conn:
+                size = int.from_bytes(conn.recv(4), "big")
+                while size > 0:
+                    size -= len(conn.recv(min(size, 65536)) or b"x" * size)
+                conn.sendall((2).to_bytes(4, "big") + b"\xff\xfe")
+        threading.Thread(target=answer_garbage, daemon=True).start()
+        garbled = WitnessClient(listener.getsockname()[1], self.public, str(self.log_path))
+        self.addCleanup(garbled.close)
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.log_path.parent)), 8999, reader, garbled, "manager")
+        self.addCleanup(cell.close)
+        case = cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        self.assertEqual(cell.json(f"/api/cases/{case}/witness", {}, who="manager"),
+                         (409, {"error": "witness_unavailable", "detail": "the witness's answer was unreadable"}))
+        # No answer within the client's timeout: the witness may have signed, and the refusal says so.
+        with unittest.mock.patch.object(garbled, "submit", side_effect=TimeoutError()):
+            self.assertEqual(cell.json(f"/api/cases/{case}/witness", {}, who="manager"),
+                             (409, {"error": "witness_unavailable", "detail": "the witness did not answer in time; it may still have signed, so read its log again"}))
 
     def test_each_request_is_counted_and_traced_with_its_actor(self):
         self.cell.work.trace = TraceLog(self.log_path.parent / "traces.jsonl")
@@ -834,11 +874,17 @@ class ConsoleWitnessRequest(CellCase):
         self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")
         self.cell.json(f"/api/cases/{case}/witness", {}, who="manager")
         self.cell.json(f"/api/cases/{case}/witness", {}, who="operator")
+        self.cell.json("/api/cases/no-such-case/witness", {}, who="manager")
+        self.cell.work.register_principal("person-1", "human", "lead", "local", ["manager"], token="token-lead")
+        self.cell.tokens["lead"] = "token-lead"
+        self.cell.json(f"/api/cases/{case}/witness", {}, who="lead")
         rows = [r for r in self.cell.work.trace.read() if r["name"] == "witness_request"]
-        self.assertEqual([(r["case_id"], r["actor"], r["status"]) for r in rows], [(case, "manager", "signed"), (case, "manager", "already_witnessed")],
+        self.assertEqual([(r["case_id"], r["actor"], r["principal"], r["status"]) for r in rows],
+                         [(case, "manager", None, "signed"), (case, "manager", None, "already_witnessed"),
+                          ("no-such-case", "manager", None, "unknown_case"), (case, "lead", "person-1", "already_witnessed")],
                          "a role refusal never reaches Work")
         self.assertEqual(rows[0]["head"], self.cell.work.inspect(case)["events"][-1]["hash"])
-        self.assertEqual(self.cell.work.metrics["witness_request"], 2)
+        self.assertEqual(self.cell.work.metrics["witness_request"], 4)
 
     def test_the_console_is_told_who_may_ask(self):
         self.assertEqual(self.cell.json("/api/console", who="supplier")[1]["witness"], {"log": True, "request_role": "manager"})
@@ -864,7 +910,8 @@ class ConsoleWitnessRequest(CellCase):
                               (log, {"SYBERWORK_WITNESS_PORT": "0", "SYBERWORK_WITNESS_ROLE": "manager"}),
                               (log, {"SYBERWORK_WITNESS_PORT": "70000", "SYBERWORK_WITNESS_ROLE": "manager"}),
                               (log, {"SYBERWORK_WITNESS_PORT": "-1", "SYBERWORK_WITNESS_ROLE": "manager"}),
-                              (log, {"SYBERWORK_WITNESS_PORT": port, "SYBERWORK_WITNESS_ROLE": "manager admin"})):
+                              (log, {"SYBERWORK_WITNESS_PORT": port, "SYBERWORK_WITNESS_ROLE": "manager admin"}),
+                              (log, {"SYBERWORK_WITNESS_PORT": port, "SYBERWORK_WITNESS_ROLE": "model"})):
             with self.subTest(sorted(names), log=reader is not None), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
                 configured(reader, **names)
         client, role = configured(log, SYBERWORK_WITNESS_PORT=port, SYBERWORK_WITNESS_ROLE="manager")
@@ -873,9 +920,14 @@ class ConsoleWitnessRequest(CellCase):
         # make_server holds the same rule for a caller that builds it directly.
         users = {"m": {"hash": "x", "roles": ["manager"]}}
         for kwargs in ({"witness_client": client}, {"witness_role": "manager"}, {"witness_client": client, "witness_role": "manager"},
-                       {"witness_log": log, "witness_client": client, "witness_role": ""}):
+                       {"witness_log": log, "witness_client": client, "witness_role": ""},
+                       {"witness_log": log, "witness_client": client, "witness_role": "compiled"}):
             with self.subTest(sorted(kwargs)), self.assertRaises(Rejected):
                 make_server(self.cell.work, users, port=0, **kwargs)
+        other = TransparencyLog.open_readonly(self.log_path, generate()[1])
+        self.addCleanup(other.close)
+        with self.assertRaises(Rejected):
+            make_server(self.cell.work, users, port=0, witness_log=other, witness_client=client, witness_role="manager")
 
 
 class ConsolePreview(CellCase):
