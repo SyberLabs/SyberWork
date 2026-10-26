@@ -317,7 +317,7 @@ class Publishing(RepoCase):
         kit, thread = self.accepted(checks=CRITIC)
         lines = self.pull_request_lines(thread)
         self.assertEqual([line for line in lines if line.startswith("Reviewed-by:")],
-                         ["Reviewed-by: rules@2 (critic check critic: high 0, medium 0, low 0)"])
+                         ["Reviewed-by: rules@3 (critic check critic: high 0, medium 0, low 0)"])
         self.assertEqual([line for line in lines if line.startswith("Evidence:")], ["Evidence: tested"])
         self.assertIn("Host checks on that tree: critic passed, tests passed.", lines)
         self.assertFalse([line for line in lines if line.startswith("Approved-by:")])
@@ -330,7 +330,7 @@ class Publishing(RepoCase):
         self.assertEqual(thread.accept("c1").status, "succeeded")
         lines = self.pull_request_lines(thread)
         self.assertEqual([line for line in lines if line.startswith("Reviewed-by:")],
-                         ["Reviewed-by: lead@example.test (maintainer), rules@2 (critic check critic: high 0, medium 0, low 0)"])
+                         ["Reviewed-by: lead@example.test (maintainer), rules@3 (critic check critic: high 0, medium 0, low 0)"])
         self.assertIn("Approved-by: lead@example.test (maintainer)", lines)
 
     def test_reviewer_name_and_revision_cannot_forge_a_field(self):

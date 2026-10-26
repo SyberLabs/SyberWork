@@ -104,17 +104,27 @@ otherwise:
 - **Before running:** the union of the shards' ids equals the discovered set,
   and no id is in two shards. No discovered test may take a method that
   starts or reports it (`run`, `__call__`, `debug`, `id`, `_callTestMethod`,
-  `_callSetUp`, `_callTearDown`, `_callCleanup`) from a class outside the
-  `unittest` package or from the instance, and its `id()` must be
-  `module.Class.method` (`harness_override`). Such a test could report a run
-  that did not happen, or take another test's id.
+  `_callSetUp`, `_callTearDown`, `_callCleanup`, `_addExpectedFailure`,
+  `_addUnexpectedSuccess`) from a class outside the `unittest` package or from
+  the instance, and its `id()` must be `module.Class.method`
+  (`harness_override`). Such a test could report a run that did not happen,
+  take another test's id, or report its own outcome as another: an
+  `_addUnexpectedSuccess` that calls `addSuccess` turns an expected failure
+  that passed, which fails a run, into a pass.
 - **While running:** each shard records the functions that start, run and
-  report a test (those methods of `TestCase`, the suite's `run` and fixture
+  report a test (those methods of `TestCase` and its `doCleanups` and
+  `subTest`, `unittest.case._addSkip` and `_addError`, through which
+  `TestCase.run` reports a skip or an error, the suite's `run` and fixture
   handling, the result's `startTest` to `stop`, its own channel) before it
   imports a test module, and reports a test that starts after any of them
   changed (`harness_changed`): a test that patched `TestCase._callTestMethod`
-  would otherwise have every later test pass without running its body.
-- **After running:** every shard's stream is intact and ends with `done`; it
+  would otherwise have every later test pass without running its body, and
+  one that made `_addError` a no-op would have every later failure vanish.
+- **After running:** every shard's stream is intact and ends with `done`;
+  every test it started reported an outcome before it stopped (a success,
+  failure, error, skip, expected failure, unexpected success or failed
+  subtest: `unittest` reports one of these for every test it runs, so a test
+  that stops with none was not reported, whatever silenced it); it
   started every id it was assigned, as many times as discovery found it,
   except a test that `unittest` itself never starts because its class's
   `setUpClass` or its module's `setUpModule` skipped or failed, which the
@@ -238,6 +248,9 @@ critic finding, and the honest rows still pass:
 | Test forges its shard's result file, then `os._exit(0)` | **0** | 1 (there is no result file; the test errors) | high (`process_exit`) |
 | Test forges another shard's result; that shard dies | **0** | 1, `shard_crashed` | high (`process_exit`) |
 | `run()` overridden to fake `startTest`/`addSuccess` | **0** | 1, `harness_override` | high (`harness_override`) |
+| `_addUnexpectedSuccess` overridden to report an expected failure that passed as a pass (after #119) | **0** | 1, `harness_override` | before: none; now high (`harness_override`, rules@3) |
+| A test makes `unittest.case._addError` a no-op; a later test fails (after #119) | **0** | 1, `harness_changed` and a test that reported no outcome | high (`unittest_patch`) |
+| A test sets `self._outcome.result = None`, then fails (after #119) | **0** | 1, a test that reported no outcome | high (`unittest_patch`) |
 | A test patches `TestCase._callTestMethod` at run time (new) | **0** | 1, `harness_changed` | high (`unittest_patch`) |
 | A test writes a line without the nonce to the channel (new) | n/a | 1, `channel_tampered` | high (`runner_reach`) |
 | A test finds the runner in its own process and writes a consistent, false stream (new) | n/a | **0: not caught** | high (`runner_reach`, `process_exit`) |
@@ -252,6 +265,11 @@ critic finding, and the honest rows still pass:
 | A test removed by a conditional, its `def` still in the diff (floor) | 0 | 1, `test_set_shrank` | none |
 | Import error, `sys.exit(0)` in a test, fixture errors | 1 | 1 | none |
 | Skips, fixture skips, `expectedFailure`, subtests, duplicate ids, a test added after the manifest | as serial | as serial | `load_tests` row only |
+
+The three rows marked "after #119" ran the same way on `main` at `296e3ca`
+(before) and on this change (after); serial `unittest discover` says `OK` for
+each of them as well. `tests/test_run_shards.py` holds every row of the
+table that the runner catches.
 
 The guarantee, exactly: with the factory's `tests` check (the host
 checkout's runner, `SYBERLABS_BASE` set) and the reference critic required, a

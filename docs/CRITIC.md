@@ -59,7 +59,7 @@ Whether a medium finding should block when the thread's class is C, P or X is an
 `publish.attribution` adds the critic of the promoting evaluation to the pull request body, from the observation:
 
 ```
-Reviewed-by: rules@2 (critic check critic: high 0, medium 1, low 0)
+Reviewed-by: rules@3 (critic check critic: high 0, medium 1, low 0)
 ```
 
 An independent approver under an `approval_role` still renders as `actor (role)`, and both can appear on the one line, comma-separated. Every part is rendered on one line, so a reviewer name or revision cannot add a field, and the parser refuses a revision with a line break before it can be observed at all. Without either kind of reviewer the line still reads `Reviewed-by: none recorded`.
@@ -77,7 +77,7 @@ In the factory, test code is candidate code, and it runs inside the process whos
 | `process_exit` | ends or kills a process: `os._exit`, `os.abort`, `os.kill` (except `os.kill(pid, 0)`, which only asks whether `pid` is alive), `os.killpg`, `signal.raise_signal`, `signal.pthread_kill`, also when reached through `from os import _exit`, `__import__("os")` or `getattr(os, "_exit")` |
 | `signal_handler` | installs a signal handler or timer: `signal.signal`, `signal.alarm`, `signal.setitimer`, `signal.set_wakeup_fd`, `signal.siginterrupt`, `signal.pthread_sigmask` |
 | `exit_at_import` | calls `sys.exit`, `exit`, `quit`, `os._exit` or `unittest.main`, or raises `SystemExit`, `KeyboardInterrupt`, `GeneratorExit` or `BaseException`, at module level (not under `if __name__ == "__main__":`) or in `setUpModule`, `tearDownModule`, `setUpClass` or `tearDownClass` |
-| `harness_override` | defines or assigns `run`, `__call__`, `debug`, `id`, `_callTestMethod`, `_callSetUp`, `_callTearDown`, `_callCleanup`, `countTestCases` or `__getattribute__` in a class that derives from a name ending in `TestCase` or from `unittest`, or that defines a `test*` method |
+| `harness_override` | defines or assigns `run`, `__call__`, `debug`, `id`, `_callTestMethod`, `_callSetUp`, `_callTearDown`, `_callCleanup`, `_addExpectedFailure`, `_addUnexpectedSuccess`, `countTestCases` or `__getattribute__` in a class that derives from a name ending in `TestCase` or from `unittest`, or that defines a `test*` method |
 | `load_tests` | defines or assigns `load_tests` |
 | `unittest_patch` | assigns or deletes an attribute of anything imported from `unittest`; assigns a result callback (`startTest`, `stopTest`, `addSuccess`, ..., `wasSuccessful`, `testsRun`, `shouldStop`, `stop`) or a test's identity (`_testMethodName`, `__qualname__`, `__module__`) on anything; uses `setattr` or `delattr` for those; patches a `unittest.*` or `sys.modules` target with `mock.patch`; reads `_outcome`, `_resultForDoCleanups` or `shouldStop` |
 | `sys_modules` | writes `sys.modules['unittest...']` or `sys.modules['__main__']` (assignment, `del`, `pop`, `setdefault`, `__setitem__`), or calls `sys.modules.update` or `sys.modules.clear` |
@@ -108,7 +108,7 @@ What it does not catch:
 
 It is a pattern list, not an analysis; a candidate that knows the list can write around it. Its precision against human review is unmeasured.
 
-The reviewer declares revision `2` (`Reviewed-by: rules@2`). Its verdicts changed twice: with the test-integrity rule, and again when the rule's scope grew to every changed Python file. `tests/test_publish.py` pins the line.
+The reviewer declares revision `3` (`Reviewed-by: rules@3`). Its verdicts changed three times: with the test-integrity rule, again when the rule's scope grew to every changed Python file, and again when `harness_override` came to name `_addExpectedFailure` and `_addUnexpectedSuccess`. Through these `TestCase.run` reports an expected failure and an expected failure that passed; a test class that defines `_addUnexpectedSuccess` to call `addSuccess` turned an outcome that fails the run into a pass, and revision 2 did not see it (`scripts/run_shards.py` now refuses it too, `docs/TESTING.md`). `tests/test_publish.py` pins the line.
 
 ## Model-backed critic
 
