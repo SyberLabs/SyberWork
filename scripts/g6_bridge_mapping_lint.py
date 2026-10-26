@@ -2,7 +2,8 @@
 
 Factory gate G6 blocks a merge when an Attest artifact type can map to a
 ``reconciled`` event, or when caller-supplied ``success``/``evidence`` input is
-accepted as reconciliation proof. Only SyberWork's destination status lookup
+accepted as reconciliation proof. Each emitter must also ask ``attest_artifact``
+of the destination's proof before it may append ``reconciled``. Only SyberWork's destination status lookup
 may append ``reconciled`` (docs/RECONCILIATION.md).
 
 This is a static check over the source tree. It reads Python files with
@@ -22,6 +23,8 @@ from pathlib import Path
 CLASSIFIER = "syberlabs/attest_reconcile_map.py"
 CLASSIFIER_TABLE = "_CLASSIFICATIONS"
 CLASSIFIER_FUNCTION = "classify_attest_artifact"
+# Each emitter asks this of the destination's proof before it may append ``reconciled``.
+ATTEST_GUARD = "attest_artifact"
 ALLOWED_CLASSES = {"observation", "handoff"}
 
 # Product code scanned for ``reconciled`` emission. Tests and fixtures may
@@ -250,6 +253,27 @@ def check_emitters(root: Path, findings: list[str]) -> None:
         findings.append(f"{rel}: {owner}.{function} no longer emits 'reconciled'; update the G6 emitter list")
 
 
+def check_attest_guard(root: Path, findings: list[str]) -> None:
+    """Each emitter calls ``attest_artifact`` on the proof before its first ``reconciled`` append."""
+    tree = _parse(root, CLASSIFIER, findings)
+    if tree is not None and not any(isinstance(node, ast.FunctionDef) and node.name == ATTEST_GUARD
+                                    for node in tree.body):
+        findings.append(f"{CLASSIFIER}: {ATTEST_GUARD} not found; G6 hook missing")
+    for rel, owner, function in sorted(EMITTERS):
+        tree = _parse(root, rel, findings)
+        if tree is None:
+            continue
+        matches = [node for cls, name, node in _scopes(tree) if (cls, name) == (owner, function)]
+        if len(matches) != 1:
+            continue  # check_emitter_inputs reports the missing emitter
+        guards = [node.lineno for node in ast.walk(matches[0]) if isinstance(node, ast.Call)
+                  and getattr(node.func, "id", None) == ATTEST_GUARD and len(node.args) == 1]
+        emits = [node.lineno for node in ast.walk(matches[0]) if _emits_reconciled(node)]
+        if emits and (not guards or min(guards) > min(emits)):
+            findings.append(f"{rel}:{matches[0].lineno}: {owner}.{function} may append 'reconciled' without "
+                            f"first asking {ATTEST_GUARD}() of the proof")
+
+
 def _guard_refuses(statement: ast.stmt) -> bool:
     if not isinstance(statement, ast.If) or len(statement.body) != 1 or statement.orelse:
         return False
@@ -345,7 +369,8 @@ def check_server_route(root: Path, findings: list[str]) -> None:
                                 f"{ast.unparse(argument)}; only data['proposal_id'] is allowed")
 
 
-CHECKS = (check_classifier, check_bridge_modules, check_emitters, check_emitter_inputs, check_server_route)
+CHECKS = (check_classifier, check_bridge_modules, check_emitters, check_emitter_inputs, check_attest_guard,
+          check_server_route)
 
 
 def lint(root: Path) -> list[str]:
