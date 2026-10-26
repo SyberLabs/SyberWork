@@ -4,8 +4,8 @@ GitHits and the web tools see only the agent's queries, never the repository. Th
 for the queries themselves: before Claude Code runs a GitHits (``mcp__githits__*``) or web (``WebSearch``,
 ``WebFetch``) tool, it reads the tool call from standard input and blocks it when the outbound text
 
-- ``secret``: matches a credential shape (``metrics`` owns the pattern set; this module adds a private-key header
-  and a bearer token), or
+- ``secret``: matches a credential shape (``_patterns.SECRET``, shared with ``metrics``; this module adds a
+  private-key header and a bearer token), or
 - ``url_credentials``: holds a URL with a user or password before the host (``scheme://user:pass@host``), or
 - ``email``: holds an email address, or
 - ``too_long``: is longer than ``max_chars`` characters (default 400), or
@@ -59,11 +59,23 @@ import sys
 import unicodedata
 from pathlib import Path
 
-if __package__ in (None, ""):  # run by absolute path (``-I``): import the host's own package beside this file
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+if __package__ in (None, ""):  # run by absolute path (``-I``): the hook process
+    # Load the host's own two leaf modules from beside this file, by path, and not the ``syberlabs`` package,
+    # whose ``__init__`` imports the whole SDK (most of a lookup's time). A worktree's ``syberlabs`` is never
+    # on the import path either way (``-I``).
+    import importlib.util
 
-from syberlabs.canonical import canonical  # noqa: E402
-from syberlabs.metrics import _SECRET as CREDENTIAL  # noqa: E402  the one credential pattern set, shared, not copied
+    def _beside(name: str):
+        spec = importlib.util.spec_from_file_location(f"syberlabs.{name}", Path(__file__).resolve().parent / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    canonical = _beside("canonical").canonical
+    CREDENTIAL = _beside("_patterns").SECRET
+else:
+    from syberlabs._patterns import SECRET as CREDENTIAL  # the one credential pattern set, shared, not copied
+    from syberlabs.canonical import canonical
 
 VERSION = "2"
 DEFAULT_MAX_LINES = 3
@@ -197,8 +209,8 @@ def tree_digests(root: Path, paths) -> set[str]:
 
 
 def _credential(text: str) -> bool:
-    """``metrics``' credential shapes at the start of a word (so ``risk-assessment`` is not an ``sk-`` key), or a
-    private-key header or bearer token."""
+    """The shared credential shapes (``_patterns.SECRET``) at the start of a word (so ``risk-assessment`` is not
+    an ``sk-`` key), or a private-key header or bearer token."""
     if _EXTRA_SECRET.search(text):
         return True
     return any(m.start() == 0 or not (text[m.start() - 1].isalnum() or text[m.start() - 1] == "_")
