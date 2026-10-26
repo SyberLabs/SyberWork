@@ -274,7 +274,9 @@ function summarize(info) {
 async function mutate(path, data, success) {
   const result = await api(path, data);
   state.lastResponse = {path, result, at: Date.now()};
-  if (success) toast(typeof success === 'function' ? success(result) : success, result && result.decision && result.decision.status === 'denied' ? 'warn' : 'ok');
+  // A refusal or an outcome that is not yet known is reported in the warning tone, never as success.
+  const unsettled = result && ((result.decision && result.decision.status === 'denied') || ['unknown', 'pending', 'unverified', 'rejected'].includes(result.status));
+  if (success) toast(typeof success === 'function' ? success(result) : success, unsettled ? 'warn' : 'ok');
   if (state.selected) await loadCase(state.selected);
   loadMetrics();
   renderRail();
@@ -505,11 +507,14 @@ function stepAction(step, info) {
       p && ['claimed', 'unknown'].includes(p.effect.state) ? reconcileButton(p) : null));
 }
 function stepSignoff(step, info) {
+  // A signature before the effect it follows is accepted by the server but never satisfies the clause,
+  // so the Flow offers it only once that effect has applied or been reconciled.
+  const ready = !step.after || M.pathSteps(info, policy(), Date.now() / 1000).some(s => s.kind === 'action' && s.action === step.after && s.state === 'done');
   return h('div', {class: 'step-body'},
     h('div', {class: 'step-head'}, h('h4', {}, 'Sign off · ', step.role), badge(step.state === 'done' ? 'applied' : 'idle', step.state === 'done' ? 'Signed' : 'To do'),
       step.after ? h('span', {class: 'muted'}, 'after ' + step.after + ' succeeds') : null),
     h('p', {class: 'hint'}, 'A signature counts only after the effect it follows, and the signer must not be the actor who executed it.'),
-    step.state !== 'done' ? h('div', {class: 'step-actions'}, signoffButton(step.role, info)) : null);
+    step.state !== 'done' ? h('div', {class: 'step-actions'}, ready ? signoffButton(step.role, info) : h('span', {class: 'why'}, 'available once ' + step.after + ' has applied')) : null);
 }
 function factChip(f) {
   const tones = {verified: 'verified', present: 'unverified', unverified: 'unverified', missing: 'idle', stale: 'pending', wrong_source: 'denied'};
