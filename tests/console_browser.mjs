@@ -190,7 +190,8 @@ await shot('09a-witness');
 await page.locator('.timeline li').first().locator('summary').click();
 report.side_row = await page.locator('.timeline li').first().locator('.side-row').textContent();
 await shot('09-history');
-// History → Open certificates in Studio: the Build Thread certificates serve reads, each verified by serve.
+// History → Open certificates in Studio: the Build Thread certificates serve reads, each verified by serve under one of
+// the keys it trusts, and each signed row names that key.
 await page.locator('.certificate-case button', { hasText: 'Open certificates in Studio' }).click();
 await page.waitForSelector('.certificate-rows tbody tr');
 report.certificate_rows = await page.locator('.certificate-rows tbody tr').evaluateAll(rows => rows.map(r => [r.dataset.state, r.textContent]));

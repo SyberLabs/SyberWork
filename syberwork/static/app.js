@@ -1007,7 +1007,7 @@ function witnessPanel(info) {
           mono('<home>/certificates'), '; a case is not a Build Thread and has none. Nothing on this case is drawn as certified.'),
         configured
           ? h('div', {class: 'act'}, h('button', {type: 'button', class: 'btn', onclick: openCertificates}, 'Open certificates in Studio'),
-            h('span', {class: 'why'}, 'the Build Thread certificates serve reads, each verified by serve under the key it was given'))
+            h('span', {class: 'why'}, 'the Build Thread certificates serve reads, each verified by serve under the keys it was given'))
           : h('p', {class: 'muted'}, 'serve reads no certificates: set ', mono('SYBERWORK_CERTIFICATE_HOME'), ' and ', mono('SYBERWORK_CERTIFICATE_PUBLIC'), '.'))));
 }
 function witnessSummary(entry, info) {
@@ -1202,7 +1202,8 @@ function openCertificates() {
   go('studio');
 }
 // Admission certificates (docs/CERTIFICATE.md) of Build Threads, from GET /api/certificates. serve verifies each file under
-// the key it was given; the console checks no signature, and draws as certified only what M.certificateView reads so.
+// the keys it was given; the console checks no signature, and draws as certified only what M.certificateView reads so.
+// With more than one key (a rotation), each signed row names the key that verified it.
 function studioCertificates() {
   if (!state.certificates) {
     const read = api('/api/certificates').then(body => ({view: M.certificateView(body)}), error => ({error}));
@@ -1222,7 +1223,8 @@ function certificatesView(entry) {
   if (v.state === 'unknown') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text)];
   const dash = h('span', {class: 'muted'}, '—');
   return [
-    h('p', {}, h('b', {}, v.certified), ' of ', v.shown, ' certificate', v.shown === 1 ? '' : 's', ' certified · key ', mono(M.short(v.publicKey, 16) + '…'),
+    h('p', {}, h('b', {}, v.certified), ' of ', v.shown, ' certificate', v.shown === 1 ? '' : 's', ' certified · ', v.publicKeys.length === 1 ? 'key ' : v.publicKeys.length + ' keys ',
+      v.publicKeys.map((k, i) => [i ? ', ' : '', mono((v.publicKeys.length === 1 ? '' : (i + 1) + ' ') + M.short(k, 16) + '…')]),
       v.truncated ? h('span', {class: 'why warn'}, ' · ' + v.total + ' files; only the first ' + v.shown + ' by name were verified') : null),
     v.rows.length ? h('table', {class: 'grid certificate-rows'}, h('thead', {}, h('tr', {}, ['File', 'Thread · candidate', 'Result', 'Contract', 'Checks', 'Chain', 'Verdict'].map(t => h('th', {}, t)))),
       h('tbody', {}, v.rows.map(r => {
@@ -1236,12 +1238,13 @@ function certificatesView(entry) {
           // is what the key signed, nothing more.
           h('td', {}, st ? st.checks.map(c => h('div', {}, badge(c.state !== 'passed' ? (r.certified ? 'denied' : 'idle') : r.certified ? 'verified' : r.state === 'signed' ? 'pending' : 'idle', c.name + ' ' + c.state))) : dash),
           h('td', {class: 'mono-s'}, st ? '#1–#' + st.chain.count + ' · ' + M.short(st.chain.head, 10) : dash),
-          h('td', {}, badge(r.tone, r.label), r.reason ? [' ', mono(r.reason)] : null, h('div', {class: 'why'}, r.text)));
+          h('td', {}, badge(r.tone, r.label), r.reason ? [' ', mono(r.reason)] : null, h('div', {class: 'why'}, r.text),
+            r.key ? h('div', {class: 'muted mono-s'}, 'key ' + (v.publicKeys.length === 1 ? '' : r.key + ' · ') + M.short(r.statement.keyid, 16) + '…') : null));
       })))
       : h('p', {class: 'muted'}, 'No certificate files under ', mono('<home>/certificates'), '.'),
     h('p', {class: 'hint'}, 'Checked by serve: ', v.checked.join(' and ') || 'nothing', '. Not checked: ', v.notChecked.join(', ') || 'nothing',
-      ' (the commits, trees and diff in Git); run ', mono('syberlabs verify FILE --public KEY --repo .'), ' for it. The key is serve\'s configuration (',
-      mono('SYBERWORK_CERTIFICATE_PUBLIC'), '); the .pub file beside each certificate is not read. v0 certificates are signed in the certifying process, not witnessed. The console checks no signature.'),
+      ' (the commits, trees and diff in Git); run ', mono('syberlabs verify FILE --public KEY --repo .'), ' for it. The keys are serve\'s configuration (',
+      mono('SYBERWORK_CERTIFICATE_PUBLIC'), ', the current key and any still being rotated out; a listed key is trusted until it is removed, and nothing is revoked); the .pub file beside each certificate is not read. v0 certificates are signed in the certifying process, not witnessed. The console checks no signature.'),
   ];
 }
 function studioTabs(tabs) {

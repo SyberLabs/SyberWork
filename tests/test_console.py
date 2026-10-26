@@ -33,6 +33,7 @@ from syberlabs.build import Kit
 from syberlabs.canonical import canonical
 from syberlabs.certificate import certify, write_certificate
 from syberlabs.dsse import CHAIN_HEAD_TYPE, CHECKPOINT_TYPE, sign_chain_head, sign_dsse
+from syberlabs import ed25519
 from syberlabs.ed25519 import generate, public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
@@ -49,6 +50,10 @@ from syberwork.server import POLICY_READERS, make_server
 from syberwork.trace import TraceLog
 from tests.test_build_thread import GOOD, REPORT, TEST_REPORT, git
 from tests.test_certificate import OTHER_PUBLIC, OTHER_SEED, PUBLIC, SEED
+
+# A third key that no test configures: a certificate signed under it is never trusted.
+THIRD_SEED = hashlib.sha256(b"syberwork console third certificate key").digest()
+THIRD_PUBLIC = public_from_seed(THIRD_SEED)
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "syberwork" / "examples"
@@ -212,8 +217,10 @@ class CellCase(unittest.TestCase):
     # serve may ask to sign for witness_role.
     witness = False
     witness_role = "manager"
-    # True: serve reads a Build Thread home holding one certified candidate (certified_home), under PUBLIC.
+    # True: serve reads a Build Thread home holding one certified candidate (certified_home), signed under PUBLIC, and
+    # trusts certificate_keys.
     certificates = False
+    certificate_keys = (PUBLIC,)
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -250,7 +257,7 @@ class CellCase(unittest.TestCase):
         shelf = None
         if self.certificates:
             self.cert_home, self.cert_payload = certified_home(Path(folder.name) / "build")
-            shelf = self.shelf = CertificateShelf(self.cert_home, PUBLIC)
+            shelf = self.shelf = CertificateShelf(self.cert_home, self.certificate_keys)
         self.cell = Cell(Path(folder.name), port, reader, client, self.witness_role if client else None, shelf)
         self.addCleanup(self.cell.close)
 
@@ -1005,7 +1012,7 @@ class ConsoleCertificates(CellCase):
 
     def test_a_certificate_signed_under_the_key_and_matching_its_journal_passes_both_layers(self):
         body = self.listing()
-        self.assertEqual((body["configured"], body["public_key"], body["total"], body["shown"]), (True, PUBLIC.hex(), 2, 2))
+        self.assertEqual((body["configured"], body["public_keys"], body["total"], body["shown"]), (True, [PUBLIC.hex()], 2, 2))
         self.assertEqual((body["checked"], body["not_checked"]), (["signature", "journal"], ["repository"]))
         self.assertIn("syberlabs verify FILE --public KEY --repo PATH", body["note"])
         payload = self.cert_payload
@@ -1180,7 +1187,186 @@ class ConsoleCertificates(CellCase):
             with self.subTest(sorted(names)), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
                 configured(**names)
         shelf = configured(SYBERWORK_CERTIFICATE_HOME=home, SYBERWORK_CERTIFICATE_PUBLIC=PUBLIC.hex() + "\n")
-        self.assertEqual((shelf.home, shelf.public), (self.cert_home, PUBLIC))
+        self.assertEqual((shelf.home, shelf.keys), (self.cert_home, (PUBLIC,)))
+
+
+class ConsoleCertificateKeys(CellCase):
+    """More than one trusted key: the new key and the old ones during a rotation. Each file passes under the key that
+    signed it, is tried only under the keys its signatures could match, and the row names that key."""
+
+    certificates = True
+    certificate_keys = (OTHER_PUBLIC, PUBLIC)   # OTHER_PUBLIC the new key; the fixture's certificates are under the old one
+
+    def folder(self) -> Path:
+        return self.cert_home / "certificates"
+
+    def rows(self):
+        status, body = self.cell.json("/api/certificates")
+        self.assertEqual(status, 200, body)
+        return body, {row["file"]: row for row in body["certificates"]}
+
+    def envelope(self, seed=OTHER_SEED, payload=None):
+        good = json.loads((self.folder() / f"{self.cert_payload['thread'][:8]}-c1.bare.json").read_text(encoding="utf-8"))
+        data = base64.standard_b64decode(good["payload"]) if payload is None else canonical(payload).encode()
+        return sign_dsse(good["payloadType"], data, seed)
+
+    def put(self, name, envelope):
+        (self.folder() / name).write_text(json.dumps(envelope), encoding="utf-8")
+
+    def test_each_listed_key_verifies_what_it_signed_and_the_row_names_it(self):
+        self.put("rotated.json", self.envelope(OTHER_SEED))
+        self.put("untrusted.json", self.envelope(THIRD_SEED))
+        body, rows = self.rows()
+        self.assertEqual(body["public_keys"], [OTHER_PUBLIC.hex(), PUBLIC.hex()], "in configured order")
+        thread8 = self.cert_payload["thread"][:8]
+        for name, key in ((f"{thread8}-c1.json", PUBLIC), (f"{thread8}-c1.bare.json", PUBLIC), ("rotated.json", OTHER_PUBLIC)):
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["signature"], row["journal"], row["journal_present"]), ("pass", "ok", "ok", True))
+                self.assertEqual(row["statement"]["keyid"], key.hex())
+        row = rows["untrusted.json"]
+        self.assertEqual((row["verdict"], row["reason"], row["statement"]), ("fail", "signature_invalid", None))
+        self.assertNotIn(THIRD_PUBLIC.hex(), json.dumps(body), "a key nobody configured is never named")
+
+    def test_a_file_is_tried_only_under_the_keys_its_signatures_could_match(self):
+        """verified_payload tries a signature only under the key its keyid names, or under every key when it names none."""
+        unnamed = self.envelope(SEED)                    # the old key, keyid removed: tried under the new key, then the old
+        del unnamed["signatures"][0]["keyid"]
+        self.put("unnamed.json", unnamed)
+        misnamed = self.envelope(OTHER_SEED)             # signed by the new key but naming the old: the old key only, so it fails
+        misnamed["signatures"][0]["keyid"] = PUBLIC.hex()
+        self.put("misnamed.json", misnamed)
+        self.put("untrusted.json", self.envelope(THIRD_SEED))
+        (self.folder() / "notjson.json").write_text("{not json", encoding="utf-8")
+        shaped = {k: v for k, v in self.cert_payload.items() if k != "objective"}
+        # A malformed payload, keyid removed: the failure is the signer's. Under the old key, the new key is tried first and
+        # fails on the signature; under the new key, the run stops there and the old key is not tried.
+        for name, seed in (("shape-old.json", SEED), ("shape-new.json", OTHER_SEED)):
+            bad = self.envelope(seed, shaped)
+            del bad["signatures"][0]["keyid"]
+            self.put(name, bad)
+        names = {path.read_bytes(): path.name for path in self.folder().glob("*.json")}
+        tried = {}
+        real = shelf_module.verify_certificate
+        def spy(data, key, **kwargs):
+            tried.setdefault(names[data], []).append(key)
+            return real(data, key, **kwargs)
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", side_effect=spy):
+            _, rows = self.rows()
+        thread8 = self.cert_payload["thread"][:8]
+        expected = {f"{thread8}-c1.json": ([PUBLIC], "pass", None), f"{thread8}-c1.bare.json": ([PUBLIC], "pass", None),
+                    "unnamed.json": ([OTHER_PUBLIC, PUBLIC], "pass", None),
+                    "misnamed.json": ([PUBLIC], "fail", "signature_invalid"),
+                    "untrusted.json": ([OTHER_PUBLIC], "fail", "signature_invalid"),
+                    "notjson.json": ([OTHER_PUBLIC], "fail", "certificate_unreadable")}
+        for name, (keys, verdict, reason) in expected.items():
+            with self.subTest(name):
+                self.assertEqual(tried[name], keys)
+                self.assertEqual((rows[name]["verdict"], rows[name]["reason"]), (verdict, reason))
+        self.assertEqual(rows["unnamed.json"]["statement"]["keyid"], PUBLIC.hex())
+        for name, keys in (("shape-old.json", [OTHER_PUBLIC, PUBLIC]), ("shape-new.json", [OTHER_PUBLIC])):
+            with self.subTest(name):
+                self.assertEqual(tried[name], keys)
+                self.assertTrue(rows[name]["reason"].startswith("payload_shape"), rows[name])
+                self.assertIsNone(rows[name]["statement"])
+
+    def test_removing_a_key_stops_trusting_what_it_signed(self):
+        """There is no revocation: a key is trusted until the deployment takes it off the list and restarts serve."""
+        self.put("rotated.json", self.envelope(OTHER_SEED))
+        verdicts = lambda shelf: {row["file"]: row["verdict"] for row in shelf.listing()["certificates"]}
+        thread8 = self.cert_payload["thread"][:8]
+        self.assertEqual(verdicts(CertificateShelf(self.cert_home, (OTHER_PUBLIC,))),
+                         {f"{thread8}-c1.bare.json": "fail", f"{thread8}-c1.json": "fail", "rotated.json": "pass"})
+        self.assertEqual(verdicts(CertificateShelf(self.cert_home, PUBLIC)),
+                         {f"{thread8}-c1.bare.json": "pass", f"{thread8}-c1.json": "pass", "rotated.json": "fail"})
+
+    def test_the_shelf_takes_one_to_eight_distinct_keys(self):
+        self.assertEqual(CertificateShelf(self.cert_home, PUBLIC).keys, (PUBLIC,))
+        eight = tuple(public_from_seed(hashlib.sha256(bytes([i])).digest()) for i in range(shelf_module.MAX_KEYS))
+        self.assertEqual(CertificateShelf(self.cert_home, eight).keys, eight, "exactly MAX_KEYS keys are accepted")
+        nine = (*eight, PUBLIC)
+        for keys in ((), nine, (PUBLIC, PUBLIC), (PUBLIC, b"\0" * 31), (PUBLIC, PUBLIC.hex())):
+            with self.subTest(len(keys)), self.assertRaises(Rejected):
+                CertificateShelf(self.cert_home, keys)
+
+    def test_a_key_anyone_could_sign_under_is_refused(self):
+        """syberlabs.ed25519.verify takes any 32 bytes: under the identity point, R = B and s = 1 verify any message."""
+        identity, order4 = bytes([1]) + bytes(31), bytes(32)
+        forged = base64.standard_b64encode(ed25519._encode(ed25519._B) + (1).to_bytes(32, "little")).decode("ascii")
+        self.assertTrue(ed25519.verify(identity, b"any statement", base64.standard_b64decode(forged)), "the forgery the check exists for")
+        mixed = ed25519._encode(ed25519._decode(PUBLIC) + ed25519._decode(order4))     # a real key plus a point of order 4
+        not_a_point = bytes([2]) + bytes(31)
+        for name, key in (("identity", identity), ("order 4", order4), ("mixed order", mixed), ("not a point", not_a_point)):
+            with self.subTest(name):
+                self.assertFalse(shelf_module.usable_key(key))
+                with self.assertRaises(Rejected):
+                    CertificateShelf(self.cert_home, (PUBLIC, key))
+        self.assertTrue(all(shelf_module.usable_key(key) for key in (PUBLIC, OTHER_PUBLIC, THIRD_PUBLIC)))
+
+    def test_a_file_with_more_signatures_than_allowed_is_refused_unverified(self):
+        """A key-less signature is tried under every key, so the count of signatures bounds what one file costs."""
+        envelope = self.envelope(SEED)
+        unnamed = dict(envelope["signatures"][0])
+        del unnamed["keyid"]
+        envelope["signatures"] = [unnamed] * (shelf_module.MAX_SIGNATURES + 1)
+        self.put("many.json", envelope)
+        envelope["signatures"] = [unnamed] * shelf_module.MAX_SIGNATURES
+        self.put("two.json", envelope)
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", wraps=shelf_module.verify_certificate) as spy:
+            _, rows = self.rows()
+        self.assertEqual((rows["many.json"]["verdict"], rows["many.json"]["reason"], rows["many.json"]["statement"]),
+                         ("fail", "too_many_signatures", None))
+        self.assertEqual((rows["two.json"]["verdict"], rows["two.json"]["statement"]["keyid"]), ("pass", PUBLIC.hex()))
+        self.assertEqual(spy.call_count, 2 + 2, "the two fixture files once each, two.json under both keys, many.json never")
+
+    def test_narrowing_gives_the_verdict_of_trying_every_key(self):
+        """Odd envelopes: the shelf's answer is the one trying every configured key in order would give."""
+        good = self.envelope(SEED)
+        sig = good["signatures"][0]
+        bare = {k: v for k, v in sig.items() if k != "keyid"}
+        odd = {
+            "nondict.json": {**good, "signatures": [3, sig]},
+            "null.json": {**good, "signatures": [{**sig, "keyid": None}]},
+            "intkeyid.json": {**good, "signatures": [{**sig, "keyid": 7}]},
+            "upper.json": {**good, "signatures": [{**sig, "keyid": PUBLIC.hex().upper()}]},
+            "listkeyid.json": {**good, "signatures": [{**sig, "keyid": [PUBLIC.hex()]}]},
+            "badsig.json": {**good, "signatures": [{**bare, "sig": "AAAA"}, {**sig, "keyid": OTHER_PUBLIC.hex()}]},
+            "sigdict.json": {**good, "signatures": {"keyid": PUBLIC.hex(), "sig": sig["sig"]}},
+            "sigstring.json": {**good, "signatures": "x"},
+            "array.json": [good],
+        }
+        for name, envelope in odd.items():
+            self.put(name, envelope)
+        _, rows = self.rows()
+        for name in odd:
+            with self.subTest(name):
+                data = (self.folder() / name).read_bytes()
+                for key in self.certificate_keys:
+                    report = shelf_module.verify_certificate(data, key, home=self.cert_home)
+                    if report.reason != "signature_invalid":
+                        break
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["statement"]["keyid"] if row["statement"] else None),
+                                 ("pass" if report.passed else "fail", report.reason, report.keyid if report.signature == "ok" else None))
+        self.assertEqual({name for name in odd if rows[name]["verdict"] == "pass"}, {"nondict.json", "null.json"})
+
+    def test_serve_reads_a_comma_separated_list_and_refuses_a_malformed_one(self):
+        parser = argparse.ArgumentParser()
+        def configured(public):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            names = {"SYBERWORK_CERTIFICATE_HOME": str(self.cert_home), "SYBERWORK_CERTIFICATE_PUBLIC": public}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertEqual(configured(f" {OTHER_PUBLIC.hex().upper()} , {PUBLIC.hex()}\n").keys, (OTHER_PUBLIC, PUBLIC))
+        eight = [public_from_seed(hashlib.sha256(bytes([i])).digest()) for i in range(8)]
+        self.assertEqual(configured(",".join(key.hex() for key in eight)).keys, tuple(eight), "exactly eight keys are accepted")
+        nine = ",".join((bytes([i]) * 32).hex() for i in range(9))
+        spaced = PUBLIC.hex()[:32] + " " + PUBLIC.hex()[32:]
+        for public in (spaced, (bytes([1]) + bytes(31)).hex(), f"{PUBLIC.hex()},{bytes(32).hex()}", f"{PUBLIC.hex()},", f",{PUBLIC.hex()}", f"{PUBLIC.hex()},,{OTHER_PUBLIC.hex()}", f"{PUBLIC.hex()};{OTHER_PUBLIC.hex()}",
+                       f"{PUBLIC.hex()} {OTHER_PUBLIC.hex()}", f"{PUBLIC.hex()},{PUBLIC.hex()}", f"{PUBLIC.hex()},{PUBLIC.hex().upper()}",
+                       f"{PUBLIC.hex()},00", nine):
+            with self.subTest(public[:20]), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(public)
 
 
 class ConsolePreview(CellCase):
@@ -1460,6 +1646,10 @@ class ConsoleModel(CellCase):
         parity["certificates"] = {"body": self.cell.json("/api/certificates")[1], "count": self.cert_payload["chain"]["count"],
                                   "expected": [[f"{thread8}-c1.bare.json", "certified", "verified"], [f"{thread8}-c1.json", "certified", "verified"],
                                                ["foreign.json", "not_signed", "denied"]]}
+        # And what a shelf over the same home answers when it trusts the foreign key as the new one and PUBLIC as the old.
+        parity["certificates"]["rotated"] = {
+            "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC)).listing(),
+            "expected": [[f"{thread8}-c1.bare.json", "certified", 2], [f"{thread8}-c1.json", "certified", 2], ["foreign.json", "certified", 1]]}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -1478,6 +1668,8 @@ class ConsoleBrowser(CellCase):
     reference = True
     witness = "server"
     certificates = True
+    # A rotation: serve trusts a new key (OTHER_PUBLIC) and the old one (PUBLIC) the fixture's certificates are under.
+    certificate_keys = (OTHER_PUBLIC, PUBLIC)
 
     def test_the_purchase_order_path_completes_in_a_browser(self):
         # The strict suite allows only the inspector's exact reasons for a missing browser tool.
@@ -1488,6 +1680,10 @@ class ConsoleBrowser(CellCase):
             if shutil.which("npm") is None:
                 self.skipTest("npm is not installed")
             self.skipTest("playwright for node is not installed")
+        # One certificate signed under the new key, beside the two the fixture signed under the old one.
+        good = json.loads((self.cert_home / "certificates" / f"{self.cert_payload['thread'][:8]}-c1.bare.json").read_text(encoding="utf-8"))
+        rotated = sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), OTHER_SEED)
+        (self.cert_home / "certificates" / "rotated.json").write_text(json.dumps(rotated), encoding="utf-8")
         env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens)}
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
@@ -1515,13 +1711,16 @@ class ConsoleBrowser(CellCase):
         self.assertEqual(report["certificate_buttons"], [["Open certificates in Studio", False]])
         self.assertIn("a case is not a Build Thread and has none", report["certificate_text"])
         self.assertIn("Nothing on this case is drawn as certified", report["certificate_text"])
-        # Studio → Certificates: both genuine forms pass the signature and the journal; the repository is named as not checked.
+        # Studio → Certificates: both genuine forms pass the signature and the journal under the old key, the rotated file
+        # under the new one, and each row names its key; the repository is named as not checked.
         thread8 = self.cert_payload["thread"][:8]
-        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified", "certified"], report["certificate_rows"])
-        for (_, row), name in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json")):
-            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], "certified", "Add a CSV export"):
+        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified"] * 3, report["certificate_rows"])
+        for (_, row), name, key in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json", "rotated.json"),
+                                       ("key 2 · " + PUBLIC.hex()[:16], "key 2 · " + PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16])):
+            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], "certified", "Add a CSV export", key):
                 self.assertIn(text, row)
-        for text in ("2 of 2 certificates certified", PUBLIC.hex()[:16], "Not checked: repository", "syberlabs verify FILE --public KEY --repo .",
+        for text in ("3 of 3 certificates certified", "2 keys 1 " + OTHER_PUBLIC.hex()[:16] + "…, 2 " + PUBLIC.hex()[:16] + "…",
+                     "Not checked: repository", "syberlabs verify FILE --public KEY --repo .", "nothing is revoked",
                      "the .pub file beside each certificate is not read", "A SyberWork case has none"):
             self.assertIn(text, report["certificate_page"])
         # Before the witness signs, the log holds nothing for the case; after, every event up to the head is witnessed.

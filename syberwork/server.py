@@ -124,8 +124,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
     both or neither, and only beside the log. Nothing in the code chooses that role; ``syberwork serve`` reads it from
     SYBERWORK_WITNESS_ROLE.
 
-    ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the one public key its certificates are
-    verified under, or None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from
+    ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the public keys its certificates are
+    verified under (one, or a few during a rotation), or None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from
     SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC.
     """
     loopback = host in ("127.0.0.1", "::1", "localhost")
@@ -208,7 +208,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                                 "witness": {"log": witness_log is not None, "request_role": witness_role},
                                 "certificates": {"configured": certificates is not None}})
                 elif parts == ["api", "certificates"]:
-                    # Admission certificates of Build Threads, each verified by serve under the configured key. A case
+                    # Admission certificates of Build Threads, each verified by serve under a configured key. A case
                     # has none, so there is no per-case route. Without a configured home the answer says so.
                     self._json(certificates.listing() if certificates is not None else certificates_not_configured())
                 elif parts == ["api", "cases"]:

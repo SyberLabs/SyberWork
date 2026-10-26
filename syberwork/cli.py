@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import WitnessClient
 
 from .backup import export_cell, restore_cell
-from .certificates import CertificateShelf
+from .certificates import MAX_KEYS, CertificateShelf
 from .core import Work
 from .server import serve
 from .trace import TraceLog
@@ -66,23 +67,29 @@ def _witness_request(parser, log):
 def _certificates(parser):
     """The certificates under a Build Thread home, when SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC name one.
 
-    The home is the one ``syberlabs certify`` wrote under (``.syberlabs``); the key is the hex in the ``.pub`` file it
-    wrote. Which key to trust is the deployment's decision, so serve never reads it from beside the certificates. Half a
-    configuration stops serve.
+    The home is the one ``syberlabs certify`` wrote under (``.syberlabs``); a key is the hex in the ``.pub`` file it
+    wrote. During a rotation the variable lists the new key and the old ones, separated by commas, at most
+    ``MAX_KEYS``. Which keys to trust is the deployment's decision, so serve never reads one from beside the
+    certificates. Half a configuration, an empty entry or a key listed twice stops serve.
     """
     home, public = os.getenv("SYBERWORK_CERTIFICATE_HOME"), os.getenv("SYBERWORK_CERTIFICATE_PUBLIC")
     if not home and not public:
         return None
     if not home or not public:
         parser.error("set both SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC, or neither")
+    keys = []
+    for entry in public.split(","):
+        entry = entry.strip()
+        # bytes.fromhex would also take spaces between the pairs; a key is exactly 64 hex characters.
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", entry):
+            parser.error("SYBERWORK_CERTIFICATE_PUBLIC must be certificate public keys of 64 hex characters, separated by commas")
+        keys.append(bytes.fromhex(entry))
+    if len(keys) > MAX_KEYS:
+        parser.error(f"SYBERWORK_CERTIFICATE_PUBLIC lists more than {MAX_KEYS} keys")
+    if len(set(keys)) != len(keys):
+        parser.error("SYBERWORK_CERTIFICATE_PUBLIC lists a key twice")
     try:
-        key = bytes.fromhex(public.strip())
-    except ValueError:
-        key = b""
-    if len(key) != 32:
-        parser.error("SYBERWORK_CERTIFICATE_PUBLIC must be the certificate public key: 64 hex characters")
-    try:
-        return CertificateShelf(home, key)
+        return CertificateShelf(home, tuple(keys))
     except Rejected as exc:
         parser.error(f"certificates: {exc.code}: {exc.detail}")
 

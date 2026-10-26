@@ -43,6 +43,15 @@ SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<s
 python -m syberwork.cli --home .syberwork serve
 ```
 
+To rotate the signing key, list the new key and the old ones, separated by commas (at most 8, each once), and restart
+`serve`. Certificates signed under either key are read, and each signed row names the key that verified it. Nothing is
+revoked: a listed key is trusted until it is taken off the list.
+
+```sh
+SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<new key>,<old key> \
+python -m syberwork.cli --home .syberwork serve
+```
+
 Open the page, press `i`, and paste the `operator`, `scheduler`, `manager`, `planner` and `admin`
 tokens one at a time. They are kept in this tab's `sessionStorage` (as the old console kept one token)
 and are sent only as a bearer header to the loopback service. They never appear in the URL. Leave the
@@ -125,9 +134,10 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
   Actions and sources are listed and registered by administrators only. Other credentials see each
   source's read role and whether they hold it, and *admin or manager role required* in place of the policy
   list. Under **Build Threads**, **Certificates** lists the admission certificates `serve` reads
-  (`GET /api/certificates`), each with the verdict `serve` reached under the configured key: *certified*, *signed ·
+  (`GET /api/certificates`), each with the verdict `serve` reached under the configured keys: *certified*, *signed ·
   journal not checked*, *journal differs*, *journal unreadable* or *not certified*, with the thread, candidate, result commit, contract,
-  checks and certified chain prefix of each signed one.
+  checks and certified chain prefix of each signed one, and the key that verified it (*key 2 · d75a…* when `serve`
+  trusts more than one).
 
 ## Visual system
 
@@ -169,7 +179,7 @@ token (`unauthorized`) and a role the caller lacks (`forbidden`).
 | Route | Who | Returns |
 |---|---|---|
 | `/api/console` | any principal | `{planner_configured, effects, witness: {log, request_role}, certificates: {configured}}`. The planner URL, the witness port and the certificate home are not disclosed; `request_role` is the role `POST …/witness` requires, or `null` when `serve` has no witness to ask. |
-| `/api/certificates` | any principal | Without a configured home: `{configured: false, note}`. With one: `{configured, public_key, total, shown, checked: ["signature", "journal"], not_checked: ["repository"], certificates, note}`, one row per `*.json` under `<home>/certificates`, at most 50 in name order: `{file, verdict, reason, signature, journal, journal_present, repository: null, statement}`. `verdict` and the layer states are `syberlabs.certificate.verify_certificate`'s, run by `serve` under `SYBERWORK_CERTIFICATE_PUBLIC` with the home as the journal home. `statement` (thread, objective, candidate, contract, policy version, base and result commits, target ref, admission actor, approvers and decision, checks, chain prefix, `issued_at`, `signing`, form and key id) is present only when the signature layer passed. A link, a folder or an unreadable file is refused (`not_a_regular_file`, `certificate_unreadable`); a file the verifier raises on (a deeply nested one raises `RecursionError`) is `unverifiable`. A thread journal or `registry.jsonl` that is not a regular file, is over 64 MiB, or cannot be read fails a signed row as `journal_unreadable:not_a_regular_file`, `:too_large` or `:io_error`, and the verifier does not read it. No layer note is returned, so no host path is disclosed. |
+| `/api/certificates` | any principal | Without a configured home: `{configured: false, note}`. With one: `{configured, public_keys, total, shown, checked: ["signature", "journal"], not_checked: ["repository"], certificates, note}`, one row per `*.json` under `<home>/certificates`, at most 50 in name order: `{file, verdict, reason, signature, journal, journal_present, repository: null, statement}`. `verdict` and the layer states are `syberlabs.certificate.verify_certificate`'s, run by `serve` with the home as the journal home, under the keys in `SYBERWORK_CERTIFICATE_PUBLIC` (`public_keys`, in that order) that a signature in the file could match. `statement` (thread, objective, candidate, contract, policy version, base and result commits, target ref, admission actor, approvers and decision, checks, chain prefix, `issued_at`, `signing`, form and key id: the configured key that verified it) is present only when the signature layer passed. A link, a folder or an unreadable file is refused (`not_a_regular_file`, `certificate_unreadable`); a file the verifier raises on (a deeply nested one raises `RecursionError`) is `unverifiable`. A thread journal or `registry.jsonl` that is not a regular file, is over 64 MiB, or cannot be read fails a signed row as `journal_unreadable:not_a_regular_file`, `:too_large` or `:io_error`, and the verifier does not read it. No layer note is returned, so no host path is disclosed. |
 | `/api/contracts` | any principal | `[{id, version, title, compiled_path, digest}]` |
 | `/api/contracts/{id}/{version}` | any principal | the stored contract (the same document `GET /api/cases/{id}` already returns for a case) |
 | `/api/policies` | `admin` or `manager`, holding no automation role (`model`, `compiled`, `search`); others `403 forbidden` | `[{version, body, digest}]` |
@@ -215,7 +225,7 @@ Gaps from #95, closed or still open:
 | `/api/policies` read scope | **Closed**: admin or manager, without an automation role; `model`, `compiled`, `operator` and observer credentials get `403` | `POLICY_READERS` in `server.py`; `ConsoleReadScope` |
 | JCS side records (`Work.side_channel`) | **Closed**: a read-only route returns `Work.side_channel` as stored; History shows coverage and each event's digest and rule. The console does not recompute digests | `GET /api/cases/{id}/side`; `M.sideRecords`; `ConsoleSideRecords` |
 | Witness | **Closed for reading** (#115): `serve` opens the witness's log read-only when `SYBERWORK_WITNESS_LOG` and `SYBERWORK_WITNESS_PUBLIC` name it, and History draws what the server judged. **Closed for asking** (this branch): with `SYBERWORK_WITNESS_PORT` and `SYBERWORK_WITNESS_ROLE` also set, **Ask witness to sign** has `serve` send the history to the witness, for that role only (below) | `GET` and `POST /api/cases/{id}/witness` (`Work.witness_status`, `Work.request_witness`); `M.witnessView`, `can(…, 'witness_request')`; `ConsoleWitness`, `ConsoleWitnessRequest`; the browser walkthrough |
-| Certificate | **Closed for reading Build Thread certificates** (this branch): with `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, `serve` verifies each file under `<home>/certificates` (signature, then the journal) and Studio → Certificates draws the verdicts. **A case still has none**: History says so and links to Studio. The repository layer is not run by `serve` | `GET /api/certificates` (`syberwork/certificates.py`); `M.certificateView`; `studioCertificates`, `witnessPanel` in `app.js`; `ConsoleCertificates`, `test_a_case_has_no_certificate_route`, the browser walkthrough |
+| Certificate | **Closed for reading Build Thread certificates** (#121): with `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, `serve` verifies each file under `<home>/certificates` (signature, then the journal) and Studio → Certificates draws the verdicts. **Several keys** (this branch): the variable may list up to 8 keys for a rotation, and each signed row names the key that verified it. **A case still has none**: History says so and links to Studio. The repository layer is not run by `serve`. Nothing is revoked | `GET /api/certificates` (`syberwork/certificates.py`); `M.certificateView`; `studioCertificates`, `witnessPanel` in `app.js`; `ConsoleCertificates`, `ConsoleCertificateKeys`, `test_a_case_has_no_certificate_route`, the browser walkthrough |
 | Admission before proposing | **Closed**: Propose → By hand binds arguments from the contract and asks the server what proposing would record now, before anything is written | `POST /api/cases/{id}/preview` (`Work.preview_admission`); `M.previewView`, `M.previewCurrent`; `ConsolePreview` |
 | Builder API (`/api/builder/*`) | Open | a separate surface, not part of this console |
 | Push updates | Open | there is no push: press `r` to reload |
@@ -359,17 +369,18 @@ Gaps from #95, closed or still open:
     - **Not done.** The console still verifies no signature itself. No rate limit applies beyond one request at a
       time and the `already_witnessed` refusal: a holder of the role can ask once per new event. The witness's own
       protocol, `syberlabs/witness.py`, `syberlabs/tlog.py` and `spec/` are unchanged.
-- **Certificate** (closed for reading Build Thread certificates on this branch; it was *open, shown as missing* in
-  #118). Admission certificates (`syberlabs certify`, docs/CERTIFICATE.md) belong to Build Threads and are files under
+- **Certificate** (closed for reading Build Thread certificates in #121, under several keys on this branch; it was
+  *open, shown as missing* in #118). Admission certificates (`syberlabs certify`, docs/CERTIFICATE.md) belong to Build Threads and are files under
   `<home>/certificates`. A SyberWork case is not a Build Thread, so there is still no per-case route
   (`GET /api/cases/{id}/certificate` stays `404 not_found`) and History draws nothing on a case as certified. It now
   says why, and **Open certificates in Studio** goes to the list when `serve` reads one. #118 named the per-case route as
   the missing piece. Building that would have meant inventing a link between a case and a thread that the code does
-  not have, so this branch adds a listing instead.
+  not have, so #121 added a listing instead.
   - **Configuration.** `syberwork serve` takes `SYBERWORK_CERTIFICATE_HOME` (the Build Thread home, `.syberlabs`) and
     `SYBERWORK_CERTIFICATE_PUBLIC` (the 64 hex characters `certify` writes to the `.pub` file). It needs both or neither.
     A key that is not 32 bytes of hex, or a home that is not a directory, stops `serve` (`_certificates` in
-    `syberwork/cli.py`). Nothing in the code chooses the key. The `.pub` file beside each certificate is never read:
+    `syberwork/cli.py`). Nothing in the code chooses the key. Since this branch the variable may list several keys
+    (below). The `.pub` file beside each certificate is never read:
     whoever can write the folder can write it too, so a certificate signed under another key fails even when its own
     `.pub` matches it (`test_another_key_or_changed_bytes_fail_and_state_nothing`).
   - **What serve checks.** `CertificateShelf.listing` (`syberwork/certificates.py`) runs
@@ -419,8 +430,67 @@ Gaps from #95, closed or still open:
     - An unreadable journal was drawn as *journal differs*.
     - Signed-only rows drew their checks green.
     - The path-disclosure test could not fail on Windows.
-  - **Not done.** The repository layer from `serve`. More than one trusted key, rotation or revocation (v0 has one key,
-    as docs/CERTIFICATE.md says). Any link from a case to a thread. The witness co-signature, which is docs/CERTIFICATE.md's
+  - **Several keys** (this branch, on main after #121). #121 left *more than one trusted key, rotation or revocation* open.
+    This branch closes the first two for reading and leaves revocation open.
+    - **Configuration.** `SYBERWORK_CERTIFICATE_PUBLIC` may list keys separated by commas: the new key and the ones being
+      rotated out, at most `MAX_KEYS` (8). Space around an entry is ignored. `serve` stops on any of these:
+      - an empty entry;
+      - an entry that is not exactly 64 hex characters (`bytes.fromhex` alone would take spaces between the pairs);
+      - a key listed twice, in either letter case;
+      - a ninth key;
+      - a key that is not usable (`usable_key`): it does not decode to a curve point, or it has small or mixed order.
+        `syberlabs.ed25519.verify` accepts any 32 bytes as a key. Under the identity point `01 00 … 00` (or `00 … 00`,
+        of order 4), the signature `R = B, s = 1` verifies any message. A test performs that forgery and shows the key
+        refused. A key `certify` derives from a seed is in the prime-order subgroup and passes. This also applied to the
+        one key #121 took.
+
+      `CertificateShelf` refuses the same (`test_the_shelf_takes_one_to_eight_distinct_keys`,
+      `test_a_key_anyone_could_sign_under_is_refused`, `test_serve_reads_a_comma_separated_list_and_refuses_a_malformed_one`;
+      exactly eight are accepted). One key behaves as in #121.
+    - **Which key is tried.** `syberlabs.dsse.verified_payload` tries a signature only under the key its `keyid` names,
+      or under any key when it names none. So `serve` tries a file only under the configured keys a signature in it could
+      match, in configured order (`_candidates`). A skipped key could only have failed as `signature_invalid`, so the
+      verdict is the same as trying every key (`test_narrowing_gives_the_verdict_of_trying_every_key`, over envelopes with
+      non-object entries, a null, integer, list or upper-case `keyid`, a bad signature beside a good one, `signatures` as
+      an object or a string, and a top-level array). The first key whose
+      report is not `signature_invalid` decides: its pass, or its own later failure (shape, subject, journal). Another key's
+      `signature_invalid` never hides it. A file that cannot be read that far is verified under the first key, which
+      names the failure. As with `syberlabs verify`, a genuine signature whose `keyid` names another key is not tried,
+      and fails. `test_a_file_is_tried_only_under_the_keys_its_signatures_could_match` checks the keys tried for each
+      case. Each of these mutations fails a test: trying every key, trying only the first, stopping at the first key
+      whatever it reports, trying keys past the signer, dropping the key check or the signature limit, parsing a key
+      with `bytes.fromhex` alone, and refusing an eighth key.
+    - **Cost.** A key-less signature is tried under every key, and `verified_payload` tries every signature entry. A
+      file may therefore carry at most `MAX_SIGNATURES` (2: the certifying process's, and the witness co-signature
+      docs/CERTIFICATE.md plans). A file with more is refused as `too_many_signatures` before any check is run
+      (`test_a_file_with_more_signatures_than_allowed_is_refused_unverified`). One file costs at most 2 × the number of
+      keys Ed25519 checks, 16 with 8 keys, about 0.14 s each the first time it is seen. #121 had no such limit: a 1 MiB
+      file of key-less entries cost on the order of ten thousand checks under its one key.
+    - **What is answered.** `public_keys` replaces #121's `public_key`, in configured order. `statement.keyid` is the
+      configured key that verified the file, never a `keyid` read from the file. A key no one configured is never named
+      (`test_each_listed_key_verifies_what_it_signed_and_the_row_names_it`).
+    - **What the console draws.** `M.certificateView` reads a statement only when its `keyid` is one of `public_keys`
+      in the same answer. Otherwise a pass is *unknown* and a signed file whose journal failed is *unknown*: no statement
+      and no key. Each signed row carries `key`, the 1-based position of its key in that list. Studio shows the keys in
+      order and, with more than one, *key N · d75a…* under each signed row's verdict. The browser walkthrough serves a
+      new key and the old one: the fixture's two files read *certified · key 2* and one re-signed under the new key reads
+      *certified · key 1*. The parity test runs the node projection on a real `CertificateShelf` answer under both keys.
+    - **Not done.** Revocation, or any validity window: a listed key is trusted for any certificate it signs, whatever
+      its `issued_at`, until it is taken off the list and `serve` restarts (`test_removing_a_key_stops_trusting_what_it_signed`).
+      The cache is per process and the key list is fixed for its life, so a verdict is never kept under a changed list.
+      `syberlabs verify` still takes one `--public` key and accepts any 32 bytes as one. `SYBERWORK_WITNESS_PUBLIC` is
+      not checked with `usable_key` either: the weak-key check covers certificate keys only. The check belongs in
+      `syberlabs.ed25519` and was not moved there. `syberlabs/`, docs/CERTIFICATE.md and `spec/` are unchanged.
+    - **Independent review.** A Claude session that did not write the change reviewed it, without being told my
+      conclusions. It differential-fuzzed `_candidates` against trying every key (400 odd envelopes, 3 trusted keys and 1
+      untrusted) and found no mismatch, and no input that reads *certified* without a configured key's signature or that
+      names the wrong key. Its findings, all fixed on this branch:
+      - A weak key (the identity point, or another of small order) was accepted, as in #121, and anyone could sign under it.
+      - A file of many key-less signatures could hold the listing for hours, now up to 8 times longer than with one key.
+        The NOTES claim of one check per key was false for a file with several signatures.
+      - No test checked that exactly 8 keys are accepted, or the odd envelope shapes against trying every key.
+      - Spaces inside a key were accepted.
+  - **Not done.** The repository layer from `serve`. Revocation (above). Any link from a case to a thread. The witness co-signature, which is docs/CERTIFICATE.md's
     next packet; v0 certificates are signed in the certifying process, and the page says so. A push when a new file
     appears (press `r`). `syberlabs/certificate.py`, docs/CERTIFICATE.md and `spec/` are unchanged.
 - **Work item per case** (closed): History reads `GET /metrics/work_items/{id}` (an existing route) and
