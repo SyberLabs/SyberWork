@@ -313,6 +313,7 @@ class Arms(unittest.TestCase):
 
         repo = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, repo, True)
+        git(repo, "init", "-q")  # the provider reads its repository with git
         arm = {"name": "cc", "kind": "claude-code", "model": "claude-sonnet-5-5", "effort": "medium",
                "lane": "subscription_local", "trusted_tree": True, "tools": ["Read", "Edit"], "max_turns": 8,
                "githits": True, "executable": ["{python}", "-c", "print('2.1.309 (Claude Code)')"]}  # a stand-in
