@@ -145,6 +145,21 @@ class SkillCommands(api.FakeCase):
         self.assertIsNone(grep.corpus, "no corpus is sent, so the server's default applies")
         self.assertGreater(grep.wait_timeout_ms, default_wait)
 
+    def test_the_stop_rule_names_what_the_launcher_prints(self):
+        """"Stop at a `refused:` or `error:` line" and "Results the host drops (license, excluded owner)": the
+        launcher's own words for a refused target, a failed call and dropped results."""
+        self.assertIn("`refused:` or `error:` line", self.template)
+        self.assertIn("(license, excluded owner)", self.template)
+        code, _, err = api.run_entry(self.env, "search", "Retry", "--target", "github:SyberLabs/SyberWork")
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("refused: "), err)
+        no_token = {name: value for name, value in self.env.items() if name != githits.TOKEN_ENV}
+        code, _, err = api.run_entry(no_token, "search", "Retry", "--target", "pypi:urllib3@2.2.1")
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("error: "), err)
+        dropped = githits.Result("search", githits.OK, api.search_response([]), 200, None, 0, 1, False, None, 1)
+        self.assertIn("1 dropped (excluded owner), 1 dropped (license)", githits.render(dropped))
+
     def test_the_githits_clis_own_flags_are_usage_errors_here(self):
         """"Flags: only those above; this is not the githits CLI": forms from the upstream skill
         (githits-com/githits-cli skills/githits-code/SKILL.md at the pinned commit) exit 2, send and record nothing."""
