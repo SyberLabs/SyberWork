@@ -127,7 +127,8 @@ distribution installed from a private index looks published.
 
 - the target is pinned: `pypi:<distribution>@<version>`;
 - one `search`, then one `read` of the top hit's lines (its documentation page, or its file's span under the pinned
-  target); a lookup decision is at most two GitHits calls, each given at most a quarter of the seconds left;
+  target); a lookup decision is at most two GitHits calls, each given a quarter of the seconds left (at least one,
+  at most the client's 60);
 - the client applies its exclusions (`SyberLabs` always, whatever `SYBERLABS_GITHITS_EXCLUDE_REPLACE` says), its
   license policy and its redirect, size and token rules, and signs a record of every call in a record directory
   and under a key that are fresh per decision; the router journals those records whatever happened after a request
