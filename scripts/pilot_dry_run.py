@@ -59,11 +59,11 @@ turns, without the web tools so the launcher is its only way to look anything up
 launcher lookups, one the guard must refuse (it holds an email address). It passes when the guard refused a lookup
 for what it says and passed one that GitHits answered (an authentic client record), every decision verified and none
 ``unguarded``, and every model the call used is priced; a call that shows only one of the two is inconclusive and
-fails, since it proves either no refusal or no GitHits. Then each item runs in both arms from the same ``HEAD``, both arms back to
-back, the items and which arm goes first set by a seeded shuffle: ``start --unattended``, ``experiment label``
-(before the first candidate), ``propose --claude-code --bare [--githits]``, ``run --once`` (accepts on the host's
-checks), ``export``. Then the blind review (``review --record``), ``experiment report --items FILE --delivered
-review [--json | --markdown]``, and the bar.
+fails, since it proves either no refusal or no GitHits. Then each item runs in both arms from the same ``HEAD``,
+both arms back to back, the items and which arm goes first set by a seeded shuffle: ``start --unattended``,
+``experiment label`` (before the first candidate), ``propose --claude-code --bare [--githits]``, ``run --once``
+(accepts on the host's checks), ``export``. Then the blind review (``review --record``), ``experiment report --items
+FILE --delivered review [--json | --markdown]``, and the bar.
 
 The bar: the nine metrics known for every thread
 ------------------------------------------------
@@ -87,17 +87,17 @@ stops a thread's next call past its share and its promotion is refused; and a ru
 already spent plus one share fit under the cap. Every call is bounded by the plan's ``max_turns``. So the total
 stays under the cap plus the cost of one call, and the receipt says what it was. A call that ended
 ``provider_failed``, ``provider_timeout`` or ``provider_error`` after Claude Code ran was never priced (it raised
-before the meter), so its thread's cost and the total are unknown and no further run starts. Spend is the host's own: tokens
-priced at the plan's ``prices`` through the host's meter (``docs/METRICS.md``), never Claude Code's estimate. A fee
-the API charges per server-side web search is not a token, so neither the meter nor the cap sees it; each thread's
-web lookups in the receipt say how many searches there were.
+before the meter), so its thread's cost and the total are unknown and no further run starts. Spend is the host's
+own: tokens priced at the plan's ``prices`` through the host's meter (``docs/METRICS.md``), never Claude Code's
+estimate. A fee the API charges per server-side web search is not a token, so neither the meter nor the cap sees it;
+each thread's web lookups in the receipt say how many searches there were.
 
 The paired report
 -----------------
 
 It must compare every item: an item the report excludes (``experiment.EXCLUDE``: ``arm_conflict``,
 ``contaminated``, ``missing_arm``, ...) or a registered item it never saw fails the run, and a check that keeps an
-item but says something about it (``unused``, ``use_unknown``, ``outcome_mismatch``, ...) is printed as a warning.
+item but says something about it (``unused``, ``use_unknown``, ``two_routes``, ...) is printed as a warning.
 The report reads the treatment's GitHits from the host's launcher ledger (``signal.githits``, SyberWork #141, branch
 ``fix/experiment-report-githits-api-arm``); a report without that change excludes every item as ``arm_conflict``,
 and the run fails.
@@ -801,8 +801,11 @@ def harness_of(events: list) -> dict:
                            ("model", harness.get("model")), ("auth_source", harness.get("auth_source"))):
             if isinstance(value, str):
                 found.setdefault(key, set()).add(value)
-        if isinstance(signal.get("githits"), dict):
+        ledger = signal.get("githits")
+        if isinstance(ledger, dict):
             found.setdefault("githits_route", set()).add("api")
+            if isinstance(ledger.get("license_policy"), str):  # a digest: part of the frozen setup
+                found.setdefault("license_policy", set()).add(ledger["license_policy"])
         for entry in harness.get("mcp_servers") or []:
             if isinstance(entry, str) and entry.startswith("githits:"):
                 found.setdefault("githits_mcp", set()).add(entry)

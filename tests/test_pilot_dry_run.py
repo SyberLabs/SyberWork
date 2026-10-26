@@ -351,6 +351,8 @@ class DryRun(DryRunCase):
             self.assertEqual(entry["lookups_blocked"]["value"], 1 if on else 0)
             self.assertEqual(entry["harness"]["lane"], ["api"])
             self.assertEqual(entry["harness"].get("githits_route"), ["api"] if on else None)
+            self.assertEqual(len(entry["harness"].get("license_policy", [])), 1 if on else 0,
+                             "the treatment's license policy, as the host recorded it (a digest)")
             self.assertEqual(entry["review"]["verdict"], "pass")
         self.assertEqual(sorted(t["review"]["id"] for t in threads), [f"R{n}" for n in range(1, 7)])
         for entry in threads:
