@@ -10,8 +10,10 @@ path in place of the placeholder:
   and what reaches the fake is valid under the pinned OpenAPI fixture;
 - stays within the caps the skill states, which are tighter than the client's defaults.
 
-The characters the skill says to quote, and those it says never to type, are checked against the guard both ways, so
-a guard change the skill does not follow fails here.
+Every other rule the skill states is checked against what it describes: the characters it says to quote, and those
+it says never to type, against the guard both ways; its grep claims against the pinned contract; its stop rule
+against the launcher's own output; the registries it names against the client's. So a change on either side that
+the other does not follow fails here.
 ``GitHitsLauncher.test_the_skills_commands_run_end_to_end_in_arm_b`` (``tests/test_claude_code.py``) runs the same
 commands through a whole arm-B call.
 """
