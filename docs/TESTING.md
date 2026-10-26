@@ -105,21 +105,31 @@ otherwise:
   and no id is in two shards. No discovered test may take a method that
   starts or reports it (`run`, `__call__`, `debug`, `id`, `_callTestMethod`,
   `_callSetUp`, `_callTearDown`, `_callCleanup`, `_addExpectedFailure`,
-  `_addUnexpectedSuccess`) from a class outside the `unittest` package or from
-  the instance, and its `id()` must be `module.Class.method`
-  (`harness_override`). Such a test could report a run that did not happen,
-  take another test's id, or report its own outcome as another: an
-  `_addUnexpectedSuccess` that calls `addSuccess` turns an expected failure
-  that passed, which fails a run, into a pass.
+  `_addUnexpectedSuccess`), or a method that registers or runs its cleanups
+  or runs its subtests (`addCleanup`, `enterContext`, `doCleanups`,
+  `addClassCleanup`, `enterClassContext`, `doClassCleanups`, `subTest`), from
+  a class outside the `unittest` package or from the instance, and its `id()`
+  must be `module.Class.method` (`harness_override`). Such a test could report
+  a run that did not happen, take another test's id, or report its own
+  outcome as another: an `_addUnexpectedSuccess` that calls `addSuccess` turns
+  an expected failure that passed, which fails a run, into a pass, and a
+  `subTest` that suppresses what its block raises, or a `doCleanups` that
+  drops the cleanups, turns a failing test into a pass. These are refused by
+  where they come from, not by what they do.
 - **While running:** each shard records the functions that start, run and
-  report a test (those methods of `TestCase` and its `doCleanups` and
-  `subTest`, `unittest.case._addSkip` and `_addError`, through which
+  report a test (those methods of `TestCase` and its cleanup and subtest
+  methods, `unittest.case._addSkip` and `_addError`, through which
   `TestCase.run` reports a skip or an error, the suite's `run` and fixture
   handling, the result's `startTest` to `stop`, its own channel) before it
   imports a test module, and reports a test that starts after any of them
   changed (`harness_changed`): a test that patched `TestCase._callTestMethod`
   would otherwise have every later test pass without running its body, and
   one that made `_addError` a no-op would have every later failure vanish.
+  It checks again when each test stops, and then names the test that made
+  the change (`test code changed X while T ran`); so a test whose `setUp` or
+  body gives its instance one of the refused methods (`self.subTest = ...`),
+  after the check at its start, also fails the shard. A change made and
+  undone within one test, before it stops, is not seen.
 - **After running:** every shard's stream is intact and ends with `done`;
   every test it started reported an outcome before it stopped (a success,
   failure, error, skip, expected failure, unexpected success or failed
@@ -251,6 +261,9 @@ critic finding, and the honest rows still pass:
 | `_addUnexpectedSuccess` overridden to report an expected failure that passed as a pass (after #119) | **0** | 1, `harness_override` | before: none; now high (`harness_override`, rules@3) |
 | A test makes `unittest.case._addError` a no-op; a later test fails (after #119) | **0** | 1, `harness_changed` and a test that reported no outcome | high (`unittest_patch`) |
 | A test sets `self._outcome.result = None`, then fails (after #119) | **0** | 1, a test that reported no outcome | high (`unittest_patch`) |
+| A `TestCase` defines `subTest` to suppress what its block raises; its subtest fails (after #123) | **0** | 1, `harness_override` | before: none; now high (`harness_override`, rules@4) |
+| A `TestCase` defines `doCleanups` to drop its cleanups; a cleanup fails (after #123) | **0** | 1, `harness_override` | before: none; now high (`harness_override`, rules@4) |
+| A test's `setUp` sets `self.subTest` to suppress exceptions; its subtest fails (after #123) | **0** | 1, `harness_changed` (seen when the test stops) | before: none; now high (`unittest_patch`, rules@4) |
 | A test patches `TestCase._callTestMethod` at run time (new) | **0** | 1, `harness_changed` | high (`unittest_patch`) |
 | A test writes a line without the nonce to the channel (new) | n/a | 1, `channel_tampered` | high (`runner_reach`) |
 | A test finds the runner in its own process and writes a consistent, false stream (new) | n/a | **0: not caught** | high (`runner_reach`, `process_exit`) |
@@ -268,8 +281,10 @@ critic finding, and the honest rows still pass:
 
 The three rows marked "after #119" ran the same way on `main` at `296e3ca`
 (before) and on this change (after); serial `unittest discover` says `OK` for
-each of them as well. `tests/test_run_shards.py` holds every row of the
-table that the runner catches.
+each of them as well. The three rows marked "after #123" ran the same way on
+#123's head at `2a8bdeb` (before) and on its follow-up (after); serial
+`unittest discover` says `OK` for each. `tests/test_run_shards.py` holds every
+row of the table that the runner catches.
 
 The guarantee, exactly: with the factory's `tests` check (the host
 checkout's runner, `SYBERLABS_BASE` set) and the reference critic required, a
@@ -287,7 +302,9 @@ does not hide it. Code the candidate did not change is the base's, and the
 host already trusts it. Two further gaps are named in `spec/GAPS.md` 58:
 - Test code can keep every test in the set but make tests vacuous: its own
   in the diff, or another's at run time by replacing its method. No count can
-  see this.
+  see this. Swallowing its own failures through the cleanup and subtest
+  methods is refused (above); a `try`/`except` around its own assertions, or
+  an assertion removed, is not.
 - Outside test files, the patterns that end the process or write to raw
   descriptors do not apply, because production code does both.
 

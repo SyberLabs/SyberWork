@@ -43,7 +43,9 @@ import sys
 # Revision 2: the integrity rule (test files, then every changed Python file) changed what this reviewer
 # refuses, so a Reviewed-by line naming revision 1 would misdescribe it. Revision 3: harness_override
 # also names the two methods through which a test reports an expected failure or an unexpected success.
-REVIEWER = {"name": "rules", "revision": "3"}
+# Revision 4: harness_override also names the methods that register and run a test's cleanups and run its
+# subtests, and unittest_patch an assignment of one of them on anything.
+REVIEWER = {"name": "rules", "revision": "4"}
 TEST_MARKERS = ("tests/", "test/", "/test_", "_test.", "spec/")
 SOURCE_SUFFIXES = (".py", ".js", ".ts", ".go", ".rs", ".java", ".rb", ".c", ".h", ".cs", ".mjs")
 MAX_INTEGRITY_FINDINGS = 40  # per candidate; the summary counts the rest
@@ -56,7 +58,8 @@ TEST_INTEGRITY = {
     "exit_at_import": "exits or raises SystemExit/KeyboardInterrupt at import or in a module or class fixture: "
                       "the module ends the process that discovers or runs it",
     "harness_override": "defines, in a TestCase, a method that starts or reports a test (run, __call__, debug, id, "
-                        "...): it can report a test that never ran",
+                        "...): it can report a test that never ran; or one that runs its cleanups or subtests "
+                        "(doCleanups, subTest, ...): it can swallow its own failures",
     "load_tests": "defines load_tests: the module chooses its own test set at discovery",
     "unittest_patch": "changes unittest's own objects (assigns, deletes or patches unittest attributes or a result's "
                       "callbacks, or reaches self._outcome / shouldStop)",
@@ -73,8 +76,10 @@ SIGNAL_CALLS = {"signal.signal", "signal.alarm", "signal.setitimer", "signal.set
 QUIT_CALLS = {"sys.exit", "exit", "quit", "os._exit", "unittest.main"}
 QUIT_RAISES = {"SystemExit", "KeyboardInterrupt", "GeneratorExit", "BaseException"}
 FIXTURES = {"setUpModule", "tearDownModule", "setUpClass", "tearDownClass"}
+CLEANUP_METHODS = {"addCleanup", "enterContext", "doCleanups", "addClassCleanup", "enterClassContext",
+                   "doClassCleanups", "subTest"}
 HARNESS = {"run", "__call__", "debug", "id", "_callTestMethod", "_callSetUp", "_callTearDown", "_callCleanup",
-           "_addExpectedFailure", "_addUnexpectedSuccess", "countTestCases", "__getattribute__"}
+           "_addExpectedFailure", "_addUnexpectedSuccess", "countTestCases", "__getattribute__"} | CLEANUP_METHODS
 RESULT_CALLBACKS = {"startTest", "stopTest", "startTestRun", "stopTestRun", "addSuccess", "addError", "addFailure",
                     "addSkip", "addSubTest", "addExpectedFailure", "addUnexpectedSuccess", "addDuration",
                     "wasSuccessful", "testsRun", "shouldStop", "stop"}
@@ -342,7 +347,7 @@ class _Scan(ast.NodeVisitor):
                         self.hit(node, "unittest_patch", f"{verb} {root}.{node.attr}")
                     elif node.attr in RESULT_CALLBACKS:
                         self.hit(node, "unittest_patch", f"{verb} .{node.attr}")
-                    elif node.attr in IDENTITY_ATTRIBUTES:
+                    elif node.attr in IDENTITY_ATTRIBUTES or node.attr in CLEANUP_METHODS:
                         self.hit(node, "unittest_patch", f"{verb} .{node.attr}")
                 if isinstance(node, ast.Subscript) and self.name(node.value) == "sys.modules":
                     key = self.name(node)
