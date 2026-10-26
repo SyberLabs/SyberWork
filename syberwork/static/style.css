@@ -156,7 +156,7 @@ details.panel > summary { cursor: pointer; display: flex; align-items: center; g
 details.panel > summary::-webkit-details-marker { display: none; }
 details.panel[open] > summary { margin-bottom: var(--s3); }
 .warn-panel { border-color: color-mix(in srgb, var(--unverified) 35%, var(--line)); }
-.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4); }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4); align-items: start; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); }
 .grid-2 > .panel, .grid-3 > .panel { margin-bottom: 0; }
 .grid-2, .grid-3 { margin-bottom: var(--s4); }
