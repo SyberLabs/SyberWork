@@ -50,15 +50,19 @@ GITHITS_SETTINGS = (githits.EXCLUDE_ENV, githits.EXCLUDE_REPLACE_ENV, githits.LI
 # The stand-in model. Modes: ``lookup`` (the default) gets it right only when the request's evidence shows fakelib's
 # signature, repairs without it the wrong way (a positional timeout) and starts from the 1.x API; ``positional``
 # always calls fetch positionally; ``missing`` imports a module installed nowhere until a web result names fakelib;
-# ``empty_first`` answers its first call with no candidate, then behaves as ``lookup``. Every request is logged.
+# ``empty_first`` answers its first call with no candidate, then behaves as ``lookup``. Every request is logged, and
+# beside it the names of the GitHits variables and the signing seed the command was given.
 STAND_IN = r'''
-import json, sys
+import json, os, sys
 from pathlib import Path
 request = json.load(sys.stdin)
 log = Path(LOG)
 calls = log.read_text(encoding="utf-8").count("\n") if log.exists() else 0
 with log.open("a", encoding="utf-8") as f:
     f.write(json.dumps(request) + "\n")
+with Path(LOG + ".env").open("a", encoding="utf-8") as f:
+    f.write(json.dumps(sorted(name for name in os.environ
+                              if name.startswith(("GITHITS_", "SYBERLABS_GITHITS_", "SYBERLABS_CERT")))) + "\n")
 evidence = "\n".join(item.get("text", "") for item in request.get("evidence") or [])
 feedback = request.get("feedback")
 if MODE == "empty_first" and calls == 0:
@@ -188,6 +192,11 @@ class RouterCase(unittest.TestCase):
 
     def requests(self, name: str) -> list[dict]:
         log = self.folder / f"{name}.log"
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+    def environments(self, name: str) -> list[list[str]]:
+        """Per call of the stand-in ``name``: the GitHits variables and signing seed its environment held."""
+        log = self.folder / f"{name}.log.env"
         return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
 
     def environ(self) -> dict:
@@ -932,6 +941,29 @@ class Construction(RouterCase):
                                                   lane="provider_3p")
         self.assertEqual(caught.exception.code, "invalid_provider")
         self.assertIn("--router or --githits", caught.exception.detail)
+        config = self.folder / "mcp.json"
+        config.write_text('{"mcpServers": {}}', encoding="utf-8")
+        with self.assertRaises(Rejected) as caught:  # an MCP configuration keeps the GitHits variables for Claude Code
+            router.routed(ClaudeCodeProvider)(self.root, bare=True, executable=claude, mcp_config=config,
+                                              lane="provider_3p")
+        self.assertEqual(caught.exception.code, "invalid_provider")
+        self.assertIn("--mcp-config", caught.exception.detail)
+        self.assertIsNotNone(ClaudeCodeProvider(self.root, bare=True, executable=claude, mcp_config=config,
+                                                lane="provider_3p"), "the unrouted provider takes it, as before")
+
+    def test_under_the_router_the_models_command_holds_no_githits_variable(self):
+        operator = {githits.TOKEN_ENV: self.token, "SYBERLABS_GITHITS_LICENSES": "MIT",
+                    "SYBERLABS_CERTIFICATE_SEED": "00" * 32}
+        kit = self.kit()
+        with mock.patch.dict(os.environ, operator):
+            routed = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+            self.assertEqual([c.evaluation for c in routed.propose(self.routed("routed"), seed=1)],
+                             ["failed", "passed"])
+            plain = kit.start("Fetch a URL with fakelib", paths=["src/", "tests/"])
+            plain.propose(RepairProvider(self.adapter("plain"), max_calls=1), seed=1)
+        self.assertEqual(self.environments("routed"), [[], []], "the factory holds the GitHits route, the model not")
+        [inherited] = self.environments("plain")
+        self.assertLessEqual(set(operator), set(inherited), "the plain repair loop's command inherits all, as before")
 
 
 class ClaudeCodeRouted(RouterCase):
@@ -997,6 +1029,7 @@ class CommandLine(RouterCase):
             (("--repair", command, "--router", "--router-holdout", "1.5"), "a probability from 0 to 1"),
             (("--repair", command, "--router", "--router-max-lookups", "-1"), "zero or more"),
             (("--claude-code", "--bare", "--githits", "--router"), "pick one"),
+            (("--claude-code", "--bare", "--mcp-config", "mcp.json", "--router"), "takes no --mcp-config"),
         ]
         for args, message in cases:
             with self.subTest(args=args):

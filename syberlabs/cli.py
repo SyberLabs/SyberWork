@@ -466,7 +466,8 @@ def _settle(kit: Kit, args) -> int:
 def _router(args, thread):
     """``propose --router``'s settings (research, opt-in: docs/ROUTER.md), or None without ``--router``. A router
     option without ``--router``, ``--router`` on a provider that is not the repair loop, and ``--router`` with
-    ``--githits`` are refused, so an option never does nothing silently."""
+    ``--githits`` or ``--mcp-config`` (a GitHits route for the model) are refused, so an option never does nothing
+    silently and only the factory looks up."""
     named = [flag for flag, value in (("--router-max-lookups", args.router_max_lookups),
                                       ("--router-holdout", args.router_holdout), ("--router-web", args.router_web),
                                       ("--router-decider", args.router_decider)) if value is not None]
@@ -479,6 +480,9 @@ def _router(args, thread):
     if args.githits:
         raise Rejected("invalid_provider", "--router and --githits give GitHits to different deciders (the factory, "
                                            "the model); pick one")
+    if args.mcp_config:
+        raise Rejected("invalid_provider", "--router takes no --mcp-config: an MCP server could give the model a "
+                                           "GitHits route of its own, and with the router only the factory looks up")
     from syberlabs import router
 
     config = router.cli_config(args, thread.id)

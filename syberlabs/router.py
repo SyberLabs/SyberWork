@@ -88,8 +88,8 @@ from syberlabs import githits, metrics, query_guard
 from syberlabs.canonical import canonical
 from syberlabs.claude_code import DROPPED_ENV, githits_variable, record_lookup
 from syberlabs.errors import Rejected
-from syberlabs.providers import (RepairProvider, current_meter, model_usage, refuse, split_command, tool_usage,
-                                 with_usage)
+from syberlabs.providers import (RepairProvider, current_meter, model_usage, refuse, run_json, split_command,
+                                 tool_usage, with_usage)
 from syberlabs.search import CheckResult, SearchSpace
 
 ROUTE = "route"            # observed: one router decision, versioned <search>.r<n>
@@ -957,6 +957,10 @@ class RouterMixin:
         if getattr(self, "githits", False) is True:
             raise Rejected("invalid_provider", "a routed provider has no GitHits route of its own: with the router the "
                                                "factory looks up, the model does not (use --router or --githits)")
+        if getattr(self, "mcp_config", None) is not None:
+            raise Rejected("invalid_provider", "a routed provider takes no --mcp-config: an MCP server could give the "
+                                               "model a GitHits route of its own, and with the router only the factory "
+                                               "looks up")
         self.router = config
         self.decisions: list[dict] = []
 
@@ -1274,6 +1278,12 @@ class RouterProvider(RouterMixin, RepairProvider):
     def __init__(self, argv: Sequence[str], *, name: str = "repair-router", router: RouterConfig | None = None,
                  **kwargs):
         super().__init__(argv, name=name, router=router, **kwargs)
+
+    def _call(self, space: SearchSpace, request: dict, parents: list[str]):
+        """``RepairProvider._call`` in ``command_environment()``: the model's command gets no GitHits variable and no
+        signing seed, as Claude Code's environment has none in arm A, so under the router only the factory can look
+        up. The plain repair loop's command still inherits the caller's whole environment (unchanged)."""
+        return run_json(self.argv, request, timeout=self.timeout, cwd=self.cwd, env=command_environment())
 
 
 _ROUTED: dict[type, type] = {RepairProvider: RouterProvider}

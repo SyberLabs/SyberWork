@@ -126,8 +126,12 @@ same in process. `router.Decider` is the protocol.
 
 The decider and web commands run in the caller's environment without the GitHits variables (`GITHITS_*`,
 `SYBERLABS_GITHITS_*`, the token included: the router holds the GitHits route and they do not need it) and without
-the certificate signing seed, as Claude Code's environment loses them in arm A. That is least privilege, not a
-sandbox: they inherit everything else, as a provider command does.
+the certificate signing seed, as Claude Code's environment loses them in arm A. So does the model's own command
+under the router (`--repair ADAPTER --router`; the plain repair loop's command still inherits the whole environment,
+as before), and a routed Claude Code run has no GitHits route of its own: `--githits` and `--mcp-config` are refused
+with `--router` (an MCP server could hand the model GitHits), so its environment loses the variables as in arm A.
+Only the factory can look up. That is least privilege, not a sandbox: they inherit everything else, as a provider
+command does.
 
 ## The holdout
 

@@ -209,11 +209,14 @@ def with_usage(signal, usage: dict | None, tools: dict | None) -> dict | None:
     return found or (None if not isinstance(signal, dict) else found)
 
 
-def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Path | None = None):
+def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Path | None = None,
+             env: Mapping[str, str] | None = None):
     """Run a command with ``payload`` as JSON on stdin; return its stdout parsed as JSON.
 
     Bounded by ``timeout`` seconds and 4 MB of output. The command inherits the
-    caller's environment. Failures are ``Rejected`` with a ``provider_*`` code.
+    caller's environment, or gets ``env`` instead when a caller narrows it (the
+    opt-in lookup router, ``syberlabs/router.py``). Failures are ``Rejected`` with
+    a ``provider_*`` code.
     """
     meter = _METER.get()
     if meter is not None:
@@ -222,7 +225,8 @@ def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Pat
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:
             proc = subprocess.Popen(list(argv), stdin=subprocess.PIPE, stdout=out, stderr=err, cwd=cwd,
-                                    env=dict(os.environ), start_new_session=hasattr(os, "setsid"))
+                                    env=dict(os.environ) if env is None else dict(env),
+                                    start_new_session=hasattr(os, "setsid"))
         except OSError as exc:
             raise Rejected("provider_unavailable", f"could not start {argv[0]!r}: {exc.strerror}") from None
         try:
