@@ -51,10 +51,16 @@ def judge(argument: str) -> str:
 
 
 def tracked_files(root) -> list[str]:
+    """The checkout's tracked files, or every file under it when git cannot list them (a superset: the tree-line
+    check only gets stricter)."""
     git = shutil.which("git")
     if git and (root / ".git").exists():
-        done = subprocess.run([git, "ls-files", "-z"], cwd=root, capture_output=True, check=True, timeout=60)
-        return [name for name in done.stdout.decode("utf-8").split("\0") if name]
+        try:
+            done = subprocess.run([git, "ls-files", "-z"], cwd=root, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            done = None
+        if done is not None and done.returncode == 0:
+            return [name for name in done.stdout.decode("utf-8").split("\0") if name]
     return [str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and ".git" not in p.parts]
 
 
@@ -126,6 +132,18 @@ class SkillCommands(api.FakeCase):
         targets = {*search.targets, read.target, *grep.targets}
         self.assertEqual(len(targets), 1, "one package at one pinned version throughout")
         self.assertRegex(targets.pop(), r"^[a-z]+:[A-Za-z0-9_.-]+@\d[\w.]*$", "registry:package@version")
+
+    def test_the_grep_claims_hold_in_the_pinned_contract(self):
+        """"it searches source, changelogs and docs", and why grep waits: the skill's grep sends no corpus, so the
+        server's default (all: the target's files and its hosted docs) applies, and the server waits 0 ms for grep by
+        default, so without --wait-ms a target still being indexed would read as no match."""
+        schemas = api.load_spec()["components"]["schemas"]
+        default_wait = schemas["GrepRequest"]["properties"]["wait_timeout_ms"]["default"]
+        self.assertEqual((schemas["GrepTarget"]["properties"]["corpus"]["default"], default_wait), ("all", 0))
+        self.assertIn("it searches source, changelogs and docs", self.template)
+        [grep] = [self.parser.parse_args(words_of(c)) for c in self.commands if words_of(c)[0] == "grep"]
+        self.assertIsNone(grep.corpus, "no corpus is sent, so the server's default applies")
+        self.assertGreater(grep.wait_timeout_ms, default_wait)
 
     def test_the_githits_clis_own_flags_are_usage_errors_here(self):
         """"Flags: only those above; this is not the githits CLI": forms from the upstream skill
