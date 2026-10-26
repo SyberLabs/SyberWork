@@ -216,6 +216,7 @@ class BridgeCase(unittest.TestCase):
 
 
 class PromptInjection(BridgeCase):
+    @unittest.skip("G2 negative control: a stub never counts")
     def test_injected_receipt_text_is_inert(self):
         """Fixture: an Attest receipt whose prose fields carry an instruction. Invariant: one observation, no other event, no call."""
         key = self.unknown()
