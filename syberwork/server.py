@@ -125,8 +125,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
     SYBERWORK_WITNESS_ROLE.
 
     ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the public keys its certificates are
-    verified under (one, or a few during a rotation), or None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from
-    SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC.
+    verified under (one, or a few during a rotation), with the certificate digests it revokes, or None; ``GET /api/certificates``
+    reads it. ``syberwork serve`` builds it from SYBERWORK_CERTIFICATE_HOME, SYBERWORK_CERTIFICATE_PUBLIC and
+    SYBERWORK_CERTIFICATE_REVOKED.
     """
     loopback = host in ("127.0.0.1", "::1", "localhost")
     if not loopback and os.getenv("SYBERWORK_BIND", "") != host:
