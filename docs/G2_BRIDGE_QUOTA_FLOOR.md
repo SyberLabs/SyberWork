@@ -59,15 +59,26 @@ not say that the cases pass their rubrics (that is G3). It is not a coverage fig
 
 ## Status
 
-**Proposed.** No run of this job has been observed yet. This section changes only
-from real Actions output.
+**Measured (SyberWork bridge, scoped).** Not on `main` and not required. This
+section changes only from real Actions output.
 
-### Local counts (not CI)
+The case modules are still open PRs, so the job was measured on disposable refs.
+These are not pull requests:
 
-These counts come from Python 3.13.5 on Linux. The tree was `main` (`e2e6408`)
-with the current heads of #94 (`d84cf1e`), #96 (`23f9dcc`) and #97 (`ff65d89`)
-merged locally, plus this counter. They are counts of tagged test methods, not
-coverage.
+| Ref | Contents | Run | Result |
+|---|---|---|---|
+| `ci/g2-bridge-integration-r23` | `main` + #94 + #96 + #97 + the PR #101 commit | [run 40304511544](https://github.com/SyberLabs/SyberWork/actions/runs/40304511544) | **PASS**, 22/22, table below |
+| `ci/g2-bridge-negctl-r23` | the same, plus #96's `test_injected_receipt_text_is_inert` skip-decorated into a stub | [run 40304584830](https://github.com/SyberLabs/SyberWork/actions/runs/40304584830) | **FAIL**, PI 2 < 3, the stub listed as not counted, 21/22 |
+| `feat/ci-g2-bridge-quota-floor` (PR #101 head, `main` + this change) | no inventory | [run 40304496103](https://github.com/SyberLabs/SyberWork/actions/runs/40304496103) | **FAIL**, every cell 0, 0/22 |
+
+The 15 gate controls passed in all three runs.
+
+### Counts
+
+These counts are from run 40304511544 (Python 3.12, ubuntu-latest). They match
+the local run on Python 3.13.5. The tree was `main` (`e2e6408`) with #94
+(`d84cf1e`), #96 (`23f9dcc`) and #97 (`ff65d89`) merged. They are counts of
+tagged test methods, not coverage.
 
 | Cat | Floor | active | xfail | stub | Counted (active+xfail) | Active-only | Result |
 |---|---:|---:|---:|---:|---:|---:|---|
