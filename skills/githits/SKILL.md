@@ -18,7 +18,7 @@ modified: >-
 
 # GitHits lookups
 
-GitHits shows a third-party package's source at the version installed here. Look up only when a failing check in your task implicates such a package (the traceback ends inside it, or an import, attribute or argument error names its symbol) and the check's output does not already say what the package expects. Never before a check has failed, and never for this repository's code, tests or conventions, or the standard library.
+GitHits shows a third-party package's source at the version installed here. Look up only when a failing check in your task implicates such a package (the traceback ends inside it, or an import, attribute or argument error names its symbol) and the check's output does not already show how to fix it, for example by naming the replacement. Never before a check has failed, and never for this repository's code, tests or conventions, or the standard library.
 
 ## Commands
 
@@ -35,7 +35,7 @@ Your only command (Bash) is the launcher, typed exactly as here. For a check fai
 
 ## Lean reads
 
-1. Locate: `grep --literal` for a name the check says is missing or for the package's error text (it searches source, changelogs and docs); `search --source symbol` for a name that exists but is used wrongly. Keep `--max-matches 5` and `--limit 3`.
+1. Locate with one command: `grep --literal` for a name the check says is missing or for the package's error text (it searches source, changelogs and docs); `search --source symbol` for a name that exists but is used wrongly; the other only if the first finds nothing. Keep `--max-matches 5` and `--limit 3`.
 2. Read the hit's line range, or the lines around the traceback's line: at most 60 lines, with the same target and the hit's path.
 
 ## Stop

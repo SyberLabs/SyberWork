@@ -888,7 +888,7 @@ SEARCH = 'search "requests retry backoff zq71" --target pypi:requests@2.32.3'
 EXAMPLE = 'example "retry an HTTP call with backoff zq72" --language python'
 # The committed blob's SHA-256 (``git cat-file blob HEAD:skills/githits/SKILL.md``): what signal.harness.skill
 # records on every platform, a Windows checkout with core.autocrlf included (githits-pilot-hardening, item 3).
-SKILL_SHA256 = "176d85f5e4c7f77569ed3b5faba26eee4da19fe4cd8d212be8af2933e8e0dccd"
+SKILL_SHA256 = "35ef6b4a4141e91ed93dad269e44b613fe679335ff0ce38ad4b59afc31b30b1b"
 # An operator's own GitHits variable, beside the token and the base URL the fixture sets: arm A drops it too.
 OPERATOR_GITHITS = {"GITHITS_OPERATOR_SETTING": "kept-only-in-arm-b"}
 # What a provider built today passes; githits=False must keep its argv byte-identical (githits-wiring, item 2).
