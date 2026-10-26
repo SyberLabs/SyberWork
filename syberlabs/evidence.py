@@ -1,5 +1,40 @@
 """Effect evidence predicates shared by admission and acceptance."""
 
+import json
+
+# Top-level fields a destination uses to say its record is not a live effect. A flag that is
+# present must be exactly false, ``livemode`` exactly true, and a label exactly a live label.
+SIMULATION_FLAGS = ("simulated", "simulation", "sandbox", "dry_run", "test", "testnet", "preview")
+SIMULATION_LABELS = ("mode", "environment", "env")
+LIVE_LABELS = ("live", "production", "mainnet")
+
+
+class AmbiguousRecord(ValueError):
+    """A destination body that names one field twice has no single meaning."""
+
+
+def _unique_fields(pairs: list) -> dict:
+    record = {}
+    for name, value in pairs:
+        if name in record:
+            raise AmbiguousRecord(f"duplicate field {name!r}")
+        record[name] = value
+    return record
+
+
+def destination_record(raw: bytes):
+    """Parse a destination body; duplicate keys at any depth raise ``AmbiguousRecord``, never last-wins."""
+    return json.loads(raw, object_pairs_hook=_unique_fields)
+
+
+def simulation_labeled(record) -> bool:
+    """True when a destination record labels itself as simulated, sandbox, test or otherwise not live."""
+    if not isinstance(record, dict):
+        return False
+    return (any(name in record and record[name] is not False for name in SIMULATION_FLAGS)
+            or ("livemode" in record and record["livemode"] is not True)
+            or any(name in record and record[name] not in LIVE_LABELS for name in SIMULATION_LABELS))
+
 
 def verified_reconciliation(event: dict) -> bool:
     """Legacy manager attestations do not establish external execution."""

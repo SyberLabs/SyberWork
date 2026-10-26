@@ -83,7 +83,7 @@ GitHits' privacy line is that it sees only the agents' queries, never code, and 
   "timeout": 30, "onFailure": "block"}]}]}}
 ```
 
-and passes it with `--settings`. The script is the host's own file by absolute path, as a critic program is (`docs/CRITIC.md`), so a candidate cannot rewrite its guard; `-I` keeps the worktree's directory and `PYTHONPATH` off the import path, so the worktree's own `syberlabs` is never imported. The three files are written read-only and the directory is removed after the call.
+and passes it with `--settings`. The script is the host's own file by absolute path, as a critic program is (`docs/CRITIC.md`), so a candidate cannot rewrite its guard; `-I` keeps the worktree's directory and `PYTHONPATH` off the import path, so the worktree's own `syberlabs` is never imported. The hook loads only the two standard-library modules it needs from beside itself, `canonical.py` and `_patterns.py`, by path, and not the `syberlabs` package, whose `__init__` imports the whole SDK. The three files are written read-only and the directory is removed after the call.
 
 **What keeps the record the hook's.** The guard's directory is a plain directory of the operator's user outside the worktree, so three things stop a model from forging a `pass` or weakening the guard there:
 
@@ -99,7 +99,7 @@ What can read the key: the Claude Code process, the hook, and every other proces
 
 | Rule | Blocks |
 |---|---|
-| `secret` | A credential shape: the pattern set `syberlabs.metrics` refuses in a note (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `sk-ant-`, `sk-`, `xox?-`, `AKIA`, followed by 8 or more key characters; the guard requires a word start, so `risk-assessment` is not an `sk-` key), a PEM private-key header, or a bearer token. |
+| `secret` | A credential shape: the pattern set `syberlabs.metrics` refuses in a note, one object defined in `syberlabs/_patterns.py` (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `sk-ant-`, `sk-`, `xox?-`, `AKIA`, followed by 8 or more key characters; the guard requires a word start, so `risk-assessment` is not an `sk-` key), a PEM private-key header, or a bearer token. |
 | `url_credentials` | A URL with a user name or password before the host (`scheme://user:pass@host`). |
 | `email` | An email address. |
 | `too_long` | More than `max_chars` characters (default 400). |
