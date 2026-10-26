@@ -33,6 +33,16 @@ SYBERWORK_WITNESS_LOG=.witness/log.sqlite3 SYBERWORK_WITNESS_PUBLIC=<hex> \
 SYBERWORK_WITNESS_PORT=<n> SYBERWORK_WITNESS_ROLE=manager python -m syberwork.cli --home .syberwork serve
 ```
 
+To list Build Thread admission certificates in Studio, give `serve` the Build Thread home that `syberlabs certify` wrote
+under and the signer's public key: the 64 hex characters `certify` printed and wrote to the `.pub` file. Both or neither, or `serve` stops.
+Take the key from the signer's own record, kept apart from the folder. Do not copy it from a `.pub` file in the folder
+`serve` reads: anyone who can write a certificate there can write a `.pub` beside it.
+
+```sh
+SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<signer key, 64 hex> \
+python -m syberwork.cli --home .syberwork serve
+```
+
 Open the page, press `i`, and paste the `operator`, `scheduler`, `manager`, `planner` and `admin`
 tokens one at a time. They are kept in this tab's `sessionStorage` (as the old console kept one token)
 and are sent only as a bearer header to the loopback service. They never appear in the URL. Leave the
@@ -101,7 +111,8 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
      value, the events it came from and the server's note), **Witness** (`GET /api/cases/{id}/witness`: each
      leaf of the witness's log that names this case, the events it covers and the server's verdict, and
      **Ask witness to sign**, `POST /api/cases/{id}/witness`, for the role `serve` was given) and
-     **Certificate**, a disabled button that names the read route it lacks.
+     **Certificate**, which says a case has none (certificates are about Build Threads) and, when `serve` reads a
+     certificate home, offers **Open certificates in Studio**.
   6. *Replay*: choose a contract and a policy version. The table shows each changed decision as recorded
      and as replayed, and each acceptance clause before and after. The server's note (no re-read, no
      mutation) is shown verbatim.
@@ -113,7 +124,10 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
   that validates JSON, refuses an existing version, and lists the changed paths before **Publish**.
   Actions and sources are listed and registered by administrators only. Other credentials see each
   source's read role and whether they hold it, and *admin or manager role required* in place of the policy
-  list.
+  list. Under **Build Threads**, **Certificates** lists the admission certificates `serve` reads
+  (`GET /api/certificates`), each with the verdict `serve` reached under the configured key: *certified*, *signed ·
+  journal not checked*, *journal differs*, *journal unreadable* or *not certified*, with the thread, candidate, result commit, contract,
+  checks and certified chain prefix of each signed one.
 
 ## Visual system
 
@@ -145,7 +159,8 @@ refreshes and proposals act at once, because they are either read-only or pass t
 All require a bearer token and append nothing to the case (`tests/test_console.py` `test_reads_append_nothing`,
 `test_explain_appends_nothing_and_writes_no_row`, `test_side_read_appends_nothing_and_an_unknown_case_is_refused`,
 `test_preview_appends_nothing_for_anyone`, `test_the_read_appends_nothing_to_the_case_or_the_log`,
-`test_only_the_configured_role_may_ask_and_the_case_gets_nothing`). All are `GET` except two POSTs.
+`test_only_the_configured_role_may_ask_and_the_case_gets_nothing`, `ConsoleCertificates.test_the_read_writes_nothing`).
+All are `GET` except two POSTs.
 `POST /api/cases/{id}/preview` carries the proposal's arguments in its body and, like the existing `replay` POST,
 writes nothing. `POST /api/cases/{id}/witness` is the one route here with an effect, and it is outside this
 database: the witness appends a leaf to its own log. As POSTs, their refusals answer `409`, including a missing
@@ -153,7 +168,8 @@ token (`unauthorized`) and a role the caller lacks (`forbidden`).
 
 | Route | Who | Returns |
 |---|---|---|
-| `/api/console` | any principal | `{planner_configured, effects, witness: {log, request_role}}`. The planner URL and the witness port are not disclosed; `request_role` is the role `POST …/witness` requires, or `null` when `serve` has no witness to ask. |
+| `/api/console` | any principal | `{planner_configured, effects, witness: {log, request_role}, certificates: {configured}}`. The planner URL, the witness port and the certificate home are not disclosed; `request_role` is the role `POST …/witness` requires, or `null` when `serve` has no witness to ask. |
+| `/api/certificates` | any principal | Without a configured home: `{configured: false, note}`. With one: `{configured, public_key, total, shown, checked: ["signature", "journal"], not_checked: ["repository"], certificates, note}`, one row per `*.json` under `<home>/certificates`, at most 50 in name order: `{file, verdict, reason, signature, journal, journal_present, repository: null, statement}`. `verdict` and the layer states are `syberlabs.certificate.verify_certificate`'s, run by `serve` under `SYBERWORK_CERTIFICATE_PUBLIC` with the home as the journal home. `statement` (thread, objective, candidate, contract, policy version, base and result commits, target ref, admission actor, approvers and decision, checks, chain prefix, `issued_at`, `signing`, form and key id) is present only when the signature layer passed. A link, a folder or an unreadable file is refused (`not_a_regular_file`, `certificate_unreadable`); a file the verifier raises on (a deeply nested one raises `RecursionError`) is `unverifiable`. A thread journal or `registry.jsonl` that is not a regular file, is over 64 MiB, or cannot be read fails a signed row as `journal_unreadable:not_a_regular_file`, `:too_large` or `:io_error`, and the verifier does not read it. No layer note is returned, so no host path is disclosed. |
 | `/api/contracts` | any principal | `[{id, version, title, compiled_path, digest}]` |
 | `/api/contracts/{id}/{version}` | any principal | the stored contract (the same document `GET /api/cases/{id}` already returns for a case) |
 | `/api/policies` | `admin` or `manager`, holding no automation role (`model`, `compiled`, `search`); others `403 forbidden` | `[{version, body, digest}]` |
@@ -187,7 +203,7 @@ docs/METRICS.md); no branch in this stack adds a metrics route.
 | 7 | External planner | Done, with an empty state when unset (`GET /api/console`). Not exercised against a live planner. |
 | 8 | Effect and reconciliation status | Done. Attest text is never drawn as reconciled; legacy `reconciled` rows without proof are flagged. |
 | 9 | Keyboard, contrast, states, responsive | Done for keyboard, contrast and loading/empty/error/success states. Responsive layout is checked at 820 px only. |
-| 10 | Tests | `tests/test_console.py` (routes, static safety, the node projection tests with Python parity, the browser walkthrough, which also has the manager ask the witness to sign the completed case and reads it back). |
+| 10 | Tests | `tests/test_console.py` (routes, static safety, the node projection tests with Python parity, the browser walkthrough, which also has the manager ask the witness to sign the completed case and reads it back, then opens the Build Thread certificates from History). |
 
 Gaps from #95, closed or still open:
 
@@ -199,7 +215,7 @@ Gaps from #95, closed or still open:
 | `/api/policies` read scope | **Closed**: admin or manager, without an automation role; `model`, `compiled`, `operator` and observer credentials get `403` | `POLICY_READERS` in `server.py`; `ConsoleReadScope` |
 | JCS side records (`Work.side_channel`) | **Closed**: a read-only route returns `Work.side_channel` as stored; History shows coverage and each event's digest and rule. The console does not recompute digests | `GET /api/cases/{id}/side`; `M.sideRecords`; `ConsoleSideRecords` |
 | Witness | **Closed for reading** (#115): `serve` opens the witness's log read-only when `SYBERWORK_WITNESS_LOG` and `SYBERWORK_WITNESS_PUBLIC` name it, and History draws what the server judged. **Closed for asking** (this branch): with `SYBERWORK_WITNESS_PORT` and `SYBERWORK_WITNESS_ROLE` also set, **Ask witness to sign** has `serve` send the history to the witness, for that role only (below) | `GET` and `POST /api/cases/{id}/witness` (`Work.witness_status`, `Work.request_witness`); `M.witnessView`, `can(…, 'witness_request')`; `ConsoleWitness`, `ConsoleWitnessRequest`; the browser walkthrough |
-| Certificate | **Open, shown as missing**: no read path exists. History has a disabled button naming `GET /api/cases/{id}/certificate` and why it does not exist | `witnessPanel` in `app.js`; `test_the_certificate_is_named_as_missing_not_drawn` |
+| Certificate | **Closed for reading Build Thread certificates** (this branch): with `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, `serve` verifies each file under `<home>/certificates` (signature, then the journal) and Studio → Certificates draws the verdicts. **A case still has none**: History says so and links to Studio. The repository layer is not run by `serve` | `GET /api/certificates` (`syberwork/certificates.py`); `M.certificateView`; `studioCertificates`, `witnessPanel` in `app.js`; `ConsoleCertificates`, `test_a_case_has_no_certificate_route`, the browser walkthrough |
 | Admission before proposing | **Closed**: Propose → By hand binds arguments from the contract and asks the server what proposing would record now, before anything is written | `POST /api/cases/{id}/preview` (`Work.preview_admission`); `M.previewView`, `M.previewCurrent`; `ConsolePreview` |
 | Builder API (`/api/builder/*`) | Open | a separate surface, not part of this console |
 | Push updates | Open | there is no push: press `r` to reload |
@@ -343,10 +359,70 @@ Gaps from #95, closed or still open:
     - **Not done.** The console still verifies no signature itself. No rate limit applies beyond one request at a
       time and the `already_witnessed` refusal: a holder of the role can ask once per new event. The witness's own
       protocol, `syberlabs/witness.py`, `syberlabs/tlog.py` and `spec/` are unchanged.
-- **Certificate** (open, shown as missing): admission certificates (`syberlabs certify`, docs/CERTIFICATE.md)
-  belong to Build Threads and are files under `<home>/certificates`; a case here has none. The console draws
-  nothing as certified. A disabled *Show certificate* names `GET /api/cases/{id}/certificate`, which is not
-  served (`404 not_found`).
+- **Certificate** (closed for reading Build Thread certificates on this branch; it was *open, shown as missing* in
+  #118). Admission certificates (`syberlabs certify`, docs/CERTIFICATE.md) belong to Build Threads and are files under
+  `<home>/certificates`. A SyberWork case is not a Build Thread, so there is still no per-case route
+  (`GET /api/cases/{id}/certificate` stays `404 not_found`) and History draws nothing on a case as certified. It now
+  says why, and **Open certificates in Studio** goes to the list when `serve` reads one. #118 named the per-case route as
+  the missing piece. Building that would have meant inventing a link between a case and a thread that the code does
+  not have, so this branch adds a listing instead.
+  - **Configuration.** `syberwork serve` takes `SYBERWORK_CERTIFICATE_HOME` (the Build Thread home, `.syberlabs`) and
+    `SYBERWORK_CERTIFICATE_PUBLIC` (the 64 hex characters `certify` writes to the `.pub` file). It needs both or neither.
+    A key that is not 32 bytes of hex, or a home that is not a directory, stops `serve` (`_certificates` in
+    `syberwork/cli.py`). Nothing in the code chooses the key. The `.pub` file beside each certificate is never read:
+    whoever can write the folder can write it too, so a certificate signed under another key fails even when its own
+    `.pub` matches it (`test_another_key_or_changed_bytes_fail_and_state_nothing`).
+  - **What serve checks.** `CertificateShelf.listing` (`syberwork/certificates.py`) runs
+    `syberlabs.certificate.verify_certificate(bytes, key, home=<home>)` on each file, as `syberlabs verify FILE --public
+    KEY` would with the journal layer added. The signature layer covers the size, the `payloadType`, the Ed25519
+    signature over the DSSE PAE, the statement wrapper, the strict payload shape, the subject and the canonical bytes.
+    The journal layer runs when `<home>/journal/threads/<thread>.jsonl` exists, and checks the certified prefix, its
+    head and `claims()` field by field. The **repository layer is not run**: it needs Git and the project's working
+    tree, and `serve` runs no Git. Every answer says so (`not_checked: ["repository"]`), and the console names
+    `syberlabs verify FILE --public KEY --repo .` for it. No layer note is returned, because those notes carry host
+    paths.
+  - **What the console draws** (`M.certificateView`). *certified* only for `verdict: pass`, `signature: ok`,
+    `journal: ok`, `journal_present: true` and a statement of the expected shape. *signed · journal not checked* for a
+    pass with no journal under the home, as `verify` prints `pass (journal not checked)`. *journal differs* for a signed
+    file whose journal layer failed (truncated, another head, a changed field). The statement is shown beside it, under
+    *do not treat it as certified*. *journal unreadable* for a signed file whose journal `serve` could not or would not read.
+    *not certified* for a failed signature or an unreadable file, with nothing stated.
+    Any other combination, including a pass whose journal fields disagree, is *unknown*. The console checks no
+    signature itself.
+  - **Cost and freshness.** Each first verification is a pure-Python Ed25519 check (about 0.14 s, as measured for the
+    witness). A verdict depends only on the certificate bytes, the key, `registry.jsonl` and the thread's journal. So
+    `serve` keeps up to 256 verdicts keyed on the SHA-256 of the certificate and the state of the other two. That state
+    is *absent*, the SHA-256 of a regular file of at most 64 MiB (read in chunks), or *refused*. A missing journal and
+    an unreadable one are different states. A verdict is kept only when nothing was refused and both files hash the same
+    after verifying as before. A write in between would otherwise file the new content's verdict under the old content's
+    key (`test_a_verdict_is_computed_once_per_input_bytes` corrupts the journal during verification and requires a
+    fresh pass once it is put back). The registry and each journal are hashed once per read, however many rows name
+    them. The thread used to pick the journal is read from the unverified file, only after it matches the thread id
+    pattern, and is never answered. One read verifies at most 50 files in name order and reports the total. Reads run
+    one at a time. The console keeps one answer until `r`.
+  - **Trust boundary.** The home is the deployment's, like the witness log. A process that can write it can swap a
+    journal between `serve`'s check and the verifier's read; the size and file-type checks keep a FIFO or a device from
+    hanging the route, not from that race.
+  - **Who reads.** Any principal, like the witness read. A certificate is built to travel (an in-toto Statement for
+    Sigstore and Rekor), and it carries an objective, actor and approver names, roles and commit ids. Restricting it to
+    a role would be a deployment choice this branch does not make.
+  - **Nothing is written.** The test compares every file under the Build Thread project (outside `.git`) and a full
+    dump of the case database before and after a read. `verify_certificate` opens the journal read-only and takes no
+    lock.
+  - **Independent review.** A Claude session that did not write the change reviewed it and found no input that makes a
+    row read *certified* without `serve`'s verification. All seven of its findings are fixed:
+    - A deeply nested file raised `RecursionError` past the thread lookup and answered `500` for the whole listing.
+    - The cache could not tell a missing journal from an unreadable one, and could file a verdict under the hash read
+      before an append.
+    - Journal and registry reads had no size cap, followed a FIFO, and were repeated for every row.
+    - The run example took the trusted key from the folder.
+    - An unreadable journal was drawn as *journal differs*.
+    - Signed-only rows drew their checks green.
+    - The path-disclosure test could not fail on Windows.
+  - **Not done.** The repository layer from `serve`. More than one trusted key, rotation or revocation (v0 has one key,
+    as docs/CERTIFICATE.md says). Any link from a case to a thread. The witness co-signature, which is docs/CERTIFICATE.md's
+    next packet; v0 certificates are signed in the certifying process, and the page says so. A push when a new file
+    appears (press `r`). `syberlabs/certificate.py`, docs/CERTIFICATE.md and `spec/` are unchanged.
 - **Work item per case** (closed): History reads `GET /metrics/work_items/{id}` (an existing route) and
   shows each of the nine metrics (`syberlabs.metrics.METRICS`, with a parity test) as `_cell` writes it.
   *unknown* stays a badge, a boolean is yes or no, cost has four decimals. One exception: a whole-number

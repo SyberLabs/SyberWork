@@ -325,5 +325,8 @@ dialog::backdrop { background: rgba(5, 6, 8, .6); }
 /* History: side records, the case's work item, the witness log, and the missing certificate read */
 .side-summary p, .work-item p { margin: 0 0 var(--s2); }
 table.metrics-rows td.why { max-width: 300px; }
-.witness-missing { display: grid; gap: var(--s3); }
+.certificate-case { display: grid; gap: var(--s3); }
+.certificates { display: grid; gap: var(--s3); }
+table.certificate-rows td { vertical-align: top; }
+table.certificate-rows td .why { max-width: 260px; }
 .witness-ask { margin: var(--s3) 0; }
