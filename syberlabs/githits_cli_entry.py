@@ -12,6 +12,11 @@ It accepts only the five lookups (``githits.LOOKUPS``: search, example, read, li
 ``githits.launcher_parser``. ``doctor``, ``--help`` and anything else exit 2 with a usage message before a client
 exists, so they write no record; ``doctor`` is the operator's, through ``syberlabs githits doctor``. ``example`` has
 no ``--license-mode`` here and always sends ``license_mode: strict``.
+
+Before it prints anything it runs ``cli.survive_unicode()``, as ``syberlabs`` itself does: under ``-I`` on Windows a
+piped stdout is cp1252, and a result holding a character outside it (a box-drawing line, an emoji) must print with
+that character replaced, not raise. The client delivers the output before it writes the call's record, so a print
+that still fails is recorded ``error`` and never follows an ``ok`` record (``githits.Client.call``, ``deliver``).
 """
 
 from __future__ import annotations
@@ -27,11 +32,12 @@ def main(argv: list[str] | None = None) -> int:
     if sys.path[:1] != [root]:
         sys.path.insert(0, root)
     import syberlabs
-    from syberlabs import githits
+    from syberlabs import cli, githits
 
-    if Path(syberlabs.__file__).resolve().parent != HERE or Path(githits.__file__).resolve().parent != HERE:
+    if any(Path(module.__file__).resolve().parent != HERE for module in (syberlabs, cli, githits)):
         sys.stderr.write("error: githits_launcher: syberlabs was not imported from the host checkout\n")
         return 1
+    cli.survive_unicode()  # before any output: a cp1252 pipe replaces what it cannot encode instead of raising
     words = list(sys.argv[1:] if argv is None else argv)
     parser = githits.launcher_parser()
     if not words or words[0] not in githits.LOOKUPS:

@@ -103,8 +103,9 @@ def _print_receipt(receipt) -> None:
         print("next: " + receipt.hint)
 
 
-def _survive_unicode() -> None:
-    """Never crash on a console that cannot encode a check's output (cp1252 and a vitest tick, say)."""
+def survive_unicode() -> None:
+    """Never crash on a console that cannot encode a check's output (cp1252 and a vitest tick, say). Public because
+    the GitHits launcher's entry (``githits_cli_entry.py``) runs it too, before it prints anything."""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
@@ -115,7 +116,7 @@ def _survive_unicode() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _survive_unicode()
+    survive_unicode()
     parser = argparse.ArgumentParser(prog="syberlabs", description="Governed, Git-lineaged changes to this repository.")
     parser.add_argument("--home", default=".syberlabs")
     parser.add_argument("--repo", default=".")
