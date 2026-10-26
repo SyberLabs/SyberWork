@@ -556,9 +556,14 @@ class ConsoleBrowser(CellCase):
     reference = True
 
     def test_the_purchase_order_path_completes_in_a_browser(self):
+        # The strict suite allows only the inspector's exact reasons for a missing browser tool.
+        if shutil.which("node") is None:
+            self.skipTest("node is not installed")
         root = playwright_root()
         if root is None:
-            self.skipTest("node playwright is not installed")
+            if shutil.which("npm") is None:
+                self.skipTest("npm is not installed")
+            self.skipTest("playwright for node is not installed")
         env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens)}
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
