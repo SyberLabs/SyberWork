@@ -550,6 +550,28 @@ SWALLOWS_AT_SETUP = """
             with self.subTest(i=0):
                 self.fail("must fail")
 """
+SWAPS_SUBTEST_LIKE_HYPOTHESIS = """
+    import contextlib
+    import types
+    import unittest
+
+    @contextlib.contextmanager
+    def quiet_subtest(self, msg=None, **params):
+        yield
+
+    class Given(unittest.TestCase):
+        def test_swaps_and_restores(self):  # what Hypothesis's @given does around its examples
+            subTest = self.subTest
+            try:
+                self.subTest = types.MethodType(quiet_subtest, self)
+                with self.subTest(i=0):
+                    pass
+            finally:
+                self.subTest = subTest
+        def test_fails_after(self):
+            with self.subTest(i=0):
+                self.fail("deliberate")
+"""
 PRINTS_PROTOCOL = """
     import unittest
 
@@ -740,6 +762,16 @@ class Integrity(unittest.TestCase):
         self.assertIn("test code changed Swallow.subTest while test_setup.Swallow.test_fails_in_a_subtest ran",
                       ran.stdout)
         self.assertTrue(_summary(_serial_suite({"test_setup.py": SWALLOWS_AT_SETUP}))[1].startswith("OK"))  # serial unittest is fooled
+
+    def test_unittest_s_own_subtest_put_back_on_the_instance_is_not_an_override(self):
+        """Hypothesis's ``@given`` replaces ``subTest`` on the instance while it runs and puts back ``unittest``'s
+        own method, bound to the test: that is not taken from outside, and a later failure still counts."""
+        ran = self.run_suite({"test_given.py": SWAPS_SUBTEST_LIKE_HYPOTHESIS})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertNotIn("harness", ran.stdout)
+        self.assertNotIn("test code changed", ran.stdout)
+        self.assertIn("FAIL: test_fails_after (test_given.Given.test_fails_after)", ran.stdout)
+        self.assertRegex(ran.stdout, r"FAILED \((?:[^)]*, )?failures=1")
 
     def test_the_critic_flags_each_way_of_swallowing_a_failure(self):
         for name, body, rule in (("test_swallow.py", SWALLOWS_SUBTEST, "harness_override"),

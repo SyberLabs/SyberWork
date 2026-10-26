@@ -156,11 +156,16 @@ def _overrides(test) -> list:
     """The harness and cleanup methods ``test`` takes from outside ``unittest`` (its class or the instance)."""
     found = []
     for name in HARNESS_METHODS + CLEANUP_METHODS:
-        if name in vars(test):
-            found.append(name)
-            continue
         owner = next((klass for klass in type(test).__mro__ if name in vars(klass)), None)
-        if owner is not None and not _unittest_module(owner.__module__):
+        from_unittest = owner is not None and _unittest_module(owner.__module__)
+        if name in vars(test):
+            # ``unittest``'s own method bound to this very test is not taken from outside. Hypothesis's ``@given``
+            # replaces ``subTest`` on the instance while it runs, then puts back ``test.subTest`` that way.
+            held = vars(test)[name]
+            if not (from_unittest and getattr(held, "__self__", None) is test
+                    and getattr(held, "__func__", None) is vars(owner)[name]):
+                found.append(name)
+        elif owner is not None and not from_unittest:
             found.append(name)
     return found
 

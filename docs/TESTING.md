@@ -115,7 +115,10 @@ otherwise:
   an expected failure that passed, which fails a run, into a pass, and a
   `subTest` that suppresses what its block raises, or a `doCleanups` that
   drops the cleanups, turns a failing test into a pass. These are refused by
-  where they come from, not by what they do.
+  where they come from, not by what they do. One instance attribute is not an
+  override: `unittest`'s own method bound to that same test. Hypothesis's
+  `@given` replaces `subTest` on the instance while it runs (with a version
+  that only warns) and puts `unittest`'s back that way.
 - **While running:** each shard records the functions that start, run and
   report a test (those methods of `TestCase` and its cleanup and subtest
   methods, `unittest.case._addSkip` and `_addError`, through which
