@@ -35,8 +35,9 @@ from spec.validate import validate_events
 from syberlabs import Rejected, claude_code, githits, metrics, query_guard
 from syberlabs.canonical import canonical
 from syberlabs.claude_code import (BIN_ENV, CODE_TOOLS, DEFAULT_TOOLS, GITHITS_ENTRY, LOGIN_LANE_DROPPED_ENV, LOOKUP,
-                                   SKILL_PATH, ClaudeCodeProvider, Transcript, code_tools, githits_skill,
-                                   instruction_file, parse_tools, query_text, version_tuple, write_launcher)
+                                   SKILL_PATH, THIRD_PARTY_SWITCHES, ClaudeCodeProvider, Transcript, code_tools,
+                                   githits_skill, instruction_file, parse_tools, query_text, version_tuple,
+                                   write_launcher)
 from syberlabs.cli import main as cli
 from syberlabs.events import verify_events
 from syberlabs.gitspace import IDENTITY
@@ -206,6 +207,18 @@ VERSION_ONLY = [PY, "-c", "print('2.1.309 (Claude Code)')"]  # a stand-in that o
 
 
 class ClaudeCodeCase(RepoCase):
+    def setUp(self):
+        super().setUp()
+        # A test's lane comes from the test, never from the environment the suite happens to run in. A Claude Code
+        # cloud session sets ANTHROPIC_BASE_URL and CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, which the provider rightly
+        # reads as provider_3p and refuses for api (THIRD_PARTY_SWITCHES); a test that wants a switch sets it itself
+        # with mock.patch.dict. The whole environment is restored afterwards.
+        hermetic = mock.patch.dict(os.environ)
+        hermetic.start()
+        self.addCleanup(hermetic.stop)
+        for name in THIRD_PARTY_SWITCHES:
+            os.environ.pop(name, None)
+
     def stand_in(self, name, *, first=None, repair=None, exit=0, lookups=None, hooks=True, no_tool_use_id=False,
                  version=None, forge=None, tamper_policy=False, fail_after_lookups=0, hang_after_lookups=False,
                  log_env=False, records_written=()):
