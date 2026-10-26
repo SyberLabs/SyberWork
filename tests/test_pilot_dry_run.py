@@ -25,7 +25,8 @@ from unittest import mock
 from syberlabs import claude_code, experiment, githits, metrics, query_guard
 from syberlabs.cli import main as cli
 from tests.test_build_thread import git
-from tests.test_claude_code import BROKEN, COST, PRICES, ClaudeCodeCase, launcher_lookup
+from tests.test_claude_code import BROKEN, COST, ClaudeCodeCase, launcher_lookup
+from tests.test_claude_code import PRICES as INPUT_OUTPUT
 from tests.test_githits import FakeGitHits
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,10 @@ pilot = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pilot)
 
 SEED = 7
+# The stand-in's model at all four rates the plan must give, its cache rates the input rate: so the host's arithmetic
+# is test_claude_code's COST.
+PRICES = {model: {**rates, "cache_read_per_million": rates["input_per_million"],
+                  "cache_creation_per_million": rates["input_per_million"]} for model, rates in INPUT_OUTPUT.items()}
 # What the canary asks the model to run, and what the stand-in runs on every call.
 LOOKUPS = [launcher_lookup(pilot.CANARY_BLOCKED), launcher_lookup(pilot.CANARY_PASSING)]
 # Variables a test must not inherit from the shell (a Claude Code cloud session sets two of the switches).
@@ -150,7 +155,7 @@ class Plan(unittest.TestCase):
         plan = pilot.validate_plan(self.valid(_comment="ignored"))
         self.assertEqual((plan["experiment"], plan["max_calls"], plan["max_turns"]),
                          (pilot.DEFAULT_EXPERIMENT, pilot.DEFAULT_MAX_CALLS, pilot.DEFAULT_MAX_TURNS))
-        self.assertEqual(plan["allowed_tools"], ",".join(claude_code.DEFAULT_TOOLS))
+        self.assertEqual(plan["allowed_tools"], "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch", "the pilot's")
         self.assertEqual(experiment.parse_items(pilot.items_text(plan["items"], plan["experiment"])),
                          {"A-0": ("needs_lookup",), "A-1": ("needs_lookup",), "A-2": ("needs_lookup",)})
         refused = {
@@ -161,15 +166,22 @@ class Plan(unittest.TestCase):
             "an unknown key": self.valid(budget=3),
             "no prices": {k: v for k, v in self.valid().items() if k != "prices"},
             "the template's prices": self.valid(prices=pilot.TEMPLATE["prices"]),
+            "no cache rates": self.valid(prices=INPUT_OUTPUT),
+            "a free cache": self.valid(prices={m: {**r, "cache_read_per_million": 0} for m, r in PRICES.items()}),
             "a shell": self.valid(allowed_tools="Read,Edit,Bash"),
             "prices and a contract": self.valid(contract={"evolution": {}}),
             "a path out of the tree": self.valid(items=[{"id": f"A-{n}", "objective": f"x {n}", "paths": ["../x"]}
                                                         for n in range(3)]),
+            "a Windows path out of the tree": self.valid(items=[{"id": f"A-{n}", "objective": f"x {n}",
+                                                                 "paths": ["src\\..\\..\\x"]} for n in range(3)]),
+            "a canary path out of the tree": self.valid(canary_paths=["..\\x"]),
             "an objective like a flag": self.valid(items=[{"id": f"A-{n}", "objective": f"--x {n}"} for n in range(3)]),
         }
         for why, doc in refused.items():
             with self.subTest(why), self.assertRaises(pilot.PlanError):
                 pilot.validate_plan(doc)
+        with self.assertRaisesRegex(pilot.PlanError, "cache_read_per_million, cache_creation_per_million .*cache"):
+            pilot.validate_plan(self.valid(prices=INPUT_OUTPUT))  # says which rates, and why they matter
 
 
 class Arguments(unittest.TestCase):
@@ -232,17 +244,41 @@ class Pieces(unittest.TestCase):
             doc = json.loads(json.dumps(main))
             del doc["evolution"]["budget"][key]
             return doc
-        over = json.loads(json.dumps(main))
-        over["evolution"]["budget"]["max_dollars"] = 9.0
+        def with_budget(**values):
+            doc = json.loads(json.dumps(main))
+            doc["evolution"]["budget"].update(values)
+            return doc
         for why, cap, doc, words in (("no prices", 8.0, without("prices"), "prices no model"),
+                                     ("no cache rates", 8.0, with_budget(prices=INPUT_OUTPUT), "cache_read_per"),
                                      ("no share", 8.0, without("max_dollars"), "sets no budget.max_dollars"),
+                                     ("a share in words", 8.0, with_budget(max_dollars="1"), "positive number of"),
+                                     ("a negative share", 8.0, with_budget(max_dollars=-1), "positive number of"),
                                      ("not strict", 8.0, without("strict"), "budget.strict true"),
-                                     ("share over the cap", 8.0, over, "above the cap"),
+                                     ("share over the cap", 8.0, with_budget(max_dollars=9.0), "above the cap"),
                                      ("no cap", float("nan"), main, "positive number")):
             with self.subTest(why):
                 check = pilot.check_budget(cap, doc, 6)
                 self.assertEqual(check.status, "FAIL")
                 self.assertIn(words, check.detail)
+
+    def test_file_names_paths_and_an_empty_table_on_any_system(self):
+        self.assertEqual(pilot.file_name("GH:1"), "GH_1", "':' would name an NTFS stream, out of the scan's sight")
+        self.assertEqual(pilot.file_name("LIB-1.a+b_c"), "LIB-1.a+b_c")
+        for path in ("../x", "src/../../x", "..\\x", "src\\..\\x", "/etc", "\\x", "C:x", " "):
+            self.assertFalse(pilot.relative_path(path), path)
+        for path in ("src", "src/app", "src\\app", "a..b", ".github"):
+            self.assertTrue(pilot.relative_path(path), path)
+        self.assertEqual(pilot.table([]), [])
+
+    def test_a_file_is_searched_whole_and_across_its_blocks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "big.bin"
+            path.write_bytes(b"x" * 1000 + b"needle-0123456789" + b"y" * 1000)
+            self.assertTrue(pilot.holds(path, b"needle-0123456789", block=1005), "a match across two blocks")
+            self.assertFalse(pilot.holds(path, b"needle-9", block=7))
+            found, read, unread = pilot.files_holding("needle-0123456789", [path, Path(folder) / "gone"], limit=10)
+            self.assertEqual((found, read, unread), ([], 0, 2), "over the limit, and unreadable: counted, not read")
+            self.assertEqual(pilot.files_holding("needle-0123456789", [path], limit=None)[:2], ([path], 1))
 
     def test_the_gate_keeps_one_share_of_room_under_the_cap(self):
         self.assertIsNone(pilot.gate(0.0, 1.0, 8.0))
@@ -290,6 +326,7 @@ class DryRun(DryRunCase):
         self.assertEqual(canary["status"], "PASS", canary["detail"])
         self.assertEqual([(x["tool"], x["guard"], x["ok"]) for x in canary["lookups"]],
                          [("Bash", "email", False), ("githits.search", "pass", True)])
+        self.assertIn("the guard refused 1 lookup(s) (email) and passed 1 that reached GitHits", canary["detail"])
         self.assertEqual(canary["spend"], COST)
 
         # Every item in both arms, from the one base, in the seeded order, each thread labelled before its candidate.
@@ -326,6 +363,9 @@ class DryRun(DryRunCase):
         for argv in proposals:
             start = argv.index("propose")
             self.assertEqual(argv[start:start + 3], ["propose", "--claude-code", "--bare"])
+        tools = [argv[argv.index("--allowed-tools") + 1] for argv in proposals]
+        self.assertEqual(tools, ["Read,Edit,Write,Glob,Grep"] + ["Read,Edit,Write,Glob,Grep,WebSearch,WebFetch"] * 6,
+                         "the pilot's tools in both arms; the canary without the web, so it can only use the launcher")
         self.assertTrue(all(argv[argv.index("--githits-arm") + 1] == "on" for argv in proposals if "--githits" in argv))
         self.assertEqual(sum("--githits" in argv for argv in proposals), 4, "the canary and the three treatment runs")
         for entry in threads:
@@ -338,7 +378,9 @@ class DryRun(DryRunCase):
         self.assertEqual(report[:2], ["experiment", "report"])
         for flag, value in (("--items", str(Path("<run>") / "items.txt")), ("--delivered", "review")):
             self.assertEqual(report[report.index(flag) + 1], value)
-        self.assertNotIn(str(self.out), json.dumps(receipt["commands"]), "the run's own path stays on the machine")
+        commands = json.dumps(receipt["commands"])
+        for form in (str(self.out), json.dumps(str(self.out))[1:-1], self.out.as_posix()):  # as JSON writes it too
+            self.assertNotIn(form, commands, "the run's own path stays on the machine")
 
         # GitHits saw the doctor, the canary's clean lookup and one per treatment run, with the arm's headers.
         self.assertEqual([r["path"] for r in self.fake.requests], ["/v1/languages"] + ["/v1/searches"] * 4)
@@ -394,6 +436,9 @@ class DryRun(DryRunCase):
         self.assertTrue(all(t["metrics"]["delivered"]["value"] is False for t in receipt["threads"]))
         self.assertNotIn("Blind review", printed, "nothing was accepted, so nothing is reviewed")
         self.assertIn("FAIL  nine metrics: known for 0 of 6 threads", printed)
+        why = [reason for reason in receipt["reasons"] if ": not accepted: " in reason]
+        self.assertEqual(len(why), 6, "each thread says why it has no time to a passing change")
+        self.assertIn("none of its 1 candidate(s) passed the host's checks", why[0])
 
     def test_a_skipped_review_leaves_delivered_unknown_and_fails_the_bar(self):
         code, printed, receipt = self.dry_run(ask=answers("", "maybe", "skip", *["pass"] * 5))
@@ -416,7 +461,8 @@ class Canary(DryRunCase):
         self.assertIn("unguarded", {x["guard"] for x in receipt["canary"]["lookups"]})
 
     def test_a_model_the_plan_does_not_price_stops_the_run_at_the_canary(self):
-        prices = {"another-model": {"input_per_million": 3, "output_per_million": 15}}
+        prices = {"another-model": {"input_per_million": 3, "output_per_million": 15, "cache_read_per_million": 0.3,
+                                    "cache_creation_per_million": 3.75}}
         code, _, receipt = self.dry_run(plan=self.plan(prices=prices))
         self.assertEqual((code, receipt["canary"]["status"]), (1, "FAIL"))
         self.assertIn("claude-opus-5, which the plan does not price", receipt["canary"]["detail"])
@@ -428,6 +474,19 @@ class Canary(DryRunCase):
         code, _, receipt = self.dry_run()
         self.assertEqual((code, receipt["canary"]["status"]), (1, "FAIL"))
         self.assertIn("inconclusive", receipt["canary"]["detail"])
+
+    def test_a_canary_needs_both_a_refusal_and_a_lookup_that_reached_githits(self):
+        # A model that leaves the address out proves no refusal; a launcher that never runs proves no GitHits. Each
+        # would pass a weaker test and send the arms out unguarded or without GitHits.
+        for number, (lookups, words) in enumerate(((LOOKUPS[1:], "no lookup the guard refused"),
+                                                   (LOOKUPS[:1], "no lookup the guard passed that reached GitHits"))):
+            with self.subTest(words):
+                self.claude(f"half-{number}", lookups=lookups)
+                code, _, receipt = self.dry_run(out=f"half-{number}")
+                self.assertEqual((code, receipt["canary"]["status"]), (1, "FAIL"))
+                self.assertIn(f"inconclusive: {words}", receipt["canary"]["detail"])
+                self.assertEqual(receipt["threads"], [], "no run was started")
+                self.assertEqual(len(self.runs(self.bin)), 1, "the canary was the only call")
 
 
 class Budget(DryRunCase):
@@ -444,6 +503,52 @@ class Budget(DryRunCase):
         contract = json.loads((self.out / "home" / "contracts" / "repo-change.v1.json").read_text(encoding="utf-8"))
         self.assertEqual((contract["evolution"]["budget"]["max_dollars"], contract["evolution"]["budget"]["strict"]),
                          (0.1, True), "the host's own meter holds each thread to its share")
+
+
+    def test_a_call_that_costs_more_than_its_share_leaves_its_thread_unaccepted_and_says_why(self):
+        code, _, receipt = self.dry_run("--thread-budget", "0.05")  # each call costs 0.0759
+        self.assertEqual((code, receipt["verdict"]), (1, "FAIL"))
+        self.assertEqual([t["accepted"] for t in receipt["threads"]], [False] * 6)
+        why = [reason for reason in receipt["reasons"] if ": not accepted: " in reason]
+        self.assertEqual(len(why), 6)
+        self.assertIn("a candidate passed the host's checks", why[0])
+        self.assertIn("search_over_budget", why[0], "the host's meter refused it: the share is the reason")
+
+
+class FailedCall(DryRunCase):
+    def test_a_call_that_dies_after_it_ran_makes_the_spend_unknown_and_stops_the_runs(self):
+        # Claude Code dies after its lookups and before its result: claude_code raises provider_failed before its
+        # meter prices the call, so what the call spent is in no record. The total is unknown, never that much less.
+        arms = pilot.DryRun.arms
+
+        def dying(dry_run):
+            self.claude("dying", fail_after_lookups=3)
+            return arms(dry_run)
+        with mock.patch.object(pilot.DryRun, "arms", dying):
+            code, printed, receipt = self.dry_run()
+        self.assertEqual((code, receipt["verdict"], receipt["canary"]["status"]), (1, "FAIL", "PASS"))
+        first, *rest = receipt["threads"]
+        self.assertEqual(first["search"]["error"], "provider_failed")
+        self.assertEqual(first["metrics"]["cost"]["known"], False)
+        self.assertIn("provider_failed after Claude Code ran", first["metrics"]["cost"]["note"])
+        self.assertTrue(all(entry["thread"] is None and "no further run" in entry["skipped"] for entry in rest))
+        self.assertEqual(sum("propose" in c["argv"] for c in receipt["commands"]), 2,
+                         "the canary and run 1: no call after the one the meter missed")
+        self.assertIsNone(receipt["spend"]["total"], "unknown, not the canary's dollars")
+        self.assertIsNone(receipt["spend"]["by_thread"][first["thread"]])
+        self.assertIn("FAIL  spend: unknown", printed)
+        self.assertTrue(any(reason.startswith("run 1 (") and ": not accepted: " in reason
+                            and "its search ended provider_failed" in reason for reason in receipt["reasons"]))
+
+    def test_an_export_that_cannot_be_read_keeps_the_one_before_it(self):
+        dry_run = pilot.DryRun.__new__(pilot.DryRun)
+        dry_run.receipt, dry_run.exports = {"reasons": []}, {}
+        self.assertEqual(dry_run.keep("t" * 36, None), {})
+        self.assertIsNone(dry_run.spent(), "a thread never read has an unknown spend, not $0")
+        dry_run.keep("t" * 36, {"events": [{"kind": "x", "case_id": "t", "seq": 1, "body": {}}]})
+        self.assertEqual(dry_run.keep("t" * 36, None)["events"][0]["kind"], "x", "a failed export keeps the earlier")
+        self.assertEqual(len(dry_run.receipt["reasons"]), 2)
+        self.assertIn("the one before it is kept", dry_run.receipt["reasons"][1])
 
 
 class Preflight(DryRunCase):
@@ -510,6 +615,13 @@ class Preflight(DryRunCase):
         with self.subTest("a plan that is not a dry run"):
             receipt, _ = self.refused("plan", plan=self.plan(items=2, name="small"))
             self.assertIn("3 to 5 work items", self.check(receipt, "plan")["detail"])
+
+    def test_an_interrupt_before_the_first_check_still_writes_the_receipt_and_prints_the_table(self):
+        with mock.patch.object(pilot, "check_repository", side_effect=KeyboardInterrupt):
+            code, printed, receipt = self.dry_run()
+        self.assertEqual((code, receipt["verdict"], receipt["preflight"]), (1, "ABORTED", []))
+        self.assertIn("pilot dry run: ABORTED", printed)
+        self.assertNotIn("Traceback", printed)
 
     def test_the_guard_key_check_runs_the_hosts_hook_as_claude_code_does(self):
         check = pilot.check_guard_key(os.environ)

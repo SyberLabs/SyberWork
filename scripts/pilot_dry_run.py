@@ -21,7 +21,8 @@ How Mateo runs it
 
    (PowerShell: ``$env:ANTHROPIC_API_KEY = "..."``; ``Remove-Item Env:ANTHROPIC_BASE_URL``.)
 3. Write the plan: ``python scripts/pilot_dry_run.py --template > plan.json``, then fill in 3 to 5 items (id, tags,
-   objective, paths) and the prices of the model your Claude Code runs (the canary names it if it is missing).
+   objective, paths) and the four rates of the model your Claude Code runs: input, output, cache read and cache
+   write, in dollars per million tokens (the canary names the model if it is not the one priced).
 4. Run ``python scripts/pilot_dry_run.py --plan plan.json`` from the SyberWork checkout (Windows:
    ``py scripts/pilot_dry_run.py --plan plan.json``; ``--repo PATH`` when the items change another repository;
    ``--budget 8`` is the default hard cap in dollars; ``--seed N`` repeats an order). It prints the preflight, asks to
@@ -33,10 +34,12 @@ How Mateo runs it
    ``commands.log`` stay on the machine: they hold the items' objectives and code.
 
 The plan (JSON): ``items``, 3 to 5 of ``{id, tags, objective, paths}``; ``prices``, dollars per million tokens per
-model (``evolution.budget.prices``), or instead a whole ``contract`` that holds its prices, ``max_dollars`` and
-``strict``; and what both arms share: ``max_calls`` (3: one shot, two repairs), ``max_turns`` (30, Claude Code's
-``--max-turns``), ``allowed_tools`` (the provider's default; no shell), ``guard_max_lines`` and ``guard_max_chars``,
-``checks`` (the derived contract's checks; default: those ``syberlabs init`` detects) and ``canary_paths``.
+model (``evolution.budget.prices``) with all four rates above 0 (input, output, cache read, cache creation: a cache
+rate left out would be priced at the input rate, one at 0 as free), or instead a whole ``contract`` that holds such
+prices, ``max_dollars`` and ``strict``; and what both arms share: ``max_calls`` (3: one shot, two repairs),
+``max_turns`` (30, Claude Code's ``--max-turns``), ``allowed_tools`` (the pilot's, ``docs/GITHITS.md``:
+``Read,Edit,Write,Glob,Grep,WebSearch,WebFetch``; no shell), ``guard_max_lines`` and ``guard_max_chars``, ``checks``
+(the derived contract's checks; default: those ``syberlabs init`` detects) and ``canary_paths``.
 
 The sequence
 ------------
@@ -52,23 +55,28 @@ Claude Code runs it, signing a block and a pass that verify under a key the host
 contracts the run installs.
 
 The canary is one cheap call in the treatment's mode (``propose --claude-code --bare --githits``, one call, a few
-turns) whose objective asks for two launcher lookups, one the guard must refuse (it holds an email address). It
-passes when the call's lookups carry a verified guard decision and none is ``unguarded``, and every model the call
-used is priced. Then each item runs in both arms from the same ``HEAD``, both arms back to back, the items and which
-arm goes first set by a seeded shuffle: ``start --unattended``, ``experiment label`` (before the first candidate),
-``propose --claude-code --bare [--githits]``, ``run --once`` (accepts on the host's checks), ``export``. Then the
-blind review (``review --record``), ``experiment report --items FILE --delivered review [--json | --markdown]``,
-and the bar.
+turns, without the web tools so the launcher is its only way to look anything up) whose objective asks for two
+launcher lookups, one the guard must refuse (it holds an email address). It passes when the guard refused a lookup
+and passed one that reached GitHits (an authentic client record), every decision verified and none ``unguarded``,
+and every model the call used is priced; a call that shows only one of the two is inconclusive and fails, since it
+proves either no refusal or no GitHits. Then each item runs in both arms from the same ``HEAD``, both arms back to
+back, the items and which arm goes first set by a seeded shuffle: ``start --unattended``, ``experiment label``
+(before the first candidate), ``propose --claude-code --bare [--githits]``, ``run --once`` (accepts on the host's
+checks), ``export``. Then the blind review (``review --record``), ``experiment report --items FILE --delivered
+review [--json | --markdown]``, and the bar.
 
 The bar: the nine metrics known for every thread
 ------------------------------------------------
 
 Cost, turns, agent time, fix rounds, web lookups, GitHits lookups, delivered, review rejections and human
 interventions (``metrics.METRICS``), per thread as the paired report reads them (``experiment.Run.value``: counted
-up to the thread's first acceptance). Two of the nine are read the way the report pairs them, because their
-merge-based forms need a merged pull request and the pilot publishes at most one arm per item: agent time is the
-report's time to a passing change (``time_to_pass``) and delivered is ``reviewed`` (accepted, and the blind review
-passed: ``--delivered review``). The merge-based values are in the receipt beside them (``strict``).
+up to the thread's first acceptance). Two of the nine are read the way the report pairs them. Agent time is the
+report's time to a passing change (``time_to_pass``): its merge-based form needs a merged pull request, which a dry
+run never has and the pilot has for at most one arm per item. Delivered is ``reviewed``, the pilot's definition
+(accepted, and the blind review passed: ``--delivered review``): its merge-based form is known in a dry run but is
+"no" for every thread, which measures nothing. The merge-based values are in the receipt beside them (``strict``);
+``syberlabs settle`` and agent time to merge, the pilot's end-of-week step, are not exercised. A thread that is not
+accepted has no time to a passing change, so the bar fails, and the reasons say why it was not accepted.
 
 Budget
 ------
@@ -77,11 +85,15 @@ Budget
 an equal share of it (``--thread-budget``; default the cap over the runs plus the canary), so the host's own meter
 stops a thread's next call past its share and its promotion is refused; and a run starts only while the dollars
 already spent plus one share fit under the cap. Every call is bounded by the plan's ``max_turns``. So the total
-stays under the cap plus the cost of one call, and the receipt says what it was. Spend is the host's own: tokens
-priced at the plan's ``prices`` through the host's meter (``docs/METRICS.md``), never Claude Code's estimate.
+stays under the cap plus the cost of one call, and the receipt says what it was. A call that ended
+``provider_failed`` or ``provider_timeout`` after Claude Code ran was never priced (``claude_code`` raises before
+its meter), so its thread's cost and the total are unknown and no further run starts. Spend is the host's own: tokens
+priced at the plan's ``prices`` through the host's meter (``docs/METRICS.md``), never Claude Code's estimate. A fee
+the API charges per server-side web search is not a token, so neither the meter nor the cap sees it; each thread's
+web lookups in the receipt say how many searches there were.
 
 The paired report
-----------------
+-----------------
 
 It must compare every item: an item the report excludes (``experiment.EXCLUDE``: ``arm_conflict``,
 ``contaminated``, ``missing_arm``, ...) or a registered item it never saw fails the run, and a check that keeps an
@@ -104,6 +116,7 @@ import math
 import os
 import platform
 import random
+import re
 import secrets
 import shutil
 import subprocess
@@ -130,6 +143,15 @@ DEFAULT_MAX_TURNS = 30       # Claude Code's agentic turns per call: bounds a ca
 DEFAULT_MAX_SECONDS = 3600   # per search: a call, its repairs and the checks
 DEFAULT_REVIEWER = "blind-1"
 MIN_ITEMS, MAX_ITEMS = 3, 5
+# Both arms' tools in the pilot's documented commands (docs/GITHITS.md, "The A/B report"); the treatment adds its
+# launcher. No shell: a shell could read the guard's key (claude_code.DEFAULT_TOOLS).
+WEB_TOOLS = ("WebSearch", "WebFetch")
+PILOT_TOOLS = (*claude_code.DEFAULT_TOOLS, *WEB_TOOLS)
+# Every rate of a priced model: Claude Code's calls are mostly cache reads and writes, and a cache rate left out is
+# priced at the input rate (economic.price_usage), one at 0 makes those tokens free. Either way the cost is wrong.
+RATES = ("input_per_million", "output_per_million", "cache_read_per_million", "cache_creation_per_million")
+# claude_code raises these after Claude Code ran and before the host's meter priced the call: what it spent is lost.
+UNMETERED = ("provider_failed", "provider_timeout")
 BASELINE, TREATMENT = experiment.BASELINE, experiment.TREATMENT  # "off" and "on", the report's defaults
 CANARY_CONTRACT = "pilot-canary"
 CANARY_TURNS = 6
@@ -160,7 +182,8 @@ CANARY_OBJECTIVE = (
     f"it. Call 2 passes the arguments `{CANARY_PASSING}`.")
 TEMPLATE = {
     "_comment": "3 to 5 items. Keys starting with _ are ignored. Objectives stay on this machine: the receipt "
-                "holds their digests only.",
+                "holds their digests only. Prices: the model id Claude Code reports, and all four of its rates in "
+                "dollars per million tokens, none 0 (Claude Code's calls are mostly cache reads and writes).",
     "experiment": DEFAULT_EXPERIMENT,
     "items": [
         {"id": "LIB-1", "tags": ["needs_lookup"], "objective": "One sentence: the change this item asks for",
@@ -172,7 +195,7 @@ TEMPLATE = {
                                                      "cache_read_per_million": 0, "cache_creation_per_million": 0}},
     "max_calls": DEFAULT_MAX_CALLS,
     "max_turns": DEFAULT_MAX_TURNS,
-    "allowed_tools": ",".join(claude_code.DEFAULT_TOOLS),
+    "allowed_tools": ",".join(PILOT_TOOLS),
 }
 
 
@@ -229,6 +252,32 @@ def _name(value, what: str) -> str:
     return value
 
 
+def relative_path(path) -> bool:
+    """A repository path the plan may name: relative, no drive, no ``..`` part (either separator, for Windows)."""
+    return (isinstance(path, str) and bool(path.strip()) and not path.startswith(("/", "\\")) and ":" not in path
+            and ".." not in re.split(r"[\\/]", path))
+
+
+def file_name(text: str) -> str:
+    """``text`` as part of a file name on any system: an item id may hold ``:``, an NTFS stream separator."""
+    return re.sub(r"[^A-Za-z0-9_.+-]", "_", text)
+
+
+def missing_rates(prices) -> str | None:
+    """Why a price table cannot price a Claude Code call in full, or None: every model needs a real id and all four
+    rates (``RATES``) above 0."""
+    for model, rates in (prices or {}).items():
+        if "<" in model:
+            return f"fill in the model id Claude Code reports, not {model!r}"
+        zero = [rate for rate in RATES if not (isinstance(rates.get(rate), (int, float))
+                                              and not isinstance(rates.get(rate), bool) and rates[rate] > 0)]
+        if zero:
+            return (f"fill in {model}'s {', '.join(zero)} (dollars per million tokens, above 0): Claude Code's calls "
+                    "are mostly cache reads and writes, and a cache rate left out is priced at the input rate, one "
+                    "at 0 as free")
+    return None
+
+
 def _count(raw: dict, key: str, low: int, high: int, default):
     value = raw.get(key, default)
     if value is None:
@@ -268,8 +317,7 @@ def validate_plan(raw) -> dict:
             raise PlanError(f"item {item_id}: another item has the same objective")
         objectives.add(objective.strip())
         paths = item.get("paths", [])
-        if (not isinstance(paths, list) or any(not isinstance(p, str) or not p.strip() or ".." in p.split("/")
-                                               or p.startswith(("/", "\\")) or ":" in p for p in paths)):
+        if not isinstance(paths, list) or not all(relative_path(p) for p in paths):
             raise PlanError(f"item {item_id}: paths must be relative repository paths")
         found.append({"id": item_id, "tags": tags, "objective": objective.strip(), "paths": list(paths)})
     if len({item["id"] for item in found}) != len(found):
@@ -283,17 +331,15 @@ def validate_plan(raw) -> dict:
         raise PlanError("give prices or a whole contract (whose budget holds its prices), not both")
     if contract is None:
         reason = check_prices(prices) if prices is not None else "prices are required: the cost metric needs them"
+        reason = reason or missing_rates(prices)
         if reason:
             raise PlanError(f"prices: {reason}")
-        for model, rates in prices.items():
-            if "<" in model or (rates["input_per_million"] == 0 and rates["output_per_million"] == 0):
-                raise PlanError(f"prices: fill in {model!r}: the model id Claude Code reports and its real rates")
     elif not isinstance(contract, dict) or not isinstance(contract.get("evolution"), dict):
         raise PlanError("contract must be a whole contract document with an evolution section")
     checks = raw.get("checks")
     if checks is not None and (contract is not None or not isinstance(checks, dict) or not checks):
         raise PlanError("checks must be a non-empty object of named checks, and only without a whole contract")
-    tools = raw.get("allowed_tools", ",".join(claude_code.DEFAULT_TOOLS))
+    tools = raw.get("allowed_tools", ",".join(PILOT_TOOLS))
     tools = claude_code.parse_tools(tools) if isinstance(tools, str) else tools
     if not isinstance(tools, list) or not tools or any(not isinstance(t, str) or not t for t in tools):
         raise PlanError("allowed_tools must be a comma list of tool names")
@@ -301,8 +347,8 @@ def validate_plan(raw) -> dict:
         raise PlanError("allowed_tools: no Bash or PowerShell; the treatment's launcher is its only command")
     canary_paths = raw.get("canary_paths")
     if canary_paths is not None and (not isinstance(canary_paths, list)
-                                     or any(not isinstance(p, str) or not p for p in canary_paths)):
-        raise PlanError("canary_paths must be a list of repository paths")
+                                     or not all(relative_path(p) for p in canary_paths)):
+        raise PlanError("canary_paths must be a list of relative repository paths")
     return {"experiment": name, "items": found, "prices": prices, "contract": contract, "checks": checks,
             "allowed_tools": ",".join(tools), "max_calls": _count(raw, "max_calls", 1, 12, DEFAULT_MAX_CALLS),
             "max_turns": _count(raw, "max_turns", 1, 200, DEFAULT_MAX_TURNS),
@@ -510,20 +556,37 @@ def scan_paths(repo: Path, extra: list) -> list[Path]:
     return sorted(p for p in paths if p.is_file())
 
 
-def files_holding(secret: str, paths) -> tuple[list[Path], int]:
-    """The files among ``paths`` whose bytes hold ``secret``, and how many were read. The secret is never printed."""
-    needle, found, read = secret.encode("utf-8"), [], 0
+def holds(path: Path, needle: bytes, block: int = 1 << 20) -> bool:
+    """Whether the file's bytes hold ``needle``, read a block at a time (a match across two blocks included)."""
+    keep, carry = len(needle) - 1, b""
+    with open(path, "rb") as handle:
+        while True:
+            data = handle.read(block)
+            if not data:
+                return False
+            data = carry + data
+            if needle in data:
+                return True
+            carry = data[-keep:] if keep else b""
+
+
+def files_holding(secret: str, paths, limit: int | None = MAX_SCAN_BYTES) -> tuple[list[Path], int, int]:
+    """The files among ``paths`` whose bytes hold ``secret``, how many were read, and how many were not (larger than
+    ``limit``, or unreadable). The secret is never printed."""
+    needle, found, read, skipped = secret.encode("utf-8"), [], 0, 0
     for path in paths:
         try:
-            if path.stat().st_size > MAX_SCAN_BYTES:
+            if limit is not None and path.stat().st_size > limit:
+                skipped += 1
                 continue
-            data = path.read_bytes()
+            hit = holds(path, needle)
         except OSError:
+            skipped += 1
             continue
         read += 1
-        if needle in data:
+        if hit:
             found.append(path)
-    return found, read
+    return found, read, skipped
 
 
 def check_token(env, repo: Path, plan_path: Path | None) -> Check:
@@ -532,14 +595,16 @@ def check_token(env, repo: Path, plan_path: Path | None) -> Check:
         return Check("githits token", FAIL, f"{githits.TOKEN_ENV} is not set in the environment")
     if not token.isprintable() or any(ch.isspace() for ch in token):
         return Check("githits token", FAIL, f"{githits.TOKEN_ENV} holds whitespace or a control character")
-    found, read = files_holding(token, scan_paths(repo, [plan_path] if plan_path else []))
+    found, read, skipped = files_holding(token, scan_paths(repo, [plan_path] if plan_path else []))
     if found:
         names = ", ".join(str(p) for p in found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
         return Check("githits token", FAIL, f"the token is written in {names}: remove it there and keep it in the "
                                             "environment only")
+    unread = f"; {skipped} not read (over {MAX_SCAN_BYTES >> 20} MB or unreadable)" if skipped else ""
     return Check("githits token", PASS, f"in the environment only: in none of the {read} files scanned (the "
                                         "repository's tracked and untracked files, .env*, .mcp.json, local Claude "
-                                        "settings, the plan)", {"files_scanned": read})
+                                        f"settings, the plan){unread}",
+                 {"files_scanned": read, "files_unread": skipped})
 
 
 def check_doctor(sy: Syberlabs) -> Check:
@@ -618,13 +683,17 @@ def check_budget(cap, contract: dict, runs: int) -> Check:
     if not isinstance(cap, (int, float)) or isinstance(cap, bool) or not math.isfinite(cap) or cap <= 0:
         return Check("budget cap", FAIL, "--budget must be a positive number of dollars")
     budget = contract.get("evolution", {}).get("budget", {})
+    budget = budget if isinstance(budget, dict) else {}
     reason = check_prices(budget.get("prices")) if "prices" in budget else "the contract prices no model"
+    reason = reason or missing_rates(budget["prices"])
     if reason:
         return Check("budget cap", FAIL, f"the arms' contract: {reason}: the cost metric needs host-priced usage")
     share = budget.get("max_dollars")
     if share is None:
         return Check("budget cap", FAIL, "the arms' contract sets no budget.max_dollars: the host's meter would not "
                                          "stop a thread")
+    if not isinstance(share, (int, float)) or isinstance(share, bool) or not math.isfinite(share) or share <= 0:
+        return Check("budget cap", FAIL, "the arms' contract budget.max_dollars must be a positive number of dollars")
     if share > cap:
         return Check("budget cap", FAIL, f"the arms' contract max_dollars ${share:.4f} is above the cap ${cap:.2f}")
     if budget.get("strict") is not True:
@@ -675,10 +744,34 @@ def contracts_of(records: list[dict]) -> dict:
     return found
 
 
+def unmetered(events: list) -> str | None:
+    """Why the host's meter missed part of what the threads in ``events`` spent, or None: a call that ended
+    ``provider_failed`` or ``provider_timeout`` after Claude Code ran (``claude_code`` raises those before it prices
+    the call), or a search that never finished (the process died inside it)."""
+    threads: dict = {}
+    for event in events:
+        threads.setdefault(event.get("case_id"), []).append(event)
+    for found in threads.values():
+        searching = False
+        for event in sorted(found, key=lambda e: e.get("seq", 0)):
+            if event["kind"] == "search_started":
+                searching = True
+            elif event["kind"] == "search_finished":
+                searching = False
+                if event["body"].get("error") in UNMETERED:
+                    return (f"a call ended {event['body']['error']} after Claude Code ran, before the host's meter "
+                            "priced it")
+        if searching:
+            return "a search never finished, so the host's meter never settled its calls"
+    return None
+
+
 def spend_of(events: list, contracts: dict) -> float | None:
     """Host-observed dollars over the threads in ``events``: a thread whose calls crossed the meter at a model the
-    prices name counts its dollars, one where nothing crossed it counts nothing, and one with a model the prices do not
-    name makes the whole sum unknown."""
+    prices name counts its dollars, and one where nothing crossed it counts nothing. A model the prices do not name,
+    or a call the meter missed (``unmetered``), makes the whole sum unknown."""
+    if unmetered(events):
+        return None
     total = 0.0
     for item in metrics.work_items(events, contracts):
         if item.cost_basis == "host_observed":
@@ -711,10 +804,10 @@ def harness_of(events: list) -> dict:
 
 # ----------------------------------------------------------------------------------------------------------- canary
 
-def claude_flags(plan: dict, arm: str, max_calls: int, max_turns: int) -> list[str]:
+def claude_flags(plan: dict, arm: str, max_calls: int, max_turns: int, tools: str | None = None) -> list[str]:
     """``propose`` flags: the same in both arms but for ``--githits`` (and its arm name) in the treatment."""
     flags = ["propose", "--claude-code", "--bare", "--max-calls", str(max_calls), "--max-turns", str(max_turns),
-             "--allowed-tools", plan["allowed_tools"]]
+             "--allowed-tools", tools or plan["allowed_tools"]]
     if plan["guard_max_lines"] is not None:
         flags += ["--guard-max-lines", str(plan["guard_max_lines"])]
     if plan["guard_max_chars"] is not None:
@@ -725,13 +818,18 @@ def claude_flags(plan: dict, arm: str, max_calls: int, max_turns: int) -> list[s
 
 
 def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
-    """PASS when the call's lookups carry a verified guard decision, none is ``unguarded``, and every model it used is
-    priced; FAIL otherwise, with the reason."""
+    """PASS when the guard refused at least one lookup and passed at least one that reached GitHits (an authentic
+    client record), every decision verified and none ``unguarded``, and every model the call used is priced; FAIL
+    otherwise, with the reason. A call that shows only one of the two proves too little: a model that leaves the
+    address out, or a launcher Claude Code will not run, would pass a weaker test and leave the arms unguarded or
+    without GitHits."""
     lookups = facts(events, claude_code.LOOKUP)
     finished = last_search(events) or {}
     unguarded = [x for x in lookups if x.get("guard") == query_guard.UNGUARDED]
     decided = [x for x in lookups if isinstance(x.get("guard"), str) and x["guard"] != query_guard.UNGUARDED]
-    blocked = sorted({x["guard"] for x in decided if x["guard"] != query_guard.PASS})
+    refused = [x for x in decided if x["guard"] != query_guard.PASS]
+    reached = [x for x in decided if x["guard"] == query_guard.PASS
+               and str(x.get("tool", "")).startswith(claude_code.CLIENT_TOOL)]
     spend = finished.get("spend") if isinstance(finished.get("spend"), dict) else {}
     data = {"lookups": [{"tool": x.get("tool"), "guard": x.get("guard"), "ok": x.get("ok")} for x in lookups],
             "search": {"stopped": finished.get("stopped"), "error": finished.get("error")},
@@ -741,9 +839,14 @@ def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
         return FAIL, (f"the query guard did not fire: {len(unguarded)} lookup(s) ran with no verified decision "
                       "(unguarded): under this Claude Code and --bare the --settings hook did not run, or its record "
                       "was not the hook's. Do not run the pilot in this mode"), data
-    if not decided:
-        why = f"; the call ended {finished.get('error')}" if finished.get("error") else ""
-        return FAIL, "inconclusive: the call made no lookup, so the guard was not exercised" + why + "; run again", data
+    if not refused or not reached:
+        missing = ([] if refused else ["no lookup the guard refused (the canary asks for one holding an email "
+                                       "address)"]) + \
+                  ([] if reached else ["no lookup the guard passed that reached GitHits (the launcher did not run, "
+                                       "or GitHits did not answer)"])
+        why = f"; the call ended {finished['error']}" if finished.get("error") else ""
+        return FAIL, (f"inconclusive: {' and '.join(missing)}{why}; run again, and read the canary's thread in "
+                      "commands.log if it repeats"), data
     if finished.get("error"):
         return FAIL, f"the canary's call failed: {finished['error']}", data
     if spend.get("unknown_models"):
@@ -751,9 +854,9 @@ def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
                       "prices, or cost will be unknown for every thread"), data
     if spend.get("host_observed") is not True or data["spend"] is None:
         return FAIL, "no usage of the call crossed the host's meter, so cost could not be known", data
-    clients = sum(1 for x in decided if str(x.get("tool", "")).startswith(claude_code.CLIENT_TOOL))
-    return PASS, (f"{len(decided)} lookups with a verified decision ({', '.join(blocked) or 'none'} blocked; "
-                  f"{clients} GitHits client record(s)), 0 unguarded; ${data['spend']:.4f}"), data
+    rules = ", ".join(sorted({x["guard"] for x in refused}))
+    return PASS, (f"the guard refused {len(refused)} lookup(s) ({rules}) and passed {len(reached)} that reached "
+                  f"GitHits, every decision verified, 0 unguarded; ${data['spend']:.4f}"), data
 
 
 # ------------------------------------------------------------------------------------------------------------- runs
@@ -761,7 +864,8 @@ def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
 def gate(spent: float | None, reserve: float, cap: float) -> str | None:
     """Why the next run may not start, or None."""
     if spent is None:
-        return "the spend so far is unknown (a model the prices do not name), so the cap cannot be enforced"
+        return ("the spend so far is unknown (a model the prices do not name, a call the meter missed, or a thread "
+                "whose record could not be read), so the cap cannot be enforced")
     if spent + reserve > cap + 1e-9:
         return (f"${spent:.4f} spent; another run may cost up to ${reserve:.4f} (a thread's max_dollars), which the "
                 f"${cap:.2f} cap cannot cover")
@@ -771,14 +875,33 @@ def gate(spent: float | None, reserve: float, cap: float) -> str | None:
 def thread_record(record: dict | None) -> dict:
     """What one exported thread says about its run."""
     if not record:
-        return {"accepted": False, "candidate": None, "commit": None, "search": None, "base": None}
+        return {"accepted": False, "candidate": None, "commit": None, "search": None, "base": None, "candidates": []}
     status = record.get("status") if isinstance(record.get("status"), dict) else {}
     events = record.get("events") or []
     finished = last_search(events) or {}
     return {"accepted": status.get("accepted") is not None, "candidate": status.get("accepted"),
             "commit": status.get("target") if status.get("accepted") else None,
             "search": {"stopped": finished.get("stopped"), "error": finished.get("error")} if finished else None,
-            "base": status.get("base")}
+            "base": status.get("base"),
+            "candidates": [{"evaluation": c.get("evaluation"), "promotion": c.get("promotion")}
+                           for c in status.get("candidates") or [] if isinstance(c, dict)]}
+
+
+def not_accepted(entry: dict) -> str:
+    """Why a run's thread has no accepted change, from its record: what its candidates' checks and promotions came to,
+    the runner's last word on it, and how its search ended."""
+    found = entry.get("candidates") or []
+    passed = [c for c in found if c.get("evaluation") == "passed"]
+    if passed:
+        why = f"a candidate passed the host's checks, and its promotion is {passed[-1].get('promotion')}"
+    elif found:
+        why = f"none of its {len(found)} candidate(s) passed the host's checks"
+    else:
+        why = "it has no candidate"
+    if entry.get("runner"):
+        why += f"; the runner: {entry['runner']}"
+    error = (entry.get("search") or {}).get("error")
+    return why + (f"; its search ended {error}" if error else "")
 
 
 def diffstat(diff: str) -> str:
@@ -848,7 +971,8 @@ def metric_view(metric) -> dict:
 
 def evaluate(entries: list, records: list[dict], name: str) -> None:
     """Each run's nine metrics as the paired report reads them (``PAIRED`` for agent time and delivered), with the
-    merge-based forms of those two beside them, from the exported records."""
+    merge-based forms of those two beside them, from the exported records. A thread with a call the host's meter
+    missed (``unmetered``) has an unknown cost here, whatever the fold says: part of what it spent was never priced."""
     events = [event for record in records for event in (record.get("events") or [])]
     contracts = contracts_of(records)
     runs = {run.thread: run for run in experiment.runs(events, name, contracts)}
@@ -866,6 +990,10 @@ def evaluate(entries: list, records: list[dict], name: str) -> None:
             item = work[run.thread]
             entry["strict"] = {m: metric_view(item.metric(m)) for m in PAIRED}
             entry["lookups_blocked"] = metric_view(item.lookups_blocked)
+            missed = unmetered([event for event in events if event.get("case_id") == run.thread])
+            if missed:
+                entry["metrics"]["cost"] = {"known": False, "value": None, "note": missed, "source": "cost",
+                                            "metered": entry["metrics"]["cost"]["value"]}
         entry["unknown"] = [m for m in NINE if not entry["metrics"][m]["known"]]
 
 
@@ -885,6 +1013,8 @@ def cell(metric: dict, name: str) -> str:
 
 
 def table(rows: list[list[str]]) -> list[str]:
+    if not rows:  # an interrupt before the first preflight check: nothing to line up
+        return []
     widths = [max(len(row[n]) for row in rows) for n in range(len(rows[0]))]
     return ["  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip() for row in rows]
 
@@ -1028,7 +1158,14 @@ class DryRun:
     # The record, as exported thread by thread.
 
     def keep(self, thread: str, record: dict | None) -> dict:
-        self.exports[thread] = record or {}
+        """The thread's latest export. One that could not be read keeps the export before it, and is a reason to
+        fail; with none before it the thread's spend is unknown."""
+        if record is not None:
+            self.exports[thread] = record
+        else:
+            self.receipt["reasons"].append(f"the export of thread {thread[:8]} could not be read"
+                                           + ("; the one before it is kept" if self.exports.get(thread) else ""))
+            self.exports.setdefault(thread, {})
         return self.exports[thread]
 
     def events(self, thread: str | None = None) -> list:
@@ -1036,7 +1173,11 @@ class DryRun:
         return [event for record in found for event in (record.get("events") or [])]
 
     def spent(self, thread: str | None = None) -> float | None:
+        """Dollars the host metered over one thread or all of them; None when any of them is unknown, a thread whose
+        export was never read included."""
         found = [self.exports.get(thread, {})] if thread else list(self.exports.values())
+        if any(not record.get("events") for record in found):
+            return None
         return spend_of(self.events(thread), contracts_of(found))
 
     @property
@@ -1150,7 +1291,7 @@ class DryRun:
 
     def canary(self) -> bool:
         plan, repo = self.plan, self.repo
-        say("\ncanary: one call with --bare --githits; the guard must refuse one lookup")
+        say("\ncanary: one call with --bare --githits; the guard must refuse one lookup and pass one to GitHits")
         stop = gate(self.spent(), self.share, self.cap)
         if stop:
             return self.fail(f"budget: {stop}")
@@ -1162,7 +1303,9 @@ class DryRun:
             self.receipt["canary"] = {"status": FAIL, "detail": "could not start: " + tail(done.err or done.out)}
             return self.fail("canary: " + self.receipt["canary"]["detail"])
         thread = self.sy.current()
-        proposed = self.sy("--thread", thread, *claude_flags(plan, TREATMENT, 1, CANARY_TURNS), timeout=None)
+        # The treatment's flags without the web tools: the launcher is the call's only way to look anything up.
+        tools = ",".join(tool for tool in claude_code.parse_tools(plan["allowed_tools"]) if tool not in WEB_TOOLS)
+        proposed = self.sy("--thread", thread, *claude_flags(plan, TREATMENT, 1, CANARY_TURNS, tools), timeout=None)
         record = self.keep(thread, self.sy.export(thread, self.out / "canary.json"))
         status, detail, data = judge_canary(self.events(thread), contracts_of([record]))
         if proposed.code != 0:  # refused before any call: say why, not "no lookup"
@@ -1226,8 +1369,11 @@ class DryRun:
             if proposed.code != 0:
                 stop = f"run {number}: propose failed: {tail(proposed.err or proposed.out)}"
             else:
-                sy("--thread", thread, "run", "--once")
-        path = self.out / "threads" / f"{number:02d}-{item['id']}-{arm}-{thread[:8]}.json"
+                ran = sy("--thread", thread, "run", "--once")
+                said = [line.strip()[len(thread[:8]):].strip() for line in ran.out.splitlines()
+                        if line.strip().startswith(thread[:8])]
+                entry["runner"] = tail(said[-1], 200) if said else None
+        path = self.out / "threads" / f"{number:02d}-{file_name(item['id'])}-{arm}-{thread[:8]}.json"
         path.parent.mkdir(exist_ok=True)
         record = self.keep(thread, sy.export(thread, path))
         entry.update(thread_record(record), export=path.relative_to(self.out).as_posix())
@@ -1236,6 +1382,10 @@ class DryRun:
             stop = stop or f"run {number}: the thread started from {str(entry['base'])[:10]}, not the base"
         if search.get("error") == "provider_guard_inactive":
             stop = stop or f"run {number}: the query guard did not fire (provider_guard_inactive); no further run"
+        missed = unmetered(record.get("events") or []) if record.get("events") else "its export could not be read"
+        if missed:
+            stop = stop or (f"run {number}: {missed}, so what it spent is unknown and the cap cannot be enforced; no "
+                            "further run")
         cost = self.spent(thread)
         state = "accepted" if entry["accepted"] else f"not accepted ({search.get('error') or search.get('stopped')})"
         say(f"    {state}; " + ("cost unknown" if cost is None else f"${cost:.4f}"))
@@ -1262,6 +1412,9 @@ class DryRun:
             "not_run": found.get("not_run"), "rule": found["rule"]}
         rows, reasons = receipt["checks"], receipt["reasons"]
         unknown = [entry for entry in self.entries if entry["unknown"]]
+        for e in self.entries:  # why a thread has no time to a passing change, before saying that it has none
+            if e.get("thread") and not e.get("accepted"):
+                reasons.append(f"run {e['order']} ({e['item']} {e['arm']}): not accepted: {not_accepted(e)}")
         reasons += [f"run {e['order']} ({e['item']} {e['arm']}): unknown " + ", ".join(LABELS[m] for m in e["unknown"])
                     for e in unknown]
         rows.append({"status": PASS if self.entries and not unknown else FAIL, "name": "nine metrics",
@@ -1316,9 +1469,15 @@ class DryRun:
         credentials = [(name, os.environ.get(name, "")) for name in (githits.TOKEN_ENV, API_KEY_ENV)]
         credentials = [(name, value) for name, value in credentials if len(value) >= MIN_SECRET_CHARS]
         files = [path for path in out.rglob("*") if path.is_file()]
-        written = [f"{name} in {path.relative_to(out).as_posix()}" for name, value in credentials
-                   for path in files_holding(value, files)[0]]
-        receipt["credential_scan"] = {"files": len(files), "found": written}
+        written, read, unread = [], 0, 0
+        for name, value in credentials:  # every file, whatever its size
+            found, read, unread = files_holding(value, files, limit=None)
+            written += [f"{name} in {path.relative_to(out).as_posix()}" for path in found]
+        receipt["credential_scan"] = {"files": read, "unread": unread, "found": written}
+        if unread:
+            receipt["verdict"] = FAIL
+            receipt["reasons"].append(f"{unread} file(s) of the run's directory could not be read for the credential "
+                                      "scan")
         if written:  # never expected: nothing in the factory writes a credential
             receipt["verdict"] = FAIL
             receipt["reasons"].append("a credential was written in the run's directory: " + "; ".join(written))
