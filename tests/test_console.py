@@ -38,7 +38,7 @@ from syberlabs.ed25519 import generate, public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import AUTOMATION_ROLES
-from syberlabs.jcs import envelope_jcs
+from syberlabs.jcs import envelope_jcs, jcs_bytes
 from syberlabs.metrics import METRICS, UNKNOWN, Metric, _cell
 from syberlabs.tlog import TransparencyLog, merkle_root
 from syberlabs.witness import Witness, WitnessClient, WitnessServer
@@ -218,9 +218,10 @@ class CellCase(unittest.TestCase):
     witness = False
     witness_role = "manager"
     # True: serve reads a Build Thread home holding one certified candidate (certified_home), signed under PUBLIC, and
-    # trusts certificate_keys.
+    # trusts certificate_keys and revokes the digests in certificate_revoked.
     certificates = False
     certificate_keys = (PUBLIC,)
+    certificate_revoked = ()
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -257,7 +258,7 @@ class CellCase(unittest.TestCase):
         shelf = None
         if self.certificates:
             self.cert_home, self.cert_payload = certified_home(Path(folder.name) / "build")
-            shelf = self.shelf = CertificateShelf(self.cert_home, self.certificate_keys)
+            shelf = self.shelf = CertificateShelf(self.cert_home, self.certificate_keys, self.certificate_revoked)
         self.cell = Cell(Path(folder.name), port, reader, client, self.witness_role if client else None, shelf)
         self.addCleanup(self.cell.close)
 
@@ -1369,6 +1370,146 @@ class ConsoleCertificateKeys(CellCase):
                 configured(public)
 
 
+class ConsoleCertificateRevocation(CellCase):
+    """SYBERWORK_CERTIFICATE_REVOKED: a certificate whose digest the deployment lists fails as revoked under every key,
+    and still shows what it states. The digest is of the signed payload, so no rewrite of the file escapes it."""
+
+    certificates = True
+    certificate_keys = (OTHER_PUBLIC, PUBLIC)
+
+    def folder(self) -> Path:
+        return self.cert_home / "certificates"
+
+    def good(self) -> dict:
+        return json.loads((self.folder() / f"{self.cert_payload['thread'][:8]}-c1.bare.json").read_text(encoding="utf-8"))
+
+    def put(self, name, envelope, **dump):
+        (self.folder() / name).write_text(json.dumps(envelope, **dump), encoding="utf-8")
+
+    def reissued(self) -> dict:
+        """The same candidate certified again, later: another certificate, under the new key."""
+        payload = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] + 1)
+        return sign_dsse(self.good()["payloadType"], jcs_bytes(payload), OTHER_SEED)
+
+    def digest(self, name=None) -> str:
+        """The SHA-256 of the payload as signed: the bare form's payload bytes, or the JCS bytes of a statement's predicate."""
+        if name is None:
+            return hashlib.sha256(base64.standard_b64decode(self.good()["payload"])).hexdigest()
+        statement = json.loads(base64.standard_b64decode(json.loads((self.folder() / name).read_text(encoding="utf-8"))["payload"]))
+        return hashlib.sha256(jcs_bytes(statement["predicate"])).hexdigest()
+
+    def statement(self) -> str:
+        return f"{self.cert_payload['thread'][:8]}-c1.json"
+
+    def rows(self, shelf):
+        body = shelf.listing()
+        return body, {row["file"]: row for row in body["certificates"]}
+
+    def test_the_digest_is_of_the_signed_payload_whatever_key_or_form_signed_it(self):
+        good = self.good()
+        self.put("rotated.json", sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), OTHER_SEED))
+        self.put("reissued.json", self.reissued())
+        self.put("untrusted.json", sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), THIRD_SEED))
+        status, body = self.cell.json("/api/certificates")
+        self.assertEqual((status, body["revoked"]), (200, []))
+        rows = {row["file"]: row for row in body["certificates"]}
+        thread8 = self.cert_payload["thread"][:8]
+        digest = self.digest()
+        self.assertEqual(digest, shelf_module.certificate_digest(self.cert_payload))
+        for name in (f"{thread8}-c1.bare.json", "rotated.json"):
+            with self.subTest(name):
+                self.assertEqual((rows[name]["verdict"], rows[name]["digest"]), ("pass", digest))
+        # The statement form signs a wrapper; its digest is its predicate's. The fixture certified it in a second run of
+        # certify, at another issued_at, so it is another certificate.
+        self.assertEqual((rows[self.statement()]["verdict"], rows[self.statement()]["digest"]), ("pass", self.digest(self.statement())))
+        self.assertNotEqual(self.digest(self.statement()), digest)
+        self.assertEqual(rows["reissued.json"]["verdict"], "pass")
+        self.assertNotEqual(rows["reissued.json"]["digest"], digest, "another issued_at is another certificate")
+        self.assertIsNone(rows["untrusted.json"]["digest"], "a file no configured key signed has no digest")
+
+    def test_a_listed_digest_fails_as_revoked_under_every_key_however_the_file_is_written(self):
+        good = self.good()
+        signed = base64.standard_b64decode(good["payload"])
+        self.put("rotated.json", sign_dsse(good["payloadType"], signed, OTHER_SEED))
+        self.put("reissued.json", self.reissued())
+        # A folder writer rewrites a revoked file: indented, keys reordered, the keyid dropped. The signed bytes are the same.
+        unnamed = {k: v for k, v in good["signatures"][0].items() if k != "keyid"}
+        self.put("rewritten.json", {"signatures": [unnamed], "payloadType": good["payloadType"], "payload": good["payload"]}, indent=2)
+        # The statement's predicate signed in the bare form: another file and another form, the same certificate.
+        predicate = json.loads(base64.standard_b64decode(json.loads((self.folder() / self.statement()).read_text(encoding="utf-8"))["payload"]))["predicate"]
+        self.put("unwrapped.json", sign_dsse(good["payloadType"], jcs_bytes(predicate), SEED))
+        digest, statement = self.digest(), self.digest(self.statement())
+        shelf = CertificateShelf(self.cert_home, self.certificate_keys, (bytes(32).hex(), digest, statement))
+        body, rows = self.rows(shelf)
+        self.assertEqual(body["revoked"], [bytes(32).hex(), digest, statement], "in configured order")
+        thread8 = self.cert_payload["thread"][:8]
+        for name, key, listed in ((self.statement(), PUBLIC, statement), (f"{thread8}-c1.bare.json", PUBLIC, digest),
+                                  ("rotated.json", OTHER_PUBLIC, digest), ("rewritten.json", PUBLIC, digest),
+                                  ("unwrapped.json", PUBLIC, statement)):
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["signature"], row["journal"], row["journal_present"], row["digest"]),
+                                 ("fail", "revoked", "ok", "ok", True, listed))
+                self.assertEqual((row["statement"]["keyid"], row["statement"]["candidate"]), (key.hex(), "c1"), "what was revoked is shown")
+        self.assertEqual((rows["reissued.json"]["verdict"], rows["reissued.json"]["reason"]), ("pass", None),
+                         "revoking a certificate is not revoking its key or its candidate")
+        # Revocation wins over a journal failure too: the row names revoked, not the journal.
+        journal = self.cert_home / "journal" / "threads" / f"{self.cert_payload['thread']}.jsonl"
+        journal.write_bytes(b"\n".join(journal.read_bytes().splitlines()[:2]) + b"\n")
+        _, rows = self.rows(shelf)
+        self.assertEqual((rows["rotated.json"]["reason"], rows["rotated.json"]["journal"]), ("revoked", "chain_truncated"))
+        self.assertEqual(rows["reissued.json"]["reason"], "chain_truncated")
+
+    def test_revocation_holds_on_a_verdict_read_from_the_cache(self):
+        shelf = CertificateShelf(self.cert_home, self.certificate_keys, (self.digest(), self.digest(self.statement())))
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", wraps=shelf_module.verify_certificate) as spy:
+            first = self.rows(shelf)[1]
+            calls = spy.call_count
+            again = self.rows(shelf)[1]
+            self.assertEqual(spy.call_count, calls, "the second read is served from the cache")
+        self.assertEqual(again, first)
+        self.assertTrue(all(row["reason"] == "revoked" for row in again.values()), again)
+
+    def test_the_route_answers_the_configured_list(self):
+        self.assertEqual(self.shelf.revoked, (), "nothing is revoked unless the deployment lists it")
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.cert_home.parent)), 8999, certificates=CertificateShelf(self.cert_home, PUBLIC, (self.digest(),)))
+        self.addCleanup(cell.close)
+        status, body = cell.json("/api/certificates", who="supplier")
+        self.assertEqual((status, body["revoked"], body["public_keys"]), (200, [self.digest()], [PUBLIC.hex()]))
+        rows = {row["file"]: row["reason"] for row in body["certificates"]}
+        self.assertEqual(rows, {f"{self.cert_payload['thread'][:8]}-c1.bare.json": "revoked", self.statement(): None})
+
+    def test_the_shelf_takes_up_to_the_limit_of_distinct_lowercase_digests(self):
+        many = tuple(hashlib.sha256(bytes([i % 256, i // 256])).hexdigest() for i in range(shelf_module.MAX_REVOKED))
+        self.assertEqual(CertificateShelf(self.cert_home, PUBLIC, many).revoked, many, "exactly MAX_REVOKED digests are accepted")
+        digest = self.digest()
+        for revoked in ((*many, digest), (digest, digest), (digest.upper(),), (digest[:63],), (digest + "0",), (" " + digest,),
+                        (bytes.fromhex(digest),), ("",)):
+            with self.subTest(repr(revoked[-1])[:20]), self.assertRaises(Rejected):
+                CertificateShelf(self.cert_home, PUBLIC, revoked)
+
+    def test_serve_reads_a_comma_separated_revocation_list_and_refuses_a_malformed_one(self):
+        parser = argparse.ArgumentParser()
+        digest, other = self.digest(), hashlib.sha256(b"another certificate").hexdigest()
+        def configured(revoked=None, home=str(self.cert_home), public=PUBLIC.hex()):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            names = {k: v for k, v in (("SYBERWORK_CERTIFICATE_HOME", home), ("SYBERWORK_CERTIFICATE_PUBLIC", public),
+                                       ("SYBERWORK_CERTIFICATE_REVOKED", revoked)) if v is not None}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertEqual(configured().revoked, ())
+        self.assertEqual(configured("").revoked, ())
+        self.assertEqual(configured(f" {digest.upper()} , {other}\n").revoked, (digest, other))
+        many = ",".join(hashlib.sha256(bytes([i % 256, i // 256])).hexdigest() for i in range(shelf_module.MAX_REVOKED + 1))
+        for revoked in (" ", f"{digest},", f",{digest}", f"{digest},,{other}", f"{digest};{other}", f"{digest} {other}",
+                        f"{digest},{digest}", f"{digest},{digest.upper()}", digest[:63], digest[:32] + " " + digest[32:], many):
+            with self.subTest(revoked[:20]), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(revoked)
+        # A revocation list with no certificates to apply it to is a mistake, not a configuration.
+        with self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+            configured(digest, home=None, public=None)
+
+
 class ConsolePreview(CellCase):
     """POST /api/cases/{id}/preview: what proposing would record now (Work.preview_admission). It records nothing."""
 
@@ -1650,6 +1791,14 @@ class ConsoleModel(CellCase):
         parity["certificates"]["rotated"] = {
             "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC)).listing(),
             "expected": [[f"{thread8}-c1.bare.json", "certified", 2], [f"{thread8}-c1.json", "certified", 2], ["foreign.json", "certified", 1]]}
+        # And one that also revokes the statement form's certificate, which foreign.json re-signs under the new key.
+        bare = json.loads((self.cert_home / "certificates" / f"{thread8}-c1.bare.json").read_text(encoding="utf-8"))
+        digest = hashlib.sha256(base64.standard_b64decode(bare["payload"])).hexdigest()
+        statement = hashlib.sha256(jcs_bytes(json.loads(base64.standard_b64decode(good["payload"]))["predicate"])).hexdigest()
+        parity["certificates"]["revoked"] = {
+            "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC), (statement,)).listing(),
+            "expected": [[f"{thread8}-c1.bare.json", "certified", 2, digest], [f"{thread8}-c1.json", "revoked", 2, statement],
+                         ["foreign.json", "revoked", 1, statement]]}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -1684,6 +1833,12 @@ class ConsoleBrowser(CellCase):
         good = json.loads((self.cert_home / "certificates" / f"{self.cert_payload['thread'][:8]}-c1.bare.json").read_text(encoding="utf-8"))
         rotated = sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), OTHER_SEED)
         (self.cert_home / "certificates" / "rotated.json").write_text(json.dumps(rotated), encoding="utf-8")
+        # And one the same candidate was certified with again, later, under the new key, which the deployment revokes. Its
+        # digest exists only now, so the served shelf's list is set here, before anything is read.
+        withdrawn = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] + 1)
+        (self.cert_home / "certificates" / "withdrawn.json").write_text(json.dumps(sign_dsse(good["payloadType"], jcs_bytes(withdrawn), OTHER_SEED)), encoding="utf-8")
+        revoked = shelf_module.certificate_digest(withdrawn)
+        self.shelf.revoked = (revoked,)
         env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens)}
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
@@ -1712,16 +1867,21 @@ class ConsoleBrowser(CellCase):
         self.assertIn("a case is not a Build Thread and has none", report["certificate_text"])
         self.assertIn("Nothing on this case is drawn as certified", report["certificate_text"])
         # Studio → Certificates: both genuine forms pass the signature and the journal under the old key, the rotated file
-        # under the new one, and each row names its key; the repository is named as not checked.
+        # under the new one, and each row names its key; the revoked file reads revoked, beside what it states and its
+        # digest. The repository is named as not checked.
         thread8 = self.cert_payload["thread"][:8]
-        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified"] * 3, report["certificate_rows"])
-        for (_, row), name, key in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json", "rotated.json"),
-                                       ("key 2 · " + PUBLIC.hex()[:16], "key 2 · " + PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16])):
-            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], "certified", "Add a CSV export", key):
+        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified"] * 3 + ["revoked"], report["certificate_rows"])
+        for (_, row), name, key, verdict in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json", "rotated.json", "withdrawn.json"),
+                                                ("key 2 · " + PUBLIC.hex()[:16], "key 2 · " + PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16]),
+                                                ("certified", "certified", "certified", "revoked")):
+            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], verdict, "Add a CSV export", key, "digest "):
                 self.assertIn(text, row)
-        for text in ("3 of 3 certificates certified", "2 keys 1 " + OTHER_PUBLIC.hex()[:16] + "…, 2 " + PUBLIC.hex()[:16] + "…",
-                     "Not checked: repository", "syberlabs verify FILE --public KEY --repo .", "nothing is revoked",
-                     "the .pub file beside each certificate is not read", "A SyberWork case has none"):
+        self.assertIn("digest " + revoked, report["certificate_rows"][3][1])
+        self.assertIn("serve's configuration revokes this certificate: do not treat it as certified", report["certificate_rows"][3][1])
+        for text in ("3 of 4 certificates certified", "2 keys 1 " + OTHER_PUBLIC.hex()[:16] + "…, 2 " + PUBLIC.hex()[:16] + "…",
+                     "1 certificate digest revoked", "Not checked: repository", "syberlabs verify FILE --public KEY --repo .",
+                     "SYBERWORK_CERTIFICATE_REVOKED lists reads revoked under every key; there is no validity window",
+                     "The .pub file beside each certificate is not read", "A SyberWork case has none"):
             self.assertIn(text, report["certificate_page"])
         # Before the witness signs, the log holds nothing for the case; after, every event up to the head is witnessed.
         self.assertIn("not witnessed", report["witness_before"])

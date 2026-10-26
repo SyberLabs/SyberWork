@@ -14,7 +14,7 @@ from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import WitnessClient
 
 from .backup import export_cell, restore_cell
-from .certificates import MAX_KEYS, CertificateShelf
+from .certificates import MAX_KEYS, MAX_REVOKED, CertificateShelf
 from .core import Work
 from .server import serve
 from .trace import TraceLog
@@ -71,9 +71,16 @@ def _certificates(parser):
     wrote. During a rotation the variable lists the new key and the old ones, separated by commas, at most
     ``MAX_KEYS``. Which keys to trust is the deployment's decision, so serve never reads one from beside the
     certificates. Half a configuration, an empty entry or a key listed twice stops serve.
+
+    SYBERWORK_CERTIFICATE_REVOKED lists the digests of certificates no longer to be trusted (the ``digest`` each signed
+    row carries), separated by commas, at most ``MAX_REVOKED``. It is read only beside the other two: a revocation list
+    with no certificates to apply it to, an empty entry, a malformed digest or one listed twice stops serve.
     """
     home, public = os.getenv("SYBERWORK_CERTIFICATE_HOME"), os.getenv("SYBERWORK_CERTIFICATE_PUBLIC")
+    listed = os.getenv("SYBERWORK_CERTIFICATE_REVOKED")
     if not home and not public:
+        if listed:
+            parser.error("SYBERWORK_CERTIFICATE_REVOKED needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
         return None
     if not home or not public:
         parser.error("set both SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC, or neither")
@@ -88,8 +95,18 @@ def _certificates(parser):
         parser.error(f"SYBERWORK_CERTIFICATE_PUBLIC lists more than {MAX_KEYS} keys")
     if len(set(keys)) != len(keys):
         parser.error("SYBERWORK_CERTIFICATE_PUBLIC lists a key twice")
+    revoked = []
+    for entry in listed.split(",") if listed else ():
+        entry = entry.strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", entry):
+            parser.error("SYBERWORK_CERTIFICATE_REVOKED must be certificate digests of 64 hex characters, separated by commas")
+        revoked.append(entry.lower())
+    if len(revoked) > MAX_REVOKED:
+        parser.error(f"SYBERWORK_CERTIFICATE_REVOKED lists more than {MAX_REVOKED} digests")
+    if len(set(revoked)) != len(revoked):
+        parser.error("SYBERWORK_CERTIFICATE_REVOKED lists a digest twice")
     try:
-        return CertificateShelf(home, tuple(keys))
+        return CertificateShelf(home, tuple(keys), tuple(revoked))
     except Rejected as exc:
         parser.error(f"certificates: {exc.code}: {exc.detail}")
 

@@ -6,7 +6,9 @@ serve`` lists that folder when ``SYBERWORK_CERTIFICATE_HOME`` and ``SYBERWORK_CE
 keys to trust (one, or a few during a rotation), and runs ``verify_certificate`` on each file: the signature layer
 always, and the journal layer when the thread's journal is under the same home. The repository layer needs Git and is
 not run here. The ``.pub`` file beside each certificate is never read: whoever can write the folder can write that file
-too. A key is trusted until the deployment removes it; there is no revocation list and no validity window.
+too. A key is trusted until the deployment removes it. A certificate is revoked by listing its digest
+(``certificate_digest``) in ``SYBERWORK_CERTIFICATE_REVOKED``: it then fails as ``revoked`` under every key. There is
+no validity window.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import stat
 import threading
 from collections import OrderedDict
@@ -23,6 +26,7 @@ from syberlabs.certificate import (MAX_CERTIFICATE_BYTES, PAYLOAD_TYPE, STATEMEN
                                    verify_certificate)
 from syberlabs.ed25519 import _L, _Point, _decode, _mul
 from syberlabs.errors import Rejected
+from syberlabs.jcs import jcs_bytes
 from syberlabs.journal import CASE_ID
 
 # The most files one read verifies, in name order. Each costs a pure-Python Ed25519 check the first time it is seen.
@@ -33,6 +37,9 @@ MAX_KEYS = 8
 # plans. A key-less signature is tried under every candidate key, so this bounds a file at MAX_SIGNATURES * MAX_KEYS
 # Ed25519 checks; a file with more is refused before any is run.
 MAX_SIGNATURES = 2
+# The most certificate digests serve revokes at once. A digest is 64 lowercase hex characters (certificate_digest).
+MAX_REVOKED = 256
+DIGEST = re.compile(r"[0-9a-f]{64}")
 # Verdicts kept per process. A verdict depends only on the bytes it was computed from, so it is never stale.
 CACHE = 256
 # The largest journal or registry file serve hashes and lets the verifier read. A larger one, or one that is not a
@@ -105,6 +112,17 @@ def usable_key(key: bytes) -> bool:
     return _mul(point, 8) != identity and _mul(point, _L) == identity
 
 
+def certificate_digest(payload: dict) -> str:
+    """The SHA-256 of a verified certificate's payload as signed: its RFC 8785 bytes, hex.
+
+    The bare form signs these bytes, and the statement form carries them unchanged as its ``predicate``
+    (docs/CERTIFICATE.md), so a statement and a bare file of one payload have one digest, and so does the same payload
+    re-signed under another key. A folder writer cannot change it: the signature covers those bytes, and the verifier refuses any that are
+    not their own JCS form. A new certificate for the same candidate (another ``issued_at``) has another digest.
+    """
+    return hashlib.sha256(jcs_bytes(payload)).hexdigest()
+
+
 def _candidates(data: bytes, keys: tuple[bytes, ...]) -> tuple[bytes, ...] | None:
     """The trusted keys a signature in an unverified file could verify under, in configured order; None for a file with
     more than ``MAX_SIGNATURES`` signatures, which is refused unverified.
@@ -146,10 +164,12 @@ class CertificateShelf:
     """The certificates under ``<home>/certificates``, each with the verdict ``verify_certificate`` gives it now.
 
     ``keys`` is one public key or a sequence of distinct ones, at most ``MAX_KEYS``. A file passes the signature layer
-    when one of them verifies it; the statement names that key.
+    when one of them verifies it; the statement names that key. ``revoked`` is a sequence of distinct certificate
+    digests, at most ``MAX_REVOKED``: a signed file whose digest is listed fails as ``revoked``, whatever its other layers
+    say.
     """
 
-    def __init__(self, home: str | Path, keys: bytes | tuple[bytes, ...] | list[bytes]):
+    def __init__(self, home: str | Path, keys: bytes | tuple[bytes, ...] | list[bytes], revoked: tuple[str, ...] | list[str] = ()):
         home = Path(home)
         if not home.is_dir():
             raise Rejected("invalid_runtime", "the certificate home must be a directory (a Build Thread home such as .syberlabs)")
@@ -163,7 +183,14 @@ class CertificateShelf:
         if not all(usable_key(key) for key in keys):
             raise Rejected("invalid_runtime", "a certificate public key is not a usable Ed25519 key (not a curve point, "
                                               "or of small or mixed order)")
-        self.home, self.keys = home, keys
+        revoked = tuple(revoked)
+        if len(revoked) > MAX_REVOKED:
+            raise Rejected("invalid_runtime", f"revoke at most {MAX_REVOKED} certificate digests")
+        if not all(isinstance(digest, str) and DIGEST.fullmatch(digest) for digest in revoked):
+            raise Rejected("invalid_runtime", "a revoked certificate digest must be 64 lowercase hex characters")
+        if len(set(revoked)) != len(revoked):
+            raise Rejected("invalid_runtime", "a revoked certificate digest is listed twice")
+        self.home, self.keys, self.revoked = home, keys, revoked
         self._cache: OrderedDict[tuple, dict] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -175,7 +202,8 @@ class CertificateShelf:
             # The registry and a thread's journal are hashed once per listing, however many rows name them.
             seen: dict[Path, tuple] = {}
             rows = [self._row(path, seen) for path in files[:LIMIT]]
-        return {"configured": True, "public_keys": [key.hex() for key in self.keys], "total": len(files), "shown": len(rows),
+        return {"configured": True, "public_keys": [key.hex() for key in self.keys], "revoked": list(self.revoked),
+                "total": len(files), "shown": len(rows),
                 "checked": ["signature", "journal"], "not_checked": ["repository"], "certificates": rows, "note": NOTE}
 
     def _inputs(self, journal: Path | None, seen: dict | None = None) -> tuple:
@@ -190,7 +218,7 @@ class CertificateShelf:
 
     def _row(self, path: Path, seen: dict) -> dict:
         refused = {"file": path.name, "verdict": "fail", "signature": None, "journal": None, "journal_present": None,
-                   "repository": None, "statement": None}
+                   "repository": None, "statement": None, "digest": None}
         if path.is_symlink() or not path.is_file():
             return {**refused, "reason": "not_a_regular_file"}
         try:
@@ -204,7 +232,7 @@ class CertificateShelf:
         key = (hashlib.sha256(data).hexdigest(), *inputs)
         if key in self._cache:
             self._cache.move_to_end(key)
-            return {"file": path.name, **self._cache[key]}
+            return {"file": path.name, **self._revoke(self._cache[key])}
         verdict = self._verdict(data, inputs)
         # Kept only when nothing was refused and the inputs read the same after verifying: an append in between would
         # otherwise file the new content's verdict under the old content's key.
@@ -212,7 +240,15 @@ class CertificateShelf:
             self._cache[key] = verdict
             while len(self._cache) > CACHE:
                 self._cache.popitem(last=False)
-        return {"file": path.name, **verdict}
+        return {"file": path.name, **self._revoke(verdict)}
+
+    def _revoke(self, verdict: dict) -> dict:
+        """A verdict, failed as ``revoked`` when its digest is listed. Applied after the cache, which keeps what the bytes
+        say; the list is fixed for the life of the process. Only a signed file has a digest, so only one can be revoked.
+        What it states and its other layers are kept, so the console can show what was revoked."""
+        if verdict["digest"] is None or verdict["digest"] not in self.revoked:
+            return verdict
+        return {**verdict, "verdict": "fail", "reason": "revoked"}
 
     def _verdict(self, data: bytes, inputs: tuple) -> dict:
         registry, journal = inputs
@@ -221,7 +257,7 @@ class CertificateShelf:
         candidates = _candidates(data, self.keys)
         if candidates is None:
             return {"verdict": "fail", "reason": "too_many_signatures", "signature": None, "journal": None,
-                    "journal_present": None, "repository": None, "statement": None}
+                    "journal_present": None, "repository": None, "statement": None, "digest": None}
         try:
             # The first key a signature verifies under decides. Every other failure (too large, unreadable, a wrong type)
             # comes before the signature and reads the same under every key.
@@ -231,16 +267,16 @@ class CertificateShelf:
                     break
         except Exception:  # an envelope verify_certificate cannot read is refused, never drawn
             return {"verdict": "fail", "reason": "unverifiable", "signature": None, "journal": None,
-                    "journal_present": None, "repository": None, "statement": None}
-        statement = None
+                    "journal_present": None, "repository": None, "statement": None, "digest": None}
+        statement = digest = None
         if report.signature == "ok" and report.payload is not None:
             payload_type = json.loads(data).get("payloadType", PAYLOAD_TYPE)
-            statement = _statement(report.payload, payload_type, report.keyid)
+            statement, digest = _statement(report.payload, payload_type, report.keyid), certificate_digest(report.payload)
         if blocked and statement is not None:
             # Signed, but the journal could not be read safely: never a pass, and named as unreadable, not as changed.
             reason = f"journal_unreadable:{blocked}"
             return {"verdict": "fail", "reason": reason, "signature": "ok", "journal": reason, "journal_present": True,
-                    "repository": None, "statement": statement}
+                    "repository": None, "statement": statement, "digest": digest}
         return {"verdict": "pass" if report.passed else "fail", "reason": report.reason, "signature": report.signature,
                 "journal": report.journal, "journal_present": None if statement is None else journal[0] != "absent",
-                "repository": None, "statement": statement}
+                "repository": None, "statement": statement, "digest": digest}

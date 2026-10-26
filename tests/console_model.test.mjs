@@ -68,6 +68,11 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   const rotated = M.certificateView(cases.certificates.rotated.body);
   assert.deepEqual(rotated.publicKeys, cases.certificates.rotated.body.public_keys);
   assert.deepEqual(rotated.rows.map(r => [r.file, r.state, r.key]), cases.certificates.rotated.expected);
+  // And a shelf over that home that also revokes the statement form's digest: that file, and the same payload under the
+  // new key, read revoked; the bare form, another certificate, stays certified.
+  const revoked = M.certificateView(cases.certificates.revoked.body);
+  assert.deepEqual(revoked.rows.map(r => [r.file, r.state, r.key, r.digest]), cases.certificates.revoked.expected);
+  assert.deepEqual(revoked.revoked, cases.certificates.revoked.body.revoked);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -458,9 +463,11 @@ test('asking the witness is for the role serve names, and not for a head already
 const CERTIFIED = { keyid: 'd'.repeat(64), thread: '0123abcd-0000-4000-8000-000000000000', candidate: 'c1', objective: 'o', act_class: null, contract: { id: 'repo-change', version: 2 },
   result: { commit: 'a'.repeat(40), tree: 'b'.repeat(40), files: 2 }, target_ref: 'refs/heads/syberlabs/0123abcd', checks: [{ name: 'tests', required: true, state: 'passed' }],
   chain: { count: 12, head: 'c'.repeat(64) } };
-const SHELF = (rows, extra = {}) => ({ configured: true, public_keys: ['d'.repeat(64)], total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
+const SHELF = (rows, extra = {}) => ({ configured: true, public_keys: ['d'.repeat(64)], revoked: [], total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
   not_checked: ['repository'], certificates: rows, note: 'n', ...extra });
-const ROW = extra => ({ file: 'x.json', verdict: 'pass', reason: null, signature: 'ok', journal: 'ok', journal_present: true, repository: null, statement: CERTIFIED, ...extra });
+const DIGEST = '9a'.repeat(32);
+const ROW = extra => ({ file: 'x.json', verdict: 'pass', reason: null, signature: 'ok', journal: 'ok', journal_present: true, repository: null, statement: CERTIFIED,
+  digest: DIGEST, ...extra });
 
 test('a certificate reads certified only when serve passed its signature and its journal', () => {
   const view = M.certificateView(SHELF([ROW({}), ROW({ file: 'y.json', journal: null, journal_present: false })]));
@@ -507,6 +514,44 @@ test('with more than one key, each signed row names the listed key that verified
   // A failed signature names no key.
   const unsigned = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'signature_invalid', signature: 'signature_invalid', journal: null, journal_present: null })])).rows[0];
   assert.deepEqual([unsigned.state, unsigned.key], ['not_signed', null]);
+});
+
+test('a revoked certificate reads revoked only when the same answer lists its digest, and a listed digest is never certified', () => {
+  const revoked = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'revoked' })], { revoked: ['0'.repeat(64), DIGEST] }));
+  const row = revoked.rows[0];
+  assert.deepEqual([row.state, row.tone, row.label, row.certified, row.key, row.digest], ['revoked', 'denied', 'revoked', false, 1, DIGEST]);
+  assert.equal(row.statement.candidate, 'c1', 'what was revoked is shown');
+  assert.match(row.text, /do not treat it as certified/);
+  assert.deepEqual([revoked.certified, revoked.revoked], [0, ['0'.repeat(64), DIGEST]]);
+  // Any disagreement between the row and the list is unknown: never certified, and never revoked on the row's word alone.
+  for (const [extra, list] of [
+    [{ verdict: 'fail', reason: 'revoked' }, []],                                       // serve says revoked, the answer lists no such digest
+    [{ verdict: 'fail', reason: 'revoked' }, ['0'.repeat(64)]],
+    [{}, [DIGEST]],                                                                      // a pass whose digest is listed
+    [{ journal: null, journal_present: false }, [DIGEST]],                               // a signed-only pass whose digest is listed
+    [{ verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated' }, [DIGEST]],
+    [{ verdict: 'pass', reason: 'revoked' }, [DIGEST]],
+    [{ verdict: 'fail', reason: 'revoked', statement: { ...CERTIFIED, keyid: 'f'.repeat(64) } }, [DIGEST]],
+    [{ verdict: 'fail', reason: 'revoked', statement: null }, [DIGEST]],
+    [{ verdict: 'fail', reason: 'revoked', digest: DIGEST.toUpperCase() }, [DIGEST]],                // a digest serve would not write
+  ]) {
+    const r = M.certificateView(SHELF([ROW(extra)], { revoked: list })).rows[0];
+    assert.deepEqual([r.state, r.certified, r.statement, r.digest], ['unknown', false, null, null], JSON.stringify([extra, list]));
+  }
+  // A pass is certified only with a digest the console could check against the list.
+  for (const digest of [undefined, null, 4, 'abc', DIGEST.toUpperCase(), DIGEST + '0']) {
+    for (const extra of [{}, { journal: null, journal_present: false }]) {
+      const r = M.certificateView(SHELF([ROW({ ...extra, digest })])).rows[0];
+      assert.deepEqual([r.state, r.certified], ['unknown', false], JSON.stringify([digest, extra]));
+    }
+  }
+  assert.equal(M.certificateView(SHELF([ROW({})])).rows[0].digest, DIGEST, 'a certified row shows the digest that would revoke it');
+  // An answer without a revocation list of strings is unknown: the console could not tell what is revoked.
+  // So is a list with an entry serve would not write: the console could not match it against a row's digest.
+  for (const extra of [{ revoked: undefined }, { revoked: null }, { revoked: DIGEST }, { revoked: [DIGEST, 3] }, { revoked: [DIGEST.toUpperCase()] },
+    { revoked: [' ' + DIGEST] }, { revoked: [DIGEST + '\n'] }, { revoked: [''] }, { revoked: [DIGEST.slice(1)] }]) {
+    assert.equal(M.certificateView(SHELF([ROW({})], extra)).state, 'unknown', JSON.stringify(extra));
+  }
 });
 
 test('a certificate answer of another shape is unknown, and an unconfigured one says so', () => {

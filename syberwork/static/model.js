@@ -600,13 +600,15 @@ export function witnessView(body, events) {
 // under the keys it was given (one, or a few during a rotation): signature and shape, then the thread's journal under the
 // same home. serve never runs the repository layer. The console checks no signature. A row reads certified only when the
 // server passed it with a signature of ok, a journal of ok and a statement of the expected shape, signed under a key the
-// same answer lists; a pass without a journal reads as signed only. Any other answer is a failure or unknown, and a row
-// whose signature failed states nothing.
+// same answer lists, with a digest that answer does not revoke; a pass without a journal reads as signed only. A row
+// serve failed as revoked reads revoked only when its digest is one the same answer lists. Any other answer is a failure
+// or unknown, and a row whose signature failed states nothing.
 export const CERTIFICATE_STATE = {
   certified: ['verified', 'certified', 'signed under a configured key, and the thread\'s journal still says what it states'],
   signed: ['pending', 'signed · journal not checked', 'signed under a configured key; no journal for this thread under the configured home, so only the signature was checked'],
   journal_differs: ['denied', 'journal differs', 'signed under a configured key, but the journal no longer says what it states: do not treat it as certified'],
   journal_unreadable: ['unknown', 'journal unreadable', 'signed under a configured key, but serve could not read the thread\'s journal: not certified'],
+  revoked: ['denied', 'revoked', 'signed under a configured key, but serve\'s configuration revokes this certificate: do not treat it as certified'],
   not_signed: ['denied', 'not certified', 'not signed by any configured key, or not a certificate this server reads'],
   unknown: ['unknown', 'unknown', 'an answer this console does not know'],
 };
@@ -617,11 +619,17 @@ function certificateStatement(s, keys) {
     !!s.result && typeof s.result.commit === 'string' && !!s.chain && Number.isInteger(s.chain.count) && typeof s.chain.head === 'string' &&
     !!s.contract && typeof s.contract.id === 'string' && Array.isArray(s.checks) ? s : null;
 }
-function certificateRow(r, keys) {
+// revoked: the certificate digests the same answer lists. A row carrying one of them is never certified, whatever else it
+// says, and a pass without a digest is unknown: the console could not tell whether it is revoked.
+function certificateRow(r, keys, revoked) {
   const statement = r.signature === 'ok' ? certificateStatement(r.statement, keys) : null;
   const reason = typeof r.reason === 'string' ? r.reason : null;
+  const digest = typeof r.digest === 'string' && /^[0-9a-f]{64}$/.test(r.digest) ? r.digest : null;
+  const listed = digest !== null && revoked.includes(digest);
   let state = 'unknown';
-  if (r.verdict === 'pass' && reason === null && statement) {
+  if (reason === 'revoked' || listed) {
+    if (r.verdict === 'fail' && reason === 'revoked' && listed && statement) state = 'revoked';
+  } else if (r.verdict === 'pass' && reason === null && statement && digest) {
     if (r.journal === 'ok' && r.journal_present === true) state = 'certified';
     else if (r.journal === null && r.journal_present === false) state = 'signed';
   } else if (r.verdict === 'fail' && reason) {
@@ -631,18 +639,19 @@ function certificateRow(r, keys) {
   const [tone, label, text] = CERTIFICATE_STATE[state];
   const shown = state === 'unknown' || state === 'not_signed' ? null : statement;
   // key: which of the listed keys signed it, counted from 1, so a rotation shows which rows are still under an old key.
+  // digest: what SYBERWORK_CERTIFICATE_REVOKED would list to revoke it.
   return {file: r.file, state, tone, label, text, reason, certified: state === 'certified', statement: shown,
-    key: shown ? keys.indexOf(shown.keyid) + 1 : null};
+    key: shown ? keys.indexOf(shown.keyid) + 1 : null, digest: shown ? digest : null};
 }
 export function certificateView(body) {
   const unknown = text => ({state: 'unknown', text});
   if (!body || typeof body !== 'object' || typeof body.configured !== 'boolean') return unknown('not returned by the server');
   if (!body.configured) return {state: 'off', text: typeof body.note === 'string' ? body.note : 'serve reads no certificates'};
-  const keys = body.public_keys;
+  const keys = body.public_keys, revoked = body.revoked;
   if (!Array.isArray(body.certificates) || !Number.isInteger(body.total) || !Array.isArray(keys) || !keys.length ||
-    !keys.every(k => typeof k === 'string')) return unknown('not returned by the server');
-  const rows = body.certificates.filter(r => r && typeof r === 'object' && typeof r.file === 'string').map(r => certificateRow(r, keys));
+    !keys.every(k => typeof k === 'string') || !Array.isArray(revoked) || !revoked.every(d => typeof d === 'string' && /^[0-9a-f]{64}$/.test(d))) return unknown('not returned by the server');
+  const rows = body.certificates.filter(r => r && typeof r === 'object' && typeof r.file === 'string').map(r => certificateRow(r, keys, revoked));
   const names = list => Array.isArray(list) ? list.filter(x => typeof x === 'string') : [];
-  return {state: 'read', rows, total: body.total, shown: rows.length, truncated: body.total > rows.length, publicKeys: keys,
+  return {state: 'read', rows, total: body.total, shown: rows.length, truncated: body.total > rows.length, publicKeys: keys, revoked,
     checked: names(body.checked), notChecked: names(body.not_checked), certified: rows.filter(r => r.certified).length};
 }

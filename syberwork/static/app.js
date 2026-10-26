@@ -1203,7 +1203,8 @@ function openCertificates() {
 }
 // Admission certificates (docs/CERTIFICATE.md) of Build Threads, from GET /api/certificates. serve verifies each file under
 // the keys it was given; the console checks no signature, and draws as certified only what M.certificateView reads so.
-// With more than one key (a rotation), each signed row names the key that verified it.
+// With more than one key (a rotation), each signed row names the key that verified it. Each signed row shows its digest,
+// which SYBERWORK_CERTIFICATE_REVOKED lists to revoke it; a revoked row reads revoked, beside what it states.
 function studioCertificates() {
   if (!state.certificates) {
     const read = api('/api/certificates').then(body => ({view: M.certificateView(body)}), error => ({error}));
@@ -1225,6 +1226,7 @@ function certificatesView(entry) {
   return [
     h('p', {}, h('b', {}, v.certified), ' of ', v.shown, ' certificate', v.shown === 1 ? '' : 's', ' certified · ', v.publicKeys.length === 1 ? 'key ' : v.publicKeys.length + ' keys ',
       v.publicKeys.map((k, i) => [i ? ', ' : '', mono((v.publicKeys.length === 1 ? '' : (i + 1) + ' ') + M.short(k, 16) + '…')]),
+      v.revoked.length ? h('span', {class: 'why'}, ' · ' + v.revoked.length + ' certificate digest' + (v.revoked.length === 1 ? '' : 's') + ' revoked') : null,
       v.truncated ? h('span', {class: 'why warn'}, ' · ' + v.total + ' files; only the first ' + v.shown + ' by name were verified') : null),
     v.rows.length ? h('table', {class: 'grid certificate-rows'}, h('thead', {}, h('tr', {}, ['File', 'Thread · candidate', 'Result', 'Contract', 'Checks', 'Chain', 'Verdict'].map(t => h('th', {}, t)))),
       h('tbody', {}, v.rows.map(r => {
@@ -1239,12 +1241,14 @@ function certificatesView(entry) {
           h('td', {}, st ? st.checks.map(c => h('div', {}, badge(c.state !== 'passed' ? (r.certified ? 'denied' : 'idle') : r.certified ? 'verified' : r.state === 'signed' ? 'pending' : 'idle', c.name + ' ' + c.state))) : dash),
           h('td', {class: 'mono-s'}, st ? '#1–#' + st.chain.count + ' · ' + M.short(st.chain.head, 10) : dash),
           h('td', {}, badge(r.tone, r.label), r.reason ? [' ', mono(r.reason)] : null, h('div', {class: 'why'}, r.text),
-            r.key ? h('div', {class: 'muted mono-s'}, 'key ' + (v.publicKeys.length === 1 ? '' : r.key + ' · ') + M.short(r.statement.keyid, 16) + '…') : null));
+            r.key ? h('div', {class: 'muted mono-s'}, 'key ' + (v.publicKeys.length === 1 ? '' : r.key + ' · ') + M.short(r.statement.keyid, 16) + '…') : null,
+            r.digest ? h('div', {class: 'muted mono-s digest'}, 'digest ' + r.digest) : null));
       })))
       : h('p', {class: 'muted'}, 'No certificate files under ', mono('<home>/certificates'), '.'),
     h('p', {class: 'hint'}, 'Checked by serve: ', v.checked.join(' and ') || 'nothing', '. Not checked: ', v.notChecked.join(', ') || 'nothing',
       ' (the commits, trees and diff in Git); run ', mono('syberlabs verify FILE --public KEY --repo .'), ' for it. The keys are serve\'s configuration (',
-      mono('SYBERWORK_CERTIFICATE_PUBLIC'), ', the current key and any still being rotated out; a listed key is trusted until it is removed, and nothing is revoked); the .pub file beside each certificate is not read. v0 certificates are signed in the certifying process, not witnessed. The console checks no signature.'),
+      mono('SYBERWORK_CERTIFICATE_PUBLIC'), ', the current key and any still being rotated out; a listed key is trusted until it is removed). A certificate whose digest ',
+      mono('SYBERWORK_CERTIFICATE_REVOKED'), ' lists reads revoked under every key; there is no validity window. The .pub file beside each certificate is not read. v0 certificates are signed in the certifying process, not witnessed. The console checks no signature.'),
   ];
 }
 function studioTabs(tabs) {

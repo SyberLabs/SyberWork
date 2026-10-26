@@ -329,4 +329,5 @@ table.metrics-rows td.why { max-width: 300px; }
 .certificates { display: grid; gap: var(--s3); }
 table.certificate-rows td { vertical-align: top; }
 table.certificate-rows td .why { max-width: 260px; }
+table.certificate-rows td .digest { max-width: 260px; overflow-wrap: anywhere; }
 .witness-ask { margin: var(--s3) 0; }
