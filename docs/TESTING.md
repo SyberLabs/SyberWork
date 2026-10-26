@@ -24,6 +24,31 @@ PYTHONPATH=. python -m unittest tests.test_properties -v
 CI installs the extra in the `test` (3.11, 3.12, 3.13) and `windows` jobs
 before the unit tests. On Windows use `python`, never `python3`.
 
+## G8: the existing suite as one fail-closed check
+
+`unittest` reports `OK` when a test skips, so a PostgreSQL service that never
+came up, or a missing `psycopg` or `hypothesis`, leaves the suite green with
+those tests unrun. Run locally without either package, the suite says
+`OK (skipped=25)`, and 24 of those skips are tests that CI is meant to run.
+
+`scripts/g8_existing_suite.py` runs the same discovery (`-s tests`) and fails
+when no test ran, a test failed or errored (a module that does not import is an
+error), an `expectedFailure` passed, or a test skipped for a reason other than
+a missing node, npm or global playwright. Reasons match exactly, and
+`tests/test_g8_existing_suite.py` checks that each allowed reason is still a
+skip in the suite. It prints counts and writes them with `--report`. These are
+test counts, not coverage.
+
+```sh
+PYTHONPATH=. python scripts/g8_existing_suite.py --report g8.json
+```
+
+In `ci.yml`, job `g8-suite` runs it on Linux with Python 3.12 and PostgreSQL 16,
+then runs conformance. Job `g8` (check name `G8 Existing suite`) passes only
+when every leg of `test`, `windows` and `g8-suite` succeeded; a failed,
+cancelled or skipped leg fails it. The `windows` leg uses plain `unittest`,
+where the PostgreSQL skips are expected (it installs no driver). `compose` is not part of G8.
+
 ## Property suite: the admission kernel over random event sequences
 
 `tests/test_properties.py` does not script scenarios. Each test draws a random

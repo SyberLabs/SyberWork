@@ -1,0 +1,30 @@
+name: g4-positive-reconcile
+
+# Factory gate G4 (FACTORY red-team rubric §2, §3), SyberWork half: fail when a matching
+# destination status lookup no longer reconciles, so "refuse everything" cannot pass the
+# adversarial gates. Additive: ci.yml is unchanged, and branch protection decides whether
+# this job is required. See docs/G4_POSITIVE_RECONCILE.md.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  g4-positive-reconcile:
+    name: G4 Positive reconcile
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Positive controls, twins, mutants and gate self-tests
+        # Runs every id in tests/g4_positive_reconcile.txt; any missing, skipped or
+        # non-passing id fails the job. Standard library only, no installs.
+        run: python scripts/g4_positive_reconcile.py

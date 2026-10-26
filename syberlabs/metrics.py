@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
-from syberlabs import critic
+from syberlabs import _patterns, critic
 from syberlabs.clock import as_seconds
 
 HOST = "syberlabs.host"            # the same actor name build.HOST uses; metrics may not import build
@@ -77,7 +77,7 @@ _PERSON_ACTS = ("proposed", "approved", "case_cancelled")
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,63}$")
 _URL = re.compile(r"^https://[^\s\x00-\x1f\x7f]{1,500}$")
 # Shapes of common credentials. A note is free text a person types; one that looks like a key is refused, not stored.
-_SECRET = re.compile(r"(ghp_|gho_|ghs_|github_pat_|sk-ant-|sk-|xox[abprs]-|AKIA)[A-Za-z0-9_\-]{8,}")
+_SECRET = _patterns.SECRET  # one object, shared with the query guard (``syberlabs._patterns``)
 
 
 @dataclass(frozen=True)

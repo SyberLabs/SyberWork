@@ -1,8 +1,10 @@
 """Public-key chain head, transparency log, integer timestamps, and HTTPS hosts."""
 
+import base64
 import hashlib
 import json
 import os
+import random
 import shutil
 import socket
 import sqlite3
@@ -13,7 +15,8 @@ from unittest.mock import patch
 
 from syberlabs.admission import AdmissionContext, admit
 from syberlabs.clock import as_seconds, stamp
-from syberlabs.dsse import pae, sign_chain_head, verify_chain_head
+from syberlabs import ed25519
+from syberlabs.dsse import CHECKPOINT_TYPE, pae, sign_chain_head, sign_dsse, verify_chain_head
 from syberlabs.economic import denial
 from syberlabs.ed25519 import public_from_seed, sign, verify
 from syberlabs.errors import Rejected
@@ -272,6 +275,74 @@ class HttpsHosts(unittest.TestCase):
             guard_request("http://127.0.0.1:9/items/1")
         with patch("syberlabs.targets.socket.getaddrinfo", side_effect=socket.gaierror()):
             guard_request("https://example.com/path")
+
+
+
+RFC8032 = (  # RFC 8032 section 7.1, TEST 1, TEST 2 and TEST 3: (secret key, public key, message, signature)
+    (SECRET_1, PUBLIC_1, b"", SIG_1),
+    (SECRET_2, PUBLIC_2, b"r", SIG_2),
+    (bytes.fromhex("c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7"),
+     bytes.fromhex("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"),
+     bytes.fromhex("af82"),
+     bytes.fromhex("6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac"
+                   "18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a")),
+)
+
+
+class CachedPublicKey(unittest.TestCase):
+    """perf-packet-a (efficiency audit 2026-10-26, item 5): ``sign`` takes the public key its caller already derived
+    from the same seed, ``sign_dsse`` derives it once instead of twice, and a transparency log keeps its own. Ed25519
+    is deterministic, so every signature must be byte-identical to one that derives the key itself."""
+
+    def test_rfc8032_vectors_with_and_without_the_key(self):
+        for seed, public, message, signature in RFC8032:
+            self.assertEqual(public_from_seed(seed), public)
+            self.assertEqual(sign(seed, message), signature)
+            self.assertEqual(sign(seed, message, public), signature)
+            self.assertTrue(verify(public, message, signature))
+
+    def test_signatures_are_byte_identical_over_seeds_and_messages(self):
+        rng = random.Random(8032)
+        for _ in range(6):
+            seed = rng.randbytes(32)
+            public = public_from_seed(seed)
+            for size in (0, 33, 1000):
+                message = rng.randbytes(size)
+                self.assertEqual(sign(seed, message, public), sign(seed, message))
+            envelope = sign_dsse("application/vnd.syberlabs.test+json", message, seed)
+            self.assertEqual(sign_dsse("application/vnd.syberlabs.test+json", message, seed, public=public), envelope)
+            self.assertEqual(base64.standard_b64decode(envelope["signatures"][0]["sig"]),
+                             sign(seed, pae("application/vnd.syberlabs.test+json", message)))
+            self.assertEqual(envelope["signatures"][0]["keyid"], public.hex())
+        with self.assertRaises(ValueError):
+            sign(SECRET_1, b"", PUBLIC_1[:31])
+
+    def test_sign_dsse_does_two_scalar_multiplications_not_three(self):
+        with patch.object(ed25519, "_mul", wraps=ed25519._mul) as mul:
+            sign_dsse("application/vnd.syberlabs.test+json", b"{}", SECRET_1)
+        self.assertEqual(mul.call_count, 2, "the public key once, the nonce commitment once")
+        with patch.object(ed25519, "_mul", wraps=ed25519._mul) as mul:
+            sign_dsse("application/vnd.syberlabs.test+json", b"{}", SECRET_1, public=PUBLIC_1)
+        self.assertEqual(mul.call_count, 1)
+
+    def test_a_log_checkpoint_is_signed_as_before(self):
+        session = _note_session()
+        case_id = session.create_case("note", 1, {"name": "a"}, "operator")
+        events = session.inspect(case_id)["events"]
+        envelope = sign_chain_head(case_id, events, SECRET_1)
+        with tempfile.TemporaryDirectory() as folder:
+            log = TransparencyLog(Path(folder) / "log.sqlite", SECRET_1)
+            try:
+                with patch.object(ed25519, "_mul", wraps=ed25519._mul) as mul:
+                    log.append(envelope)
+                # verifying the incoming envelope is two multiplications; signing the checkpoint is now one
+                self.assertEqual(mul.call_count, 3)
+                stored = json.loads(log._db.execute("SELECT envelope FROM checkpoints WHERE size = 1").fetchone()[0])
+                self.assertTrue(log.verify_witnessed(envelope, events))
+            finally:
+                log.close()
+        payload = base64.standard_b64decode(stored["payload"])
+        self.assertEqual(stored, sign_dsse(CHECKPOINT_TYPE, payload, SECRET_1))
 
 
 if __name__ == "__main__":

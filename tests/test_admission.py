@@ -1,8 +1,11 @@
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from syberlabs import admission
 from syberlabs.admission import (
     ECONOMIC_INSERT_AFTER,
     RULES,
@@ -342,6 +345,80 @@ class AdmissionRegistry(unittest.TestCase):
             decision = next(event for event in work.inspect(case)["events"] if event["kind"] == "decision")
             self.assertNotIn("rule", decision["body"])
             work.close()
+
+
+
+def reference_effect_unresolved(ctx):
+    """``effect.unresolved`` as it was before perf-packet-a, which computed the finished proposals twice."""
+    proposals = {event["body"]["id"]: event["body"]["action"] for event in ctx.history if event["kind"] == "proposed"}
+    settled_ids = admission._finished_proposal_ids(ctx.history)
+    for event in ctx.history:
+        if event["kind"] != "effect_unknown":
+            continue
+        effect = event["body"]
+        if effect.get("action", proposals.get(effect["proposal_id"])) == ctx.action and effect["proposal_id"] not in settled_ids:
+            return admission.deny("effect_unresolved:" + ctx.action, "effect.unresolved")
+    finished = admission._finished_proposal_ids(ctx.history)
+    for event in ctx.history:
+        if event["kind"] != "effect_started":
+            continue
+        effect = event["body"]
+        if effect.get("action") == ctx.action and effect.get("proposal_id") not in finished:
+            return admission.deny("effect_unresolved:" + ctx.action, "effect.unresolved")
+    return None
+
+
+class FinishedProposalsOnce(unittest.TestCase):
+    """perf-packet-a (efficiency audit 2026-10-26, item 4): ``effect.unresolved`` computes the set of finished proposals
+    once (it was 62% of admission at 20,000 events, computed twice). Decisions are unchanged."""
+
+    KINDS = ("proposed", "effect_started", "effect_unknown", "effect_succeeded", "effect_rejected", "reconciled",
+             "observed")
+    ACTIONS = ("review", "publish")
+
+    def history(self, rng):
+        events, ids = [], []
+        for _ in range(rng.randint(0, 40)):
+            kind = rng.choice(self.KINDS)
+            if kind == "proposed" or not ids:
+                ids.append(f"p{len(ids)}")
+                events.append({"kind": "proposed", "body": {"id": ids[-1], "action": rng.choice(self.ACTIONS)}})
+                continue
+            body = {"proposal_id": rng.choice(ids)}
+            if rng.random() < 0.7:
+                body["action"] = rng.choice(self.ACTIONS)
+            if kind == "reconciled":
+                body.update(success=rng.random() < 0.8,
+                            proof={"verified": rng.random() < 0.8, "external_id": "x" if rng.random() < 0.9 else "",
+                                   "response_digest": "d"})
+            elif kind == "observed":
+                body = {"key": "note", "value": 1}
+            events.append({"kind": kind, "body": body})
+        return events
+
+    def test_decisions_equal_the_reference_on_random_histories(self):
+        rng = random.Random(20261026)
+        denied = 0
+        for _ in range(600):
+            history = self.history(rng)
+            for action in self.ACTIONS:
+                ctx = context(history=history, proposal_doc=proposal(action=action),
+                              contract_actions={name: {} for name in self.ACTIONS},
+                              policy_actions={name: {"roles": ["operator"]} for name in self.ACTIONS},
+                              installed=set(self.ACTIONS))
+                expected = reference_effect_unresolved(ctx)
+                self.assertEqual(admission.effect_unresolved(ctx), expected)
+                denied += expected is not None
+        self.assertGreater(denied, 50, "the generator reaches both outcomes")
+
+    def test_the_finished_set_is_computed_once(self):
+        history = [{"kind": "proposed", "body": {"id": "p1", "action": "review"}},
+                   {"kind": "effect_started", "body": {"proposal_id": "p1", "action": "review"}},
+                   {"kind": "effect_succeeded", "body": {"proposal_id": "p1", "action": "review"}}]
+        ctx = context(history=history)
+        with patch("syberlabs.admission._finished_proposal_ids", wraps=admission._finished_proposal_ids) as spy:
+            self.assertIsNone(admission.effect_unresolved(ctx))
+        self.assertEqual(spy.call_count, 1)
 
 
 if __name__ == "__main__":
