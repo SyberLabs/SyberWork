@@ -7,10 +7,14 @@ import json
 SIMULATION_FLAGS = ("simulated", "simulation", "sandbox", "dry_run", "test", "testnet", "preview")
 SIMULATION_LABELS = ("mode", "environment", "env")
 LIVE_LABELS = ("live", "production", "mainnet")
+# Objects and arrays a destination body may nest, counting the top level as 1. A fixed cap, because
+# the depth at which the parser itself gives up varies with the Python version and the call stack.
+MAX_DEPTH = 64
 
 
 class AmbiguousRecord(ValueError):
-    """A destination body that names one field twice has no single meaning."""
+    """A destination body whose meaning depends on the parser: a field named twice, a number that
+    overflows a double, or a string with an unpaired surrogate (RFC 8259 sections 4, 6 and 8.2)."""
 
 
 def _unique_fields(pairs: list) -> dict:
@@ -22,9 +26,46 @@ def _unique_fields(pairs: list) -> dict:
     return record
 
 
+def _not_json(constant: str):
+    # Python's parser accepts NaN, Infinity and -Infinity; JSON does not.
+    raise ValueError(f"{constant} is not JSON")
+
+
+def _finite(text: str) -> float:
+    number = float(text)
+    if number in (float("inf"), float("-inf")):
+        raise AmbiguousRecord("number overflows a double")
+    return number
+
+
+def _check_values(record) -> None:
+    """Iterative, so a body the parser could nest cannot exhaust the stack here."""
+    stack = [(record, 1)]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, (dict, list)) and depth > MAX_DEPTH:
+            raise ValueError("destination body nests too deeply")
+        if isinstance(value, dict):
+            stack.extend((name, depth) for name in value)
+            stack.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            stack.extend((item, depth + 1) for item in value)
+        elif isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise AmbiguousRecord("string has an unpaired surrogate") from None
+
+
 def destination_record(raw: bytes):
-    """Parse a destination body; duplicate keys at any depth raise ``AmbiguousRecord``, never last-wins."""
-    return json.loads(raw, object_pairs_hook=_unique_fields)
+    """Parse a destination body as strict JSON. A body with no single meaning raises ``AmbiguousRecord``,
+    never last-wins; a body that is not JSON, or nests deeper than ``MAX_DEPTH``, raises ``ValueError``."""
+    try:
+        record = json.loads(raw, object_pairs_hook=_unique_fields, parse_constant=_not_json, parse_float=_finite)
+    except RecursionError:
+        raise ValueError("destination body nests too deeply") from None
+    _check_values(record)
+    return record
 
 
 def simulation_labeled(record) -> bool:

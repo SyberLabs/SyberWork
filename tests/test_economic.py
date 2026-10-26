@@ -178,6 +178,23 @@ class EconomicActions(unittest.TestCase):
                 self.assertEqual(self.work.commit(case, key, "operator")["status"], "unknown")
                 self.assertFalse(self.work.inspect(case)["complete"])
 
+    def test_receipt_that_is_not_strict_json_never_succeeds(self):
+        """A lenient parse would read each receipt as matching; none may settle or crash the commit."""
+        receipts = {
+            "nan_fee": ', "fee": NaN}',
+            "overflowing_fee": ', "fee": 1e400}',
+            "unpaired_surrogate": ', "note": "\\udc80"}',
+            "nesting_past_cap": ', "meta": ' + "[" * 64 + "]" * 64 + "}",
+        }
+        for name, tail in receipts.items():
+            with self.subTest(receipt=name):
+                case, evidence = self.case("100000")
+                key = self.approved(case, evidence, "100000")
+                self.receipt = lambda r, tail=tail: (json.dumps(r)[:-1] + tail).encode()
+                self.assertEqual(self.work.commit(case, key, "operator")["status"], "unknown")
+                self.assertEqual(self.work.inspect(case)["events"][-1]["kind"], "effect_unknown")
+                self.assertFalse(self.work.inspect(case)["complete"])
+
     def test_receipt_and_status_naming_the_installed_rail_settle(self):
         self.receipt = lambda r: json.dumps({**r, "rail": "usdc_service", "livemode": True}).encode()
         first, evidence = self.case()

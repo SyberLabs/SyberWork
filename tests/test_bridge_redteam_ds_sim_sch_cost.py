@@ -62,6 +62,7 @@ CASES = {
     "test_settlement_record_on_another_rail_does_not_verify": ("SIM", ("R1", "R5", "R8")),
     "test_malformed_status_bodies_fail_closed": ("SCH", ("R1", "R8")),
     "test_status_body_with_duplicate_keys_fails_closed": ("SCH", ("R1", "R8")),
+    "test_status_body_that_is_not_strict_json_fails_closed": ("SCH", ("R1", "R8")),
     "test_hostile_adapter_timeout_fails_closed": ("SCH", ("R1", "R8")),
     "test_repeated_lookups_never_reissue_the_write": ("SCH", ("R1", "R7", "R8")),
     "test_expired_worker_lease_is_unknown_and_never_reexecuted": ("SCH", ("R1", "R7", "R8")),
@@ -404,6 +405,42 @@ class Schema(BridgeFloor):
                 self.assert_not_verified(self.reconcile(key), "unverified", "destination_record_ambiguous")
         self.assert_unresolved(key)
 
+    def test_status_body_that_is_not_strict_json_fails_closed(self):
+        key = self.unknown()
+        record = self.dest.records[key]
+        head = json.dumps(record)[:-1]
+        not_json = {  # Python's lenient parser reads these as a matching record
+            "nan_field": head + ', "fee": NaN}',
+            "infinity_field": head + ', "fee": Infinity}',
+            "negative_infinity_field": head + ', "fee": -Infinity}',
+        }
+        ambiguous = {  # valid JSON grammar whose value depends on the parser
+            "overflowing_number": head + ', "fee": 1e400}',
+            "overflowing_negative_number": head + ', "fee": -1e400}',
+            "unpaired_surrogate_in_external_id": json.dumps(record)[:-1].replace('"dest-', '"\\udc80dest-') + "}",
+            "unpaired_surrogate_in_field": head + ', "note": "\\ud800"}',
+            "unpaired_surrogate_in_name": head + ', "\\udfff": 1}',
+            "unpaired_surrogate_in_array": head + ', "tags": [["\\udc00"]]}',
+        }
+        for name, body in {**not_json, **ambiguous}.items():
+            with self.subTest(body=name):
+                self.assertEqual(json.loads(body)["idempotency_key"], key)
+                self.dest.status = lambda _k, body=body: (200, body.encode(), {})
+                expected = ("pending", "status_unavailable") if name in not_json else ("unverified", "destination_record_ambiguous")
+                self.assert_not_verified(self.reconcile(key), *expected)
+        raw = {  # surrogate bytes the parser decodes without error; 65 levels; past the parser's recursion limit
+            "raw_utf8_surrogate": (head + ', "note": "').encode() + b"\xed\xa0\x80" + b'"}',
+            "nesting_one_past_cap": (head + ', "meta": ' + "[" * 64 + "]" * 64 + "}").encode(),
+            "nesting_past_parser_limit": (head + ', "meta": ').encode() + b"[" * 30000 + b"]" * 30000 + b"}",
+        }
+        for name, body in raw.items():
+            with self.subTest(body=name):
+                self.assertLessEqual(len(body), 65536)
+                self.dest.status = lambda _k, body=body: (200, body, {})
+                expected = ("unverified", "destination_record_ambiguous") if "surrogate" in name else ("pending", "status_unavailable")
+                self.assert_not_verified(self.reconcile(key), *expected)
+        self.assert_unresolved(key)
+
     def test_hostile_adapter_timeout_fails_closed(self):
         # The adapter installs, but a hostile timeout must never become a settled effect.
         for timeout in ("10", None, [], -1):
@@ -629,6 +666,21 @@ class PositiveControl(BridgeFloor):
         live = {**self.dest.records[key], "simulated": False, "livemode": True, "mode": "live",
                 "environment": "production", "env": "mainnet", "meta": {"region": "eu"}}
         self.dest.status = reply(live)
+        result = self.reconcile(key)
+        self.assertEqual((result["status"], result["reason"]), ("verified", "destination_record_matched"))
+        self.assertEqual(result["event"]["body"]["proof"]["response_digest"], digest(live))
+        self.assertTrue(self.work.inspect(self.case)["complete"])
+
+
+    def test_strict_json_edge_values_still_reconcile(self):
+        """The strict parser does not refuse a paired surrogate, the largest double, -0.0 or 64 levels of nesting."""
+        key = self.unknown()
+        body = (json.dumps(self.dest.records[key])[:-1]
+                + ', "memo": "\\ud83d\\ude00", "fee": 1.7976931348623157e308, "rebate": -0.0, "meta": '
+                + "[" * 63 + "]" * 63 + "}")
+        live = json.loads(body)
+        self.assertEqual(live["memo"], "\U0001F600")
+        self.dest.status = lambda _k: (200, body.encode(), {})
         result = self.reconcile(key)
         self.assertEqual((result["status"], result["reason"]), ("verified", "destination_record_matched"))
         self.assertEqual(result["event"]["body"]["proof"]["response_digest"], digest(live))
