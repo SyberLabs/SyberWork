@@ -6,6 +6,7 @@ publishing contract v2 in the studio and replaying the case against it. It skips
 ``playwright`` package is not installed, like ``tests/test_inspector.py``.
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -50,6 +51,25 @@ def free_port() -> int:
 def read_text(path: Path) -> str:
     """Read a repository file as UTF-8. Windows would otherwise use the ANSI code page."""
     return path.read_text(encoding="utf-8")
+
+
+@contextlib.contextmanager
+def connect_db(path):
+    """Open sqlite, commit on success, and close.
+
+    ``with sqlite3.connect()`` commits and leaves the connection open. Windows
+    then cannot delete the temporary database.
+    """
+    db = sqlite3.connect(path)
+    try:
+        yield db
+    except BaseException:
+        db.rollback()
+        raise
+    else:
+        db.commit()
+    finally:
+        db.close()
 
 
 def stop_process(proc: subprocess.Popen) -> None:
@@ -341,7 +361,7 @@ class ConsoleExplain(CellCase):
         return case, made
 
     def dump(self):
-        with sqlite3.connect(self.cell.database) as db:
+        with connect_db(self.cell.database) as db:
             return list(db.iterdump())
 
     def test_explain_requires_a_bearer_token(self):
