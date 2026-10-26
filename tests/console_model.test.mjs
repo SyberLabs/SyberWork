@@ -62,7 +62,12 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   assert.deepEqual(shelf.rows.map(r => [r.file, r.state, r.tone]), cases.certificates.expected);
   assert.equal(shelf.rows.find(r => r.state === 'not_signed').statement, null);
   assert.equal(shelf.rows.find(r => r.certified).statement.chain.count, cases.certificates.count);
+  assert.deepEqual(shelf.rows.filter(r => r.certified).map(r => r.key), [1, 1]);
   assert.equal(cases.console.certificates.configured, true);
+  // The same home read by a shelf that trusts a new key and the old one: every file certified, each under its own key.
+  const rotated = M.certificateView(cases.certificates.rotated.body);
+  assert.deepEqual(rotated.publicKeys, cases.certificates.rotated.body.public_keys);
+  assert.deepEqual(rotated.rows.map(r => [r.file, r.state, r.key]), cases.certificates.rotated.expected);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -450,10 +455,10 @@ test('asking the witness is for the role serve names, and not for a head already
   assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console, view: null }).ok, true);
 });
 
-const CERTIFIED = { thread: '0123abcd-0000-4000-8000-000000000000', candidate: 'c1', objective: 'o', act_class: null, contract: { id: 'repo-change', version: 2 },
+const CERTIFIED = { keyid: 'd'.repeat(64), thread: '0123abcd-0000-4000-8000-000000000000', candidate: 'c1', objective: 'o', act_class: null, contract: { id: 'repo-change', version: 2 },
   result: { commit: 'a'.repeat(40), tree: 'b'.repeat(40), files: 2 }, target_ref: 'refs/heads/syberlabs/0123abcd', checks: [{ name: 'tests', required: true, state: 'passed' }],
   chain: { count: 12, head: 'c'.repeat(64) } };
-const SHELF = (rows, extra = {}) => ({ configured: true, public_key: 'd'.repeat(64), total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
+const SHELF = (rows, extra = {}) => ({ configured: true, public_keys: ['d'.repeat(64)], total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
   not_checked: ['repository'], certificates: rows, note: 'n', ...extra });
 const ROW = extra => ({ file: 'x.json', verdict: 'pass', reason: null, signature: 'ok', journal: 'ok', journal_present: true, repository: null, statement: CERTIFIED, ...extra });
 
@@ -486,9 +491,29 @@ test('a failed certificate is named as failed, and states nothing unless its sig
   assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'x', journal: null })])).rows[0].state, 'unknown');
 });
 
+test('with more than one key, each signed row names the listed key that verified it, and no other key is read', () => {
+  const NEW = 'e'.repeat(64);
+  const view = M.certificateView(SHELF([ROW({}), ROW({ file: 'y.json', statement: { ...CERTIFIED, keyid: NEW } })], { public_keys: [NEW, 'd'.repeat(64)] }));
+  assert.deepEqual(view.publicKeys, [NEW, 'd'.repeat(64)]);
+  assert.deepEqual(view.rows.map(r => [r.file, r.state, r.key]), [['x.json', 'certified', 2], ['y.json', 'certified', 1]]);
+  // A statement under a key the same answer does not list, or naming none, is not drawn: a pass reads unknown, and so
+  // does a signed file whose journal failed.
+  for (const statement of [{ ...CERTIFIED, keyid: 'f'.repeat(64) }, { ...CERTIFIED, keyid: undefined }, { ...CERTIFIED, keyid: 4 }]) {
+    for (const extra of [{}, { verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated' }]) {
+      const row = M.certificateView(SHELF([ROW({ ...extra, statement })], { public_keys: [NEW, 'd'.repeat(64)] })).rows[0];
+      assert.deepEqual([row.state, row.certified, row.statement, row.key], ['unknown', false, null, null], JSON.stringify([statement.keyid, extra]));
+    }
+  }
+  // A failed signature names no key.
+  const unsigned = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'signature_invalid', signature: 'signature_invalid', journal: null, journal_present: null })])).rows[0];
+  assert.deepEqual([unsigned.state, unsigned.key], ['not_signed', null]);
+});
+
 test('a certificate answer of another shape is unknown, and an unconfigured one says so', () => {
-  for (const body of [null, {}, { configured: 'yes' }, { configured: true }, { configured: true, certificates: [], total: '0', public_key: 'd' },
-    { configured: true, certificates: {}, total: 0, public_key: 'd' }]) {
+  for (const body of [null, {}, { configured: 'yes' }, { configured: true }, { configured: true, certificates: [], total: '0', public_keys: ['d'] },
+    { configured: true, certificates: {}, total: 0, public_keys: ['d'] }, { configured: true, certificates: [], total: 0, public_key: 'd' },
+    { configured: true, certificates: [], total: 0, public_keys: [] }, { configured: true, certificates: [], total: 0, public_keys: 'd' },
+    { configured: true, certificates: [], total: 0, public_keys: ['d', 3] }]) {
     assert.equal(M.certificateView(body).state, 'unknown', JSON.stringify(body));
   }
   assert.deepEqual(M.certificateView({ configured: false, note: 'serve reads no certificates; set X' }), { state: 'off', text: 'serve reads no certificates; set X' });

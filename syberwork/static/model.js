@@ -597,25 +597,28 @@ export function witnessView(body, events) {
 }
 
 // Admission certificates of Build Threads (GET /api/certificates, syberwork/certificates.py), as serve verified each file
-// under the key it was given: signature and shape, then the thread's journal under the same home. serve never runs the
-// repository layer. The console checks no signature. A row reads certified only when the server passed it with a
-// signature of ok, a journal of ok and a statement of the expected shape; a pass without a journal reads as signed only.
-// Any other answer is a failure or unknown, and a row whose signature failed states nothing.
+// under the keys it was given (one, or a few during a rotation): signature and shape, then the thread's journal under the
+// same home. serve never runs the repository layer. The console checks no signature. A row reads certified only when the
+// server passed it with a signature of ok, a journal of ok and a statement of the expected shape, signed under a key the
+// same answer lists; a pass without a journal reads as signed only. Any other answer is a failure or unknown, and a row
+// whose signature failed states nothing.
 export const CERTIFICATE_STATE = {
-  certified: ['verified', 'certified', 'signed under the configured key, and the thread\'s journal still says what it states'],
-  signed: ['pending', 'signed · journal not checked', 'signed under the configured key; no journal for this thread under the configured home, so only the signature was checked'],
-  journal_differs: ['denied', 'journal differs', 'signed under the configured key, but the journal no longer says what it states: do not treat it as certified'],
-  journal_unreadable: ['unknown', 'journal unreadable', 'signed under the configured key, but serve could not read the thread\'s journal: not certified'],
-  not_signed: ['denied', 'not certified', 'not signed by the configured key, or not a certificate this server reads'],
+  certified: ['verified', 'certified', 'signed under a configured key, and the thread\'s journal still says what it states'],
+  signed: ['pending', 'signed · journal not checked', 'signed under a configured key; no journal for this thread under the configured home, so only the signature was checked'],
+  journal_differs: ['denied', 'journal differs', 'signed under a configured key, but the journal no longer says what it states: do not treat it as certified'],
+  journal_unreadable: ['unknown', 'journal unreadable', 'signed under a configured key, but serve could not read the thread\'s journal: not certified'],
+  not_signed: ['denied', 'not certified', 'not signed by any configured key, or not a certificate this server reads'],
   unknown: ['unknown', 'unknown', 'an answer this console does not know'],
 };
-function certificateStatement(s) {
-  return !!s && typeof s === 'object' && typeof s.thread === 'string' && typeof s.candidate === 'string' &&
+// keys: the public keys the same answer lists. A statement under any other key is not one this console can read.
+function certificateStatement(s, keys) {
+  return !!s && typeof s === 'object' && typeof s.keyid === 'string' && keys.includes(s.keyid) &&
+    typeof s.thread === 'string' && typeof s.candidate === 'string' &&
     !!s.result && typeof s.result.commit === 'string' && !!s.chain && Number.isInteger(s.chain.count) && typeof s.chain.head === 'string' &&
     !!s.contract && typeof s.contract.id === 'string' && Array.isArray(s.checks) ? s : null;
 }
-function certificateRow(r) {
-  const statement = r.signature === 'ok' ? certificateStatement(r.statement) : null;
+function certificateRow(r, keys) {
+  const statement = r.signature === 'ok' ? certificateStatement(r.statement, keys) : null;
   const reason = typeof r.reason === 'string' ? r.reason : null;
   let state = 'unknown';
   if (r.verdict === 'pass' && reason === null && statement) {
@@ -626,16 +629,20 @@ function certificateRow(r) {
       : r.signature !== 'ok' ? 'not_signed' : 'unknown';
   }
   const [tone, label, text] = CERTIFICATE_STATE[state];
-  return {file: r.file, state, tone, label, text, reason, certified: state === 'certified',
-    statement: state === 'unknown' || state === 'not_signed' ? null : statement};
+  const shown = state === 'unknown' || state === 'not_signed' ? null : statement;
+  // key: which of the listed keys signed it, counted from 1, so a rotation shows which rows are still under an old key.
+  return {file: r.file, state, tone, label, text, reason, certified: state === 'certified', statement: shown,
+    key: shown ? keys.indexOf(shown.keyid) + 1 : null};
 }
 export function certificateView(body) {
   const unknown = text => ({state: 'unknown', text});
   if (!body || typeof body !== 'object' || typeof body.configured !== 'boolean') return unknown('not returned by the server');
   if (!body.configured) return {state: 'off', text: typeof body.note === 'string' ? body.note : 'serve reads no certificates'};
-  if (!Array.isArray(body.certificates) || !Number.isInteger(body.total) || typeof body.public_key !== 'string') return unknown('not returned by the server');
-  const rows = body.certificates.filter(r => r && typeof r === 'object' && typeof r.file === 'string').map(certificateRow);
+  const keys = body.public_keys;
+  if (!Array.isArray(body.certificates) || !Number.isInteger(body.total) || !Array.isArray(keys) || !keys.length ||
+    !keys.every(k => typeof k === 'string')) return unknown('not returned by the server');
+  const rows = body.certificates.filter(r => r && typeof r === 'object' && typeof r.file === 'string').map(r => certificateRow(r, keys));
   const names = list => Array.isArray(list) ? list.filter(x => typeof x === 'string') : [];
-  return {state: 'read', rows, total: body.total, shown: rows.length, truncated: body.total > rows.length, publicKey: body.public_key,
+  return {state: 'read', rows, total: body.total, shown: rows.length, truncated: body.total > rows.length, publicKeys: keys,
     checked: names(body.checked), notChecked: names(body.not_checked), certified: rows.filter(r => r.certified).length};
 }
