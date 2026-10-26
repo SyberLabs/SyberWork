@@ -7,15 +7,16 @@ publishing contract v2 in the studio and replaying the case against it. It skips
 """
 
 import hashlib
-import importlib.util
 import json
 import os
 import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -43,6 +44,36 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
+def read_text(path: Path) -> str:
+    """Read a repository file as UTF-8. Windows would otherwise use the ANSI code page."""
+    return path.read_text(encoding="utf-8")
+
+
+def stop_process(proc: subprocess.Popen) -> None:
+    """Stop a child and wait so Windows can delete files it still has open."""
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+
+
+def wait_until_listening(port: int, proc: subprocess.Popen, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"reference system exited {proc.returncode}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return
+        except OSError:
+            time.sleep(0.05)
+    stop_process(proc)
+    raise RuntimeError("reference system did not accept connections")
+
+
 def playwright_root() -> str | None:
     """A node_modules holding playwright: NODE_PATH when it has one, else the global one, else None."""
     if not shutil.which("node"):
@@ -53,7 +84,7 @@ def playwright_root() -> str | None:
     if not shutil.which("npm"):
         return None
     try:
-        root = subprocess.run([shutil.which("npm"), "root", "-g"], capture_output=True, text=True, timeout=30).stdout.strip()
+        root = subprocess.run([shutil.which("npm"), "root", "-g"], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
     return root if root and (Path(root) / "playwright").exists() else None
@@ -69,11 +100,11 @@ class Cell:
         users = {name: {"hash": hashlib.sha256(self.tokens[name].encode()).hexdigest(), "roles": roles, "sources": sources}
                  for name, (roles, sources) in IDENTITIES.items()}
         retarget = lambda doc: json.loads(json.dumps(doc).replace("127.0.0.1:8999", f"127.0.0.1:{reference_port}"))
-        self.work.install_policy(json.loads((EXAMPLES / "policy.json").read_text()))
-        self.work.install_contract(json.loads((EXAMPLES / "contract.json").read_text()))
-        for name, doc in json.loads((EXAMPLES / "actions.json").read_text()).items():
+        self.work.install_policy(json.loads(read_text(EXAMPLES / "policy.json")))
+        self.work.install_contract(json.loads(read_text(EXAMPLES / "contract.json")))
+        for name, doc in json.loads(read_text(EXAMPLES / "actions.json")).items():
             self.work.install_action(name, retarget(doc))
-        for name, doc in json.loads((EXAMPLES / "sources.json").read_text()).items():
+        for name, doc in json.loads(read_text(EXAMPLES / "sources.json")).items():
             self.work.install_source(name, retarget(doc))
         self.server = make_server(self.work, users, port=0)
         self.server.RequestHandlerClass.log_message = lambda *args: None
@@ -111,10 +142,13 @@ class CellCase(unittest.TestCase):
         port = 8999
         if self.reference:
             port = free_port()
-            spec = importlib.util.spec_from_file_location("reference_system", ROOT / "examples" / "reference_system.py")
-            reference = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(reference)
-            threading.Thread(target=reference.run, args=(Path(folder.name) / "reference.sqlite3", port), daemon=True).start()
+            # A subprocess, not a daemon thread: its sqlite handles die with the process, so
+            # Windows can delete the temporary database. Cleanup runs after the cell closes.
+            proc = subprocess.Popen(
+                [sys.executable, str(ROOT / "examples" / "reference_system.py"),
+                 "--database", str(Path(folder.name) / "reference.sqlite3"), "--port", str(port)])
+            self.addCleanup(stop_process, proc)
+            wait_until_listening(port, proc)
         self.cell = Cell(Path(folder.name), port)
         self.addCleanup(self.cell.close)
 
@@ -141,7 +175,7 @@ class ConsoleRoutes(CellCase):
         self.assertFalse(self.cell.json("/api/console")[1]["planner_configured"], "plain HTTP off loopback is not a usable planner")
 
     def test_published_documents_are_listed_and_read_back_unchanged(self):
-        contract = json.loads((EXAMPLES / "contract.json").read_text())
+        contract = json.loads(read_text(EXAMPLES / "contract.json"))
         status, listing = self.cell.json("/api/contracts")
         self.assertEqual(status, 200)
         self.assertEqual([(c["id"], c["version"], c["title"]) for c in listing], [("purchase-order", 1, contract["title"])])
@@ -157,7 +191,7 @@ class ConsoleRoutes(CellCase):
         self.assertEqual(self.cell.json("/api/contracts/purchase-order/1")[1], body, "version 1 is unchanged")
         status, policies = self.cell.json("/api/policies")
         self.assertEqual((status, [p["version"] for p in policies]), (200, [1]))
-        self.assertEqual(policies[0]["body"], json.loads((EXAMPLES / "policy.json").read_text()))
+        self.assertEqual(policies[0]["body"], json.loads(read_text(EXAMPLES / "policy.json")))
 
     def test_unknown_or_malformed_contract_reads_are_refused_not_crashed(self):
         self.assertEqual(self.cell.json("/api/contracts/purchase-order/9")[1]["error"], "unknown_contract")
@@ -338,15 +372,15 @@ class ConsoleStatic(CellCase):
                 self.assertNotEqual(self.cell.call(path, who=None)[0], 200)
 
     def test_scripts_build_the_page_without_html_strings_or_inline_code(self):
-        html = (STATIC / "index.html").read_text()
+        html = read_text(STATIC / "index.html")
         self.assertNotIn("<script>", html)
         self.assertNotIn("style=", html)
         self.assertIn('<script type="module" src="/app.js">', html)
         for name in ("app.js", "model.js"):
-            source = (STATIC / name).read_text()
+            source = read_text(STATIC / name)
             for unsafe in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
                 self.assertNotIn(unsafe, source, f"{name} uses {unsafe}")
-        app = (STATIC / "app.js").read_text()
+        app = read_text(STATIC / "app.js")
         self.assertNotIn("localStorage", app, "credentials stay in session storage")
         self.assertNotIn("location.search", app)
 
@@ -362,7 +396,7 @@ class ConsoleStatic(CellCase):
         for path in gets:
             with self.subTest(path):
                 self.assertEqual(self.cell.call(path, who="admin")[0], 200, path)
-        app = (STATIC / "app.js").read_text()
+        app = read_text(STATIC / "app.js")
         self.assertIn("'/proposals/' + encodeURIComponent(p.id) + '/explain?when=' + when", app)
         self.assertNotIn("not exposed over HTTP", app)
         for operation in ("refresh", "facts", "proposals", "compiled", "suggest", "approve", "commit", "signoff", "reconcile",
@@ -376,8 +410,8 @@ class ConsoleStatic(CellCase):
 class ConsoleModel(CellCase):
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_projections_match_the_python_rules(self):
-        contract = json.loads((EXAMPLES / "contract.json").read_text())
-        policy = json.loads((EXAMPLES / "policy.json").read_text())
+        contract = json.loads(read_text(EXAMPLES / "contract.json"))
+        policy = json.loads(read_text(EXAMPLES / "policy.json"))
         proof = {"verified": True, "external_id": "ord-1", "response_digest": "r"}
         events = [
             {"kind": "reconciled", "body": {"success": True, "proof": proof}},
@@ -406,8 +440,12 @@ class ConsoleModel(CellCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
-        done = subprocess.run(["node", "--test", str(MODEL_TESTS)], capture_output=True, text=True, timeout=120,
-                              env={**os.environ, "PARITY": handle.name}, cwd=ROOT)
+        # Pin the TAP reporter. A newer Node prints the spec reporter on stdout, which has no
+        # "# fail 0" line, even when every test passed. TAP is ASCII and stable on Windows.
+        done = subprocess.run(
+            ["node", "--test", "--test-reporter=tap", str(MODEL_TESTS)],
+            capture_output=True, text=True, encoding="utf-8", timeout=120,
+            env={**os.environ, "PARITY": handle.name}, cwd=ROOT)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("# fail 0", done.stdout)
         self.assertIn("# skipped 0", done.stdout)
@@ -424,7 +462,7 @@ class ConsoleBrowser(CellCase):
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
             env.setdefault("CHROMIUM", "/opt/pw-browsers/chromium")
-        done = subprocess.run(["node", str(BROWSER_CHECK)], capture_output=True, text=True, env=env, timeout=240)
+        done = subprocess.run(["node", str(BROWSER_CHECK)], capture_output=True, text=True, encoding="utf-8", env=env, timeout=240)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         report = json.loads(done.stdout.strip().splitlines()[-1])
         self.assertNotIn("failure", report, report)
