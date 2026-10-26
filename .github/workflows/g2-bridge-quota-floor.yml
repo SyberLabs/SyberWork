@@ -1,0 +1,36 @@
+name: g2-bridge-quota-floor
+
+# Factory gate G2 for the SyberWork bridge row (FACTORY red-team rubric §1/§3).
+# Additive: its own workflow, so it does not touch ci.yml (G8) or factory-gates.yml
+# (G6). Branch protection decides whether it is required. Gate status lives in
+# docs/G2_BRIDGE_QUOTA_FLOOR.md; update it only from real run output.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  g2-bridge-quota-floor:
+    # Fails when SyberWork bridge red-team cases per category fall below
+    # PI 3, AB 3, DS 3, SIM 2, SCH 4, COST 1, REC 6. Counts active + xfail, never a stub.
+    name: G2 Bridge quota floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      # The counter's own rules first: stubs, crashes, xpasses, missing tests, an empty
+      # inventory and a lowered floor must all be refused.
+      - name: Gate controls
+        run: PYTHONPATH=. python -m unittest -v tests.test_g2_bridge_quota_floor
+      # Runs even if the controls failed, so one run reports the real counts.
+      - name: Quota floor
+        if: ${{ !cancelled() }}
+        run: PYTHONPATH=. python scripts/g2_bridge_quota_floor.py

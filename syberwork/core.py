@@ -60,6 +60,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 HTTP = urllib.request.build_opener(NoRedirect)
 
 
+class StatusNotAuthoritative(Exception):
+    """A status lookup answered with a 2xx other than 200: 202 Accepted, 203 Non-Authoritative, 206 Partial."""
+
+
 def _destination_code(exc: BaseException) -> str:
     """Stable code for a destination failure. The exception text is not stored."""
     if isinstance(exc, Rejected):
@@ -670,6 +674,8 @@ class Work:
         request = urllib.request.Request(target, headers=headers)
         try:
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
+                if getattr(response, "status", None) != 200:
+                    raise StatusNotAuthoritative(getattr(response, "status", None))
                 raw = response.read(65537)
                 if len(raw) > 65536:
                     raise ValueError("status response exceeds 64 KB")
@@ -681,6 +687,8 @@ class Work:
             status, reason, record = "unverified", "destination_record_ambiguous", None
         except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
             status, reason, record = "pending", "status_unavailable", None
+        except StatusNotAuthoritative:
+            status, reason, record = "pending", "status_not_authoritative", None
         else:
             matched = False
             if config.get("kind") == "economic_http":
@@ -766,6 +774,35 @@ class Work:
     def list_cases(self) -> list[dict]:
         with self.tx() as db:
             return [dict(row) for row in CaseStore(db).list_all()]
+
+    # Read-only views of the published documents, for the console's studio. Each body is the stored,
+    # immutable document; nothing here compiles, installs or changes one.
+
+    def list_contracts(self) -> list[dict]:
+        with self.tx() as db:
+            rows = ContractStore(db).list_all()
+        listed = []
+        for row in rows:
+            body = json.loads(row["body"])
+            listed.append({"id": row["id"], "version": row["version"], "title": body.get("title"),
+                           "compiled_path": body.get("compiled_path", []), "digest": digest(body)})
+        return listed
+
+    def contract(self, contract_id: str, version: int) -> dict:
+        with self.tx() as db:
+            return self._contract(db, contract_id, version)
+
+    def list_policies(self) -> list[dict]:
+        with self.tx() as db:
+            rows = PolicyStore(db).list_all()
+        return [{"version": row["version"], "body": json.loads(row["body"]), "digest": digest(json.loads(row["body"]))}
+                for row in rows]
+
+    def registry(self, kind: str) -> dict:
+        """Installed action or source definitions by name. They name credential variables, never hold them."""
+        with self.tx() as db:
+            store = ActionRegistry(db) if kind == "actions" else SourceRegistry(db)
+            return {name: json.loads(body) for name, body in sorted(store.documents().items())}
 
     def metric(self, key: str) -> int:
         """One number about this cell, counted from the store in one transaction. Read only.
@@ -905,6 +942,9 @@ class Work:
         guard_request(action["url"])
         req = urllib.request.Request(action["url"], data=canonical(args).encode(), headers=headers, method=action.get("method", "POST"))
         with HTTP.open(req, timeout=min(30, action.get("timeout_seconds", 10))) as response:
+            # A settlement receipt counts only from a completed write; 202 Accepted and the rest stay unknown.
+            if action["kind"] == "economic_http" and response.status not in (200, 201):
+                raise ValueError("settlement receipt status is not a completed write")
             raw = response.read(32768)
             if action["kind"] == "economic_http":
                 record = destination_record(raw)

@@ -10,10 +10,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from syberlabs.planner import HttpPlanner
+
 from .builder_http import dispatch_get, dispatch_post
 from .core import Rejected, Work, digest
 
 STATIC = Path(__file__).parent / "static"
+# The console's files. Anything else under static/ is not served.
+ASSETS = {"app.js": "text/javascript", "model.js": "text/javascript", "style.css": "text/css"}
+
+
+def _planner_configured() -> bool:
+    """Whether SYBERWORK_PLANNER_URL names a usable endpoint. The URL itself is not disclosed."""
+    try:
+        HttpPlanner().ensure_configured()
+        return True
+    except Rejected:
+        return False
+
+
+def _version(text: str) -> int:
+    if not text.isdecimal() or len(text) > 9:
+        raise Rejected("not_found", "contract version must be a positive integer")
+    return int(text)
 
 
 def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
@@ -71,8 +90,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 if not parts or parts == ["index.html"]:
                     self._static("index.html", "text/html")
                     return
-                if parts in (["app.js"], ["style.css"]):
-                    self._static(parts[0], "text/javascript" if parts[0].endswith(".js") else "text/css")
+                if len(parts) == 1 and parts[0] in ASSETS:
+                    self._static(parts[0], ASSETS[parts[0]])
                     return
                 user = self._user()
                 if len(parts) in (2, 3) and parts[:2] == ["metrics", "work_items"]:
@@ -89,10 +108,23 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                         if key in user:
                             profile[key] = user[key]
                     self._json(profile)
+                elif parts == ["api", "console"]:
+                    # What the console needs to render honest states; no secret or URL is disclosed.
+                    self._json({"planner_configured": _planner_configured(), "effects": work.effects})
                 elif parts == ["api", "cases"]:
                     self._json(work.list_cases())
+                elif parts == ["api", "contracts"]:
+                    self._json(work.list_contracts())
+                elif len(parts) == 4 and parts[:2] == ["api", "contracts"]:
+                    self._json(work.contract(unquote(parts[2]), _version(parts[3])))
                 elif len(parts) == 5 and parts[:2] == ["api", "contracts"] and parts[4] == "artifacts":
-                    self._json(work.artifacts(parts[2], int(parts[3])))
+                    self._json(work.artifacts(unquote(parts[2]), _version(parts[3])))
+                elif parts == ["api", "policies"]:
+                    self._json(work.list_policies())
+                elif parts in (["api", "actions"], ["api", "sources"]):
+                    if "admin" not in user.get("roles", []):
+                        raise Rejected("forbidden", "admin role required")
+                    self._json(work.registry(parts[1]))
                 elif len(parts) == 3 and parts[:2] == ["api", "cases"]:
                     self._json(work.inspect(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "candidates":
@@ -198,7 +230,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     elif operation == "signoff":
                         result = work.signoff(case_id, name, roles, data["role"])
                     elif operation == "reconcile":
-                        if "success" in data or "evidence" in data:
+                        # Only the proposal is named. Any outcome-shaped field (success, evidence,
+                        # proof, an Attest receipt, ...) is refused rather than ignored.
+                        if set(data) != {"proposal_id"}:
                             raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")
                         result = work.reconcile(case_id, data["proposal_id"], name, roles)
                     elif operation == "candidates":

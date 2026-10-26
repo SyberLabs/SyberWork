@@ -737,8 +737,23 @@ class Kit:
         return matches[0]
 
     def _incomplete(self, case_id: str) -> bool:
-        """True when ``start`` was interrupted after ``case_created`` and before the base observation."""
-        return latest_observation(self.session.history(case_id), "base") is None
+        """True when ``start`` was interrupted after ``case_created`` and before the base observation.
+
+        Reads the thread's records from the first line until that observation (the second event of a completed
+        start) instead of loading the thread, so listing threads costs one short read each, not their whole
+        histories. Opening the thread still verifies its chain.
+
+        These records are not verified here. One that is not a well-formed event (a body that is not an object, a
+        missing key) is an altered journal, not an interrupted start: the thread lists as started, the listing of
+        every other thread is unaffected, and opening this one refuses ``journal_corrupt``."""
+        records = self.journal.records(case_id)
+        try:
+            return not any(record.get("t") == "event" and latest_observation([record["event"]], "base") is not None
+                           for record in records)
+        except (AttributeError, KeyError, TypeError):
+            return False
+        finally:
+            records.close()
 
     def _interrupted(self, contract_id: str, version: int, inputs: dict) -> str | None:
         """The most recent thread, when its start was interrupted and it was started with exactly these inputs."""

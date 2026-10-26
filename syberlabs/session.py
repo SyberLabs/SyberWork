@@ -96,27 +96,52 @@ class Session:
                 self._sync()
 
     def _sync(self) -> None:
-        """Apply registry records and events other processes appended."""
-        for record in self._journal.read_new(self._journal.registry):
-            if record["t"] == "contract":
-                doc = record["doc"]
-                try:
-                    valid = json.loads(canonical(prepare_contract(doc))) == doc
-                except Rejected:
-                    valid = False
-                if not valid:
-                    raise Rejected("journal_corrupt", f"contract {doc.get('id')}@{doc.get('version')} does not validate")
-                self.contracts[(doc["id"], doc["version"])] = doc
-            elif record["t"] == "policy":
-                self.policies[record["doc"]["version"]] = record["doc"]
-            elif record["t"] == "action":
-                self.actions[record["name"]] = record["doc"]
+        """Apply registry records and events other processes appended.
+
+        A registry that does not validate is read again from its first record on the next call, so it is refused
+        again on every call until the file validates."""
+        records = self._journal.read_new(self._journal.registry)
+        try:
+            for record in records:
+                if record["t"] == "contract":
+                    doc = record["doc"]
+                    try:
+                        valid = json.loads(canonical(prepare_contract(doc))) == doc
+                    except Rejected:
+                        valid = False
+                    if not valid:
+                        raise Rejected("journal_corrupt", f"contract {doc.get('id')}@{doc.get('version')} does not validate")
+                    self.contracts[(doc["id"], doc["version"])] = doc
+                elif record["t"] == "policy":
+                    self.policies[record["doc"]["version"]] = record["doc"]
+                elif record["t"] == "action":
+                    self.actions[record["name"]] = record["doc"]
+        except BaseException:
+            self._journal.unread(self._journal.registry)
+            raise
         for case_id in list(self.cases):
             self._load(case_id)
 
     def _load(self, case_id: str) -> None:
-        """Read a thread's new records and check each event links to the chain."""
-        records = self._journal.read_new(self._journal.thread_path(case_id))
+        """Read a thread's new records and check each event links to the chain.
+
+        A thread that does not load is dropped from memory and its file is read again from the first line on the
+        next access, so it stays refused (``journal_corrupt``) for as long as the file does not verify from its
+        first record, in this session and in any other on the same journal. Without this, the read offset had
+        already moved past the refused records, and the next access served the verified prefix as if it were
+        the whole thread."""
+        path = self._journal.thread_path(case_id)
+        try:
+            self._read(case_id, path)
+        except BaseException:
+            self.cases.pop(case_id, None)
+            self.events.pop(case_id, None)
+            self._side.pop(case_id, None)
+            self._journal.unread(path)
+            raise
+
+    def _read(self, case_id: str, path) -> None:
+        records = self._journal.read_new(path)
         events = self.events.setdefault(case_id, [])
         for record in records:
             if record["t"] == "case":

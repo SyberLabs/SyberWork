@@ -6,6 +6,7 @@ process. It is not written into a case database.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 
@@ -89,20 +90,36 @@ def _base() -> _Point:
 _B = _base()
 
 
-def public_from_seed(seed: bytes) -> bytes:
+def _seed_bytes(seed: bytes) -> bytes:
     if len(seed) != 32:
         raise ValueError("Ed25519 seed must be 32 bytes")
+    return bytes(seed)
+
+
+@functools.lru_cache(maxsize=8)
+def _public_for(seed: bytes) -> bytes:
+    """The public key of ``seed``, derived once per seed and kept for the eight most recent seeds.
+
+    Only this module computes the key that enters a signature's challenge; no caller can supply one. Two signatures
+    of one message under one seed with two different keys there would reveal the private scalar. The cache keeps
+    up to eight seeds for the life of the process, as a transparency log or a witness already keeps its own."""
     digest = hashlib.sha512(seed).digest()
     return _encode(_mul(_B, _clamp(digest[:32])))
 
 
+def public_from_seed(seed: bytes) -> bytes:
+    return _public_for(_seed_bytes(seed))
+
+
 def sign(seed: bytes, message: bytes) -> bytes:
-    """Detached signature over ``message``. ``seed`` is the 32-byte private key."""
-    if len(seed) != 32:
-        raise ValueError("Ed25519 seed must be 32 bytes")
+    """Detached signature over ``message``. ``seed`` is the 32-byte private key.
+
+    The public key is derived from ``seed`` here (``_public_for``, once per seed), so signing again under a seed
+    already used costs one scalar multiplication, not two."""
+    seed = _seed_bytes(seed)
     digest = hashlib.sha512(seed).digest()
     scalar = _clamp(digest[:32])
-    public = _encode(_mul(_B, scalar))
+    public = _public_for(seed)
     nonce = int.from_bytes(hashlib.sha512(digest[32:] + message).digest(), "little") % _L
     commitment = _encode(_mul(_B, nonce))
     challenge = int.from_bytes(hashlib.sha512(commitment + public + message).digest(), "little") % _L

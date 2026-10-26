@@ -6,10 +6,14 @@ admission kernel.
 ## The suites
 
 ```sh
-PYTHONPATH=. python -m unittest discover -s tests -q    # unit tests, about two minutes
+PYTHONPATH=. python scripts/run_shards.py               # unit tests, sharded (what CI runs)
+PYTHONPATH=. python -m unittest discover -s tests -q    # the same tests, one process
 PYTHONPATH=. python -m conformance.run                   # golden traces; any difference fails
 python -m conformance.clean_install                      # wheel in a fresh venv
 ```
+
+Both unit commands run the same tests; the sharded one is described under
+"Sharded unit suite" below.
 
 The package has no runtime dependencies and the unit suite needs none. Two
 modules, `tests/test_properties.py` and `tests/test_properties_journal.py`,
@@ -23,6 +27,181 @@ PYTHONPATH=. python -m unittest tests.test_properties -v
 
 CI installs the extra in the `test` (3.11, 3.12, 3.13) and `windows` jobs
 before the unit tests. On Windows use `python`, never `python3`.
+
+## Sharded unit suite
+
+`scripts/run_shards.py` (standard library only) runs the unit suite as N
+parallel processes. Every test still runs on every run; sharding changes only
+how the work is spread, never which tests run.
+
+### How it works
+
+1. **Discovery.** The runner discovers the suite exactly as
+   `python -m unittest discover -s tests` does: a fresh `unittest.TestLoader()`
+   (what `unittest.defaultTestLoader` is in a process that has not used it
+   yet), start directory `tests`, pattern `test*.py`, with the working directory
+   first on `sys.path`. (`--start`, `--pattern` and `--top-level` mirror
+   discover's `-s`, `-p` and `-t`.) A module that cannot be imported is a test
+   that errors, as under discover.
+2. **Packing.** Tests are packed by test id, not by module, from the timing
+   manifest `tests/durations.json` (test id to seconds). A test the manifest
+   does not name, for example one added after the manifest, gets the
+   manifest's median; entries for tests that no longer exist are ignored.
+   Packing is greedy longest-first: each test, longest first, goes to the shard
+   with the least planned time (ties: fewer tests, then lower shard index), so
+   the plan is deterministic. One exception keeps `unittest`'s fixture
+   semantics: the tests of a class that defines `setUpClass`, or of a module
+   that defines `setUpModule`, form one unit and stay in one shard, so the
+   fixture is built once and its tests share it as they do in one process.
+3. **Running.** N defaults to `min(os.cpu_count(), 8)`; `--shards N` sets it.
+   Each shard is a subprocess (`python scripts/run_shards.py --child ...`) that
+   discovers the suite again, keeps its assigned ids in discovery order, and
+   runs them with `unittest.TextTestRunner` (warnings `default`, as
+   `python -m unittest` sets). Its output, one line per test, goes to its own
+   log, `shard-<k>.log`, in a new temporary directory or `--log-dir`.
+4. **Isolation.** Each shard gets its own scratch `TMP`, `TEMP` and `TMPDIR`
+   and its own `HOME` and `USERPROFILE`, removed after the run (the logs are
+   kept). So that the scratch home changes where tests write and not what
+   they read, a shard keeps reading the parent's Git global configuration
+   (`GIT_CONFIG_GLOBAL` names the parent's `~/.gitconfig` when it exists and
+   the variable is unset) and the parent's Python user site
+   (`PYTHONUSERBASE`). Everything else in the environment is inherited.
+5. **Summary.** The runner prints one line per shard as it finishes, the
+   failures and errors of every shard in `unittest`'s format, and ends with
+   the lines `unittest` prints: `Ran N tests in Xs`, a blank line, then
+   `OK (...)` or `FAILED (...)`. N counts exactly what a serial run counts.
+   The exit code is 0 only for `OK`. `--report FILE` writes the plan and every
+   shard's result as JSON.
+
+### The completeness guarantee
+
+A test may never be dropped silently. The runner checks, and fails the run
+otherwise:
+
+- **Before running:** the union of the shards' ids equals the discovered set,
+  and no id is in two shards.
+- **After running:** every shard wrote a result file (written last, by
+  rename); it discovered every id it was assigned; and it started every one of
+  them, except a test that `unittest` itself never starts because its class's
+  `setUpClass` or its module's `setUpModule` skipped or failed, which the
+  shard names. Across shards, tests started plus tests held back by a fixture
+  equals the discovered count. (`Ran N` counts started tests, skipped ones
+  included, which is what `unittest` counts; the held-back tests are the only
+  discovered tests it leaves out, and they are reported as one skip or one
+  error per fixture, as under discover.)
+
+A shard that exits without a result (killed, crashed, or a test that called
+`os._exit`, even with exit code 0) is `shard_crashed`, and the runner prints
+the last test it started and the tail of its log. Any gap in the accounting
+is `shard_incomplete`. Either one, any failure, error or unexpected success,
+or a shard exit code that disagrees with its result, ends the run with
+`FAILED`. `tests/test_run_shards.py` proves each of these on a small
+synthetic suite, and that the `Ran` and `OK`/`FAILED` lines equal a serial
+`unittest discover` of the same suite.
+
+### Refreshing `tests/durations.json`
+
+The manifest only steers packing; a stale or missing entry costs balance,
+never coverage. The committed file is one `--shards 1` run of 646 tests
+(Windows 11, 16 logical CPUs, CPython 3.12.6, 2026-10-26, on `main` at
+`e2e6408`), 1,078 s in total. A first manifest built from the efficiency
+audit's per-test timings of the same day planned eight equal shards of 145 s,
+but one shard took 255 s: the audit's timer ran from `startTest` to
+`stopTest` and so left out class fixtures, and
+`test_model_comparison.PolicyArms.setUpClass` alone takes about 85 s. The
+measured file charges that time to the class's first test. To refresh it from
+a run on your machine:
+
+```sh
+PYTHONPATH=. python scripts/run_shards.py --shards 1 --write-durations tests/durations.json
+```
+
+`--write-durations` records, per test, the time from the end of the previous
+test to the end of this one, so a class fixture's cost lands on its first
+test. `--shards 1` measures without contention; a run with more shards also
+works and records somewhat inflated times. Commit the file in its own change.
+
+### Measured
+
+One Windows 11 machine (AMD Ryzen 7 3700X, 8 cores, 16 logical CPUs),
+CPython 3.12.6, 646 tests, `main` at `e2e6408` plus this runner, 2026-10-26,
+nothing else running; every run `OK (skipped=22)`:
+
+| Command | Runs | Wall, median (s) | Slowest shard (s) |
+|---|---|---|---|
+| `python -m unittest discover -s tests -q` | 1 | 990 | - |
+| `run_shards.py --shards 1` | 1 | 1,080 | 1,079 |
+| `run_shards.py --shards 2` | 3 | 526 (520-534) | 525 |
+| `run_shards.py --shards 4` | 3 | 291 (291-302) | 290 |
+| `run_shards.py --shards 8` | 3 | 191 (187-196) | 191 |
+
+The bound at eight shards is max(the longest unit, the sum over eight):
+the `PolicyArms` class with its fixture is about 86 s and the sum is 1,078 s,
+so 135 s. The runs reach 191 s: each shard ends within about 25 s of the
+others, but eight shards on eight cores take about 1.33 times as long as one
+process does for the same tests (the shards' times add up to about 1,430 s),
+because many tests start Git and Python subprocesses of their own.
+
+On GitHub's hosted runners (`ci` workflow, 4 CPUs each, so N is 4), the
+`Unit tests` step, serial on `e2e6408` (three runs, 635 tests) against
+sharded on this change (one run, 646 tests, the same skips):
+
+| Job | Serial, median of 3 (s) | Sharded, N=4 (s) | Slowest shard (s) |
+|---|---|---|---|
+| `test (3.11)` | 306 | 86 | 85 |
+| `test (3.12)` | 315 | 113 | 112 |
+| `test (3.13)` | 340 | 84 | 82 |
+| `windows` (3.12) | 1,260 (925-1,333) | 557 | 554 |
+
+In the 3.11 run one of the runner's own tests failed (Python 3.11's shared
+`defaultTestLoader` keeps state between `discover` calls in one process; the
+runner now uses a fresh loader); all 646 tests ran, so the time stands.
+
+### The `tests` check of a Build Thread contract
+
+The Build Thread's `tests` check is a contract `argv`; this repository's
+contracts are written outside it. To run the check sharded, a contract should
+use:
+
+```json
+"tests": {"argv": ["<python>", "<host checkout>/scripts/run_shards.py"], "timeout_seconds": 3000}
+```
+
+with `<python>` the interpreter's absolute path (`sys.executable`) and the
+runner named by absolute path in the host's own checkout, as `docs/CRITIC.md`
+does for the critic, so that a candidate cannot edit the runner: it runs from
+the host checkout. The candidate's test code still runs in the shard's
+process, so it can defeat the count by exiting or by forging a result, as it
+can under plain `unittest`; a test-integrity packet is planned. The check's
+working directory is the candidate's worktree, so discovery, the tests and
+`tests/durations.json` are the candidate's. A contract is immutable under its
+identity, so the switch is a new contract version, not an edit of
+`repo-change.v4`.
+
+## G8: the existing suite as one fail-closed check
+
+`unittest` reports `OK` when a test skips, so a PostgreSQL service that never
+came up, or a missing `psycopg` or `hypothesis`, leaves the suite green with
+those tests unrun. Run locally without either package, the suite says
+`OK (skipped=25)`, and 24 of those skips are tests that CI is meant to run.
+
+`scripts/g8_existing_suite.py` runs the same discovery (`-s tests`) and fails
+when no test ran, a test failed or errored (a module that does not import is an
+error), an `expectedFailure` passed, or a test skipped for a reason other than
+a missing node, npm or global playwright. Reasons match exactly, and
+`tests/test_g8_existing_suite.py` checks that each allowed reason is still a
+skip in the suite. It prints counts and writes them with `--report`. These are
+test counts, not coverage.
+
+```sh
+PYTHONPATH=. python scripts/g8_existing_suite.py --report g8.json
+```
+
+In `ci.yml`, job `g8-suite` runs it on Linux with Python 3.12 and PostgreSQL 16,
+then runs conformance. Job `g8` (check name `G8 Existing suite`) passes only
+when every leg of `test`, `windows` and `g8-suite` succeeded; a failed,
+cancelled or skipped leg fails it. The `windows` leg runs `scripts/run_shards.py`,
+where the PostgreSQL skips are expected (it installs no driver). `compose` is not part of G8.
 
 ## Property suite: the admission kernel over random event sequences
 

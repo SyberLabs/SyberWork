@@ -1,8 +1,10 @@
 """Public-key chain head, transparency log, integer timestamps, and HTTPS hosts."""
 
+import base64
 import hashlib
 import json
 import os
+import random
 import shutil
 import socket
 import sqlite3
@@ -13,7 +15,8 @@ from unittest.mock import patch
 
 from syberlabs.admission import AdmissionContext, admit
 from syberlabs.clock import as_seconds, stamp
-from syberlabs.dsse import pae, sign_chain_head, verify_chain_head
+from syberlabs import ed25519
+from syberlabs.dsse import CHECKPOINT_TYPE, pae, sign_chain_head, sign_dsse, verify_chain_head
 from syberlabs.economic import denial
 from syberlabs.ed25519 import public_from_seed, sign, verify
 from syberlabs.errors import Rejected
@@ -272,6 +275,156 @@ class HttpsHosts(unittest.TestCase):
             guard_request("http://127.0.0.1:9/items/1")
         with patch("syberlabs.targets.socket.getaddrinfo", side_effect=socket.gaierror()):
             guard_request("https://example.com/path")
+
+
+
+RFC8032 = (  # RFC 8032 section 7.1, TEST 1, TEST 2 and TEST 3: (secret key, public key, message, signature)
+    (SECRET_1, PUBLIC_1, b"", SIG_1),
+    (SECRET_2, PUBLIC_2, b"r", SIG_2),
+    (bytes.fromhex("c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7"),
+     bytes.fromhex("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"),
+     bytes.fromhex("af82"),
+     bytes.fromhex("6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac"
+                   "18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a")),
+)
+
+
+def reference_sign(seed: bytes, message: bytes, public: bytes | None = None) -> bytes:
+    """``ed25519.sign`` before perf-packet-a (``public`` None: the key derived on every call) and as perf-packet-a had
+    it (``public`` given: trusted as the caller's key, which is the hazard the follow-up removed)."""
+    digest = hashlib.sha512(seed).digest()
+    scalar = ed25519._clamp(digest[:32])
+    if public is None:
+        public = ed25519._encode(ed25519._mul(ed25519._B, scalar))
+    nonce = int.from_bytes(hashlib.sha512(digest[32:] + message).digest(), "little") % ed25519._L
+    commitment = ed25519._encode(ed25519._mul(ed25519._B, nonce))
+    challenge = int.from_bytes(hashlib.sha512(commitment + public + message).digest(), "little") % ed25519._L
+    return commitment + ((nonce + challenge * scalar) % ed25519._L).to_bytes(32, "little")
+
+
+def recovered_scalar(public: bytes, other: bytes, message: bytes, first: bytes, second: bytes) -> int | None:
+    """The private scalar from two signatures of ``message`` with one nonce and two keys in the challenge, or None."""
+    if first[:32] != second[:32]:
+        return None
+    challenge = lambda key: int.from_bytes(hashlib.sha512(first[:32] + key + message).digest(), "little") % ed25519._L
+    difference = (challenge(public) - challenge(other)) % ed25519._L
+    if difference == 0:
+        return None
+    s1, s2 = (int.from_bytes(signature[32:], "little") for signature in (first, second))
+    return (s1 - s2) * pow(difference, -1, ed25519._L) % ed25519._L
+
+
+class CachedPublicKey(unittest.TestCase):
+    """perf-packet-a (efficiency audit 2026-10-26, item 5) made a signature reuse a public key derived once.
+    perf-a-followups (verification of #105, finding 1): the key is memoized per seed inside ``ed25519``, and neither
+    ``sign`` nor ``sign_dsse`` takes one from its caller, since two signatures of one message under one seed with two
+    different keys in the challenge reveal the private scalar. Ed25519 is deterministic, so every signature must be
+    byte-identical to one that derives the key itself."""
+
+    def setUp(self):
+        ed25519._public_for.cache_clear()
+        self.addCleanup(ed25519._public_for.cache_clear)
+
+    def test_rfc8032_vectors_with_the_key_derived_and_with_it_cached(self):
+        for seed, public, message, signature in RFC8032:
+            ed25519._public_for.cache_clear()
+            self.assertEqual(sign(seed, message), signature, "derived")
+            self.assertEqual(sign(seed, message), signature, "cached")
+            self.assertEqual(sign(bytearray(seed), message), signature, "a bytearray seed")
+            self.assertEqual(public_from_seed(seed), public)
+            self.assertTrue(verify(public, message, signature))
+
+    def test_signatures_are_byte_identical_over_seeds_and_messages(self):
+        """Ten seeds, more than the cache holds, signed in two rounds so every key is derived, cached, evicted and
+        derived again; every signature and envelope equals the one before perf-packet-a."""
+        rng = random.Random(8032)
+        kind = "application/vnd.syberlabs.test+json"
+        cases = [(rng.randbytes(32), (rng.randbytes(0), rng.randbytes(33), rng.randbytes(1000))) for _ in range(10)]
+        expected = {}
+        for seed, messages in cases:
+            public = ed25519._encode(ed25519._mul(ed25519._B, ed25519._clamp(hashlib.sha512(seed).digest()[:32])))
+            expected[seed] = (public, [reference_sign(seed, message) for message in messages],
+                              reference_sign(seed, pae(kind, messages[1])))
+        for _round in range(2):
+            for seed, messages in cases:
+                public, signatures, enveloped = expected[seed]
+                self.assertEqual([sign(seed, message) for message in messages], signatures)
+                envelope = sign_dsse(kind, messages[1], seed)
+                self.assertEqual(base64.standard_b64decode(envelope["signatures"][0]["sig"]), enveloped)
+                self.assertEqual(envelope["signatures"][0]["keyid"], public.hex())
+                self.assertEqual(public_from_seed(seed), public)
+        self.assertEqual(ed25519._public_for.cache_info().currsize, 8)
+        with self.assertRaises(ValueError):
+            sign(SECRET_1[:31], b"")
+        with self.assertRaises(ValueError):
+            public_from_seed(SECRET_1 + b"\x00")
+
+    def test_no_caller_can_supply_the_key(self):
+        with self.assertRaises(TypeError):
+            sign(SECRET_1, b"", PUBLIC_1)
+        with self.assertRaises(TypeError):
+            sign(SECRET_1, b"", public=PUBLIC_1)
+        with self.assertRaises(TypeError):
+            sign_dsse("application/vnd.syberlabs.test+json", b"{}", SECRET_1, public=PUBLIC_1)
+        with tempfile.TemporaryDirectory() as folder:
+            log = TransparencyLog(Path(folder) / "log.sqlite", SECRET_1)
+            try:
+                self.assertFalse(hasattr(log, "_seed_public"), "the log keeps no key of its own for signing")
+            finally:
+                log.close()
+
+    def test_the_key_recovery_is_impossible_through_the_api(self):
+        """The verifier's demonstration: with a signer that trusts its caller's key, one message signed under one
+        seed with the right and a wrong key gives the private scalar. Through the API every signature of one message
+        under one seed is the same bytes, whatever was signed in between, so the two responses never differ and
+        there is nothing to solve."""
+        seed = random.Random(25519).randbytes(32)
+        public, wrong = public_from_seed(seed), public_from_seed(bytes(32))
+        message = pae(CHECKPOINT_TYPE, b'{"root":"00","size":1}')
+        scalar = ed25519._clamp(hashlib.sha512(seed).digest()[:32]) % ed25519._L
+        leaked = recovered_scalar(public, wrong, message, reference_sign(seed, message, public),
+                                  reference_sign(seed, message, wrong))
+        self.assertEqual(leaked, scalar, "the attack works against a signer that trusts its caller's key")
+        signatures = {sign(seed, message)}
+        ed25519._public_for.cache_clear()
+        signatures.add(sign(seed, message))
+        for other in range(9):
+            sign(bytes([other]) * 32, message)  # evicts this seed's key
+        signatures.add(sign(bytearray(seed), message))
+        envelope = sign_dsse(CHECKPOINT_TYPE, b'{"root":"00","size":1}', seed)
+        signatures.add(base64.standard_b64decode(envelope["signatures"][0]["sig"]))
+        self.assertEqual(signatures, {reference_sign(seed, message)})
+        self.assertTrue(verify(public, message, signatures.pop()))
+
+    def test_sign_dsse_derives_the_key_once_per_seed(self):
+        with patch.object(ed25519, "_mul", wraps=ed25519._mul) as mul:
+            sign_dsse("application/vnd.syberlabs.test+json", b"{}", SECRET_1)
+        self.assertEqual(mul.call_count, 2, "the public key once, the nonce commitment once")
+        with patch.object(ed25519, "_mul", wraps=ed25519._mul) as mul:
+            sign_dsse("application/vnd.syberlabs.test+json", b"{}", SECRET_1)
+            sign(SECRET_1, b"another message")
+        self.assertEqual(mul.call_count, 2, "the nonce commitment of each signature; the key is not derived again")
+
+    def test_a_log_checkpoint_is_signed_as_before(self):
+        session = _note_session()
+        case_id = session.create_case("note", 1, {"name": "a"}, "operator")
+        events = session.inspect(case_id)["events"]
+        envelope = sign_chain_head(case_id, events, SECRET_1)
+        with tempfile.TemporaryDirectory() as folder:
+            log = TransparencyLog(Path(folder) / "log.sqlite", SECRET_1)
+            try:
+                with patch.object(ed25519, "_mul", wraps=ed25519._mul) as mul:
+                    log.append(envelope)
+                # verifying the incoming envelope is two multiplications; signing the checkpoint is one
+                self.assertEqual(mul.call_count, 3)
+                stored = json.loads(log._db.execute("SELECT envelope FROM checkpoints WHERE size = 1").fetchone()[0])
+                self.assertTrue(log.verify_witnessed(envelope, events))
+            finally:
+                log.close()
+        payload = base64.standard_b64decode(stored["payload"])
+        self.assertEqual(stored, sign_dsse(CHECKPOINT_TYPE, payload, SECRET_1))
+        self.assertEqual(base64.standard_b64decode(stored["signatures"][0]["sig"]),
+                         reference_sign(SECRET_1, pae(CHECKPOINT_TYPE, payload)))
 
 
 if __name__ == "__main__":
