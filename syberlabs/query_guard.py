@@ -343,16 +343,25 @@ def remove(directory: Path) -> None:
     shutil.rmtree(directory, ignore_errors=True)
 
 
+def sign(value, key: str) -> str:
+    """HMAC-SHA256 of ``value`` as canonical JSON (``utf8``) under ``key``: the MAC of a decision here and of a
+    GitHits call record (``syberlabs.githits``)."""
+    return hmac.new(key.encode("utf-8"), utf8(canonical(value)), hashlib.sha256).hexdigest()
+
+
+def verify(value, given, key: str) -> bool:
+    """True only when ``given`` is ``sign(value, key)`` under a non-empty key; a missing or wrong MAC is not."""
+    return bool(key) and isinstance(given, str) and hmac.compare_digest(given, sign(value, key))
+
+
 def mac(entry: dict, key: str) -> str:
     """HMAC-SHA256 of a decision's four fields (``DECISION_FIELDS``, as canonical JSON) under the per-call key."""
-    message = utf8(canonical({field: entry.get(field) for field in DECISION_FIELDS}))
-    return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return sign({field: entry.get(field) for field in DECISION_FIELDS}, key)
 
 
 def authentic(entry: dict, key: str) -> bool:
     """True only when ``entry`` carries a MAC that verifies under ``key``; a missing or wrong MAC is not."""
-    given = entry.get("mac")
-    return bool(key) and isinstance(given, str) and hmac.compare_digest(given, mac(entry, key))
+    return verify({field: entry.get(field) for field in DECISION_FIELDS}, entry.get("mac"), key)
 
 
 def read_decisions(directory: Path) -> list[dict]:
