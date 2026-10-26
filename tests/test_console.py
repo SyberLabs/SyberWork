@@ -514,7 +514,7 @@ class ConsoleSideRecords(CellCase):
         row = next(r for r in self.cell.json(f"/api/cases/{case}/side")[1] if r["seq"] == decision)
         self.assertEqual((row["jcs"], row["rule"]), (None, "invented.rule"))
         self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True})
-        app = (STATIC / "app.js").read_text()
+        app = read_text(STATIC / "app.js")
         for wording in ("it cannot notice a missing row", "Verify history does not check a row without a digest",
                         "the rule ids are in no hash and nothing checks them", "only Verify history tells them apart"):
             self.assertIn(wording, app)
@@ -524,7 +524,7 @@ class ConsoleSideRecords(CellCase):
         for operation in ("witness", "certificate"):
             with self.subTest(operation):
                 self.assertEqual(self.cell.json(f"/api/cases/{case}/{operation}"), (404, {"error": "not_found"}))
-        app = (STATIC / "app.js").read_text()
+        app = read_text(STATIC / "app.js")
         for route in ("GET /api/cases/{id}/witness", "GET /api/cases/{id}/certificate"):
             self.assertIn(route, app)
         self.assertNotIn("casePath('witness')", app)
