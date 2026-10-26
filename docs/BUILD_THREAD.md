@@ -151,7 +151,7 @@ GITHUB_TOKEN="$(gh auth token)" syberlabs run --interval 300   # steps, then a s
 Every installed document and event is one fsynced line in `.syberlabs/journal/` before memory changes. `Session(journal=Journal(path))` gives any SDK project the same store, and the same conformance run passes on the in-memory and durable sessions. On reopening:
 
 - a torn final line from a crash is dropped;
-- a malformed line, an event that breaks its hash chain, or a registry contract that no longer validates refuses to load (`journal_corrupt`);
+- a malformed line, an event that breaks its hash chain, or a registry contract that no longer validates refuses to load (`journal_corrupt`), and keeps refusing on every later access in the same process, from any session or `Kit` on that journal, until the file verifies from its first record;
 - another process's appends are read before each operation (a cross-process file lock: `flock` on POSIX, `msvcrt.locking` on Windows).
 
 An acceptance interrupted after its durable claim shows as an open item, and `syberlabs recover` settles it from the branch. A thread holds at most 20,000 events.
