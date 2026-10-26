@@ -4,7 +4,7 @@
 
 **Check:** `g5-protected-text / G5 Protected-text diff` (`.github/workflows/g5-protected-text.yml`). It runs `tests/test_g5_protected_text.py`, then `scripts/g5_protected_text.py --base <base> --head HEAD`. On a PR the base is the first parent of the merge commit; on a push to `main` it is the previous `main` tip. Python 3.12, standard library only, no installs.
 
-**Status:** Proposed until a hosted run is recorded here. Update this line only from real run output. Not a required check; that is for an admin.
+**Status:** **Measured (SyberWork, scoped to `docs/attest.policy.yaml`)** on PR #108. Install run on `d5869e4`: [run 40314171132](https://github.com/SyberLabs/SyberWork/actions/runs/40314171132) passed 21 controls; the diff step reported BOOTSTRAP, 0 base units and 7 head units. Hosted controls ran on throwaway PR #109, whose base was #108's branch, so the base carried the hook. Negative control on `a18b816`, which weakened the caller-provided fields sentence in `RECONCILIATION.md`: [run 40314198451](https://github.com/SyberLabs/SyberWork/actions/runs/40314198451) passed the 21 controls, then the diff step failed with exit 1 on that paragraph. Positive control on `47a7031`, the revert: [run 40314334266](https://github.com/SyberLabs/SyberWork/actions/runs/40314334266) compared 7 of 7 units, with 0 changed. Not a required check; that is for an admin. Update this line only from real run output.
 
 ## What is protected
 
