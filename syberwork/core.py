@@ -686,7 +686,7 @@ class Work:
                     and record.get("idempotency_key") == proposal_id
                     and record.get("request_digest") == digest(proposal["args"])
                     and isinstance(record.get("external_id"), str) and record["external_id"]):
-                matched = False  # TEMPORARY G4 negative control: refuse every match
+                matched = True
             if matched:
                 status, reason = "verified", "destination_record_matched"
             else:
