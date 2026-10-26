@@ -32,7 +32,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from spec.validate import validate_events
-from syberlabs import Rejected, githits, metrics, query_guard
+from syberlabs import Rejected, claude_code, githits, metrics, query_guard
 from syberlabs.canonical import canonical
 from syberlabs.claude_code import (BIN_ENV, CODE_TOOLS, DEFAULT_TOOLS, GITHITS_ENTRY, LOGIN_LANE_DROPPED_ENV, LOOKUP,
                                    SKILL_PATH, ClaudeCodeProvider, Transcript, code_tools, githits_skill,
@@ -886,7 +886,12 @@ def launcher_lookup(command: str) -> list:
 
 SEARCH = 'search "requests retry backoff zq71" --target pypi:requests@2.32.3'
 EXAMPLE = 'example "retry an HTTP call with backoff zq72" --language python'
-# What a provider built today passes; githits=False must stay byte-identical (githits-wiring, item 2).
+# The committed blob's SHA-256 (``git cat-file blob HEAD:skills/githits/SKILL.md``): what signal.harness.skill
+# records on every platform, a Windows checkout with core.autocrlf included (githits-pilot-hardening, item 3).
+SKILL_SHA256 = "24c150e4bf1d2b6e05bd7d2a1fe243452b08ac2fe22047bde6a0f19860306508"
+# An operator's own GitHits variable, beside the token and the base URL the fixture sets: arm A drops it too.
+OPERATOR_GITHITS = {"GITHITS_OPERATOR_SETTING": "kept-only-in-arm-b"}
+# What a provider built today passes; githits=False must keep its argv byte-identical (githits-wiring, item 2).
 TODAY_NOTE = ("Make the change by editing files in the current directory. The host reads the result from this working "
               "tree with git and runs its own checks. Do not commit.")
 
@@ -912,6 +917,9 @@ class GitHitsLauncher(ClaudeCodeCase):
         return ClaudeCodeProvider(kit.repo, bare=True, executable=claude, githits=True, **kwargs)
 
     def test_arm_a_is_unchanged_and_arm_b_differs_only_in_the_githits_additions_and_the_skill(self):
+        """Arm A's argv is byte-identical to before. Its environment is the caller's minus every GitHits variable
+        (githits-pilot-hardening, item 2: least privilege over a byte-identical environment), plus the guard's three."""
+        self.enterContext(mock.patch.dict(os.environ, OPERATOR_GITHITS))
         kit = self.kit()
         claude = self.stand_in("arms", lookups=[launcher_lookup(SEARCH)], log_env=True)
         arm_a = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=1)
@@ -931,8 +939,7 @@ class GitHitsLauncher(ClaudeCodeCase):
                 self.assertEqual(candidate.signal["tool_usage"]["other"], {"Bash": 1, "Edit": 1})
             else:
                 skill = candidate.signal["harness"]["skill"]
-                self.assertEqual(skill, {"path": "skills/githits/SKILL.md",
-                                         "sha256": hashlib.sha256(SKILL_PATH.read_bytes()).hexdigest()})
+                self.assertEqual(skill, {"path": "skills/githits/SKILL.md", "sha256": SKILL_SHA256})
         run_a, run_b = self.runs("arms")
         argv_a, argv_b = list(run_a["argv"]), list(run_b["argv"])
         launcher = argv_b[argv_b.index("--allowedTools") + 1].split(",")[-1][len("Bash("):-len(":*)")]
@@ -948,15 +955,22 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertNotIn(Path(run_b["cwd"]).resolve(), Path(launcher).resolve().parents, "outside the worktree")
         env_a, env_b = run_a["env"], run_b["env"]
         per_call = {query_guard.KEY_ENV}  # a fresh MAC key per call
+        dropped = {k for k in os.environ if k.upper().startswith(("GITHITS_", "SYBERLABS_GITHITS_"))}
+        self.assertEqual(dropped, {githits.TOKEN_ENV, githits.URL_ENV, *OPERATOR_GITHITS})
         self.assertEqual({k for k in env_a if k not in os.environ}, {query_guard.KEY_ENV, query_guard.POLICY_DIGEST_ENV,
                                                                     query_guard.TREE_DIGEST_ENV},
-                         "arm A: the caller's environment plus the guard's three, as before")
+                         "arm A: the caller's environment plus the guard's three")
         self.assertEqual({k: v for k, v in env_a.items() if k in os.environ}, {
-            k: v for k, v in os.environ.items() if k not in ("SYBERLABS_CERTIFICATE_SEED",)})
+            k: v for k, v in os.environ.items() if k not in ("SYBERLABS_CERTIFICATE_SEED",) and k not in dropped},
+            "minus every GITHITS_* and SYBERLABS_GITHITS_* variable, the token included")
+        self.assertFalse([k for k in env_a if k.upper().startswith(("GITHITS_", "SYBERLABS_GITHITS_"))])
+        self.assertTrue(all(claude_code.githits_variable(k) for k in dropped))
         added = {k: env_b[k] for k in env_b if k not in env_a}
         self.assertEqual(set(added), {query_guard.LAUNCHER_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV,
                                       githits.SESSION_ENV, githits.AGENT_ENV, githits.LICENSES_ENV,
-                                      githits.EXCLUDE_ENV})
+                                      githits.EXCLUDE_ENV, githits.TOKEN_ENV, githits.URL_ENV, *OPERATOR_GITHITS})
+        self.assertEqual({k: env_b[k] for k in dropped}, {k: os.environ[k] for k in dropped},
+                         "arm B as before: the operator's GitHits variables pass through unchanged")
         self.assertEqual({k for k in env_a if k not in env_b}, set())
         self.assertEqual([k for k in env_a if k not in per_call and env_a[k] != env_b[k]], [])
         self.assertEqual((added[query_guard.LAUNCHER_ENV], added[githits.SESSION_ENV], added[githits.AGENT_ENV],
@@ -1075,6 +1089,8 @@ class GitHitsLauncher(ClaudeCodeCase):
                                    mcp_config=mcp)
             self.assertEqual(caught.exception.code, "invalid_provider")
             self.assertIn("launcher", caught.exception.detail)
+            self.assertIn("the guard still blocks every Bash and PowerShell command but the launcher",
+                          caught.exception.detail)
         for mcp in (None, config):
             provider = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, mcp_config=mcp)
             command = provider.command("S", "C:/tmp/syberlabs-guard-1/githits")
@@ -1103,23 +1119,41 @@ class GitHitsLauncher(ClaudeCodeCase):
             decoy = Path(folder) / "decoy"
             (decoy / "syberlabs").mkdir(parents=True)
             (decoy / "syberlabs" / "__init__.py").write_text("raise SystemExit('the worktree package ran')\n")
-            env = {**os.environ, "PYTHONPATH": str(decoy)}
-            done = subprocess.run([sys.executable, "-I", str(GITHITS_ENTRY), "doctor"], cwd=decoy, env=env,
+            records = Path(folder) / "records"
+            env = {**os.environ, "PYTHONPATH": str(decoy), githits.RECORD_DIR_ENV: str(records),
+                   githits.RECORD_KEY_ENV: "k" * 64}
+            lookup = ["search", "retry backoff", "--target", "pypi:requests@2.32.3"]
+            done = subprocess.run([sys.executable, "-I", str(GITHITS_ENTRY), *lookup], cwd=decoy, env=env,
                                   capture_output=True, timeout=120)
             self.assertEqual(done.returncode, 0, done.stderr[-400:])
-            self.assertTrue(done.stdout.decode().startswith("githits doctor: ok"), "the host's client, not the decoy")
+            self.assertTrue(done.stdout.decode().startswith("search: 1 results"), "the host's client, not the decoy")
+            # githits-pilot-hardening, item 1: doctor is not the launcher's; exit 2, usage, no request, no record.
+            done = subprocess.run([sys.executable, "-I", str(GITHITS_ENTRY), "doctor"], cwd=decoy, env=env,
+                                  capture_output=True, timeout=120)
+            self.assertEqual(done.returncode, 2, done.stderr[-400:])
+            self.assertIn(b"usage: githits", done.stderr)
             sh = shutil.which("sh")
             if sh:  # what Claude Code's Bash tool does with the launcher (Git Bash on Windows)
-                done = subprocess.run([sh, "-c", launcher + " doctor"], capture_output=True, timeout=120, env=env)
+                done = subprocess.run([sh, "-c", launcher + " search retry --target pypi:requests@2.32.3"],
+                                      capture_output=True, timeout=120, env=env)
                 self.assertEqual(done.returncode, 0, done.stderr[-400:])
-                self.assertTrue(done.stdout.decode().startswith("githits doctor: ok"))
+                self.assertTrue(done.stdout.decode().startswith("search: 1 results"))
+                for refused in ("doctor", "doctor --json", "example retry --license-mode yolo"):
+                    done = subprocess.run([sh, "-c", launcher + " " + refused], capture_output=True, timeout=120,
+                                          env=env)
+                    self.assertEqual(done.returncode, 2, (refused, done.stderr[-400:]))
+                    self.assertIn(b"usage: githits", done.stderr)
+            self.assertEqual([r["op"] for r in githits.read_records(records, "k" * 64).records],
+                             ["search"] * (2 if sh else 1), "the refused commands wrote no record")
+            self.assertEqual([r["path"] for r in self.fake.requests], ["/v1/searches"] * (2 if sh else 1))
             os.chmod(path, stat.S_IREAD | stat.S_IWRITE)  # so the temporary directory can be removed on Windows
         with tempfile.TemporaryDirectory(prefix="with space ") as folder, self.assertRaises(Rejected):
             write_launcher(Path(folder))
 
     def test_the_skill_is_the_adapted_apache_text_and_carries_its_license(self):
         template, digest = githits_skill()
-        self.assertEqual(digest, hashlib.sha256(SKILL_PATH.read_bytes()).hexdigest())
+        self.assertEqual(digest, hashlib.sha256(SKILL_PATH.read_bytes().replace(b"\r\n", b"\n")).hexdigest())
+        self.assertEqual(digest, SKILL_SHA256, "the committed blob's digest")
         self.assertFalse(template.startswith("---"), "the front matter stays out of the prompt")
         self.assertIn("{launcher}", template)
         for words in ("Targets first", "untrusted", "No code, no line copied from this repository", "Cite what you used",
@@ -1136,6 +1170,82 @@ class GitHitsLauncher(ClaudeCodeCase):
         notice = (SKILL_PATH.parent / "NOTICE").read_text(encoding="utf-8")
         self.assertIn("0bc9f5e68b6b4d1792b8ec238b03c5591e43d925", notice)
         self.assertIn("changed the files on 2026-10-26", notice)
+
+    def test_the_skill_digest_is_the_blobs_whatever_the_checkouts_line_endings(self):
+        """githits-pilot-hardening, item 3: a CRLF checkout (Windows, core.autocrlf) records the LF blob's digest,
+        and .gitattributes checks skills/ out with LF in the first place."""
+        template, digest = githits_skill()
+        lf = SKILL_PATH.read_bytes().replace(b"\r\n", b"\n")
+        with tempfile.TemporaryDirectory() as folder:
+            for name, data in (("crlf", lf.replace(b"\n", b"\r\n")), ("lf", lf)):
+                copy = Path(folder) / name / "SKILL.md"
+                copy.parent.mkdir()
+                copy.write_bytes(data)
+                with self.subTest(endings=name), mock.patch("syberlabs.claude_code.SKILL_PATH", copy):
+                    self.assertEqual(githits_skill(), (template, SKILL_SHA256))
+            self.assertNotEqual(hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest(), SKILL_SHA256,
+                                "the raw CRLF bytes would have recorded another digest")
+        root = SKILL_PATH.parents[2]
+        self.assertIn("skills/** text eol=lf", (root / ".gitattributes").read_text(encoding="utf-8").splitlines())
+        git = shutil.which("git")
+        if git and (root / ".git").exists():
+            done = subprocess.run([git, "check-attr", "text", "eol", "--", "skills/githits/SKILL.md"], cwd=root,
+                                  capture_output=True, timeout=60)
+            self.assertEqual(done.stdout.decode().splitlines(), ["skills/githits/SKILL.md: text: set",
+                                                                 "skills/githits/SKILL.md: eol: lf"])
+
+    def test_the_exclusion_replace_switch_never_reaches_claude_code_in_either_arm(self):
+        """githits-pilot-hardening, item 4 (#134 verification finding 1): an operator's
+        SYBERLABS_GITHITS_EXCLUDE_REPLACE=1 is absent from both arms' environment, and arm B's exclusion list still
+        begins with SyberLabs (the provider computes it without the switch), so the launcher's client refuses a
+        SyberLabs target. Deleting either strip in claude_code fails this test."""
+        self.enterContext(mock.patch.dict(os.environ, {githits.EXCLUDE_ENV: "acme", githits.EXCLUDE_REPLACE_ENV: "1"}))
+        kit = self.kit()
+        claude = self.stand_in("replace", lookups=[launcher_lookup("list github:SyberLabs/SyberWork")], log_env=True)
+        for name, provider in (("a", ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=1)),
+                               ("b", self.arm_b(kit, claude))):
+            thread = kit.start(f"Add a CSV export ({name})", paths=["src/", "tests/"])
+            thread.propose(provider)
+            if name == "b":
+                [fact] = [b["value"] for b in self.lookup_facts(thread)]
+                self.assertEqual((fact["tool"], fact["status"], fact["ok"]), ("githits.list", githits.EXCLUDED, False))
+        run_a, run_b = self.runs("replace")
+        for run in (run_a, run_b):
+            self.assertNotIn(githits.EXCLUDE_REPLACE_ENV, run["env"])
+        self.assertNotIn(githits.EXCLUDE_ENV, run_a["env"], "arm A holds no GitHits variable")
+        self.assertEqual(run_b["env"][githits.EXCLUDE_ENV], "syberlabs,acme", "SyberLabs first, the operator's added")
+        self.assertEqual(self.fake.requests, [], "the SyberLabs target was refused before any request")
+
+    def test_powershell_is_judged_by_the_launcher_rule_under_the_override(self):
+        """githits-pilot-hardening, item 5 (#134 verification finding 3): with --githits and
+        --allow-code-tools-with-mcp, an operator's PowerShell entry is matched by the hook and refused unless it is
+        the launcher; without the override the matcher is unchanged."""
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        claude = self.stand_in("powershell", lookups=[
+            ["PowerShell", {"command": "Get-ChildItem env:", "description": "x"}], launcher_lookup(SEARCH)])
+        [candidate] = thread.propose(self.arm_b(kit, claude, allowed_tools=["Read", "Edit", "PowerShell"],
+                                                allow_code_tools_with_mcp=True))
+        [run] = self.runs("powershell")
+        [group] = run["settings"]["hooks"]["PreToolUse"]
+        self.assertEqual(group["matcher"], query_guard.MATCHER_SHELLS)
+        self.assertEqual(run["argv"][run["argv"].index("--tools") + 1], "Read,Edit,PowerShell,Bash")
+        values = [b["value"] for b in self.lookup_facts(thread)]
+        self.assertEqual([(v["tool"], v["guard"], v["ok"]) for v in values],
+                         [("PowerShell", "not_launcher", False), ("githits.search", "pass", True)])
+        [refused] = [h["stderr"] for h in run["hooks"] if not h.get("passed")]
+        self.assertIn("rule: not_launcher", refused)
+        self.assertEqual({k: candidate.signal["githits"][k] for k in ("launcher_calls", "launcher_passed", "records",
+                                                                      "bash_refused")},
+                         {"launcher_calls": 1, "launcher_passed": 1, "records": 1, "bash_refused": 1})
+        self.assertNotIn("mismatch", candidate.signal["githits"])
+        self.assertIs(candidate.signal["guard"]["allow_code_tools_with_mcp"], True)
+        [item] = metrics.work_items(thread.history())
+        self.assertEqual((item.githits_lookups.value, item.lookups_blocked.value), (1, 1))
+        plain = kit.start("Add a CSV export (no override)", paths=["src/", "tests/"])
+        plain.propose(self.arm_b(kit, self.stand_in("no-override", lookups=[launcher_lookup(SEARCH)])))
+        [run] = self.runs("no-override")
+        self.assertEqual(run["settings"]["hooks"]["PreToolUse"][0]["matcher"], query_guard.MATCHER_BASH)
 
     def test_propose_githits_from_the_terminal(self):
         out, err = io.StringIO(), io.StringIO()
