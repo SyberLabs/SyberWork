@@ -18,7 +18,7 @@ modified: >-
 
 # GitHits lookups
 
-GitHits shows a third-party package's source at the version installed here. Look up only when a failing check in your task implicates such a package (the traceback ends inside it, or an import, attribute or argument error names its symbol) and the check's output does not already show how to fix it, for example by naming the replacement. Never before a check has failed, and never for this repository's code, tests or conventions, or the standard library.
+GitHits shows a third-party package's source at the version installed here. Look up only when a failing check in your task implicates such a package (the traceback ends inside it, or an import, attribute or argument error names one of its modules, classes or functions) and the check's output does not already show how to fix it, for example by naming the replacement. Never before a check has failed, and never for this repository's code, tests or conventions, or the standard library.
 
 ## Commands
 
