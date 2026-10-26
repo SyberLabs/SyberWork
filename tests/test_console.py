@@ -303,6 +303,23 @@ class ConsoleExplain(CellCase):
         self.assertEqual(body["provenance"]["symbol"], "limits_amount")
         self.assertNotIn(b"/home/someone", raw)
 
+    def test_explained_module_does_not_depend_on_the_working_directory(self):
+        """From / provenance names the module by its full path less the leading slash; it is re-anchored."""
+        from syberlabs import admission
+        case, made = self.proposal()
+        path = f"/api/cases/{case}/proposals/{made['proposal']['id']}/explain"
+        here = os.getcwd()
+        self.addCleanup(admission._PROVENANCE.clear)
+        self.addCleanup(os.chdir, here)
+        for folder in ("/", str(ROOT.parent), tempfile.gettempdir()):
+            with self.subTest(folder):
+                os.chdir(folder)
+                admission._PROVENANCE.clear()
+                self.assertNotEqual(admission.rule_provenance("limits.amount")["module"], "syberlabs/admission.py") if folder == "/" else None
+                status, _, raw = self.cell.call(path)
+                self.assertEqual((status, json.loads(raw)["provenance"]["module"]), (200, "syberlabs/admission.py"))
+                self.assertNotIn(str(ROOT).strip("/").encode(), raw)
+
 
 class ConsoleStatic(CellCase):
     def test_console_files_are_served_with_the_content_security_policy(self):
@@ -430,6 +447,7 @@ class ConsoleBrowser(CellCase):
         self.assertEqual(sorted(row.split(" ")[0] for row in report["propose_rules"]), ["admission.passed", "approval.required"], report["propose_rules"])
         self.assertIn("allowed", report["now_rule"])
         self.assertIn("admission.passed", report["now_rule"])
+        self.assertIn(" · read ", report["now_rule"], "a forecast of now says when the server answered")
         self.assertEqual(report["placeholder"], 0)
         self.assertTrue(report["mismatch_rules"] and all("unknown" in row for row in report["mismatch_rules"]), report["mismatch_rules"])
         self.assertFalse(any("invented.rule" in row for row in report["mismatch_rules"]), "a rule that does not reproduce the decision is never shown")

@@ -16,6 +16,8 @@ from .builder_http import dispatch_get, dispatch_post
 from .core import Rejected, Work, digest
 
 STATIC = Path(__file__).parent / "static"
+# The directory holding syberlabs/ and syberwork/. Explained rule modules are named relative to it.
+PACKAGES = Path(__file__).resolve().parents[1]
 # The console's files. Anything else under static/ is not served.
 ASSETS = {"app.js": "text/javascript", "model.js": "text/javascript", "style.css": "text/css"}
 
@@ -35,18 +37,34 @@ def _version(text: str) -> int:
     return int(text)
 
 
+def _module(module) -> str | None:
+    """A rule's module relative to the installed packages, or None when it lies outside them.
+
+    Provenance names the module relative to the working directory, else to the packages, else in
+    full (syberlabs/admission.py ``_rule_provenance``). From ``/`` the first form carries this host's
+    layout, so the file is found again in the same order and named from the packages only.
+    """
+    if not isinstance(module, str) or not module:
+        return None
+    for root in (Path.cwd(), PACKAGES):
+        try:
+            found = (root / module).resolve()
+            if found.is_file():
+                return found.relative_to(PACKAGES).as_posix()
+        except (OSError, ValueError):
+            return None
+    return None
+
+
 def _explanation(work: Work, case_id: str, proposal_id: str, when: str) -> dict:
     """Work.explain_admission for an HTTP reader, plus the decision as recorded. Appends nothing.
 
-    The rule's module is a path relative to the package or the working directory. When provenance
-    could only name an absolute path (a rule loaded from elsewhere), the module is withheld rather
-    than disclose this host's filesystem layout.
+    A rule module outside the installed packages (a rule loaded from elsewhere) is withheld rather
+    than disclose this host's filesystem layout; the rule and symbol are still answered.
     """
     explained = work.explain_admission(case_id, proposal_id, when=when)
     found = explained.get("provenance") or {}
-    module = found.get("module")
-    if not isinstance(module, str) or module.startswith("/") or ":" in module or ".." in module.split("/"):
-        module = None
+    module = _module(found.get("module"))
     return {"proposal_id": proposal_id, "when": when, "status": explained["status"], "reason": explained["reason"],
             "rule": explained["rule"], "provenance": {"module": module, "symbol": found.get("symbol"), "line": found.get("line")},
             "recorded": work.recorded_decision(case_id, proposal_id)}

@@ -559,21 +559,21 @@ function proposalLine(p, info) {
 }
 
 // The deciding rule as the server explains it (GET .../proposals/{id}/explain). The slot fills in place
-// when the read returns, so a slow read never re-renders a form someone is typing in. A failed read is
-// shown and not kept, so the next render asks again; nothing here re-renders on its own.
-function explainKey(p, when) {
-  const head = state.info.events[state.info.events.length - 1];
-  return [state.selected, p.id, when, when === 'now' && head ? head.seq : ''].join('|');
-}
+// when the read returns, so a slow read never re-renders a form someone is typing in. Only a recorded
+// answer is kept: it cannot change. A "now" answer also depends on the policy in force, the clock and
+// other cases' reservations, so each slot sends its own read, never one started before the latest
+// change, and shows when it was read. A failed read is shown and not kept; nothing re-renders on its own.
 function ruleSlot(p, when) {
-  const key = explainKey(p, when);
+  const key = [state.selected, p.id].join('|');
   const slot = h('span', {class: 'rule-slot', 'data-when': when});
   const fill = entry => slot.replaceChildren(...[ruleView(entry, when)].flat(Infinity).filter(Boolean));
-  if (state.explained.has(key)) { fill(state.explained.get(key)); return slot; }
+  if (when === 'recorded' && state.explained.has(key)) { fill(state.explained.get(key)); return slot; }
   fill(null);
+  const path = '/api/cases/' + encodeURIComponent(state.selected) + '/proposals/' + encodeURIComponent(p.id) + '/explain?when=' + when;
+  const read = () => api(path).then(body => ({body, at: Date.now()}), error => ({error}));
+  if (when === 'now') { read().then(fill); return slot; }
   if (!state.explaining.has(key)) {
-    const path = '/api/cases/' + encodeURIComponent(state.selected) + '/proposals/' + encodeURIComponent(p.id) + '/explain?when=' + when;
-    state.explaining.set(key, api(path).then(body => ({body}), error => ({error})).then(entry => {
+    state.explaining.set(key, read().then(entry => {
       state.explaining.delete(key);
       if (!entry.error) state.explained.set(key, entry);
       return entry;
@@ -594,6 +594,7 @@ function ruleView(entry, when) {
     v.state === 'recorded' ? h('span', {class: 'muted'}, ' · written with decision #' + v.seq) : null,
     v.state === 'rederived' ? h('span', {class: 'muted'}, ' · re-derived: decision #' + v.seq + ' predates written rules') : null,
     where ? h('span', {class: 'muted mono-s'}, ' · ' + where) : null,
+    when === 'now' && entry.at ? h('span', {class: 'muted'}, ' · read ' + new Date(entry.at).toLocaleTimeString()) : null,
     v.drift ? h('div', {class: 'why warn'}, 'Re-deriving this decision today gives ' + v.drift + '; the rule above is the one written at the time.') : null,
   ];
 }

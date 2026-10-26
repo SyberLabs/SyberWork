@@ -142,8 +142,10 @@ Known gaps, stated rather than faked:
   (an older row) and the re-derivation reproduces the recorded status and reason; if it does not, the
   console says *unknown* instead of naming a rule. A re-derivation that disagrees with the written rule
   is shown as a warning below it, never in its place. A failed read shows *unavailable* and the error
-  code. The module path in `provenance` is withheld when it could only be absolute, so the route never
-  discloses the host's filesystem layout.
+  code. *If executed now* is never cached: the answer also depends on the policy in force, the clock and
+  other cases' reservations, so each render asks again and shows when the server answered. The route
+  names the rule's module relative to the installed packages, whatever directory `serve` runs from, and
+  withholds a module outside them, so it never discloses the host's filesystem layout.
 - **JCS side records** (`Work.side_channel`), **witness and certificate**, and **per-work-item metrics**
   (`/metrics/work_items`) are not shown in the console.
 - **Builder API** (`/api/builder/*`) is a separate surface and is not part of this console.
