@@ -543,3 +543,43 @@ export function workItemRows(body, events, caseId) {
   return {state: 'read', rows, costBasis: item.cost_basis || 'none', lane: item.lane || null,
     pullRequest: item.pull_request || null, opened: item.opened && item.opened.value === true, cancelled: item.cancelled === true};
 }
+
+// What the witness's transparency log holds for a case (GET /api/cases/{id}/witness, Work.witness_status), as the
+// server judged each signed chain head against the events. A signed head covers events #1–#count, so it still holds
+// once later events arrive; those later events are not witnessed. The console checks no signature. A verdict it
+// does not know is unknown, and a head that differs from this history, or one beyond it, outranks any witnessed one.
+export const WITNESS_VERDICT = {
+  included: ['verified', 'in the log', 'the signed head matches this history and the log\'s newest signed checkpoint covers it'],
+  not_included: ['pending', 'not covered now', 'signed for this history, but the log\'s newest signed checkpoint does not cover the log as read'],
+  head_differs: ['denied', 'head differs', 'the witness signed another hash for this event: this history is not the one witnessed'],
+  beyond_history: ['denied', 'beyond this history', 'the witness signed more events than this case holds: events were removed, or this is another database'],
+  bad_signature: ['unverified', 'not signed by this key', 'names this case but is not signed by the configured witness key'],
+  malformed: ['unknown', 'unreadable', 'signed by the configured key, but not a chain head this server can read'],
+};
+// Verdicts that carry no event count of their own.
+const COUNTLESS = new Set(['bad_signature', 'malformed']);
+export function witnessView(body, events) {
+  const unknown = text => ({state: 'unknown', text});
+  if (!body || typeof body !== 'object' || typeof body.configured !== 'boolean') return unknown('not returned by the server');
+  if (!body.configured) return {state: 'off', text: typeof body.note === 'string' ? body.note : 'no witness log is configured'};
+  if (!Array.isArray(body.entries) || !Number.isInteger(body.count)) return unknown('not returned by the server');
+  const hashAt = new Map(events.map(e => [e.seq, e.hash]));
+  const entries = body.entries.filter(e => e && typeof e === 'object' && Number.isInteger(e.index)).map(e => {
+    const count = Number.isInteger(e.count) && e.count >= 0 ? e.count : null;
+    const known = Object.hasOwn(WITNESS_VERDICT, e.verdict) && (count !== null || COUNTLESS.has(e.verdict));
+    const [tone, label, text] = known ? WITNESS_VERDICT[e.verdict] : ['unknown', 'unknown', 'a verdict this console does not know'];
+    return {index: e.index, count, head: typeof e.head === 'string' ? e.head : null, verdict: known ? e.verdict : 'unknown', tone, label, text};
+  });
+  // The server judged against the events it read. An entry it calls included must name the hash this page shows at
+  // that event; otherwise the two reads disagree and the console names neither as witnessed.
+  const disagree = entries.filter(e => e.verdict === 'included' && hashAt.has(e.count) && hashAt.get(e.count) !== e.head);
+  if (disagree.length) return unknown(`the answer names another hash at #${disagree[0].count} than this page shows; press r`);
+  // A head over no events witnesses nothing.
+  const included = entries.filter(e => e.verdict === 'included' && e.count > 0);
+  const through = included.length ? Math.max(...included.map(e => e.count)) : null;
+  const conflicts = entries.filter(e => e.verdict === 'head_differs' || e.verdict === 'beyond_history');
+  return {state: conflicts.length ? 'conflict' : through !== null ? 'witnessed' : 'none', entries, through, conflicts,
+    unwitnessed: events.filter(e => through === null || e.seq > through).map(e => e.seq), count: body.count,
+    shown: events.length, moved: body.count !== events.length, checkpoint: body.checkpoint === true,
+    publicKey: typeof body.public_key === 'string' ? body.public_key : null};
+}

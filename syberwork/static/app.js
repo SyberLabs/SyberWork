@@ -213,6 +213,8 @@ function action({label, op, ctx = {}, run, confirm, tone = 'secondary', keys}) {
 // ---------- loading ----------
 async function refreshAll() {
   if (!state.me) { render(); return; }
+  // The witness log moves without the case, so r asks it again.
+  for (const key of [...state.headReads.keys()]) if (key.startsWith('witness|')) state.headReads.delete(key);
   await Promise.all([loadCases(), loadPolicies(), loadContracts(), loadRegistry(), loadMetrics()]);
   if (state.selected) await loadCase(state.selected);
   render();
@@ -910,7 +912,7 @@ function tabHistory(info) {
     h('div', {class: 'grid-2'},
       section('JCS side records', h('span', {class: 'muted mono-s'}, 'GET …/side'), fillSlot(h('div', {class: 'side-summary'}), side, sideSummary)),
       section('Work item', h('span', {class: 'muted mono-s'}, 'GET /metrics/work_items/{case}'), fillSlot(h('div', {class: 'work-item'}), item, workItemView))),
-    witnessPanel(),
+    witnessPanel(info),
     h('ol', {class: 'timeline'}, info.events.slice().reverse().map(e => {
       const tone = M.toneOf(e);
       return h('li', {class: 'tl tone-' + tone},
@@ -987,17 +989,48 @@ function workItemView(entry) {
         h('td', {class: 'why'}, r.note))))),
   ];
 }
-// Witness and certificate: the server reads neither, so both are named as missing instead of drawn.
-function witnessPanel() {
-  const missing = (label, route, why) => h('div', {class: 'act'},
-    h('button', {type: 'button', class: 'btn', disabled: true}, label),
-    h('span', {class: 'why'}, 'no read route: needs ', mono(route), ' · ', why));
-  return section('Witness and certificate', badge('idle', 'none shown'),
-    h('p', {class: 'hint'}, 'Nothing on this page is witnessed or certified. Verify history is the server recomputing its own chain, not a signature by another party.'),
-    h('div', {class: 'witness-missing'}, missing('Show witness', 'GET /api/cases/{id}/witness', [mono('serve'), ' configures no witness, and ', mono('Work.submit_witness'),
-      ' returns the signed chain head to its caller without storing it in the case database']),
-    missing('Show certificate', 'GET /api/cases/{id}/certificate', ['admission certificates are written by ', mono('syberlabs certify'),
-      ' for a Build Thread as files under ', mono('<home>/certificates'), '; a case here has none'])));
+// Witness: what the witness's transparency log holds for this case, judged by the server under the witness's public
+// key. The log moves without the case, so a read is kept for a case and head only until r asks again. Certificate:
+// the server reads none, so it is named as missing instead of drawn.
+function witnessPanel(info) {
+  const read = headRead('witness', id => '/api/cases/' + encodeURIComponent(id) + '/witness', info)
+    .then(entry => entry.error ? entry : {witness: M.witnessView(entry.body, info.events)});
+  return h('div', {class: 'grid-2'},
+    section('Witness', h('span', {class: 'muted mono-s'}, 'GET …/witness'), fillSlot(h('div', {class: 'witness'}), read, witnessSummary)),
+    section('Certificate', badge('idle', 'none shown'),
+      h('div', {class: 'witness-missing'}, h('div', {class: 'act'},
+        h('button', {type: 'button', class: 'btn', disabled: true}, 'Show certificate'),
+        h('span', {class: 'why'}, 'no read route: needs ', mono('GET /api/cases/{id}/certificate'), ' · admission certificates are written by ',
+          mono('syberlabs certify'), ' for a Build Thread as files under ', mono('<home>/certificates'), '; a case here has none')))));
+}
+function witnessSummary(entry) {
+  if (!entry) return h('span', {class: 'muted'}, 'reading from the server…');
+  if (entry.error) return readFailed(entry);
+  const v = entry.witness;
+  const signs = h('p', {class: 'hint'}, 'Verify history is the server recomputing its own chain. A witness is another process holding its own key: it signs a chain head (', mono('python -m syberlabs.witness'),
+    ') and appends it to its log. This console asks for no signature; ', mono('Work.submit_witness'), ' does, outside it.');
+  if (v.state === 'off') return [h('p', {}, badge('idle', 'not configured'), ' ', h('span', {class: 'why'}, v.text)),
+    h('p', {class: 'hint'}, 'Nothing on this page is witnessed.'), signs];
+  if (v.state === 'unknown') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text)];
+  const headline = v.state === 'conflict' ? [badge('denied', 'history differs'), ' the witness signed a head this history does not have. Do not treat this case as witnessed.']
+    : v.state === 'witnessed' ? [badge('verified', 'witnessed through #' + v.through), ' events #1–#' + v.through + ' are the ones the witness signed.']
+    : [badge('idle', 'not witnessed'), ' the log holds no head that matches this history and its newest checkpoint covers.'];
+  return [
+    h('p', {class: 'witness-state', 'data-state': v.state}, headline),
+    v.unwitnessed.length && v.state !== 'conflict' ? h('p', {class: 'why'}, M.seqRanges(v.unwitnessed), v.unwitnessed.length > 1 ? ' are' : ' is', ' not witnessed: no signed head in the log covers ', v.unwitnessed.length > 1 ? 'them' : 'it', '.') : null,
+    v.moved ? h('p', {class: 'muted'}, 'The server read ' + v.count + ' events; this page shows ' + v.shown + ' · ', h('kbd', {}, 'r')) : null,
+    v.entries.length ? h('table', {class: 'grid witness-rows'}, h('thead', {}, h('tr', {}, ['Leaf', 'Covers', 'Signed head', 'Verdict'].map(t => h('th', {}, t)))),
+      h('tbody', {}, v.entries.map(e => h('tr', {'data-verdict': e.verdict},
+        h('td', {class: 'mono-s'}, '#' + e.index),
+        h('td', {}, e.count === null ? h('span', {class: 'muted'}, '—') : e.count ? '#1–#' + e.count : 'no events'),
+        h('td', {}, e.head ? mono(M.short(e.head, 12)) : h('span', {class: 'muted'}, '—')),
+        h('td', {}, badge(e.tone, e.label), ' ', h('span', {class: 'why'}, e.text))))))
+      : h('p', {class: 'muted'}, 'No leaf in the log names this case.'),
+    v.checkpoint ? null : h('p', {class: 'why warn'}, 'The log\'s newest signed checkpoint does not cover the log as read, so no head counts as witnessed now.'),
+    h('p', {class: 'muted mono-s'}, 'witness key ', v.publicKey ? M.short(v.publicKey, 16) + '…' : 'not returned'),
+    h('p', {class: 'hint'}, 'The server checked each signature and the checkpoint under the configured public key; the console checks none. A signed head covers events #1 to its count only.'),
+    signs,
+  ];
 }
 
 // Replay: the recorded proposals re-admitted under another contract or policy version.

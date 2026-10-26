@@ -6,6 +6,7 @@ publishing contract v2 in the studio and replaying the case against it. It skips
 ``playwright`` package is not installed, like ``tests/test_inspector.py``.
 """
 
+import argparse
 import contextlib
 import hashlib
 import json
@@ -19,15 +20,26 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
+from contextlib import closing
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote
 
 from syberlabs.admission import approval_roles
+from syberlabs.canonical import canonical
+from syberlabs.dsse import CHAIN_HEAD_TYPE, CHECKPOINT_TYPE, sign_chain_head, sign_dsse
+from syberlabs.ed25519 import generate
+from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import AUTOMATION_ROLES
 from syberlabs.jcs import envelope_jcs
 from syberlabs.metrics import METRICS, UNKNOWN, Metric, _cell
+from syberlabs.tlog import TransparencyLog, merkle_root
+from syberlabs.witness import Witness, WitnessClient, WitnessServer
+from syberwork.cli import _witness_log
 from syberwork.core import Work
 from syberwork.server import POLICY_READERS, make_server
 
@@ -116,7 +128,7 @@ def playwright_root() -> str | None:
 class Cell:
     """The included example installed as ``init`` installs it, with sources and actions on ``reference_port``."""
 
-    def __init__(self, folder: Path, reference_port: int = 8999):
+    def __init__(self, folder: Path, reference_port: int = 8999, witness_log=None):
         self.database = folder / "work.sqlite3"
         self.work = Work(self.database)
         self.tokens = {name: "token-" + name for name in IDENTITIES}
@@ -129,7 +141,7 @@ class Cell:
             self.work.install_action(name, retarget(doc))
         for name, doc in json.loads(read_text(EXAMPLES / "sources.json")).items():
             self.work.install_source(name, retarget(doc))
-        self.server = make_server(self.work, users, port=0)
+        self.server = make_server(self.work, users, port=0, witness_log=witness_log)
         self.server.RequestHandlerClass.log_message = lambda *args: None
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"
@@ -158,6 +170,8 @@ class Cell:
 
 class CellCase(unittest.TestCase):
     reference = False
+    # True: an in-process Witness writes the log serve reads. "server": a loopback WitnessServer on witness_port.
+    witness = False
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -172,14 +186,30 @@ class CellCase(unittest.TestCase):
                  "--database", str(Path(folder.name) / "reference.sqlite3"), "--port", str(port)])
             self.addCleanup(stop_process, proc)
             wait_until_listening(port, proc)
-        self.cell = Cell(Path(folder.name), port)
+        reader = None
+        if self.witness:
+            self.seed, self.public = generate()
+            self.log_path = Path(folder.name) / "witness.sqlite3"
+            if self.witness == "server":
+                server = WitnessServer(str(self.log_path), self.seed, 0)
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+                self.addCleanup(server.close)
+                self.addCleanup(server.shutdown)
+                self.witness_port, self.witness_log = server.server_address[1], server.witness._log
+            else:
+                writer = Witness(str(self.log_path), self.seed)
+                self.addCleanup(writer.close)
+                self.attest, self.witness_log = writer.attest, writer._log
+            reader = TransparencyLog.open_readonly(self.log_path, self.public)
+            self.addCleanup(reader.close)
+        self.cell = Cell(Path(folder.name), port, reader)
         self.addCleanup(self.cell.close)
 
 
 class ConsoleRoutes(CellCase):
     def test_every_new_route_requires_a_bearer_token(self):
         for path in ("/api/console", "/api/contracts", "/api/contracts/purchase-order/1", "/api/policies", "/api/actions", "/api/sources",
-                     "/api/cases/any/side"):
+                     "/api/cases/any/side", "/api/cases/any/witness"):
             with self.subTest(path):
                 status, body = self.cell.json(path, who=None)
                 self.assertEqual((status, body["error"]), (401, "unauthorized"))
@@ -479,7 +509,7 @@ class ConsoleExplain(CellCase):
 
 
 class ConsoleSideRecords(CellCase):
-    """GET /api/cases/{id}/side: Work.side_channel over HTTP, read only. Witness and certificate have no read route."""
+    """GET /api/cases/{id}/side: Work.side_channel over HTTP, read only. The certificate has no read route."""
 
     def case_with_decision(self):
         case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
@@ -539,18 +569,130 @@ class ConsoleSideRecords(CellCase):
                         "the rule ids are in no hash and nothing checks them", "only Verify history tells them apart"):
             self.assertIn(wording, app)
 
-    def test_witness_and_certificate_are_named_as_missing_not_drawn(self):
+    def test_the_certificate_is_named_as_missing_not_drawn(self):
         case = self.case_with_decision()
-        for operation in ("witness", "certificate"):
-            with self.subTest(operation):
-                self.assertEqual(self.cell.json(f"/api/cases/{case}/{operation}"), (404, {"error": "not_found"}))
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/certificate"), (404, {"error": "not_found"}))
         app = read_text(STATIC / "app.js")
-        for route in ("GET /api/cases/{id}/witness", "GET /api/cases/{id}/certificate"):
-            self.assertIn(route, app)
-        self.assertNotIn("casePath('witness')", app)
+        self.assertIn("GET /api/cases/{id}/certificate", app)
         self.assertNotIn("casePath('certificate')", app)
-        self.assertIn("h('button', {type: 'button', class: 'btn', disabled: true}, label)", app)
-        self.assertIn("Nothing on this page is witnessed or certified.", app)
+        self.assertIn("h('button', {type: 'button', class: 'btn', disabled: true}, 'Show certificate')", app)
+
+
+class ConsoleWitness(CellCase):
+    """GET /api/cases/{id}/witness: Work.witness_status over a read-only reader of the witness's log."""
+
+    witness = True
+
+    def case_events(self, *, decided=True):
+        case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        if decided:
+            self.cell.json(f"/api/cases/{case}/proposals", {"action": "issue_order", "args": {}})
+        return case, self.cell.work.inspect(case)["events"]
+
+    def forge(self, envelope):
+        """Append a leaf the witness API would refuse, then sign a checkpoint over the log as the witness would."""
+        db = self.witness_log._db
+        size = db.execute("SELECT COUNT(*) AS n FROM leaves").fetchone()["n"]
+        db.execute("INSERT INTO leaves (idx, body) VALUES (?, ?)", (size, canonical(envelope)))
+        bodies = [row["body"].encode() for row in db.execute("SELECT body FROM leaves ORDER BY idx")]
+        checkpoint = sign_dsse(CHECKPOINT_TYPE, canonical({"root": merkle_root(bodies).hex(), "size": size + 1}).encode("ascii"), self.seed)
+        db.execute("INSERT INTO checkpoints (size, envelope) VALUES (?, ?)", (size + 1, canonical(checkpoint)))
+
+    def test_the_route_requires_a_token_and_a_known_case(self):
+        self.assertEqual(self.cell.json("/api/cases/any/witness", who=None)[1]["error"], "unauthorized")
+        for path in ("/api/cases/no-such-case/witness", "/api/cases/%2e%2e/witness"):
+            with self.subTest(path):
+                status, body = self.cell.json(path)
+                self.assertNotEqual(status, 500)
+                self.assertEqual(body["error"], "unknown_case")
+
+    def test_a_signed_head_is_witnessed_through_its_count_and_later_events_are_not(self):
+        case, events = self.case_events()
+        other, other_events = self.case_events(decided=False)
+        self.attest(other_events)
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness")[1]["entries"], [], "another case's leaf is not this case's")
+        self.attest(events)
+        for who in ("operator", "manager", "supplier", "planner"):
+            with self.subTest(who):
+                status, body = self.cell.json(f"/api/cases/{case}/witness", who=who)
+                self.assertEqual(status, 200)
+                self.assertEqual(body["entries"], [{"index": 1, "count": len(events), "head": events[-1]["hash"], "verdict": "included"}])
+                self.assertEqual((body["configured"], body["checkpoint"], body["witnessed_through"]), (True, True, len(events)))
+                self.assertEqual(body["public_key"], self.public.hex())
+        # A later event: the signed head still covers the events it named, and only those.
+        self.cell.json(f"/api/cases/{case}/proposals", {"action": "record_review", "args": {}}, who="scheduler")
+        body = self.cell.json(f"/api/cases/{case}/witness")[1]
+        self.assertGreater(body["count"], len(events))
+        self.assertEqual((body["witnessed_through"], body["entries"][0]["verdict"]), (len(events), "included"))
+        reader = TransparencyLog.open_readonly(self.log_path, self.public)
+        self.addCleanup(reader.close)
+        self.assertEqual(body, self.cell.work.witness_status(case, reader), "the route is Work.witness_status unchanged")
+
+    def test_a_head_this_history_does_not_have_is_named_not_counted(self):
+        case, events = self.case_events()
+        self.attest(events)
+        rewritten = [*events[:-1], dict(events[-1], hash="0" * 64)]
+        longer = [*events, dict(events[-1], seq=len(events) + 1, hash="1" * 64)]
+        self.witness_log.append(sign_chain_head(case, rewritten, self.seed))
+        self.witness_log.append(sign_chain_head(case, longer, self.seed))
+        other_seed, _ = generate()
+        self.forge(sign_chain_head(case, events, other_seed))
+        self.forge(sign_dsse(CHAIN_HEAD_TYPE, canonical({"case_id": case, "count": "all", "head": "x"}).encode("ascii"), self.seed))
+        body = self.cell.json(f"/api/cases/{case}/witness")[1]
+        self.assertEqual([(e["count"], e["verdict"]) for e in body["entries"]],
+                         [(len(events), "included"), (len(events), "head_differs"), (len(events) + 1, "beyond_history"),
+                          (None, "bad_signature"), (None, "malformed")])
+        self.assertEqual(body["entries"][1]["head"], "0" * 64)
+        self.assertEqual(body["witnessed_through"], len(events), "the server reports what it found; the console lets a conflict outrank it")
+
+    def test_a_leaf_the_newest_checkpoint_does_not_cover_is_not_included(self):
+        case, events = self.case_events()
+        self.attest(events)
+        self.witness_log._db.execute("INSERT INTO leaves (idx, body) VALUES (?, ?)", (1, canonical({"payloadType": "x"})))
+        body = self.cell.json(f"/api/cases/{case}/witness")[1]
+        self.assertEqual((body["checkpoint"], body["entries"][0]["verdict"], body["witnessed_through"]), (False, "not_included", None))
+
+    def test_the_read_appends_nothing_to_the_case_or_the_log(self):
+        case, events = self.case_events()
+        self.attest(events)
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            before = list(db.iterdump())
+        with closing(sqlite3.connect(self.log_path)) as db, db:
+            log_before = list(db.iterdump())
+        self.assertEqual(self.cell.call(f"/api/cases/{case}/witness")[0], 200)
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            self.assertEqual(list(db.iterdump()), before)
+        with closing(sqlite3.connect(self.log_path)) as db, db:
+            self.assertEqual(list(db.iterdump()), log_before)
+
+    def test_serve_reads_a_log_only_when_both_variables_name_one(self):
+        parser = argparse.ArgumentParser()
+        def configured(**names):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_WITNESS_")}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _witness_log(parser)
+        self.assertIsNone(configured())
+        for names in ({"SYBERWORK_WITNESS_LOG": str(self.log_path)}, {"SYBERWORK_WITNESS_PUBLIC": self.public.hex()},
+                      {"SYBERWORK_WITNESS_LOG": str(self.log_path), "SYBERWORK_WITNESS_PUBLIC": "not hex"},
+                      {"SYBERWORK_WITNESS_LOG": str(self.log_path), "SYBERWORK_WITNESS_PUBLIC": "00"},
+                      {"SYBERWORK_WITNESS_LOG": str(self.cell.database), "SYBERWORK_WITNESS_PUBLIC": self.public.hex()}):
+            with self.subTest(sorted(names)), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(**names)
+        log = configured(SYBERWORK_WITNESS_LOG=str(self.log_path), SYBERWORK_WITNESS_PUBLIC=self.public.hex())
+        self.addCleanup(log.close)
+        self.assertEqual(log.public, self.public)
+        with self.assertRaises(Rejected):
+            log.append(sign_chain_head("c", [], self.seed))
+
+    def test_without_a_log_the_route_says_so(self):
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.log_path.parent)), 8999)
+        self.addCleanup(cell.close)
+        case = cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
+        status, body = cell.json(f"/api/cases/{case}/witness")
+        self.assertEqual(status, 200)
+        self.assertEqual((body["configured"], body["count"]), (False, 1))
+        self.assertIn("SYBERWORK_WITNESS_LOG", body["note"])
+        self.assertNotIn("entries", body)
 
 
 class ConsolePreview(CellCase):
@@ -738,7 +880,8 @@ class ConsoleStatic(CellCase):
         gets = ["/api/me", "/api/console", "/api/cases", f"/api/cases/{case}", f"/api/cases/{case}/verify", "/api/contracts",
                 "/api/contracts/purchase-order/1", "/api/contracts/purchase-order/1/artifacts", "/api/policies",
                 "/api/actions", "/api/sources", "/metrics/cases_open", "/metrics/effects_pending", "/metrics/queue_depth",
-                "/metrics/proposals_denied_total", "/metrics/work_items", f"/api/cases/{case}/side", f"/metrics/work_items/{case}"]
+                "/metrics/proposals_denied_total", "/metrics/work_items", f"/api/cases/{case}/side", f"/metrics/work_items/{case}",
+                f"/api/cases/{case}/witness"]
         proposal = self.cell.json(f"/api/cases/{case}/proposals", {"action": "record_review", "args": {}}, who="admin")[1]["proposal"]["id"]
         gets += [f"/api/cases/{case}/proposals/{proposal}/explain?when={when}" for when in ("recorded", "now")]
         for path in gets:
@@ -747,8 +890,9 @@ class ConsoleStatic(CellCase):
         app = read_text(STATIC / "app.js")
         self.assertIn("'/proposals/' + encodeURIComponent(p.id) + '/explain?when=' + when", app)
         self.assertNotIn("not exposed over HTTP", app)
-        # Both History reads build their URL from the case being drawn (headRead), not from the selection.
+        # The History reads build their URL from the case being drawn (headRead), not from the selection.
         self.assertIn("headRead('side', id => '/api/cases/' + encodeURIComponent(id) + '/side', info)", app)
+        self.assertIn("headRead('witness', id => '/api/cases/' + encodeURIComponent(id) + '/witness', info)", app)
         self.assertIn("headRead('work_item', id => '/metrics/work_items/' + encodeURIComponent(id), info)", app)
         self.assertIn("api(route(info.case.id))", app)
         # The admission preview posts to the case being drawn, like the History reads.
@@ -763,6 +907,8 @@ class ConsoleStatic(CellCase):
 
 
 class ConsoleModel(CellCase):
+    witness = True
+
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_projections_match_the_python_rules(self):
         contract = json.loads(read_text(EXAMPLES / "contract.json"))
@@ -807,7 +953,12 @@ class ConsoleModel(CellCase):
         bound = self.cell.json(f"/api/cases/{fresh}/preview", {"action": "record_review"})[1]
         parity["preview"] = [{"body": unbound, "expected": ["denied", "amount_required", "limits.amount", False, 1]},
                              {"body": bound, "expected": ["allowed", "all_checks_passed", "admission.passed", True, 2]}]
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+        # What GET .../witness answers once the witness signed this case's head and one event came after it.
+        self.attest(self.cell.json(f"/api/cases/{fresh}")[1]["events"])
+        self.cell.json(f"/api/cases/{fresh}/proposals", {"action": "record_review", "args": {}}, who="scheduler")
+        parity["witness"] = {"events": self.cell.json(f"/api/cases/{fresh}")[1]["events"], "body": self.cell.json(f"/api/cases/{fresh}/witness")[1]}
+        self.assertEqual(parity["witness"]["body"]["witnessed_through"], len(parity["witness"]["events"]) - 2)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
         # Pin the TAP reporter. A newer Node prints the spec reporter on stdout, which has no
@@ -823,6 +974,35 @@ class ConsoleModel(CellCase):
 
 class ConsoleBrowser(CellCase):
     reference = True
+    witness = "server"
+
+    def witness_hook(self) -> str:
+        """A loopback URL whose POST /{case} runs Work.submit_witness against the witness server, outside the console."""
+        client = WitnessClient(self.witness_port, self.public, str(self.log_path))
+        self.addCleanup(client.close)
+        work = self.cell.work
+
+        class Hook(BaseHTTPRequestHandler):
+            def do_POST(self):
+                try:
+                    status, answer = 200, {"envelope": work.submit_witness(unquote(self.path.rsplit("/", 1)[-1]), client)}
+                except Rejected as exc:
+                    status, answer = 409, {"error": exc.code, "detail": exc.detail}
+                body = json.dumps(answer).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        hook = ThreadingHTTPServer(("127.0.0.1", 0), Hook)
+        threading.Thread(target=hook.serve_forever, daemon=True).start()
+        self.addCleanup(hook.server_close)
+        self.addCleanup(hook.shutdown)
+        return f"http://127.0.0.1:{hook.server_port}/witness/"
 
     def test_the_purchase_order_path_completes_in_a_browser(self):
         # The strict suite allows only the inspector's exact reasons for a missing browser tool.
@@ -833,7 +1013,8 @@ class ConsoleBrowser(CellCase):
             if shutil.which("npm") is None:
                 self.skipTest("npm is not installed")
             self.skipTest("playwright for node is not installed")
-        env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens)}
+        env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens),
+               "WITNESS_HOOK": self.witness_hook()}
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
             env.setdefault("CHROMIUM", "/opt/pw-browsers/chromium")
@@ -848,7 +1029,7 @@ class ConsoleBrowser(CellCase):
         self.assertTrue(report["self_approval_blocked"])
         self.assertIn("Complete", report["status"])
         self.assertIn("intact", report["verify"])
-        # History: the JCS side records and this case's work item, read from the server; witness and certificate missing.
+        # History: the JCS side records, this case's work item and the witness log, read from the server; no certificate.
         self.assertRegex(report["side_summary"], r"(\d+) of \1 events carry a side record · 2 of 2 decisions name their deciding rule", report["side_summary"])
         self.assertNotIn("have no side record", report["side_summary"])
         self.assertIn("JCS", report["side_row"])
@@ -857,9 +1038,18 @@ class ConsoleBrowser(CellCase):
         self.assertEqual(list(cells), list(METRICS), report["work_item"])
         self.assertIn("unknown", cells["cost"], "no model call is metered for a purchase order")
         self.assertIn("no pull request opened", cells["delivered"])
-        self.assertEqual(report["witness_buttons"], [["Show witness", True], ["Show certificate", True]])
-        self.assertIn("GET /api/cases/{id}/witness", report["witness_text"])
-        self.assertIn("GET /api/cases/{id}/certificate", report["witness_text"])
+        self.assertEqual(report["certificate_buttons"], [["Show certificate", True]])
+        self.assertIn("GET /api/cases/{id}/certificate", report["certificate_text"])
+        # Before the witness signs, the log holds nothing for the case; after, every event up to the head is witnessed.
+        self.assertIn("not witnessed", report["witness_before"])
+        self.assertIn("No leaf in the log names this case", report["witness_before"])
+        self.assertTrue(report["witness_signed"])
+        events = report["history_events"]
+        self.assertIn(f"witnessed through #{events}", report["witness_after"])
+        self.assertNotIn("not witnessed", report["witness_after"])
+        self.assertIn(self.public.hex()[:16], report["witness_after"])
+        self.assertEqual([verdict for verdict, _ in report["witness_rows"]], ["included"])
+        self.assertIn(f"#1–#{events}", report["witness_rows"][0][1])
         self.assertTrue(any("destination acknowledged HTTP 201" in row for row in report["effects"]), report["effects"])
         self.assertTrue(any("recorded locally" in row for row in report["effects"]), report["effects"])
         self.assertIn("No external planner configured", report["planner"])

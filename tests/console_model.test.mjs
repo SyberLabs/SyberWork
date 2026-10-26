@@ -48,6 +48,11 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
     assert.ok(M.provenanceText(view.provenance).startsWith('syberlabs/admission.py:'), M.provenanceText(view.provenance));
     assert.deepEqual(M.previewCurrent(view, {action: view.action, origin: view.origin, args: view.args}, view.head), {state: 'current'});
   }
+  // What GET .../witness answered for a case the witness signed, with two events after the signed head.
+  const witnessed = M.witnessView(cases.witness.body, cases.witness.events);
+  const n = cases.witness.events.length;
+  assert.deepEqual([witnessed.state, witnessed.through, witnessed.unwitnessed, witnessed.moved, witnessed.checkpoint], ['witnessed', n - 2, [n - 1, n], false, true]);
+  assert.deepEqual(witnessed.entries.map(e => [e.verdict, e.tone, e.label]), [['included', 'verified', 'in the log']]);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -366,4 +371,40 @@ test('a preview is out of date once the case or the form moves', () => {
   const nested = M.previewView({ ...PREVIEW, args: { quote: { id: 'Q-7', price: 10 } } });
   assert.equal(M.previewCurrent(nested, { ...draft, args: { quote: { price: 10, id: 'Q-7' } } }, 7).state, 'current');
   assert.equal(M.previewCurrent(nested, { ...draft, args: { quote: { price: 10, id: 'Q-8' } } }, 7).state, 'changed');
+});
+
+const WITNESS = (entries, extra = {}) => ({ case_id: 'c', configured: true, count: 4, head: { seq: 4, hash: 'h4' }, public_key: 'ab'.repeat(32),
+  checkpoint: true, entries, witnessed_through: null, note: 'read', ...extra });
+const FOUR = () => history(['case_opened', {}], ['observed', {}], ['proposal', {}], ['decision', {}]);
+
+test('a signed head witnesses the events it counts, never the ones after it', () => {
+  const view = M.witnessView(WITNESS([{ index: 3, count: 2, head: 'h2', verdict: 'included' }, { index: 9, count: 3, head: 'h3', verdict: 'not_included' }]), FOUR());
+  assert.deepEqual([view.state, view.through, view.unwitnessed, view.moved], ['witnessed', 2, [3, 4], false]);
+  assert.deepEqual(view.entries.map(e => [e.index, e.tone, e.label]), [[3, 'verified', 'in the log'], [9, 'pending', 'not covered now']]);
+  const none = M.witnessView(WITNESS([], { checkpoint: false }), FOUR());
+  assert.deepEqual([none.state, none.through, none.unwitnessed, none.checkpoint], ['none', null, [1, 2, 3, 4], false]);
+  assert.equal(M.witnessView(WITNESS([{ index: 0, count: 0, head: '0'.repeat(64), verdict: 'included' }]), FOUR()).state, 'none', 'a head over no events witnesses nothing');
+  assert.equal(M.witnessView(WITNESS([], { count: 5 }), FOUR()).moved, true);
+});
+
+test('a head this history does not have outranks a witnessed one', () => {
+  for (const verdict of ['head_differs', 'beyond_history']) {
+    const view = M.witnessView(WITNESS([{ index: 0, count: 4, head: 'h4', verdict: 'included' }, { index: 1, count: 4, head: 'x', verdict }]), FOUR());
+    assert.deepEqual([view.state, view.through, view.conflicts.map(e => e.tone)], ['conflict', 4, ['denied']], verdict);
+  }
+  const unsigned = M.witnessView(WITNESS([{ index: 0, count: null, head: null, verdict: 'bad_signature' }, { index: 1, count: null, head: null, verdict: 'malformed' }]), FOUR());
+  assert.deepEqual([unsigned.state, unsigned.entries.map(e => e.tone)], ['none', ['unverified', 'unknown']]);
+});
+
+test('a witness answer of another shape, or one that disagrees with this page, is unknown', () => {
+  for (const body of [null, [], {}, { configured: 'yes' }, WITNESS(undefined), WITNESS([], { count: '4' })]) {
+    assert.equal(M.witnessView(body, FOUR()).state, 'unknown', JSON.stringify(body));
+  }
+  const disagree = M.witnessView(WITNESS([{ index: 0, count: 2, head: 'other', verdict: 'included' }]), FOUR());
+  assert.equal(disagree.state, 'unknown');
+  assert.match(disagree.text, /another hash at #2/);
+  const odd = M.witnessView(WITNESS([{ index: 0, count: 2, head: 'h2', verdict: 'trusted' }, { index: 1, count: null, head: 'h2', verdict: 'included' }, { index: 'x', verdict: 'included' }]), FOUR());
+  assert.deepEqual([odd.state, odd.entries.map(e => e.verdict)], ['none', ['unknown', 'unknown']]);
+  const off = M.witnessView({ case_id: 'c', configured: false, count: 4, head: null, note: 'serve has no witness log' }, FOUR());
+  assert.deepEqual(off, { state: 'off', text: 'serve has no witness log' });
 });
