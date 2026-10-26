@@ -10,6 +10,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -490,6 +491,44 @@ SAME_PROCESS_FORGERY = """
 """
 
 
+# The same forgery, moved verbatim into a module outside tests/ that a test imports and calls.
+FORGERY_HELPER = """
+    import gc, os
+    import __main__
+
+    def forge(test):
+        result = next(o for o in gc.get_objects() if isinstance(o, __main__._ShardResult))
+        spec = next(o for o in gc.get_objects() if isinstance(o, dict) and "nonce" in o and "ids" in o)
+        channel, me, ran = result.channel, test.id(), result.testsRun
+        channel.send("outcome", id=me, kind="success")
+        channel.send("stop", id=me)
+        for other in spec["ids"]:
+            if other != me and other not in result.durations:
+                channel.send("start", id=other)
+                channel.send("outcome", id=other, kind="success")
+                channel.send("stop", id=other)
+                ran += 1
+        channel.send("done", tests_run=ran, failures=[{}] * len(result.failures), errors=[{}] * len(result.errors),
+                     skipped=len(result.skipped), expected_failures=len(result.expectedFailures),
+                     unexpected=[{}] * len(result.unexpectedSuccesses), durations={})
+        os._exit(0)
+"""
+FORGERY_CALLER = """
+    import os, unittest
+    from pathlib import Path
+    from forge_helper import forge
+
+    class AAForge(unittest.TestCase):
+        @classmethod
+        def setUpClass(cls): pass
+        def test_0_forge(self):
+            forge(self)
+        def test_1_never_runs(self):
+            Path(os.environ["RUN_SHARDS_MARK"]).write_text("ran")
+            raise AssertionError("must run")
+"""
+
+
 class Integrity(unittest.TestCase):
     """Test code runs in the shard's process; these are the ways it can try to lie, and what catches each."""
 
@@ -563,6 +602,102 @@ class Integrity(unittest.TestCase):
         findings = critic_rules.integrity_findings("tests/test_forge.py", source, None)
         self.assertEqual({f["claim"].split("(")[1].split(")")[0] for f in findings}, {"runner_reach", "process_exit"})
         self.assertTrue(all(f["severity"] == "high" for f in findings))
+
+    def test_the_same_forgery_moved_into_a_helper_module_passes_the_runner_and_the_critic_flags_the_helper(self):
+        """Verifier finding 1 on #116: the forgery one ``import`` away from the test. The runner is still fooled
+        (only a sandbox closes that); the critic now reads every changed Python file, so the helper is high."""
+        with tempfile.TemporaryDirectory() as folder:
+            _write_suite(Path(folder), {"test_forge.py": FORGERY_CALLER})
+            (Path(folder) / "forge_helper.py").write_text(textwrap.dedent(FORGERY_HELPER), encoding="utf-8")
+            mark = Path(folder) / "mark.txt"
+            before = os.environ.get("RUN_SHARDS_MARK")
+            os.environ["RUN_SHARDS_MARK"] = str(mark)
+            try:
+                ran = _shards(Path(folder), "--shards", "2")
+            finally:
+                if before is None:
+                    os.environ.pop("RUN_SHARDS_MARK", None)
+                else:
+                    os.environ["RUN_SHARDS_MARK"] = before
+            self.assertEqual(ran.returncode, 0, ran.stdout)  # fooled: test_1_never_runs is counted and never ran
+            self.assertFalse(mark.exists())
+        helper = critic_rules.integrity_findings("forge_helper.py", textwrap.dedent(FORGERY_HELPER).lstrip(), None)
+        self.assertEqual({f["claim"].split("(")[1].split(")")[0] for f in helper}, {"runner_reach"})
+        self.assertTrue(all(f["severity"] == "high" for f in helper))
+        self.assertEqual(critic_rules.integrity_findings("tests/test_forge.py",
+                                                         textwrap.dedent(FORGERY_CALLER).lstrip(), None), [])
+
+
+# --- a shard's time budget ---------------------------------------------------------------------
+
+SLEEPER = """
+    import os, subprocess, sys, time, unittest
+
+    BEAT = "import sys, time\\nwhile True:\\n    open(sys.argv[1], 'w').write(str(time.time()))\\n    time.sleep(0.1)\\n"
+
+    class Sleeper(unittest.TestCase):
+        def test_sleeps(self):
+            subprocess.Popen([sys.executable, "-c", BEAT, os.environ["RUN_SHARDS_MARK"]])
+            time.sleep(120)
+"""
+
+
+class Timeout(unittest.TestCase):
+    """``--shard-timeout``: a shard past its budget is stopped with every process it started, and named."""
+
+    def test_a_shard_past_its_budget_is_stopped_with_its_process_tree_and_names_its_last_test(self):
+        with tempfile.TemporaryDirectory() as folder:
+            _write_suite(Path(folder), {"test_sleep.py": SLEEPER})
+            beat = Path(folder) / "beat.txt"
+            before = os.environ.get("RUN_SHARDS_MARK")
+            os.environ["RUN_SHARDS_MARK"] = str(beat)
+            try:
+                ran = _shards(Path(folder), "--shards", "1", "--shard-timeout", "6")
+            finally:
+                if before is None:
+                    os.environ.pop("RUN_SHARDS_MARK", None)
+                else:
+                    os.environ["RUN_SHARDS_MARK"] = before
+            self.assertEqual(ran.returncode, 1, ran.stdout)
+            self.assertIn("run_shards: shard_timeout: shard 1 ran past its budget of 6 s and was stopped with its "
+                          "process tree; last test started: test_sleep.Sleeper.test_sleeps", ran.stdout)
+            self.assertIn("run_shards: shard 1/1: TIMED OUT after", ran.stdout)
+            self.assertEqual(_summary(ran.stdout)[1], "FAILED (shard_timeout=1)")
+            # The process the test started is gone too: its heartbeat stops.
+            self.assertTrue(beat.exists(), "the sleeping test never started its child")
+            first = beat.stat().st_mtime_ns
+            time.sleep(1.5)
+            self.assertEqual(beat.stat().st_mtime_ns, first, "the test's child outlived its shard")
+
+    def test_discovery_that_hangs_at_import_is_stopped(self):
+        with tempfile.TemporaryDirectory() as folder:
+            _write_suite(Path(folder), {"test_zz_hang.py": "import time\ntime.sleep(120)\n"})
+            ran = _shards(Path(folder), "--shards", "2", "--shard-timeout", "4")
+            self.assertEqual(ran.returncode, 1, ran.stdout)
+            self.assertIn("run_shards: discovery_failed: discovery ran past its budget of 4 s and was stopped with "
+                          "its process tree", ran.stdout)
+            self.assertEqual(_summary(ran.stdout), (0, "FAILED (discovery_failed=1)"))
+
+    def test_the_default_budget_is_three_times_the_plan_and_at_least_five_minutes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            _write_suite(Path(folder), durations={"test_gamma.Gamma.test_00": 120.0, "test_alpha.Plain.test_one": 2.0})
+            ran = _shards(Path(folder), "--shards", "2")
+            self.assertEqual(ran.returncode, 0, ran.stdout)
+            line = next(l for l in ran.stdout.splitlines() if l.startswith("run_shards: planned seconds per shard: "))
+            planned, budgets = line.split(": ", 2)[2].split("; time budget per shard: ")
+            budgets = budgets.split(" (")[0]
+            planned = [float(x) for x in planned.split(", ")]
+            self.assertEqual([float(x) for x in budgets.split(", ")],
+                             [float(f"{max(300.0, 3 * x):.0f}") for x in planned])
+            self.assertTrue(any(x > 100 for x in planned), line)  # the 120 s test makes one budget exceed the floor
+            self.assertIn("(3x planned, at least 300)", line)
+        with tempfile.TemporaryDirectory() as folder:
+            _write_suite(Path(folder))
+            for bad in ("0", "-5"):
+                with self.subTest(bad=bad):
+                    ran = _shards(Path(folder), "--shard-timeout", bad)
+                    self.assertEqual(ran.returncode, 2, ran.stderr)
+                    self.assertIn("--shard-timeout must be a positive number of seconds", ran.stderr)
 
 
 # --- the floor: a test discovered on the base may not silently disappear -------------------------
@@ -678,15 +813,24 @@ class Floor(unittest.TestCase):
             "modified tests/test_keep.py": {"tests/test_keep.py": KEEP.replace("pass", "self.fail()")},
             "ignored tests/__pycache__/": {"tests/__pycache__/test_keep.cpython-312.pyc": "not really bytecode"},
             "untracked helper.pth": {"helper.pth": "import os"},
+            "ignored build/ (holds lib/helper.py)": {"build/lib/helper.py": "import os"},
         }
         for change, files in cases.items():
             with self.subTest(change):
                 self.reset()
-                self.commit({".gitignore": "__pycache__/\n"})
+                self.commit({".gitignore": "__pycache__/\n*.egg-info/\nbuild/\n"})
                 self.write(files)
                 ran = self.floor()
                 self.assertEqual(ran.returncode, 1, ran.stdout)
                 self.assertIn(f"run_shards: worktree_changed: {change}", ran.stdout)
+
+    def test_an_ignored_directory_with_nothing_importable_is_not_a_change(self):
+        """``pip install -e .`` leaves an ignored ``*.egg-info/`` beside the code; CI floors after that install."""
+        self.commit({".gitignore": "*.egg-info/\n"})
+        self.write({"demo.egg-info/PKG-INFO": "Metadata-Version: 2.1\n", "demo.egg-info/top_level.txt": "demo\n"})
+        ran = self.floor()
+        self.assertEqual(ran.returncode, 0, ran.stdout)
+        self.assertIn("floor: all 3 tests discovered on the base are here or excused by the diff", ran.stdout)
 
     def test_a_base_that_is_not_a_commit_here_fails_closed(self):
         ran = self.floor("0" * 40)

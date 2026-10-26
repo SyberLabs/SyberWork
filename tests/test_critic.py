@@ -458,13 +458,15 @@ class TestIntegrityRule(unittest.TestCase):
             self.assertFalse(critic_rules.is_test_code(path), path)
 
     def test_the_current_suite_has_no_finding(self):
-        """Every test file in this checkout, read as if it were added whole, trips nothing: zero false positives."""
+        """Every Python file in this checkout, test code or not, read as if it were added whole, trips nothing:
+        zero false positives."""
         root = Path(__file__).resolve().parents[1]
         paths = [p.relative_to(root).as_posix() for p in root.rglob("*.py")
                  if not any(part.startswith(".") for part in p.relative_to(root).parts)]
         tests = [p for p in paths if critic_rules.is_test_code(p)]
         self.assertGreater(len(tests), 50)
-        found = {p: critic_rules.integrity_findings(p, (root / p).read_text(encoding="utf-8"), None) for p in tests}
+        self.assertGreater(len(paths) - len(tests), 80)
+        found = {p: critic_rules.integrity_findings(p, (root / p).read_text(encoding="utf-8"), None) for p in paths}
         self.assertEqual({p: f for p, f in found.items() if f}, {})
 
     def test_a_changed_test_file_the_rule_cannot_read_is_high_not_passed(self):
@@ -505,6 +507,113 @@ class TestIntegrityRule(unittest.TestCase):
         [finding] = json.loads(out)["findings"]
         self.assertEqual((finding["file"], finding["line"], finding["severity"]), ("tests/test_a.py", 10, "high"))
         self.assertIn("(process_exit): os.abort", finding["claim"])
+
+
+def _added_files(files: dict):
+    """A request for a candidate that adds several files, with no repository behind it."""
+    diff = "".join(_new_file_diff(path, source) for path, source in files.items())
+    return critic.request({"id": "c1", "changed_paths": list(files), "base": "b" * 40,
+                           "provider": {"name": "p", "revision": "1"}}, [], diff,
+                          {"objective": "o", "acceptance": [], "scope": {"paths": ["."], "exclude": []}})
+
+
+# The consistent same-process forgery of tests/test_run_shards.py, moved into a module outside tests/.
+RELOCATED_HELPER = """\
+import gc, os
+import __main__
+
+
+def forge(test):
+    result = next(o for o in gc.get_objects() if isinstance(o, __main__._ShardResult))
+    spec = next(o for o in gc.get_objects() if isinstance(o, dict) and "nonce" in o and "ids" in o)
+    result.channel.send("outcome", id=test.id(), kind="success")
+    os._exit(0)
+"""
+RELOCATED_CALLER = """\
+import unittest
+from forge_helper import forge
+
+
+class T(unittest.TestCase):
+    def test_a(self):
+        forge(self)
+"""
+
+
+class IntegrityBeyondTests(unittest.TestCase):
+    """Any changed Python file, not only test code: a test can import it, and then it runs in the test process."""
+
+    def rules(self, document, path=None):
+        return {f["claim"].split("(")[1].split(")")[0] for f in document["findings"]
+                if f["severity"] == "high" and (path is None or f["file"] == path)}
+
+    def test_the_relocated_forgery_is_high_on_the_helper(self):
+        document = critic_rules.review(_added_files({"forge_helper.py": RELOCATED_HELPER,
+                                                     "tests/test_forge.py": RELOCATED_CALLER}))
+        check_schema(document, "finding.schema.json")
+        self.assertEqual(self.rules(document, "forge_helper.py"), {"runner_reach"})
+        self.assertEqual(self.rules(document, "tests/test_forge.py"), set())
+        self.assertEqual(sorted(f["line"] for f in document["findings"]), [1, 2, 6, 7])
+        self.assertTrue(all("a test can import this file" in f["claim"] for f in document["findings"]))
+        self.assertEqual(document["reviewer"], {"name": "rules", "revision": "2"})
+
+    def test_the_harness_families_apply_to_any_python_file(self):
+        write_side = ("os.write", "syberlabs-")  # the runner_reach snippets that stay test-scoped (next test)
+        for rule in critic_rules.HARNESS_RULES:
+            for snippet in TRIPS[rule]:
+                if rule == "runner_reach" and any(marker in snippet for marker in write_side):
+                    continue
+                with self.subTest(rule=rule, snippet=snippet):
+                    for path in ("src/helper.py", "syberlabs/util.pyw", "conftest_like.py"):
+                        self.assertIn(rule, self.rules(critic_rules.review(_added(path, snippet))), path)
+
+    def test_ending_the_process_and_the_runner_write_side_stay_test_scoped(self):
+        for rule in critic_rules.TEST_ONLY_RULES:
+            for snippet in TRIPS[rule]:
+                with self.subTest(rule=rule, snippet=snippet):
+                    self.assertEqual(self.rules(critic_rules.review(_added("src/app.py", snippet))), set())
+                    self.assertIn(rule, self.rules(critic_rules.review(_added("tests/test_app.py", snippet))))
+        for snippet in ("import os\n\ndef helper():\n    os.write(3, b'x')\n", "import msvcrt\n", "import _winapi\n",
+                        "import os\n\ndef reopen(fd):\n    return os.fdopen(os.dup(fd), 'wb')\n",
+                        "LOGS = 'syberlabs-' 'shards-'\n"):
+            with self.subTest(snippet=snippet):
+                self.assertEqual(self.rules(critic_rules.review(_added("src/app.py", snippet))), set())
+                self.assertIn("runner_reach", self.rules(critic_rules.review(_added("tests/test_app.py", snippet))))
+        for snippet in ("import ctypes\n", "import gc\n", "import sys\n\ndef f():\n    return sys._getframe(1)\n",
+                        "import sys\n\ndef f():\n    sys.settrace(None)\n"):
+            with self.subTest(snippet=snippet):  # the read side, which finds the nonce, applies everywhere
+                self.assertIn("runner_reach", self.rules(critic_rules.review(_added("src/app.py", snippet))))
+
+    def test_a_computed_import_anchored_in_a_named_package_is_not_dynamic_code(self):
+        anchored = ("import importlib\n\ndef load(name):\n    return importlib.import_module(f'benchmarks.scenarios.{name}')\n",
+                    "from importlib import import_module\n\ndef load(name):\n    return import_module('syberlabs.' + name)\n")
+        loose = ("import importlib\n\ndef load(name):\n    return importlib.import_module(name)\n",
+                 "import importlib\n\ndef load(name):\n    return importlib.import_module(f'{name}.x')\n",
+                 "import importlib\n\ndef load(name):\n    return importlib.import_module('o' + name)\n",
+                 "import importlib\n\ndef load(name):\n    return importlib.import_module(f'os.{name}')\n",
+                 "import importlib\n\ndef load(name):\n    return importlib.import_module(f'ctypes.{name}')\n")
+        for path in ("src/app.py", "tests/test_app.py"):
+            for snippet in anchored:
+                with self.subTest(path=path, snippet=snippet):
+                    self.assertEqual(self.rules(critic_rules.review(_added(path, snippet))), set())
+            for snippet in loose:
+                with self.subTest(path=path, snippet=snippet):
+                    self.assertIn("dynamic_code", self.rules(critic_rules.review(_added(path, snippet))))
+
+    def test_a_compiled_module_or_an_unreadable_python_file_is_high(self):
+        request = critic.request({"id": "c1", "changed_paths": ["src/fast.pyd", "src/fast.so", "src/cached.pyc",
+                                                                "data/blob.bin"], "base": "b" * 40, "provider": {}},
+                                 [], "", None)
+        found = critic_rules.review(request)["findings"]
+        self.assertEqual(sorted(f["file"] for f in found), ["src/cached.pyc", "src/fast.pyd", "src/fast.so"])
+        self.assertTrue(all(f["severity"] == "high" and "compiled module" in f["claim"] for f in found))
+        modified = ("diff --git a/src/a.py b/src/a.py\nindex 1..2 100644\n--- a/src/a.py\n"
+                    "+++ b/src/a.py\n@@ -3,0 +4 @@\n+    x = 1\n")
+        request = critic.request({"id": "c1", "changed_paths": ["src/a.py"], "base": "b" * 40, "provider": {}},
+                                 [], modified, None)
+        [finding] = [f for f in critic_rules.review(request)["findings"] if f["severity"] == "high"]
+        self.assertEqual(finding["file"], "src/a.py")
+        self.assertIn("a changed Python file could not be read", finding["claim"])
 
 
 class IntegrityThroughTheHost(CriticCase):
