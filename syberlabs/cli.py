@@ -19,6 +19,7 @@
     syberlabs review --record --verdict pass --reviewer NAME --revision COMMIT
     syberlabs experiment label --name githits-pilot --item ITEM-14 --arm on --tag needs_lookup
     syberlabs experiment report --name githits-pilot [--json|--csv|--markdown]   # the arms compared, from the journal
+    syberlabs githits search "retry with backoff" --target pypi:urllib3@2.2.1   # GitHits API, SyberLabs excluded
 
 The current thread is remembered in ``.syberlabs/current``. Every command
 reads the journal fresh, so a thread can be resumed from any terminal.
@@ -33,6 +34,7 @@ from pathlib import Path
 
 from syberlabs import certificate
 from syberlabs import critic
+from syberlabs import githits
 from syberlabs import metrics
 from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.ed25519 import public_from_seed
@@ -304,9 +306,12 @@ def main(argv: list[str] | None = None) -> int:
     compare = commands.add_parser("contract-diff", help="field differences between two contract versions")
     compare.add_argument("a")
     compare.add_argument("b")
+    githits.add_parser(commands)
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "githits":
+            return githits.run(args)  # no Kit: a lookup needs no repository or journal
         if args.command == "verify":
             return _verify(args)  # no Kit: works outside any repository and has none of Kit.local's side effects
         if args.command == "metrics" and args.exports:
