@@ -243,6 +243,29 @@ class ConsoleReadScope(CellCase):
                     self.assertNotIn(withheld, raw)
         self.assertEqual(self.cell.json("/api/sources", who=None)[0], 401)
 
+    def test_read_roles_that_are_not_a_list_of_names_are_answered_as_unknown(self):
+        """install_source does not validate roles; the projection never forecasts from a value refresh_fact misreads."""
+        self.cell.work.install_source("odd", {"kind": "http", "url": "http://127.0.0.1:9/odd/{key}", "roles": "admin"})
+        self.cell.work.install_source("unset", {"kind": "http", "url": "http://127.0.0.1:9/unset/{key}", "roles": None})
+        self.cell.work.install_source("closed", {"kind": "http", "url": "http://127.0.0.1:9/closed/{key}", "roles": []})
+        sources = self.cell.json("/api/sources")[1]
+        self.assertEqual((sources["odd"], sources["unset"], sources["closed"]), ({"roles": None}, {"roles": None}, {"roles": []}))
+
+    def test_a_refused_builder_read_keeps_its_status(self):
+        """Only the console's reads moved to 403; a builder GET refused as forbidden still answers 409."""
+        users = {"odd": {"hash": hashlib.sha256(b"token-odd").hexdigest(), "roles": "admin", "sources": []}}
+        server = make_server(self.cell.work, users, port=0)
+        server.RequestHandlerClass.log_message = lambda *args: None
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        for path, expected in (("/api/builder/policies", 409), ("/api/policies", 403)):
+            with self.subTest(path):
+                request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}{path}", headers={"Authorization": "Bearer token-odd"})
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    urllib.request.urlopen(request, timeout=10)
+                self.assertEqual((refused.exception.code, json.loads(refused.exception.read())["error"]), (expected, "forbidden"))
+
     def test_listed_read_roles_are_the_ones_refresh_enforces(self):
         """The roles /api/sources lists are what refresh_fact checks: a credential without one is refused."""
         self.cell.work.install_source("ledger", {"kind": "http", "url": "http://127.0.0.1:9/ledger/{key}", "roles": ["logistics"]})

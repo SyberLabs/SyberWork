@@ -122,15 +122,17 @@ All are `GET`, require a bearer token, and append nothing (`tests/test_console.p
 | `/api/contracts/{id}/{version}` | any principal | the stored contract (the same document `GET /api/cases/{id}` already returns for a case) |
 | `/api/policies` | `admin` or `manager`, holding no automation role (`model`, `compiled`, `search`); others `403 forbidden` | `[{version, body, digest}]` |
 | `/api/actions` | admin; others `403 forbidden` | installed definitions by name. They contain credential variable names, never values. |
-| `/api/sources` | admin: installed definitions, as above. Any other principal: read roles only | `{name: {roles}}`. `roles` is what `refresh_fact` checks (`["operator"]` when the definition names none). No URL, credential variable, value path or kind. |
-
-`403` is new: a console read the principal's roles do not cover now answers `403 forbidden` (it was `409`).
-`/api/builder/*` keeps its own statuses. The console also reads `GET /metrics/work_items`, which already
-existed (`Work.work_items`, docs/METRICS.md); this branch adds no metrics route.
+| `/api/sources` | admin: installed definitions, as above. Any other principal: read roles only | `{name: {roles}}`. `roles` is what `refresh_fact` checks (`["operator"]` when the definition names none; `null` when the stored value is not a list of names, and the console then says the server decides). No URL, credential variable, value path or kind. |
 | `/api/cases/{id}/proposals/{proposal}/explain?when=recorded\|now` | any principal, like `/api/cases/{id}` | `Work.explain_admission` (`status`, `reason`, `rule`, `provenance: {module, symbol, line}`) and `recorded`: the proposal's first decision as stored, with the rule id written beside it on the side channel (`null` for rows older than that table). `when` defaults to `now`, as in `Work`. |
 
 A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 not_found` instead of
 `500 internal_error`.
+
+`403` is new: a `GET` the principal's roles do not cover (`/api/policies`, `/api/actions`, admin
+`/api/sources`) now answers `403 forbidden` (it was `409`). `POST` refusals, such as an operator-only
+`POST /api/cases`, still answer `409`, and `/api/builder/*` keeps its own statuses. The console also reads
+`GET /metrics/work_items`, which already existed (`Work.work_items`, docs/METRICS.md); this branch adds no
+metrics route.
 
 ## Completed capabilities and gaps
 
@@ -184,11 +186,16 @@ Gaps from #95, closed or still open:
   credential variable names, value paths and timeouts stay admin only. `/api/actions` stays admin only.
 - **Work items** (closed for the top bar): `delivered` in docs/METRICS.md means a merged pull request,
   so for purchase-order cases the console shows only the item count, with opened, cancelled and cost
-  basis in the tooltip. The *merged · unknown* counter appears once a pull request was opened.
+  basis in the tooltip. The *merged · unknown* counter appears once a pull request was opened or a merge
+  is recorded.
   There is still no scalar `work_items.*` key under `GET /metrics/<key>` (`spec/GAPS.md` #52): the
   console reads the `{items, summary}` route instead, and no storage or key was added for it.
 - **JCS side records**, **witness and certificate**, the **Builder API** and **push updates** remain
   open as listed. No backend for them was added here.
+- **Still readable by any principal, unchanged here**: contract budgets (`evolution.budget`, `prices`)
+  through `GET /api/contracts/{id}/{v}` and `GET /api/cases/{id}`, and `POST /api/cases/{id}/replay`
+  with any `policy_version`, which answers how that version would decide (decisions and reasons, not
+  the policy body). Narrowing them is a separate decision.
 - **Attest detection** is a display rule (value `schema` starting with `attest.`, or a source named
   like `attest`). It only adds a warning label; it cannot make anything verified.
 - **Case statuses** in the list come from one `GET /api/cases/{id}` per case, four at a time, capped

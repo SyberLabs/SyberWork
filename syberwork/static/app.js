@@ -141,6 +141,7 @@ async function activate(name) {
   state.active = name;
   state.registry = {actions: null, sources: null};
   state.registryError = null;
+  Object.assign(state, {policies: null, policiesError: null});
   saveIdentities();
   try {
     const me = await api('/api/me');
@@ -261,8 +262,9 @@ async function loadRegistry() {
 async function loadMetrics() {
   const keys = ['cases_open', 'effects_pending', 'queue_depth', 'proposals_denied_total'];
   // The work-item summary is read on its own so that a failure there leaves the cell counters standing.
-  const items = api('/metrics/work_items').then(r => Object.assign(state, {workItems: r.summary, workItemsError: null}),
-    error => Object.assign(state, {workItems: null, workItemsError: error}));
+  const who = state.active;
+  const items = api('/metrics/work_items').then(r => { if (state.active === who) Object.assign(state, {workItems: r.summary, workItemsError: null}); },
+    error => { if (state.active === who) Object.assign(state, {workItems: null, workItemsError: error}); });
   try {
     const values = await Promise.all(keys.map(k => api('/metrics/' + k)));
     state.metrics = Object.fromEntries(values.map(v => [v.key, v.value]));
@@ -372,7 +374,7 @@ function workItemCounters() {
   const title = `Per-work-item metrics over every case. Opened pull requests: ${w.opened}. Cancelled: ${w.cancelled}. Cost basis: ${basis || 'none'}.`;
   return [
     h('span', {title}, h('b', {}, w.items), ' work items'),
-    w.opened ? h('span', {class: w.delivered.unknown ? 'attention' : '', title: 'Delivered: a pr_merged fact is in the record. Unknown: a pull request is open with no merge recorded.'},
+    w.opened || w.delivered.yes ? h('span', {class: w.delivered.unknown ? 'attention' : '', title: 'Delivered: a pr_merged fact is in the record. Unknown: a pull request is open with no merge recorded.'},
       h('b', {}, w.delivered.yes), ' merged', w.delivered.unknown ? [' · ', h('b', {}, w.delivered.unknown), ' unknown'] : null) : null,
   ];
 }
@@ -654,7 +656,7 @@ function refreshButton(f, info) {
   try { inputs = JSON.parse(info.case.inputs); } catch { inputs = {}; }
   const record = inputs[f.key];
   const listed = state.registry.sources;
-  const roles = listed && listed[f.source] ? listed[f.source].roles || ['operator'] : null;
+  const roles = listed && listed[f.source] && Array.isArray(listed[f.source].roles) ? listed[f.source].roles : null;
   if (record === undefined) {
     return h('button', {type: 'button', class: 'btn', onclick: () => { state.tab = 'evidence'; state.prefill = {key: f.key, source: f.source}; updateHash(); renderMain(); }}, `Refresh ${f.key} from ${f.source}…`);
   }
@@ -973,7 +975,7 @@ function renderStudio() {
       : (state.policies || []).map(p => item('policy', 'policy', p.version, `policy v${p.version}`, Object.keys(p.body.actions || {}).length + ' actions')),
     h('div', {class: 'group'}, 'Connectors'),
     item('actions', 'actions', 0, 'Actions', admin ? Object.keys(state.registry.actions || {}).length + ' installed' : 'admin only'),
-    item('sources', 'sources', 0, 'Sources', state.registry.sources ? Object.keys(state.registry.sources).length + ' installed' + (admin ? '' : ' · read roles') : '…'));
+    item('sources', 'sources', 0, 'Sources', state.registry.sources ? Object.keys(state.registry.sources).length + ' installed' + (admin ? '' : ' · read roles') : state.registryError ? 'unreadable' : '…'));
   let body;
   if (s.kind === 'contract' && s.id) body = studioContract(contracts.find(c => c.id === s.id && c.version === s.version));
   else if (s.kind === 'policy' && state.policiesError) body = empty('Policy not readable', state.policiesError.code === 'forbidden'
@@ -1097,9 +1099,10 @@ function sourceAccess(names) {
   const docs = state.registry.sources;
   if (!docs) return h('p', {class: 'hint'}, 'Source read roles ', state.registryError ? 'unavailable (' + state.registryError.code + ')' : 'loading', '; the server checks them.');
   return h('p', {class: 'hint'}, 'Read role: ', names.map((n, i) => {
-    const roles = docs[n] ? docs[n].roles || ['operator'] : null;
+    const roles = docs[n] && Array.isArray(docs[n].roles) ? docs[n].roles : null;
     const held = roles && roles.some(r => state.me.roles.includes(r));
-    return [i ? ' · ' : '', mono(n), ' ', !roles ? 'not installed' : roles.join(' or '), roles && !held ? ' (not held by this credential)' : ''];
+    const named = !docs[n] ? 'not installed' : !roles ? 'not a list of roles; the server decides' : roles.length ? roles.join(' or ') : 'none';
+    return [i ? ' · ' : '', mono(n), ' ', named, roles && !held ? ' (not held by this credential)' : ''];
   }));
 }
 // What a non-administrator may see of the sources: who can read each one. Definitions stay admin only.
@@ -1113,8 +1116,10 @@ function sourceRoles() {
       h('span', {class: 'muted'}, 'URL, credential variable and value path are shown to administrators')),
     Object.keys(docs).length ? h('table', {class: 'grid'}, h('thead', {}, h('tr', {}, ['Source', 'Read role', 'This credential'].map(t => h('th', {}, t)))),
       h('tbody', {}, Object.entries(docs).map(([n, d]) => {
-        const ok = (d.roles || []).some(r => state.me.roles.includes(r));
-        return h('tr', {}, h('td', {}, mono(n)), h('td', {}, (d.roles || []).join(' or ')), h('td', {}, ok ? badge('applied', 'may refresh') : badge('denied', 'no read role')));
+        const roles = Array.isArray(d.roles) ? d.roles : null;
+        const ok = roles && roles.some(r => state.me.roles.includes(r));
+        return h('tr', {}, h('td', {}, mono(n)), h('td', {}, roles ? roles.join(' or ') || 'none' : 'not a list of roles'),
+          h('td', {}, !roles ? badge('unknown', 'server decides') : ok ? badge('applied', 'may refresh') : badge('denied', 'no read role')));
       }))) : empty('Nothing registered', null),
     target ? h('button', {type: 'button', class: 'link', onclick: () => activate(target.name)}, '⇄ switch to ' + target.name + ' to inspect or register sources') : null);
 }

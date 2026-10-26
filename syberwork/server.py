@@ -41,8 +41,16 @@ def _policy_reader(roles) -> bool:
 
 
 def _source_roles(work: Work) -> dict:
-    """Each installed source's read roles, as refresh_fact checks them, and nothing else of its definition."""
-    return {name: {"roles": doc.get("roles", ["operator"])} for name, doc in work.registry("sources").items()}
+    """Each installed source's read roles, as refresh_fact checks them, and nothing else of its definition.
+
+    install_source does not validate ``roles``; a value that is not a list of names is answered as None, so the
+    console says the server decides instead of forecasting from a value refresh_fact would misread.
+    """
+    found = {}
+    for name, doc in work.registry("sources").items():
+        roles = doc.get("roles", ["operator"])
+        found[name] = {"roles": roles if isinstance(roles, list) and all(isinstance(r, str) for r in roles) else None}
+    return found
 
 
 def _version(text: str) -> int:
