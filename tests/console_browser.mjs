@@ -136,6 +136,14 @@ await page.keyboard.press('5');
 await page.keyboard.press('v');
 await page.waitForSelector('ul.runs li');
 report.verify = await page.textContent('ul.runs li');
+// JCS side records and the case's work item fill in place; witness and certificate are named as missing.
+await rulesSettled('.side-summary, .work-item');
+report.side_summary = await page.textContent('.side-summary');
+report.work_item = await page.locator('.work-item tbody tr').evaluateAll(rows => rows.map(r => [r.dataset.metric, r.textContent]));
+report.witness_buttons = await page.locator('.witness-missing button').evaluateAll(bs => bs.map(b => [b.textContent, b.disabled]));
+report.witness_text = await page.textContent('.witness-missing');
+await page.locator('.timeline li').first().locator('summary').click();
+report.side_row = await page.locator('.timeline li').first().locator('.side-row').textContent();
 await shot('09-history');
 await page.keyboard.press('4');
 await page.waitForSelector('.effects table');

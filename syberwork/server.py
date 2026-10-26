@@ -193,6 +193,10 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._json(work.candidates(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
                     self._json({"valid": work.verify_chain(parts[2])})
+                elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "side":
+                    # Work.side_channel: the JCS digest and deciding rule id stored beside each event. Neither is
+                    # in the event hash; events written before that table existed have no row.
+                    self._json(work.side_channel(unquote(parts[2])))
                 elif len(parts) == 6 and parts[:2] == ["api", "cases"] and parts[3] == "proposals" and parts[5] == "explain":
                     # The deciding rule for a stored proposal: ?when=recorded (the original decision) or now (the default).
                     when = parse_qs(urlsplit(self.path).query).get("when", ["now"])[-1]

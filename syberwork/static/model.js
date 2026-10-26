@@ -434,3 +434,76 @@ export function provenanceText(provenance) {
   const where = typeof provenance.module === 'string' ? provenance.module + (Number.isInteger(provenance.line) ? ':' + provenance.line : '') : '';
   return [where, typeof provenance.symbol === 'string' ? provenance.symbol : ''].filter(Boolean).join(' ');
 }
+
+// "#1–#4, #7": a sorted list of event numbers, runs collapsed.
+export function seqRanges(seqs) {
+  const sorted = [...new Set(seqs)].filter(Number.isInteger).sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    out.push(j > i ? `#${sorted[i]}–#${sorted[j]}` : `#${sorted[i]}`);
+    i = j;
+  }
+  return out.join(', ');
+}
+
+// The JCS side records of a case (GET /api/cases/{id}/side, Work.side_channel) laid against its events. Each
+// row holds the RFC 8785 SHA-256 of the fields the chain hashes and, for a decision, the deciding rule id;
+// neither is inside the event hash. This only lines them up: the server's verify route is what checks each
+// stored digest against its event, and it cannot notice a row that is absent, so an event without a row is
+// reported as such and never called legacy for certain. A null digest is a value RFC 8785 cannot encode.
+export function sideRecords(events, rows) {
+  if (!Array.isArray(rows)) return {state: 'unknown', text: 'not returned by the server'};
+  const bySeq = new Map();
+  for (const row of rows) if (row && typeof row === 'object' && Number.isInteger(row.seq)) bySeq.set(row.seq, row);
+  const known = new Set(events.map(e => e.seq));
+  const entries = events.map(e => {
+    const row = bySeq.get(e.seq);
+    if (!row) return {seq: e.seq, kind: e.kind, present: false};
+    const jcs = typeof row.jcs === 'string' && row.jcs ? row.jcs : null;
+    return {seq: e.seq, kind: e.kind, present: true, jcs, rule: named(row.rule) ? row.rule : null, sameAsHash: jcs !== null && jcs === e.hash};
+  });
+  const decisions = entries.filter(r => r.kind === 'decision');
+  return {
+    state: 'read', entries, bySeq: new Map(entries.map(r => [r.seq, r])),
+    covered: entries.filter(r => r.present).length, total: entries.length,
+    bare: entries.filter(r => !r.present).map(r => r.seq),
+    noJcs: entries.filter(r => r.present && r.jcs === null).map(r => r.seq),
+    differs: entries.filter(r => r.jcs !== null && r.present && !r.sameAsHash).map(r => r.seq),
+    decisions: decisions.length, ruled: decisions.filter(r => r.rule).length,
+    // Rows for events this case read does not hold yet (appended after it): not drawn, only counted.
+    newer: [...bySeq.keys()].filter(s => !known.has(s)).length,
+  };
+}
+
+// syberlabs/metrics.py METRICS, in the server's order, with the unit docs/METRICS.md gives each.
+export const WORK_METRICS = ['cost', 'turns', 'agent_time', 'fix_rounds', 'web_lookups', 'githits_lookups', 'delivered', 'review_rejections', 'human_interventions'];
+const METRIC_UNIT = {cost: '$', turns: 'calls', agent_time: 'hours'};
+
+// One case's work item from GET /metrics/work_items/{id} (Work.work_items, docs/METRICS.md). A value is shown
+// as syberlabs/metrics.py _cell writes it: "unknown" stays unknown, a boolean is yes or no, cost has four
+// decimals. Each number's basis (event hashes) is mapped to the event numbers this case read holds.
+export function workItemRows(body, events, caseId) {
+  const items = body && Array.isArray(body.items) ? body.items : null;
+  if (!items) return {state: 'unknown', text: 'not returned by the server'};
+  const item = items.find(i => i && i.thread === caseId);
+  if (!item) return {state: 'unknown', text: 'the server returned no work item for this case'};
+  const seqOf = new Map(events.map(e => [e.hash, e.seq]));
+  const rows = WORK_METRICS.map(name => {
+    const m = item[name] && typeof item[name] === 'object' ? item[name] : {value: 'unknown', basis: [], note: 'not returned'};
+    const unknown = m.value === 'unknown' || m.value === null || m.value === undefined;
+    let text = 'unknown';
+    if (!unknown) {
+      if (typeof m.value === 'boolean') text = m.value ? 'yes' : 'no';
+      else if (name === 'cost' && typeof m.value === 'number') text = '$' + m.value.toFixed(4);
+      else text = String(m.value);
+    }
+    const basis = Array.isArray(m.basis) ? m.basis : [];
+    const seqs = basis.map(hash => seqOf.get(hash)).filter(Number.isInteger);
+    return {name, unit: METRIC_UNIT[name] || '', known: !unknown, text, note: typeof m.note === 'string' ? m.note : '',
+      basis: seqs, unmatched: basis.length - seqs.length};
+  });
+  return {state: 'read', rows, costBasis: item.cost_basis || 'none', lane: item.lane || null,
+    pullRequest: item.pull_request || null, opened: item.opened && item.opened.value === true, cancelled: item.cancelled === true};
+}

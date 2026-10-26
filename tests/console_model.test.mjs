@@ -32,6 +32,15 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
     assert.equal(view.rule, c.rule);
     assert.ok(M.provenanceText(view.provenance).startsWith(c.provenance), M.provenanceText(view.provenance));
   }
+  assert.deepEqual(M.WORK_METRICS, cases.work_metrics, 'the console lists syberlabs.metrics.METRICS in order');
+  // What GET /api/cases/{id}/side answered for a case this server wrote: every event has its row.
+  const side = M.sideRecords(cases.side.events, cases.side.rows);
+  assert.deepEqual([side.state, side.covered, side.total, side.bare, side.noJcs, side.newer], ['read', cases.side.events.length, cases.side.events.length, [], [], 0]);
+  assert.equal(side.ruled, side.decisions);
+  assert.ok(side.decisions >= 1);
+  const item = M.workItemRows(cases.work_item.body, cases.side.events, cases.work_item.case);
+  assert.equal(item.state, 'read');
+  assert.deepEqual(item.rows.map(r => [r.name, r.text]), cases.work_item.cells);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -266,4 +275,44 @@ test('a refresh names the source read role it needs, or says the source is not i
   const missing = M.can(op, 'refresh', { source: 'crm', sourceRoles: null, sourceMissing: true });
   assert.deepEqual([missing.ok, missing.reason], [false, 'source "crm" is not installed']);
   assert.equal(M.can(op, 'refresh', {}).note, 'the source read role is checked by the server');
+});
+
+test('event numbers collapse into runs', () => {
+  assert.equal(M.seqRanges([5, 1, 2, 3, 7, 8, 3]), '#1–#3, #5, #7–#8');
+  assert.equal(M.seqRanges([]), '');
+});
+
+test('side records line up with events without being checked here', () => {
+  const events = history(['case_created', {}], ['proposed', { action: 'issue_order' }], ['decision', { status: 'denied', reason: 'amount_required' }],
+    ['observed', { key: 'k' }], ['decision', { status: 'allowed', reason: 'all_checks_passed' }]);
+  // #1 has no row (written before the side table, or absent); #4 has no digest; #5 has no rule; #9 is newer than this read.
+  const rows = [{ seq: 2, jcs: 'h2', rule: null }, { seq: 3, jcs: 'other', rule: 'limits.amount' }, { seq: 4, jcs: null, rule: null },
+    { seq: 5, jcs: 'h5', rule: '' }, { seq: 9, jcs: 'h9', rule: null }, { seq: 'x' }, null];
+  const v = M.sideRecords(events, rows);
+  assert.deepEqual([v.state, v.covered, v.total, v.bare, v.noJcs, v.differs, v.decisions, v.ruled, v.newer],
+    ['read', 4, 5, [1], [4], [3], 2, 1, 1]);
+  assert.deepEqual(v.bySeq.get(2), { seq: 2, kind: 'proposed', present: true, jcs: 'h2', rule: null, sameAsHash: true });
+  assert.equal(v.bySeq.get(3).rule, 'limits.amount');
+  assert.equal(v.bySeq.get(5).rule, null, 'an empty rule is no rule');
+  for (const bad of [undefined, null, {}, 'rows']) assert.equal(M.sideRecords(events, bad).state, 'unknown');
+});
+
+test('a work item keeps unknown as unknown and maps each basis to event numbers', () => {
+  const events = history(['case_created', {}], ['proposed', { action: 'a' }]);
+  const item = { thread: 'c1', cost_basis: 'none', lane: null, pull_request: null, cancelled: false, opened: { value: false },
+    cost: { value: 'unknown', basis: [], note: 'no model call crossed the host meter' },
+    turns: { value: 3, basis: ['h2', 'h7'], note: 'declared' },
+    delivered: { value: false, basis: [], note: 'no pull request opened' },
+    human_interventions: { value: 1, basis: ['h2'], note: 'acts by people' } };
+  const v = M.workItemRows({ items: [{ thread: 'other' }, item] }, events, 'c1');
+  assert.equal(v.state, 'read');
+  const row = name => v.rows.find(r => r.name === name);
+  assert.deepEqual([row('cost').known, row('cost').text, row('cost').unit], [false, 'unknown', '$']);
+  assert.deepEqual([row('turns').text, row('turns').basis, row('turns').unmatched], ['3', [2], 1]);
+  assert.deepEqual([row('delivered').known, row('delivered').text], [true, 'no']);
+  assert.deepEqual([row('agent_time').known, row('agent_time').note], [false, 'not returned'], 'a metric the server left out is unknown');
+  assert.equal(M.workItemRows({ items: [item] }, events, 'c1').rows.length, M.WORK_METRICS.length);
+  assert.equal(M.workItemRows({ items: [{ ...item, cost: { value: 1.5, basis: [] } }] }, events, 'c1').rows[0].text, '$1.5000');
+  assert.equal(M.workItemRows({ items: [] }, events, 'c1').state, 'unknown');
+  assert.equal(M.workItemRows(null, events, 'c1').state, 'unknown');
 });

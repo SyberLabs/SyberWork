@@ -16,7 +16,7 @@ const state = {
   cases: null, casesError: null, meta: new Map(), filter: '',
   contracts: null, policies: null, policiesError: null, registry: {actions: null, sources: null},
   verifications: new Map(), replay: null, lastResponse: null, focusProposal: null,
-  explaining: new Map(), explained: new Map(),
+  explaining: new Map(), explained: new Map(), headReads: new Map(),
   studio: {kind: 'contract', id: null, version: null, tab: 'document', artifacts: null, draft: null, error: null},
   metrics: null, workItems: null, workItemsError: null,
 };
@@ -835,6 +835,9 @@ function tabHistory(info) {
   const links = M.chainLinks(info.events);
   const runs = (state.verifications.get(info.case.id) || []).slice().reverse();
   const verifyBtn = h('button', {type: 'button', class: 'btn primary', 'aria-keyshortcuts': 'v', onclick: verify}, 'Verify history ', h('kbd', {}, 'v'));
+  const side = headRead('side', casePath('side'), info).then(entry => entry.error ? entry : {side: M.sideRecords(info.events, entry.body)});
+  const item = headRead('work_item', '/metrics/work_items/' + encodeURIComponent(info.case.id), info)
+    .then(entry => entry.error ? entry : {item: M.workItemRows(entry.body, info.events, info.case.id)});
   return h('div', {class: 'history'},
     h('div', {class: 'grid-2'},
       section('Chain verification', verifyBtn,
@@ -843,6 +846,10 @@ function tabHistory(info) {
         runs.length ? h('ul', {class: 'runs'}, runs.map(r => h('li', {}, r.valid ? badge('verified', 'intact') : badge('denied', 'invalid'), ' through ', mono('#' + r.headSeq + ' ' + M.short(r.headHash, 12)), ' ', h('span', {class: 'muted'}, new Date(r.at).toLocaleTimeString()))))
           : h('p', {class: 'muted'}, 'Not verified in this session.')),
       section('Head', null, kv([['Events', String(info.events.length)], ['Head hash', mono(info.events.length ? info.events[info.events.length - 1].hash : '—')], ['Genesis previous', mono('0'.repeat(16) + '…')]]))),
+    h('div', {class: 'grid-2'},
+      section('JCS side records', h('span', {class: 'muted mono-s'}, 'GET …/side'), fillSlot(h('div', {class: 'side-summary'}), side, sideSummary)),
+      section('Work item', h('span', {class: 'muted mono-s'}, 'GET /metrics/work_items/{case}'), fillSlot(h('div', {class: 'work-item'}), item, workItemView))),
+    witnessPanel(),
     h('ol', {class: 'timeline'}, info.events.slice().reverse().map(e => {
       const tone = M.toneOf(e);
       return h('li', {class: 'tl tone-' + tone},
@@ -850,8 +857,84 @@ function tabHistory(info) {
           h('span', {class: 'tl-seq mono'}, '#' + e.seq), h('span', {class: 'tl-kind'}, badge(tone, e.kind.replace(/_/g, ' '))),
           h('span', {class: 'tl-desc'}, M.describe(e)), h('span', {class: 'tl-hash mono', title: e.hash}, M.short(e.hash, 10)),
           h('span', {class: 'tl-time muted', title: when(M.seconds(e.at))}, when(M.seconds(e.at)))),
-        h('div', {class: 'tl-body'}, kv([['hash', mono(e.hash)], ['previous', mono(e.previous)], ['at', mono(String(e.at))]]), h('pre', {class: 'json'}, pretty(e.body)))));
+        h('div', {class: 'tl-body'}, kv([['hash', mono(e.hash)], ['previous', mono(e.previous)], ['at', mono(String(e.at))]]),
+          fillSlot(h('div', {class: 'side-row', 'data-seq': e.seq}), side, entry => sideRow(entry, e)), h('pre', {class: 'json'}, pretty(e.body)))));
     })));
+}
+
+// Reads folded from a case's events up to its head (the side records, the work item). Events are append-only,
+// so one answer per case and head is kept and a re-render does not ask again; a failed read is not kept.
+function headRead(name, path, info) {
+  const head = info.events.length ? info.events[info.events.length - 1].seq : 0;
+  const key = [name, info.case.id, head].join('|');
+  if (!state.headReads.has(key)) {
+    const read = api(path).then(body => ({body}), error => ({error}));
+    state.headReads.set(key, read);
+    read.then(entry => { if (entry.error) state.headReads.delete(key); });
+  }
+  return state.headReads.get(key);
+}
+// Fill an element in place when its read returns, as ruleSlot does, so a slow read re-renders nothing else.
+function fillSlot(el, promise, view) {
+  const fill = entry => el.replaceChildren(...[view(entry)].flat(Infinity).filter(Boolean).map(k => k instanceof Node ? k : document.createTextNode(String(k))));
+  fill(null);
+  promise.then(fill);
+  return el;
+}
+function readFailed(entry) {
+  return [badge('unknown', 'unavailable'), ' ', mono(entry.error.code || 'error'), entry.error.detail ? h('span', {class: 'why'}, ' ' + entry.error.detail) : null];
+}
+function sideSummary(entry) {
+  if (!entry) return h('span', {class: 'muted'}, 'reading from the server…');
+  if (entry.error) return readFailed(entry);
+  const v = entry.side;
+  if (v.state !== 'read') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text)];
+  return [
+    h('p', {}, h('b', {}, v.covered), ' of ', h('b', {}, v.total), ' events carry a side record · ', h('b', {}, v.ruled), ' of ', v.decisions, ' decisions name their deciding rule'),
+    v.bare.length ? h('p', {class: 'why'}, M.seqRanges(v.bare), ' have no side record: written before the side table existed, or the row is absent. Verify history checks each stored digest; it cannot notice a missing row.') : null,
+    v.noJcs.length ? h('p', {class: 'why'}, M.seqRanges(v.noJcs), ' have no JCS digest: a value RFC 8785 cannot encode.') : null,
+    v.differs.length ? h('p', {class: 'why'}, M.seqRanges(v.differs), ': the JCS digest differs from the chain hash (the chain\'s canonical form and RFC 8785 give different bytes for this event).') : null,
+    v.newer ? h('p', {class: 'muted'}, v.newer + ' newer row' + (v.newer > 1 ? 's' : '') + ' for events appended after this case was read · ', h('kbd', {}, 'r')) : null,
+    h('p', {class: 'hint'}, 'Each digest is the RFC 8785 SHA-256 of the fields the chain hashes, stored beside the event and outside its hash. Expand a row below to see its record. The console lines them up; it does not recompute them.'),
+  ];
+}
+function sideRow(entry, e) {
+  if (!entry || entry.error || entry.side.state !== 'read') return null;
+  const row = entry.side.bySeq.get(e.seq);
+  if (!row || !row.present) return kv([['JCS', h('span', {class: 'muted'}, 'no side record')]]);
+  return kv([
+    ['JCS', row.jcs ? [mono(row.jcs), row.sameAsHash ? h('span', {class: 'muted'}, ' · same as the chain hash') : null] : h('span', {class: 'muted'}, 'no digest · not encodable under RFC 8785')],
+    e.kind === 'decision' ? ['rule', row.rule ? mono(row.rule, 'rule-name') : h('span', {class: 'muted'}, 'none written')] : null,
+  ]);
+}
+// One case's work item (docs/METRICS.md). Delivered means a merged pull request; unknown is a value, never zero.
+function workItemView(entry) {
+  if (!entry) return h('span', {class: 'muted'}, 'reading from the server…');
+  if (entry.error) return readFailed(entry);
+  const v = entry.item;
+  if (v.state !== 'read') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text)];
+  return [
+    h('p', {class: 'muted'}, 'cost basis ', mono(v.costBasis), v.lane ? [' · lane ', mono(v.lane)] : null,
+      ' · pull request ', v.opened ? mono('#' + v.pullRequest) : 'none opened', v.cancelled ? ' · cancelled' : null),
+    h('table', {class: 'grid metrics-rows'}, h('thead', {}, h('tr', {}, ['Metric', 'Value', 'From', 'Note'].map(t => h('th', {}, t)))),
+      h('tbody', {}, v.rows.map(r => h('tr', {'data-metric': r.name},
+        h('td', {}, r.name.replace(/_/g, ' '), r.unit ? h('span', {class: 'muted'}, ' (' + r.unit + ')') : null),
+        h('td', {}, r.known ? h('b', {}, r.text) : badge('unknown', 'unknown')),
+        h('td', {class: 'mono-s'}, r.basis.length ? M.seqRanges(r.basis) : h('span', {class: 'muted'}, '—'), r.unmatched ? h('span', {class: 'muted'}, ' +' + r.unmatched + ' newer') : null),
+        h('td', {class: 'why'}, r.note))))),
+  ];
+}
+// Witness and certificate: the server reads neither, so both are named as missing instead of drawn.
+function witnessPanel() {
+  const missing = (label, route, why) => h('div', {class: 'act'},
+    h('button', {type: 'button', class: 'btn', disabled: true}, label),
+    h('span', {class: 'why'}, 'no read route: needs ', mono(route), ' · ', why));
+  return section('Witness and certificate', badge('idle', 'none shown'),
+    h('p', {class: 'hint'}, 'Nothing on this page is witnessed or certified. Verify history is the server recomputing its own chain, not a signature by another party.'),
+    h('div', {class: 'witness-missing'}, missing('Show witness', 'GET /api/cases/{id}/witness', [mono('serve'), ' configures no witness, and ', mono('Work.submit_witness'),
+      ' returns the signed chain head to its caller without storing it in the case database']),
+    missing('Show certificate', 'GET /api/cases/{id}/certificate', ['admission certificates are written by ', mono('syberlabs certify'),
+      ' for a Build Thread as files under ', mono('<home>/certificates'), '; a case here has none'])));
 }
 
 // Replay: the recorded proposals re-admitted under another contract or policy version.
