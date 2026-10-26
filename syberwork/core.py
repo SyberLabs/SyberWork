@@ -50,6 +50,8 @@ __all__ = ["METRIC_KEYS", "Rejected", "Work", "canonical", "digest", "trusted_or
 # ``GET /metrics/<key>`` (plus ``uptime_seconds``, which is the process's, not the store's).
 METRIC_KEYS = ("cases_open", "cases_total", "proposals_admitted_total", "proposals_denied_total", "effects_pending",
                "effects_settled_applied_total", "effects_settled_not_applied_total", "queue_depth")
+# Witness verdicts that mean the log holds a head this history does not have (``Work.witness_status``).
+WITNESS_CONFLICTS = ("head_differs", "beyond_history", "chain_broken")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -112,6 +114,7 @@ class Work:
         self.trace = trace
         self.metrics = {"admission": 0, "effect_claim": 0, "effect_settlement": 0, "effect_unknown": 0, "reconciliation": 0}
         self._lock = threading.Lock()
+        self._witness_lock = threading.Lock()
         self._db = open_store(database)
 
     def close(self) -> None:
@@ -972,11 +975,43 @@ class Work:
                 # The checkpoint signs the Merkle root of every leaf read with it, so it covers this one or none.
                 verdict = "included" if covered else "not_included"
             judged.append({"index": index, "count": count, "head": signed["head"] if signed else None, "verdict": verdict})
-        conflict = any(entry["verdict"] in ("head_differs", "beyond_history", "chain_broken") for entry in judged)
+        conflict = any(entry["verdict"] in WITNESS_CONFLICTS for entry in judged)
         through = None if conflict else max((entry["count"] for entry in judged if entry["verdict"] == "included" and entry["count"] > 0), default=None)
         return {"case_id": case_id, "configured": True, "count": len(events), "head": head, "public_key": log.public.hex(),
                 "checkpoint": covered, "entries": judged, "witnessed_through": through,
                 "note": "Read from the witness's log under its public key. The witness holds the seed; this read appends nothing"}
+
+    def request_witness(self, case_id: str, client, log, actor: str) -> dict:
+        """Ask the witness to sign this case's head, judged first against what its log already holds. Writes nothing to the case.
+
+        ``client`` is a ``WitnessClient`` on the witness's loopback port and ``log`` the read-only reader
+        ``witness_status`` takes, under the same public key. ``witness_conflict``: the log holds a head this history
+        does not have (``head_differs``, ``chain_broken``, ``beyond_history``), and the witness, which checks only the
+        links it is sent, would sign the changed history beside it. ``already_witnessed``: a covered head already names
+        every event. ``witness_unavailable``: nothing answered on the port. Requests are made one at a time, so two
+        presses cannot append the same head twice. The log does not record who asked, so each request is counted and
+        traced with its actor and outcome.
+        """
+        with self._witness_lock:
+            status = self.witness_status(case_id, log)
+            try:
+                conflict = next((e for e in status["entries"] if e["verdict"] in WITNESS_CONFLICTS), None)
+                if conflict:
+                    raise Rejected("witness_conflict", f"log leaf #{conflict['index']} is {conflict['verdict']}: the witness signed a head this history does not have")
+                if status["witnessed_through"] == status["count"]:
+                    raise Rejected("already_witnessed", f"a signed head in the log already covers #1 to #{status['count']}")
+                try:
+                    envelope = self.submit_witness(case_id, client)
+                except OSError:
+                    raise Rejected("witness_unavailable", "the witness did not answer on its port") from None
+            except Rejected as error:
+                self._emit("witness_request", case_id=case_id, actor=actor, status=error.code)
+                raise
+        # WitnessClient.submit returned only after the signature matched the events sent and the log's checkpoint covered it.
+        signed = _head_document(verified_payload(envelope, client.public, CHAIN_HEAD_TYPE))
+        self._emit("witness_request", case_id=case_id, actor=actor, status="signed", count=signed["count"], head=signed["head"])
+        return {"case_id": case_id, "count": signed["count"], "head": signed["head"], "envelope": envelope, "written": False,
+                "note": "The witness signed this head and appended it to its own log; nothing was written to the case"}
 
     def chain_ok(self, db, case_id: str) -> bool:
         """Check one case on a connection the caller already holds."""
