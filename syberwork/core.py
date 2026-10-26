@@ -945,6 +945,10 @@ class Work:
             # A settlement receipt counts only from a completed write; 202 Accepted and the rest stay unknown.
             if action["kind"] == "economic_http" and response.status not in (200, 201):
                 raise ValueError("settlement receipt status is not a completed write")
+            # A plain write counts only from 200, 201 or 204. 202 Accepted has not completed, 203 is a proxy's
+            # answer, 205-226 are not write completions; each, and a missing status, leaves the effect unknown.
+            if action["kind"] == "http" and getattr(response, "status", None) not in (200, 201, 204):
+                raise Rejected("destination_not_completed", "write acknowledged without a completion status")
             raw = response.read(32768)
             if action["kind"] == "economic_http":
                 record = destination_record(raw)

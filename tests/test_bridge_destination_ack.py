@@ -5,6 +5,10 @@ The status lookup proves a record only from a 200. A 202 Accepted, 203 Non-Autho
 (``status_not_authoritative``). An economic settlement receipt counts only from a 200 or 201; any other
 2xx leaves the effect ``unknown`` with its reservation held. Every case runs against a loopback
 destination and moves no funds. Positive controls show the same fixtures still reconcile and settle.
+
+A plain ``http`` write counts as done only from a 200, 201 or 204. A 202 Accepted ("processing has not been
+completed"), a 203, a 205-226 or a response without a status leaves the effect ``unknown``
+(``destination_not_completed``): acceptance stays unmet and only a 200 status lookup can resolve it.
 """
 
 import io
@@ -19,10 +23,13 @@ from unittest.mock import patch
 
 from syberlabs.evidence import verified_reconciliation
 from syberwork.core import HTTP, Rejected, Work, digest
+from syberwork.worker import run_once
 
 # 2xx statuses that are not "here is the destination's record". 204 and 205 carry no body.
 NOT_AUTHORITATIVE = (201, 202, 203, 204, 205, 206, 207, 208, 226)
 EMPTY = (204, 205)
+# 2xx statuses that do not say a plain write completed. 299 stands for any unregistered 2xx.
+NOT_COMPLETED = (202, 203, 205, 206, 207, 208, 226, 299)
 
 
 class Destination:
@@ -88,13 +95,13 @@ class Cell(unittest.TestCase):
     def setUp(self):
         self.fresh()
 
-    def fresh(self):
+    def fresh(self, **work):
         """A new store, destination and installation. The shared budget admits one settled purchase."""
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.dest = Destination(self.record_for)
         self.addCleanup(self.dest.close)
-        self.work = Work(Path(folder.name) / "work.sqlite3")
+        self.work = Work(Path(folder.name) / "work.sqlite3", **work)
         self.addCleanup(self.work.close)
         self.install()
 
@@ -279,6 +286,103 @@ class SettlementAck(Cell):
                 self.assertEqual(self.reservation(key), "settled")
                 self.assertTrue(self.work.inspect(case)["complete"])
                 self.assert_budget_held()
+
+
+class WriteAck(Cell):
+    """Plain ``http`` write: only 200, 201 or 204 says the write completed; anything else is an unknown effect."""
+
+    action = "ship"
+    status_lookup = True
+
+    def install(self):
+        action = {"kind": "http", "url": self.dest.base + "/ship"}
+        if self.status_lookup:
+            action["status_url"] = self.dest.base + "/status/{key}"
+        self.work.install_action("ship", action)
+        self.work.install_contract({"id": "ack", "version": 1, "inputs": {"subject": "string"},
+            "actions": {"ship": {"required_facts": [{"key": "order", "source": "ledger", "verified": True}],
+                                 "arguments": {"order_id": "fact:order.id"}}},
+            "acceptance": [{"id": "shipped", "kind": "effect", "action": "ship"}]})
+        self.work.install_policy({"version": 1, "actions": {"ship": {"roles": ["operator"]}}})
+
+    def proposed(self):
+        case = self.work.create_case("ack", 1, {"subject": "accepted write"}, "operator")
+        self.work.observe(case, "order", {"id": "O-1"}, "ledger", "v1", "ledger", verified=True)
+        return case, self.propose(case)["proposal"]["id"]
+
+    def propose(self, case):
+        return self.work.propose(case, "ship", {"order_id": "O-1"}, "operator", ["operator"])
+
+    def assert_not_completed(self, case, key, result):
+        """The destination wrote, but the write is ``unknown``: not succeeded, not applied, not accepted."""
+        self.assertEqual(result["status"], "unknown")
+        self.assertIn(key, self.dest.records)
+        kinds = [e["kind"] for e in self.history(case)]
+        self.assertNotIn("effect_succeeded", kinds)
+        self.assertEqual(next(e for e in self.history(case) if e["kind"] == "effect_unknown")["body"]["error"],
+                         "destination_not_completed")
+        self.assertEqual(self.work.metric("effects_settled_applied_total"), 0)
+        self.assertEqual(self.work.metric("effects_pending"), 1)
+        self.assert_unresolved(case, key, lambda: self.propose(case))
+
+    def test_write_accepted_but_not_completed_is_unknown(self):
+        for code in NOT_COMPLETED:
+            with self.subTest(code=code):
+                self.fresh()
+                case, key = self.proposed()
+                self.dest.write_code = code
+                self.assert_not_completed(case, key, self.work.commit(case, key, "operator"))
+                # Only the destination's 200 lookup resolves it, and the write is not repeated.
+                self.assert_verified(case, key, self.work.reconcile(case, key, "manager", ["manager"]))
+                self.assertEqual(self.work.metric("effects_settled_applied_total"), 1)
+                self.assertEqual(self.dest.posts, 1)
+
+    def test_write_without_an_http_status_is_unknown(self):
+        case, key = self.proposed()
+        record = json.dumps(committed(key, {"order_id": "O-1"})).encode()
+        self.dest.records[key] = json.loads(record)
+        with patch.object(HTTP, "open", return_value=io.BytesIO(record)):
+            self.assert_not_completed(case, key, self.work.commit(case, key, "operator"))
+
+    def test_worker_settles_an_accepted_write_as_unknown(self):
+        self.fresh(effects="worker")
+        case, key = self.proposed()
+        self.dest.write_code = 202
+        self.assertEqual(self.work.commit(case, key, "operator")["status"], "queued")
+        self.assert_not_completed(case, key, run_once(self.work))
+        self.assertEqual(self.work.metric("queue_depth"), 0)
+
+    def test_positive_control_200_201_204_writes_succeed(self):
+        for code in (200, 201, 204):
+            with self.subTest(code=code):
+                self.fresh()
+                case, key = self.proposed()
+                self.dest.write_code = code
+                result = self.work.commit(case, key, "operator")
+                self.assertEqual(result["status"], "succeeded")
+                body = "" if code in EMPTY else json.dumps(self.dest.records[key])
+                self.assertEqual(result["event"]["body"]["output"], {"status": code, "body": body})
+                self.assertTrue(self.work.inspect(case)["complete"])
+                self.assertEqual(self.work.metric("effects_settled_applied_total"), 1)
+                self.assertEqual(self.dest.posts, 1)
+
+
+class WriteAckWithoutLookup(WriteAck):
+    """Without a status lookup, a write that was only accepted stays unresolved; nobody can declare it done.
+
+    The inherited cases run again without a lookup; only the reconcile case differs.
+    """
+
+    status_lookup = False
+
+    def test_write_accepted_but_not_completed_is_unknown(self):
+        case, key = self.proposed()
+        self.dest.write_code = 202
+        self.assert_not_completed(case, key, self.work.commit(case, key, "operator"))
+        with self.assertRaisesRegex(Rejected, "reconciliation_unavailable"):
+            self.work.reconcile(case, key, "manager", ["manager"])
+        self.assert_unresolved(case, key, lambda: self.propose(case))
+        self.assertEqual(self.dest.lookups, 0)
 
 
 if __name__ == "__main__":
