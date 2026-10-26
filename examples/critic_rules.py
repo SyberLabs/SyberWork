@@ -15,10 +15,16 @@ clauses and mutable scope) and prints a findings document (``spec/finding.schema
 - high, test integrity: a line the candidate adds to a Python file under ``tests/`` (or named
   ``test*.py``) that can end, signal or subvert the process the tests run in, or reach the runner
   that judges them (``TEST_INTEGRITY`` lists the patterns; ``docs/CRITIC.md`` says why each is
-  there). Test code is candidate code, and it runs inside the process that reports on it.
+  there). Test code is candidate code, and it runs inside the process that reports on it. Any other
+  Python file the candidate adds or changes is held to the harness-tampering families
+  (``HARNESS_RULES``): a test can import it, so the same code one ``import`` away from a test runs in
+  the same process. Ending the process, signal handlers, exiting at import and ``load_tests`` stay
+  test-scoped (``TEST_ONLY_RULES``): production code legitimately exits. A compiled module the
+  candidate adds (``.pyc``, ``.pyd``, ``.so``) is a high finding: Python can import it and this rule
+  cannot read it.
 
 Every finding names what would falsify it. No model is called. The integrity rule reads each changed
-test file's content at the candidate commit and the lines the candidate added from Git
+Python file's content at the candidate commit and the lines the candidate added from Git
 (``git show <commit>:<path>``, ``git diff -U0 <base> <commit>``, run in the check's working
 directory, the candidate's worktree), which are content-addressed, so the same request always yields
 the same document. Without a repository (a request built by hand), it rebuilds a new file from the
@@ -34,7 +40,9 @@ import re
 import subprocess
 import sys
 
-REVIEWER = {"name": "rules", "revision": "1"}
+# Revision 2: the integrity rule (test files, then every changed Python file) changed what this reviewer
+# refuses, so a Reviewed-by line naming revision 1 would misdescribe it.
+REVIEWER = {"name": "rules", "revision": "2"}
 TEST_MARKERS = ("tests/", "test/", "/test_", "_test.", "spec/")
 SOURCE_SUFFIXES = (".py", ".js", ".ts", ".go", ".rs", ".java", ".rb", ".c", ".h", ".cs", ".mjs")
 MAX_INTEGRITY_FINDINGS = 40  # per candidate; the summary counts the rest
@@ -46,8 +54,8 @@ TEST_INTEGRITY = {
     "signal_handler": "installs a signal handler or timer from test code (signal.signal, signal.alarm, ...)",
     "exit_at_import": "exits or raises SystemExit/KeyboardInterrupt at import or in a module or class fixture: "
                       "the module ends the process that discovers or runs it",
-    "harness_override": "a TestCase defines a method that starts or reports a test (run, __call__, debug, id, ...): "
-                        "it can report a test that never ran",
+    "harness_override": "defines, in a TestCase, a method that starts or reports a test (run, __call__, debug, id, "
+                        "...): it can report a test that never ran",
     "load_tests": "defines load_tests: the module chooses its own test set at discovery",
     "unittest_patch": "changes unittest's own objects (assigns, deletes or patches unittest attributes or a result's "
                       "callbacks, or reaches self._outcome / shouldStop)",
@@ -84,6 +92,22 @@ PATCHERS = ("patch", "patch.object", "patch.dict", "patch.multiple", "mock.patch
             "mock.patch.dict", "mock.patch.multiple", "unittest.mock.patch", "unittest.mock.patch.object",
             "unittest.mock.patch.dict", "unittest.mock.patch.multiple")
 
+# Where each family applies. Test code gets every family. Any other changed Python file gets the
+# families that tamper with the harness from inside the test process: a test can import it.
+HARNESS_RULES = ("harness_override", "unittest_patch", "sys_modules", "runner_reach", "dynamic_code")
+TEST_ONLY_RULES = ("process_exit", "signal_handler", "exit_at_import", "load_tests")
+# Two parts of ``runner_reach`` stay test-scoped. A forged report needs the channel's nonce, and only
+# reading the process's memory gets it: gc, frames, ``__main__``, ctypes, trace and audit hooks.
+# Those apply everywhere. The write side applies to tests only: raw descriptors and handles
+# (``os.write``, ``os.dup``, ``os.fdopen``, ``msvcrt``, ``_winapi``) are I/O that production code and
+# the runner itself use. Without the nonce, a write through them is ``channel_tampered``. The
+# runner's directory names lead only to its logs, now that results travel over the channel.
+TEST_ONLY_REACH_CALLS = {"os.dup", "os.dup2", "os.write", "os.fdopen", "os.set_inheritable",
+                         "os.set_handle_inheritable"}
+TEST_ONLY_REACH_MODULES = {"msvcrt", "_winapi"}
+PYTHON_SOURCE = (".py", ".pyw")
+PYTHON_COMPILED = (".pyc", ".pyd", ".so")
+
 
 def _in_scope(scope: dict, path: str) -> bool:
     def matches(entry: str) -> bool:
@@ -100,10 +124,16 @@ def is_test(path: str) -> bool:
 
 def is_test_code(path: str) -> bool:
     """A Python file the test runner may import: under a ``tests/`` directory, or named ``test*.py``."""
-    return path.endswith(".py") and (("/" + path).find("/tests/") >= 0 or path.split("/")[-1].startswith("test"))
+    return path.endswith(PYTHON_SOURCE) and (("/" + path).find("/tests/") >= 0
+                                            or path.split("/")[-1].startswith("test"))
 
 
-# --- reading the candidate's test files ------------------------------------------------------
+def is_python_code(path: str) -> bool:
+    """Any Python source file: a test can import it, so it runs in the test process."""
+    return path.endswith(PYTHON_SOURCE)
+
+
+# --- reading the candidate's Python files ----------------------------------------------------
 
 
 def _git(args: list):
@@ -145,7 +175,7 @@ def _hunks(diff_text: str) -> dict:
 
 
 def _sources(request: dict, paths: list) -> dict:
-    """``{path: (source text or None, added line numbers or None for "unknown")}`` for each changed test file.
+    """``{path: (source text or None, added line numbers or None for "unknown")}`` for each changed Python file.
 
     From Git when the candidate commit is in the repository the critic runs in: the content at the
     commit and the lines ``git diff -U0 <base> <commit>`` adds (all lines when that diff cannot be
@@ -187,7 +217,7 @@ class _Scan(ast.NodeVisitor):
 
     def __init__(self):
         self.aliases: dict = {}
-        self.hits: list = []
+        self.hits: list = []  # (first line, last line, rule, detail, test-scoped only?)
         self.scopes: list = []  # ("def"|"class", name, node)
 
     # names --------------------------------------------------------------------------------
@@ -226,9 +256,10 @@ class _Scan(ast.NodeVisitor):
                 return key.value
         return None
 
-    def hit(self, node, rule, detail):
+    def hit(self, node, rule, detail, test_only=False):
+        """Record a construct; ``test_only`` marks the part of a family that applies to test code only."""
         self.hits.append((getattr(node, "lineno", 0), getattr(node, "end_lineno", None) or getattr(node, "lineno", 0),
-                          rule, detail))
+                          rule, detail, test_only or rule in TEST_ONLY_RULES))
 
     @staticmethod
     def _rooted(name, roots) -> bool:
@@ -267,6 +298,23 @@ class _Scan(ast.NodeVisitor):
         self.scopes.append(("class", node.name, node))
         self.generic_visit(node)
         self.scopes.pop()
+
+    @staticmethod
+    def _anchored(node) -> bool:
+        """A computed module name whose package is fixed in the source: ``f"pkg.{name}"`` or ``"pkg." + name``.
+
+        It imports a submodule of ``pkg``, so it cannot be ``os``, ``gc`` or ``ctypes``. A sensitive or
+        reaching package (``os.``, ``ctypes.``, ...) does not anchor it.
+        """
+        if isinstance(node, ast.JoinedStr) and node.values:
+            first = node.values[0]
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            first = node.left
+        else:
+            return False
+        prefix = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else ""
+        root = prefix.split(".")[0]
+        return "." in prefix and root.isidentifier() and root not in SENSITIVE_MODULES | REACH_MODULES
 
     def _test_case_like(self, cls: ast.ClassDef) -> bool:
         for base in cls.bases:
@@ -324,13 +372,15 @@ class _Scan(ast.NodeVisitor):
 
     def visit_Import(self, node):
         for alias in node.names:
-            if alias.name.split(".")[0] in REACH_MODULES:
-                self.hit(node, "runner_reach", f"import {alias.name}")
+            root = alias.name.split(".")[0]
+            if root in REACH_MODULES:
+                self.hit(node, "runner_reach", f"import {alias.name}", root in TEST_ONLY_REACH_MODULES)
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
-        if node.module and node.module.split(".")[0] in REACH_MODULES and not node.level:
-            self.hit(node, "runner_reach", f"from {node.module} import ...")
+        root = (node.module or "").split(".")[0]
+        if root in REACH_MODULES and not node.level:
+            self.hit(node, "runner_reach", f"from {node.module} import ...", root in TEST_ONLY_REACH_MODULES)
         self.generic_visit(node)
 
     # expressions --------------------------------------------------------------------------
@@ -352,7 +402,7 @@ class _Scan(ast.NodeVisitor):
 
     def visit_Constant(self, node):
         if isinstance(node.value, str) and any(marker in node.value for marker in RUNNER_NAMES):
-            self.hit(node, "runner_reach", f"names the shard runner's directories ({node.value[:60]!r})")
+            self.hit(node, "runner_reach", f"names the shard runner's directories ({node.value[:60]!r})", True)
 
     def visit_Call(self, node):
         name = self.name(node.func)
@@ -367,16 +417,17 @@ class _Scan(ast.NodeVisitor):
             for names, rule in ((EXIT_CALLS, "process_exit"), (SIGNAL_CALLS, "signal_handler"),
                                 (REACH_CALLS, "runner_reach")):
                 if reference in names:
-                    self.hit(node, rule, f"getattr reference to {reference}")
+                    self.hit(node, rule, f"getattr reference to {reference}", reference in TEST_ONLY_REACH_CALLS)
         if name in SIGNAL_CALLS:
             self.hit(node, "signal_handler", name)
         if name in QUIT_CALLS and (self.at_import_time() or self.in_fixture()):
             self.hit(node, "exit_at_import", f"{name}()")
         if name in REACH_CALLS:
-            self.hit(node, "runner_reach", f"{name}()")
+            self.hit(node, "runner_reach", f"{name}()", name in TEST_ONLY_REACH_CALLS)
         if name in ("exec", "eval", "compile"):
             self.hit(node, "dynamic_code", f"{name}()")
-        if name in ("__import__", "importlib.import_module", "importlib.reload") and not isinstance(constant, str):
+        if name in ("__import__", "importlib.import_module", "importlib.reload") and not isinstance(constant, str) \
+                and not self._anchored(args[0] if args else None):
             self.hit(node, "dynamic_code", f"{name}() of a computed name")
         if name in ("getattr", "setattr", "delattr") and len(args) >= 2:
             target = self.name(args[0])
@@ -402,13 +453,19 @@ class _Scan(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def integrity_findings(path: str, source: str | None, added: set) -> list:
-    """High findings for the lines ``added`` to test file ``path`` (content ``source``; ``added`` None: all lines)."""
+def integrity_findings(path: str, source: str | None, added: set, test: bool | None = None) -> list:
+    """High findings for the lines ``added`` to Python file ``path`` (content ``source``; ``added`` None: all lines).
+
+    Test code (``test``; by default ``is_test_code(path)``) is held to every family. Any other Python
+    file is held to ``HARNESS_RULES``, without the test-only parts of ``runner_reach``.
+    """
+    test = is_test_code(path) if test is None else test
+    what = "test file" if test else "Python file"
     if added is not None and not added:
         return []
     if source is None:
         return [{"severity": "high", "file": path, "line": None,
-                 "claim": "a changed test file could not be read at the candidate commit, so the test-integrity "
+                 "claim": f"a changed {what} could not be read at the candidate commit, so the test-integrity "
                           "rule did not run on it",
                  "falsifier": "run the critic where `git show <commit>:<path>` works (the candidate's worktree)"}]
     try:
@@ -416,22 +473,45 @@ def integrity_findings(path: str, source: str | None, added: set) -> list:
     except (SyntaxError, ValueError):
         # It cannot import under this interpreter either, but the rule did not read it, so it does not pass it.
         return [{"severity": "high", "file": path, "line": None,
-                 "claim": "a changed test file does not parse, so the test-integrity rule could not read it",
-                 "falsifier": "a test file that parses under the host's Python"}]
+                 "claim": f"a changed {what} does not parse, so the test-integrity rule could not read it",
+                 "falsifier": f"a {what} that parses under the host's Python"}]
     scan = _Scan()
     scan.bind_imports(tree)
     scan.visit(tree)
     findings, seen = [], set()
-    for first, last, rule, detail in sorted(scan.hits):
+    for first, last, rule, detail, test_only in sorted(scan.hits):
+        if test_only and not test:
+            continue
         line = first if added is None else next((n for n in range(first, last + 1) if n in added), None)
         if line is None or (line, rule) in seen:
             continue
         seen.add((line, rule))
-        findings.append({"severity": "high", "file": path, "line": line,
-                         "claim": f"test integrity ({rule}): {detail}: test code {TEST_INTEGRITY[rule]}",
-                         "falsifier": "remove the construct, or show that it never runs inside the test process "
-                                      "(a string, or a child process the test starts and checks)"})
+        if test:
+            claim = f"test integrity ({rule}): {detail}: test code {TEST_INTEGRITY[rule]}"
+            falsifier = ("remove the construct, or show that it never runs inside the test process "
+                         "(a string, or a child process the test starts and checks)")
+        else:
+            claim = (f"test integrity ({rule}): {detail}: a test can import this file, and its code "
+                     f"{TEST_INTEGRITY[rule]}")
+            falsifier = ("remove the construct, or show that it never runs inside the test process "
+                         "(a string, or code only a child process runs)")
+        findings.append({"severity": "high", "file": path, "line": line, "claim": claim, "falsifier": falsifier})
     return findings
+
+
+def compiled_findings(request: dict, paths: list) -> list:
+    """High findings for compiled modules the candidate adds or changes: Python imports them, this rule cannot read them."""
+    commit = (request.get("candidate") or {}).get("commit")
+    in_repo = bool(commit) and _git(["rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"]) is not None
+    found = []
+    for path in paths:
+        if in_repo and _git(["cat-file", "-e", f"{commit}:{path}"]) is None:
+            continue  # deleted by the candidate
+        found.append({"severity": "high", "file": path, "line": None,
+                      "claim": "the candidate adds or changes a compiled module that Python can import and the "
+                               "test-integrity rule cannot read",
+                      "falsifier": "the module's source instead, or show that nothing in the test process imports it"})
+    return found
 
 
 def review(request: dict) -> dict:
@@ -450,9 +530,10 @@ def review(request: dict) -> dict:
                              "claim": "a source file changed and no test changed in the same candidate",
                              "falsifier": "a changed file under tests/ (or named test_*) that exercises this change"})
     integrity = []
-    test_code = [p for p in changed if is_test_code(p)]
-    for path, (source, added) in _sources(request, test_code).items():
+    python_code = [p for p in changed if is_python_code(p)]
+    for path, (source, added) in _sources(request, python_code).items():
         integrity += integrity_findings(path, source, added)
+    integrity += compiled_findings(request, [p for p in changed if p.endswith(PYTHON_COMPILED)])
     findings += integrity[:MAX_INTEGRITY_FINDINGS]
     summary = (f"{len(findings)} finding(s) over {len(changed)} changed path(s)" if findings
                else f"no findings over {len(changed)} changed path(s)")
