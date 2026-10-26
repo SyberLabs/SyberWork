@@ -96,13 +96,20 @@ def public_from_seed(seed: bytes) -> bytes:
     return _encode(_mul(_B, _clamp(digest[:32])))
 
 
-def sign(seed: bytes, message: bytes) -> bytes:
-    """Detached signature over ``message``. ``seed`` is the 32-byte private key."""
+def sign(seed: bytes, message: bytes, public: bytes | None = None) -> bytes:
+    """Detached signature over ``message``. ``seed`` is the 32-byte private key.
+
+    ``public`` is the key ``public_from_seed(seed)`` returned, passed by a caller that already derived it so the
+    scalar multiplication is not repeated; the signature is byte-identical. Pass only a key derived from this very
+    seed: two signatures of one message under two different ``public`` values reveal the private scalar."""
     if len(seed) != 32:
         raise ValueError("Ed25519 seed must be 32 bytes")
     digest = hashlib.sha512(seed).digest()
     scalar = _clamp(digest[:32])
-    public = _encode(_mul(_B, scalar))
+    if public is None:
+        public = _encode(_mul(_B, scalar))
+    elif len(public) != 32:
+        raise ValueError("Ed25519 public key must be 32 bytes")
     nonce = int.from_bytes(hashlib.sha512(digest[32:] + message).digest(), "little") % _L
     commitment = _encode(_mul(_B, nonce))
     challenge = int.from_bytes(hashlib.sha512(commitment + public + message).digest(), "little") % _L

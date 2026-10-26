@@ -37,8 +37,9 @@ how the work is spread, never which tests run.
 ### How it works
 
 1. **Discovery.** The runner discovers the suite exactly as
-   `python -m unittest discover -s tests` does: `unittest.defaultTestLoader`,
-   start directory `tests`, pattern `test*.py`, with the working directory
+   `python -m unittest discover -s tests` does: a fresh `unittest.TestLoader()`
+   (what `unittest.defaultTestLoader` is in a process that has not used it
+   yet), start directory `tests`, pattern `test*.py`, with the working directory
    first on `sys.path`. (`--start`, `--pattern` and `--top-level` mirror
    discover's `-s`, `-p` and `-t`.) A module that cannot be imported is a test
    that errors, as under discover.
@@ -168,11 +169,39 @@ use:
 
 with `<python>` the interpreter's absolute path (`sys.executable`) and the
 runner named by absolute path in the host's own checkout, as `docs/CRITIC.md`
-does for the critic, so that a candidate cannot weaken the completeness check
-that judges it. The check's working directory is the candidate's worktree, so
-discovery, the tests and `tests/durations.json` are the candidate's. A
-contract is immutable under its identity, so the switch is a new contract
-version, not an edit of `repo-change.v4`.
+does for the critic, so that a candidate cannot edit the runner: it runs from
+the host checkout. The candidate's test code still runs in the shard's
+process, so it can defeat the count by exiting or by forging a result, as it
+can under plain `unittest`; a test-integrity packet is planned. The check's
+working directory is the candidate's worktree, so discovery, the tests and
+`tests/durations.json` are the candidate's. A contract is immutable under its
+identity, so the switch is a new contract version, not an edit of
+`repo-change.v4`.
+
+## G8: the existing suite as one fail-closed check
+
+`unittest` reports `OK` when a test skips, so a PostgreSQL service that never
+came up, or a missing `psycopg` or `hypothesis`, leaves the suite green with
+those tests unrun. Run locally without either package, the suite says
+`OK (skipped=25)`, and 24 of those skips are tests that CI is meant to run.
+
+`scripts/g8_existing_suite.py` runs the same discovery (`-s tests`) and fails
+when no test ran, a test failed or errored (a module that does not import is an
+error), an `expectedFailure` passed, or a test skipped for a reason other than
+a missing node, npm or global playwright. Reasons match exactly, and
+`tests/test_g8_existing_suite.py` checks that each allowed reason is still a
+skip in the suite. It prints counts and writes them with `--report`. These are
+test counts, not coverage.
+
+```sh
+PYTHONPATH=. python scripts/g8_existing_suite.py --report g8.json
+```
+
+In `ci.yml`, job `g8-suite` runs it on Linux with Python 3.12 and PostgreSQL 16,
+then runs conformance. Job `g8` (check name `G8 Existing suite`) passes only
+when every leg of `test`, `windows` and `g8-suite` succeeded; a failed,
+cancelled or skipped leg fails it. The `windows` leg runs `scripts/run_shards.py`,
+where the PostgreSQL skips are expected (it installs no driver). `compose` is not part of G8.
 
 ## Property suite: the admission kernel over random event sequences
 

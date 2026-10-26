@@ -172,7 +172,7 @@ def effect_unresolved(ctx: AdmissionContext) -> dict | None:
             return deny("effect_unresolved:" + ctx.action, "effect.unresolved")
     # An effect_started with no terminal outcome occupies the action.
     # effect_rejected is terminal, so a fresh proposal of that action can proceed.
-    finished = _finished_proposal_ids(ctx.history)
+    finished = settled_ids  # the same set over the same history; computed once
     for event in ctx.history:
         if event["kind"] != "effect_started":
             continue

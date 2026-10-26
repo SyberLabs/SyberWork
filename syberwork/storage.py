@@ -464,6 +464,9 @@ class ContractStore:
             (contract_id, version),
         ).fetchone()
 
+    def list_all(self) -> list:
+        return self.store.execute("SELECT id, version, body FROM contracts ORDER BY id, version").fetchall()
+
     def insert_new(self, contract_id: str, version: int, body: str) -> None:
         self.store.execute(
             "INSERT OR IGNORE INTO contracts VALUES (?,?,?)",
@@ -486,6 +489,9 @@ class PolicyStore:
 
     def bodies(self) -> list:
         return self.store.execute("SELECT body FROM policies").fetchall()
+
+    def list_all(self) -> list:
+        return self.store.execute("SELECT version, body FROM policies ORDER BY version").fetchall()
 
     def insert_new(self, version: int, body: str) -> None:
         self.store.execute("INSERT OR IGNORE INTO policies VALUES (?,?)", (version, body))
@@ -514,6 +520,9 @@ class SourceRegistry:
 
     def get(self, name: str):
         return self.store.execute("SELECT body FROM sources WHERE name=?", (name,)).fetchone()
+
+    def documents(self) -> dict:
+        return {row["name"]: row["body"] for row in self.store.execute("SELECT name, body FROM sources")}
 
     def insert_new(self, name: str, body: str) -> None:
         self.store.execute("INSERT OR IGNORE INTO sources VALUES (?,?)", (name, body))
