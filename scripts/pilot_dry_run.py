@@ -25,7 +25,7 @@ How Mateo runs it
    write, in dollars per million tokens (the canary names the model if it is not the one priced).
 4. Run ``python scripts/pilot_dry_run.py --plan plan.json`` from the SyberWork checkout (Windows:
    ``py scripts/pilot_dry_run.py --plan plan.json``; ``--repo PATH`` when the items change another repository;
-   ``--budget 8`` is the default hard cap in dollars; ``--seed N`` repeats an order). It prints the preflight, asks to
+   ``--budget 8`` is the default scheduling budget in dollars; ``--seed N`` repeats an order). It prints the preflight, asks to
    start, runs the canary and then every run, asks for the blind review of each accepted change (shown as R1, R2, ...
    in a shuffled order, without its arm: hand the keyboard to the reviewer, or answer yourself without looking up the
    mapping), prints the paired report and the PASS/FAIL table, and writes ``receipt.json``. Exit 0 is PASS, 1 FAIL,
@@ -51,7 +51,7 @@ Preflight refuses to start on any failure: the repository and its base commit; C
 file the run touches (the repository's tracked and untracked files, its ``.env*``, ``.mcp.json`` and local Claude
 settings, the plan); ``syberlabs githits doctor`` ``ok``, with its call record verifying under a key the host set;
 the query guard's key reaching the hook (``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`` off, and the host's own hook, run as
-Claude Code runs it, signing a block and a pass that verify under a key the host set); the hard budget cap; and the
+Claude Code runs it, signing a block and a pass that verify under a key the host set); the scheduling budget; and the
 contracts the run installs.
 
 The canary is one cheap call in the treatment's mode (``propose --claude-code --bare --githits``, one call, a few
@@ -122,7 +122,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -1128,7 +1127,8 @@ def parse_args(argv):
     parser.add_argument("--repo", default=".", help="the repository the items change (default: here)")
     parser.add_argument("--base", help="the commit every thread starts from; must be HEAD (default: HEAD)")
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET,
-                        help=f"hard cap in dollars for the whole run, canary included (default {DEFAULT_BUDGET:g})")
+                        help=f"token-cost scheduling budget, canary included (default {DEFAULT_BUDGET:g}); "
+                             "may overshoot by one call and excludes server-side search fees")
     parser.add_argument("--thread-budget", type=float,
                         help="each thread's contract max_dollars (default: the cap over the runs plus the canary)")
     parser.add_argument("--seed", type=int, help="the shuffle's seed (default: drawn, and printed)")
@@ -1504,7 +1504,7 @@ class DryRun:
                 text = text.replace(value, f"[{name} redacted]")
         (out / "receipt.json").write_text(text + "\n", encoding="utf-8")
         say("")
-        say(render(receipt, out))
+        say(render(json.loads(text), out))
 
 
 def report_rows(found: dict | None, expected: int, reasons: list) -> list[dict]:
@@ -1570,18 +1570,18 @@ def main(argv: list | None = None, *, ask: Ask | None = None, runner: Runner | N
     exclude_from_git(repo, out if args.out else runs_dir)
     dry = DryRun(args, out, seed, ask or input, runner or subprocess_runner)
     try:
-        return dry.run()
+        status = dry.run()
     except KeyboardInterrupt:
         dry.receipt["verdict"] = "ABORTED"
         dry.receipt["reasons"].append("interrupted by the operator")
-        return 1
-    except Exception as exc:  # a fault here or in a command: the receipt says so, the traceback follows on stderr
-        traceback.print_exc()
+        status = 1
+    except Exception as exc:  # exception text and tracebacks can contain credentials or private output
         dry.receipt["verdict"] = FAIL
-        dry.receipt["reasons"].append(f"internal error: {type(exc).__name__}: {tail(str(exc), 200)}")
-        return 1
+        dry.receipt["reasons"].append(f"internal error: {type(exc).__name__}")
+        status = 1
     finally:
         dry.finish()
+    return 1 if dry.receipt["verdict"] == FAIL else status
 
 
 if __name__ == "__main__":

@@ -143,6 +143,23 @@ class ApiRouteChecks(unittest.TestCase):
         self.assertEqual(self.row(looked_up(idle, "x-on", "mcp__githits__search"))["flags"], [],
                          "a lookup the host observed in a call that registered nothing is still a use")
 
+    def test_blocked_mcp_facts_never_establish_use_in_either_arm(self):
+        for guard in ("email", "secret", "shell_syntax", "unguarded", None):
+            with self.subTest(guard=guard):
+                events = self.pair(on={"githits": 0})
+                for case in ("x-off", "x-on"):
+                    events = looked_up(events, case, "mcp__githits__search", guard=guard)
+                self.assertEqual(self.row(events)["flags"], ["unused"])
+                self.assertEqual([r.observed for r in experiment.runs(events, NAME)], [0, 0])
+
+    def test_registered_mcp_attempt_counts_do_not_turn_blocks_into_use(self):
+        events = self.pair(off={"githits": 1}, on={"githits": 1})
+        for case in ("x-off", "x-on"):
+            events = looked_up(events, case, "mcp__githits__search", guard="email")
+        self.assertEqual(self.row(events)["flags"], ["unused"])
+        events = looked_up(events, "x-on", "mcp__githits__search", guard="pass")
+        self.assertEqual(self.row(events)["flags"], [])
+
     def test_an_unknown_lookup_count_is_never_read_as_zero(self):
         """``githits_lookups`` is unknown when a call declared no count and, where ``metrics`` reads it so (#139), when
         a launcher call or a client record cannot be vouched for (``signal.githits.mismatch``, ``unguarded``). The
@@ -341,8 +358,7 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         """Arm B runs the API launcher and, by mistake, a GitHits MCP server as well (``--mcp-config``), and the model
         uses both. GitHits was there, so the item is no ``arm_conflict``; the treatment is said to have had two routes
         (``two_routes``, kept: the pilot pre-registers its exclusions, and this is not one). Its paired GitHits count is
-        the metrics station's count of client records, which leaves the MCP lookup out (``spec/GAPS.md`` 59), while
-        the report sees both. The same stray server in arm A is ``arm_conflict``, and its lookup ``contaminated``."""
+        the metrics station's count of client records plus MCP attempts; the report also sees both. The same stray server in arm A is ``arm_conflict``, and its lookup ``contaminated``."""
         config = self.root.parent / "githits-mcp.json"
         config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
         mcp = ["mcp__githits__search", {"query": "zq95 githits mcp query: csv writer header"}]
@@ -364,8 +380,8 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         runs = {(r.item, r.arm): r for r in experiment.runs(self.events(), NAME)}
         self.assertEqual((runs["Z", "on"].server, runs["Z", "on"].routes, runs["Z", "on"].observed), (True,
                          ("launcher", "mcp"), 2))
-        self.assertEqual(rows["Z"]["values"]["on"]["githits_lookups"], 1.0,
-                         "metrics counts the client's record only; the MCP lookup is the report's to see")
+        self.assertEqual(rows["Z"]["values"]["on"]["githits_lookups"], 2.0,
+                         "both the authentic client record and the MCP attempt are counted")
         self.assertEqual(rows["W"]["excluded"], ["arm_conflict", "contaminated"])
         self.assertEqual(found["items"], {"labelled": 2, "compared": 1, "excluded": 1})
         code, text = self.cli("experiment", "report", "--name", NAME)

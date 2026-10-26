@@ -419,6 +419,14 @@ class NotSent(GroundTruth):
 class Unknowable(GroundTruth):
     """Cases where the journal cannot say how many requests reached GitHits: the count is unknown, never a guess."""
 
+    def test_no_change_cannot_discard_an_unrecorded_launcher_attempt(self):
+        kit = self.kit()
+        thread = kit.start("No change with a missing record", paths=["src/", "tests/"])
+        claude = self.stand_in("no-change-gap", first={}, lookups=[launcher("search")])
+        self.assertEqual(thread.propose(self.arm_b(kit, thread, claude)), [])
+        self.assertIsNone(self.ledger(thread).metric.value)
+        self.assertEqual([f["tool"] for f in client_facts(thread.history())], ["githits.unrecorded"])
+
     def test_a_launcher_call_that_left_no_record_makes_the_count_unknown(self):
         """A usage error (``search`` with no ``--target``) exits 2 before a client exists: nothing is sent or recorded,
         and the guard passed the call, so the call reports ``githits_unrecorded``. Since #142 the client records every
@@ -620,6 +628,23 @@ class MetricRule(unittest.TestCase):
         j.lookup("mcp__githits__search")
         j.registration(declared=3)
         self.assertEqual(j.githits_lookups().value, 3)
+
+    def test_synthetic_gaps_are_unknown_even_if_mislabelled_pass(self):
+        for guard in ("unguarded", "pass"):
+            with self.subTest(guard=guard):
+                j = Journal()
+                gap = j.lookup("githits.unrecorded", guard=guard)
+                j.registration(counts(1, 0), declared=1)
+                found = j.githits_lookups()
+                self.assertEqual((found.value, found.basis), (None, (gap,)))
+                self.assertIn("synthetic", found.note)
+                self.assertIn("(0 recorded)", found.note)
+
+    def test_mixed_route_counts_include_mcp_attempts_once(self):
+        j = Journal()
+        facts = (j.lookup(), j.lookup("mcp__githits__search"), j.lookup("mcp__githits__read", guard="email"))
+        j.registration(counts(1, 1), declared=3)
+        self.assertEqual((j.githits_lookups().value, j.githits_lookups().basis), (3, facts))
 
 
 if __name__ == "__main__":

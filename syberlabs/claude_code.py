@@ -876,11 +876,11 @@ class ClaudeCodeProvider(RepairProvider):
             # journaled through its client record, which is the host's evidence that a lookup left.
             observed += [{k: v for k, v in call.items() if k != "launcher"} for call in bash
                          if call["guard"] != query_guard.PASS]
-            # A failed or timed-out call registers no candidate, so no signal.githits.mismatch reaches the journal: a
+            # A failed, timed-out or no_change call registers no candidate to carry signal.githits.mismatch: a
             # launcher call in flight when the host ended Claude Code (the session is killed, so its client never
             # records) would leave no trace. Its records are then journaled unguarded (not reconciled), and when it
             # has none, one githits.unrecorded fact stands for each launcher call the guard passed.
-            lost = mismatch == GITHITS_UNRECORDED and failure is not None
+            lost = mismatch == GITHITS_UNRECORDED
             guard = query_guard.UNGUARDED if mismatch == GITHITS_UNEXPECTED or lost else query_guard.PASS
             observed += [record_lookup(record, guard) for record in records.records]
             if lost and not records.records:

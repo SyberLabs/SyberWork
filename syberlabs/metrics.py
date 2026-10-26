@@ -69,6 +69,7 @@ PR_REVIEW = "pr_review"
 LOOKUP = "lookup"                  # claude_code.LOOKUP; its ``guard`` is query_guard's decision
 CLIENT_LOOKUP = "githits."         # claude_code.CLIENT_TOOL: a lookup fact made from an authentic GitHits client record
 CLIENT_DOCTOR = CLIENT_LOOKUP + "doctor"  # a readiness check's record, not a lookup: never in ``githits_lookups``
+CLIENT_UNRECORDED = CLIENT_LOOKUP + "unrecorded"  # a synthetic gap, never an authentic record
 INTERVENTION_KINDS = ("message", "commit", "approve", "edit", "override")
 VERDICTS = ("pass", "fail")
 MAX_NOTE = 500
@@ -376,19 +377,23 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
     # say, so the count is unknown.
     client = [(e, f) for e, f in ((e, fact(e, LOOKUP)) for e in events)
               if f is not None and isinstance(f.get("tool"), str) and f["tool"].startswith(CLIENT_LOOKUP)]
-    counted = [(e, f) for e, f in client if f["tool"] != CLIENT_DOCTOR]
+    counted = [(e, f) for e, f in client if f["tool"] not in (CLIENT_DOCTOR, CLIENT_UNRECORDED)]
+    mcp = [(e, f) for e, f in ((e, fact(e, LOOKUP)) for e in events)
+           if f is not None and str(f.get("tool", "")).startswith("mcp__githits__")]
+    synthetic = [e for e, f in client if f["tool"] == CLIENT_UNRECORDED]
     gaps = [e for e in registrations if _githits_mismatch(e["body"].get("signal"))]
     unguarded = [e for e, f in counted if f.get("guard") != "pass"]
-    if gaps or unguarded:
+    if gaps or unguarded or synthetic:
         why = ([f"{len(gaps)} call(s) report launcher calls the query guard passed that left no GitHits client record "
                 "(signal.githits.mismatch)"] if gaps else []) + (
                [f"{len(unguarded)} GitHits client record(s) had no guarded launcher call behind them (guard "
-                "unguarded)"] if unguarded else [])
-        githits = Metric(None, tuple(e["hash"] for e in gaps + unguarded), "; ".join(why)
+                "unguarded)"] if unguarded else []) + (
+               [f"{len(synthetic)} synthetic unrecorded lookup fact(s)"] if synthetic else [])
+        githits = Metric(None, tuple(e["hash"] for e in gaps + unguarded + synthetic), "; ".join(why)
                          + f": the record cannot say whether they reached GitHits ({len(counted)} recorded)")
     elif client:
-        githits = Metric(len(counted), tuple(e["hash"] for e, _f in counted),
-                         "host-observed: authentic GitHits client records (lookup facts; doctor excluded)")
+        githits = Metric(len(counted) + len(mcp), tuple(e["hash"] for e, _f in counted + mcp),
+                         "host-observed: authentic GitHits client records and MCP attempts (doctor excluded)")
     else:
         githits = lookups(("githits",), "githits")
 

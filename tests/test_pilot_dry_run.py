@@ -650,6 +650,48 @@ class Preflight(DryRunCase):
         self.assertEqual(self.runs(self.bin), [])
 
 
+class Finalization(DryRunCase):
+    def test_final_scan_verdict_print_and_process_status_agree(self):
+        # Inject only the work stage: exercise the real main, finish, receipt, console
+        # and process exit without spending or contacting any service.
+        script = '''
+import os, sys
+from unittest import mock
+from tests.test_pilot_dry_run import pilot
+mode, repo, out = sys.argv[1:]
+def run(self):
+    self.receipt["verdict"] = pilot.PASS
+    if mode == "exception":
+        raise RuntimeError(os.environ[pilot.API_KEY_ENV])
+    if mode == "secret":
+        token = os.environ[pilot.githits.TOKEN_ENV]
+        (self.out / token).write_text(token)
+    return 0
+with mock.patch.object(pilot.DryRun, "run", run):
+    if mode == "unreadable":
+        with mock.patch.object(pilot, "files_holding", return_value=([], 0, 1)):
+            code = pilot.main(["--plan", "unused.json", "--repo", repo, "--out", out])
+    else:
+        code = pilot.main(["--plan", "unused.json", "--repo", repo, "--out", out])
+sys.exit(code)
+'''
+        for mode in ("pass", "secret", "unreadable", "exception"):
+            with self.subTest(mode=mode):
+                out = self.root.parent / ("final-" + mode)
+                done = subprocess.run([sys.executable, "-c", script, mode, str(self.root), str(out)],
+                                      cwd=ROOT, capture_output=True, timeout=30)
+                printed = (done.stdout + done.stderr).decode("utf-8", "replace")
+                text = (out / "receipt.json").read_text(encoding="utf-8")
+                verdict = "PASS" if mode == "pass" else "FAIL"
+                self.assertEqual(done.returncode, 0 if mode == "pass" else 1, printed)
+                self.assertEqual(json.loads(text)["verdict"], verdict)
+                self.assertIn("pilot dry run: " + verdict, printed)
+                self.assertNotIn("Traceback", printed)
+                for secret in (self.token, self.api_key):
+                    self.assertNotIn(secret, printed)
+                    self.assertNotIn(secret, text)
+
+
 class OneCommand(DryRunCase):
     def test_the_script_as_the_operator_runs_it(self):
         """``python scripts/pilot_dry_run.py --plan ...``: every ``syberlabs`` command a subprocess of this Python,

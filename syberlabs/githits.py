@@ -80,6 +80,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import os
 import re
 import sys
 import time
@@ -710,8 +711,22 @@ def write_record(directory, key: str, record: dict) -> None:
     entry["mac"] = record_mac(entry, key)
     folder = Path(directory)
     folder.mkdir(parents=True, exist_ok=True)
-    with open(folder / RECORD_FILE, "a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
+    # Windows' append seek and write are not atomic across launcher processes. Use the
+    # journal's existing OS lock; open the append handle only after acquiring it.
+    from syberlabs.journal import Journal
+    journal = Journal(folder)
+    try:
+        with journal.locked():
+            with open(folder / RECORD_FILE, "a+b") as handle:
+                if handle.tell():
+                    handle.seek(-1, os.SEEK_END)
+                    if handle.read(1) != b"\n":
+                        handle.write(b"\n")  # keep an interrupted tail separate; the reader still rejects it
+                handle.write((json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+    finally:
+        journal.close()
 
 
 def read_records(directory, key: str) -> RecordRead:
@@ -719,7 +734,7 @@ def read_records(directory, key: str) -> RecordRead:
     path = Path(directory) / RECORD_FILE
     found, ignored = [], 0
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except FileNotFoundError:
         return RecordRead([], 0)
     for line in lines:
@@ -854,7 +869,7 @@ class Client:
     def call(self, request: Request, deliver=None) -> Result:
         """Send ``request`` (unless a target is excluded), filter the answer and record the call. ``deliver``, when
         given, is called with the result before the record is written (the CLI prints there): if it raises
-        ``OSError`` or ``ValueError`` (a closed or broken stream, an unencodable character), the call is recorded
+        any exception (including an interruption), the call is recorded
         ``error`` and ``GitHitsError("output_failed")`` is raised, so a record never says ``ok`` for a result its
         caller did not receive."""
         started = time.monotonic()

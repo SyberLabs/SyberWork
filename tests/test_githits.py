@@ -925,6 +925,24 @@ class Transport(FakeCase):
 
 
 class Records(FakeCase):
+    def test_an_interrupted_tail_is_ignored_without_hiding_the_next_record(self):
+        client = self.client()
+        client.search("first", ["pypi:requests"])
+        path = Path(self.folder.name) / githits.RECORD_FILE
+        with open(path, "ab") as handle:
+            handle.write(b'{"op":"search","partial":"\xff')
+        client.search("second", ["pypi:requests"])
+        read = self.records()
+        self.assertEqual((len(read.records), read.ignored), (2, 1))
+        self.assertEqual([r["request_id"] for r in read.records], ["req0001", "req0002"])
+
+    def test_a_write_failure_never_fabricates_a_record(self):
+        with mock.patch.object(githits, "write_record", side_effect=OSError("write refused")):
+            with self.assertRaises(githits.GitHitsError) as caught:
+                self.client().search("q", ["pypi:requests"])
+        self.assertEqual(caught.exception.code, "record_failed")
+        self.assertEqual((len(self.fake.requests), self.records().records), (1, []))
+
     def test_records_hold_digests_and_counts_never_the_query_and_verify_by_mac(self):
         query = "private-looking query " + secrets.token_hex(8)
         client = self.client()

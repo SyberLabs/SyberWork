@@ -433,12 +433,11 @@ class OutputMatchesTheRecord(FakeCase):
         self.assertEqual((code, out.splitlines()[:1]), (0, ["grep: 1 matches of 0"]))
         self.assertEqual([r["status"] for r in self.records().records], [githits.OK] * 3)
 
-    @unittest.expectedFailure
     def test_pr_138_a_delivery_that_fails_in_any_way_is_recorded_as_an_error(self):
         """#138 (open) adds ``Client.call(request, deliver=...)`` and writes the record after ``deliver``; its
         ``_finish`` records ``error`` only when ``deliver`` raises OSError or ValueError. Any other exception, or the
         SystemExit a SIGTERM becomes in the launcher's entry, leaves no record for a request that reached GitHits.
-        Expected to fail until #138 records every failed delivery (here, before #138, ``deliver`` does not exist)."""
+        The integrated output path records every failed delivery."""
         def deliver(result):
             raise RuntimeError("the renderer crashed")
 

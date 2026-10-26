@@ -199,6 +199,7 @@ class Run:
     upto: metrics.WorkItemMetrics | None = None  # the same fold over the events up to acceptance
     observed: int = 0              # lookup facts showing a lookup on the server, in the whole thread (``_observed``)
     routes: tuple[str, ...] = ()   # how its calls had GitHits: ``launcher``, ``mcp`` or both (``_routes``)
+    blocked: int = 0              # GitHits MCP attempts blocked by the host, included in declared attempt counts
 
     def value(self, name: str) -> metrics.Metric:
         """A compared number. An accepted thread's work metrics are read up to its first acceptance, so what happened
@@ -285,7 +286,7 @@ def _routes(registrations: list[dict], server: str | None) -> tuple[str, ...]:
 
 def _observed(events: list[dict], server: str | None) -> int:
     """The thread's verified ``lookup`` facts that show a lookup on the server: every ``mcp__<server>__*`` call the
-    stream showed, and for GitHits each client record a guarded launcher call stands behind (``githits.<op>``, guard
+    guard passed, and for GitHits each client record a guarded launcher call stands behind (``githits.<op>``, guard
     ``pass``; not ``githits.doctor``, a readiness check). A call journals its lookups before its candidate, and before it
     raises when it fails, so this sees a lookup that no registration counts. A client record no guarded launcher call
     stands behind (``unguarded``) is left to ``githits_lookups``: the record cannot say whether it reached GitHits, and
@@ -298,9 +299,10 @@ def _observed(events: list[dict], server: str | None) -> int:
         tool = value.get("tool")
         if not isinstance(tool, str):
             continue
-        if tool.startswith(f"mcp__{server}__"):
+        if tool.startswith(f"mcp__{server}__") and value.get("guard") == "pass":
             found += 1
-        elif server == SERVER and tool.startswith(CLIENT_TOOL) and tool != DOCTOR and value.get("guard") == "pass":
+        elif (server == SERVER and tool.startswith(CLIENT_TOOL)
+              and tool not in (DOCTOR, metrics.CLIENT_UNRECORDED) and value.get("guard") == "pass"):
             found += 1
     return found
 
@@ -387,7 +389,10 @@ def _run(case_id: str, events: list[dict], name: str, work: metrics.WorkItemMetr
                base=_base(events), objective=_objective(events), server=_servers(registrations, server),
                models=_models(registrations), accepted=accepted, time_to_pass=time_to_pass,
                reviewed=_reviewed(events, accept, commit), work=work, upto=upto, observed=_observed(events, server),
-               routes=_routes(registrations, server))
+               routes=_routes(registrations, server), blocked=sum(
+                   1 for f in (metrics.fact(e, LOOKUP) or {} for e in events)
+                   if str(f.get("tool", "")).startswith(f"mcp__{server}__")
+                   and f.get("guard") not in (None, "pass", "unguarded")))
 
 
 def _threads(events: Iterable[dict]) -> dict[str, list[dict]]:
@@ -418,9 +423,9 @@ def _mean(runs_: Sequence[Run], name: str) -> float | None:
 
 
 def _looked_up(run: Run) -> bool:
-    """The record shows the run made a GitHits lookup: ``githits_lookups`` known and above zero, or a lookup fact the
+    """The record shows the run made a GitHits lookup: ``githits_lookups`` above the host's blocked MCP attempts, or a lookup fact the
     host observed (``_observed``)."""
-    return (run.work.githits_lookups.value or 0) > 0 or run.observed > 0
+    return (run.work.githits_lookups.value or 0) > run.blocked or run.observed > 0
 
 
 def _flags(item_runs: dict[str, list[Run]], baseline: str, treatment: str, server: str | None) -> list[str]:
@@ -454,7 +459,8 @@ def _flags(item_runs: dict[str, list[Run]], baseline: str, treatment: str, serve
             elif any(not run.work.githits_lookups.known for run in base_runs):
                 flags.append("contamination_unknown")
             if treat_runs and not any(_looked_up(run) for run in treat_runs):
-                flags.append("unused" if all(run.work.githits_lookups.value == 0 for run in treat_runs)
+                flags.append("unused" if all(run.work.githits_lookups.known
+                                             and run.work.githits_lookups.value <= run.blocked for run in treat_runs)
                              else "use_unknown")
     every_arm = [run for found in item_runs.values() for run in found]  # a run moved into another arm still counts
     if any(run.labelled_late for run in every_arm):
