@@ -29,8 +29,9 @@ Derivations (``docs/METRICS.md`` has the full table):
   ``lookups_blocked`` counts the host's ``lookup`` facts whose query guard decision is a rule (not ``pass``). When
   the record holds ``lookup`` facts from GitHits client records (tool ``githits.<op>``, ``claude_code`` with
   ``githits=True``), ``githits_lookups`` is their number instead: host-observed, and counted for calls whose answer
-  was refused too. It is then unknown when a call's ``signal.githits.mismatch`` says a launcher call the guard
-  passed left no record, or a record is ``unguarded``: the record cannot say whether those reached GitHits.
+  was refused too. A ``githits.doctor`` fact (a readiness check, the operator's) is never counted. It is then
+  unknown when a call's ``signal.githits.mismatch`` says a launcher call the guard passed left no record, or a
+  counted record is ``unguarded``: the record cannot say whether those reached GitHits.
 - ``delivered``: true with a ``pr_merged`` fact; false when no pull request was opened, the thread was
   cancelled, or a ``pr_closed`` fact says the pull request was closed unmerged; unknown while a pull request is
   open and no merge is in the record. ``opened`` is separate. ``syberlabs.settle`` writes the ``pr_*`` facts.
@@ -67,6 +68,7 @@ PR_CLOSED = "pr_closed"            # the same poll: closed without a merge
 PR_REVIEW = "pr_review"
 LOOKUP = "lookup"                  # claude_code.LOOKUP; its ``guard`` is query_guard's decision
 CLIENT_LOOKUP = "githits."         # claude_code.CLIENT_TOOL: a lookup fact made from an authentic GitHits client record
+CLIENT_DOCTOR = CLIENT_LOOKUP + "doctor"  # a readiness check's record, not a lookup: never in ``githits_lookups``
 INTERVENTION_KINDS = ("message", "commit", "approve", "edit", "override")
 VERDICTS = ("pass", "fail")
 MAX_NOTE = 500
@@ -367,24 +369,26 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
         return Metric(total, tuple(basis), f"{label} declared by the adapter (signal.tool_usage)")
 
     web = lookups(("web_search", "web_fetch"), "web_search and web_fetch")
-    # GitHits through the API client: the host journaled one lookup fact per authentic client record. The count is
-    # exact only while launcher calls and records agree: a launcher call the guard passed that left no record
-    # (``signal.githits.mismatch``) may or may not have reached GitHits, and so may a record no guarded launcher call
-    # stands behind (``guard: unguarded``); the record cannot say, so the count is unknown.
+    # GitHits through the API client: the host journaled one lookup fact per authentic client record; a readiness
+    # check's (``githits.doctor``) is never a lookup. The count is exact only while launcher calls and records agree:
+    # a launcher call the guard passed that left no record (``signal.githits.mismatch``) may or may not have reached
+    # GitHits, and so may a record no guarded launcher call stands behind (``guard: unguarded``); the record cannot
+    # say, so the count is unknown.
     client = [(e, f) for e, f in ((e, fact(e, LOOKUP)) for e in events)
               if f is not None and isinstance(f.get("tool"), str) and f["tool"].startswith(CLIENT_LOOKUP)]
+    counted = [(e, f) for e, f in client if f["tool"] != CLIENT_DOCTOR]
     gaps = [e for e in registrations if _githits_mismatch(e["body"].get("signal"))]
-    unguarded = [e for e, f in client if f.get("guard") != "pass"]
+    unguarded = [e for e, f in counted if f.get("guard") != "pass"]
     if gaps or unguarded:
         why = ([f"{len(gaps)} call(s) report launcher calls the query guard passed that left no GitHits client record "
                 "(signal.githits.mismatch)"] if gaps else []) + (
                [f"{len(unguarded)} GitHits client record(s) had no guarded launcher call behind them (guard "
                 "unguarded)"] if unguarded else [])
         githits = Metric(None, tuple(e["hash"] for e in gaps + unguarded), "; ".join(why)
-                         + f": the record cannot say whether they reached GitHits ({len(client)} recorded)")
+                         + f": the record cannot say whether they reached GitHits ({len(counted)} recorded)")
     elif client:
-        githits = Metric(len(client), tuple(e["hash"] for e, _f in client),
-                         "host-observed: authentic GitHits client records (lookup facts)")
+        githits = Metric(len(counted), tuple(e["hash"] for e, _f in counted),
+                         "host-observed: authentic GitHits client records (lookup facts; doctor excluded)")
     else:
         githits = lookups(("githits",), "githits")
 
