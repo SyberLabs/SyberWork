@@ -9,9 +9,12 @@ skills/githits/SKILL.md is a modified work derived from files of GitHits' CLI:
 
 The upstream repository has no NOTICE file. SyberLabs changed the files on 2026-10-26: the text was rewritten
 for the SyberLabs host's GitHits launcher (a per-call command that runs the SyberLabs GitHits API client) instead
-of the githits binary, npx or MCP tools; only the search, grep, list, read and example commands are described;
-the login, research, resolve, package, diff and upgrade guidance was removed; guidance on when a lookup is worth
-making, on phrasing queries for a host that checks them, and on citing sources was added. The upstream text's
-external-content posture and its search-then-read workflow are kept in shortened form.
+of the githits binary, npx or MCP tools; only the search, grep and read commands are described; the example,
+list, login, research, resolve, package, diff and upgrade guidance was removed; lookups are limited to a failing
+check that implicates a third-party package; queries are pinned to the installed version and an exact symbol or
+error text; caps on results and read windows, rules for stopping, rules on the characters a host that checks
+commands accepts, and a rule on citing sources were added. The same day the text was shortened to cut its cost
+in every request. The upstream text's external-content posture and its search-then-read workflow are kept in
+shortened form.
 
 These changes are licensed under the Apache License, Version 2.0, as is the rest of this repository.

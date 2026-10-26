@@ -901,7 +901,7 @@ SEARCH = 'search "requests retry backoff zq71" --target pypi:requests@2.32.3'
 EXAMPLE = 'example "retry an HTTP call with backoff zq72" --language python'
 # The committed blob's SHA-256 (``git cat-file blob HEAD:skills/githits/SKILL.md``): what signal.harness.skill
 # records on every platform, a Windows checkout with core.autocrlf included (githits-pilot-hardening, item 3).
-SKILL_SHA256 = "24c150e4bf1d2b6e05bd7d2a1fe243452b08ac2fe22047bde6a0f19860306508"
+SKILL_SHA256 = "b44485f8a7f5ff2c85b47bf37e2bc1ec1e0a2e7a9ce927f1b86bb837b9f7a27d"
 # An operator's own GitHits variable, beside the token and the base URL the fixture sets: arm A drops it too.
 OPERATOR_GITHITS = {"GITHITS_OPERATOR_SETTING": "kept-only-in-arm-b"}
 # What a provider built today passes; githits=False must keep its argv byte-identical (githits-wiring, item 2).
@@ -1039,6 +1039,31 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertEqual(validate_events(thread.history(), "claude-code"), [])
         self.assertTrue(verify_events(thread.history()))
 
+    def test_the_skills_commands_run_end_to_end_in_arm_b(self):
+        """The commands skills/githits/SKILL.md teaches, typed by the stand-in exactly as the skill shows them, pass
+        the guard's hook, run through the launcher and the host's client, and each becomes one verified lookup fact:
+        none refused, unrecorded or unguarded (tests/test_githits_skill.py checks each against the guard and the
+        contract on its own)."""
+        shown = [line.strip()[len("{launcher} "):] for line in githits_skill()[0].splitlines()
+                 if line.strip().startswith("{launcher} ")]
+        kit = self.kit()
+        thread = kit.start("Fix the retry configuration", paths=["src/", "tests/"])
+        claude = self.stand_in("skill", lookups=[launcher_lookup(command) for command in shown])
+        [candidate] = thread.propose(self.arm_b(kit, claude, thread_label=thread.id))
+        values = [b["value"] for b in self.lookup_facts(thread)]
+        self.assertEqual([(v["tool"], v["status"], v["ok"], v["guard"]) for v in values],
+                         [("githits.search", "ok", True, "pass"), ("githits.read", "ok", True, "pass"),
+                          ("githits.grep", "ok", True, "pass")])
+        self.assertEqual([r["path"] for r in self.fake.requests], ["/v1/searches", "/v1/read", "/v1/grep"])
+        self.assertEqual(candidate.signal["githits"], {"arm": "b", "launcher_calls": 3, "launcher_passed": 3,
+                                                       "records": 3, "records_ignored": 0, "bash_refused": 0,
+                                                       "license_policy": githits.LicensePolicy().digest})
+        self.assertEqual(candidate.signal["harness"]["skill"], {"path": "skills/githits/SKILL.md",
+                                                                "sha256": SKILL_SHA256})
+        [run] = self.runs("skill")
+        self.assertEqual([text.split(":", 1)[0] for text in run["bash"]], ["search", "read", "grep"])
+        self.assertTrue(all(hook.get("passed") for hook in run["hooks"]), "the guard's hook passed every command")
+
     def test_other_commands_metacharacters_and_secrets_are_blocked_and_recorded(self):
         kit = self.kit()
         thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
@@ -1169,8 +1194,9 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertEqual(digest, SKILL_SHA256, "the committed blob's digest")
         self.assertFalse(template.startswith("---"), "the front matter stays out of the prompt")
         self.assertIn("{launcher}", template)
-        for words in ("Targets first", "untrusted", "No code, no line copied from this repository", "Cite what you used",
-                      "search", "grep", "list", "read"):
+        for words in ("Look up only when a failing check", "Never before a check has failed", "installed version",
+                      "nothing from this repository", "At most three launcher commands", "untrusted", "Apply and cite",
+                      "search", "grep", "read"):
             self.assertIn(words, template)
         self.assertLess(len(SKILL_PATH.read_bytes()), 12000, "it rides in argv; keep it well under Windows' limit")
         front = SKILL_PATH.read_text(encoding="utf-8").split("---")[1]
