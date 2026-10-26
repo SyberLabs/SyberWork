@@ -12,7 +12,7 @@ import json
 from typing import Mapping
 
 from syberlabs.canonical import canonical
-from syberlabs.ed25519 import public_from_seed, sign, verify
+from syberlabs.ed25519 import key_problem, public_from_seed, sign, verify
 from syberlabs.events import GENESIS
 
 
@@ -57,8 +57,14 @@ def verified_payload(envelope: Mapping, public: bytes, payload_type: str) -> byt
     """Payload bytes after the signature verifies. None when it does not.
 
     A ``keyid`` that is present and is not ``public`` is ignored. The payload
-    is not parsed until a signature matches.
+    is not parsed until a signature matches. A ``public`` that
+    ``ed25519.key_problem`` names a problem for gives None before the envelope
+    is read: ``ed25519.verify`` takes any 32 bytes, as RFC 8032 does, and under
+    a small-order key anyone can sign without a seed. A caller that needs the
+    reason asks ``key_problem``.
     """
+    if key_problem(public) is not None:
+        return None
     if not isinstance(envelope, Mapping) or envelope.get("payloadType") != payload_type:
         return None
     encoded = envelope.get("payload")
@@ -95,7 +101,9 @@ def sign_chain_head(case_id: str, events: list, seed: bytes) -> dict:
 
 
 def verify_chain_head(envelope: Mapping, events: list, public: bytes) -> bool:
-    """True when ``envelope`` is this public key's signature of these events' head."""
+    """True when ``envelope`` is this public key's signature of these events' head.
+
+    False under a key ``ed25519.key_problem`` names a problem for, whatever the envelope (``verified_payload``)."""
     payload = verified_payload(envelope, public, CHAIN_HEAD_TYPE)
     if payload is None:
         return False

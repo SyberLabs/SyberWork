@@ -413,6 +413,13 @@ class CachedPublicKey(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             log = TransparencyLog(Path(folder) / "log.sqlite", SECRET_1)
             try:
+                # verified_payload checks the key first (ed25519.key_problem): 8·A and L·A once per key, then cached
+                ed25519._point_problem.cache_clear()
+                self.addCleanup(ed25519._point_problem.cache_clear)
+                with patch.object(ed25519, "_mul", wraps=ed25519._mul) as mul:
+                    self.assertIsNone(ed25519.key_problem(log.public))
+                    self.assertIsNone(ed25519.key_problem(log.public))
+                self.assertEqual(mul.call_count, 2)
                 with patch.object(ed25519, "_mul", wraps=ed25519._mul) as mul:
                     log.append(envelope)
                 # verifying the incoming envelope is two multiplications; signing the checkpoint is one

@@ -505,13 +505,20 @@ def verify_certificate(envelope: object, public: bytes, *, repo: Repo | None = N
     links, and ``claims`` recomputed on that prefix equals the certificate leaf by leaf. The
     first failure stops the run. Nothing is executed and nothing is written: the journal is read
     without its lock, and a torn final record is ignored and reported, never truncated.
+
+    Before layer 1, ``public`` itself: one ``ed25519.key_problem`` names a problem for fails the
+    signature layer as ``public_key_invalid``, the problem's word last in the note, and the
+    envelope is not read. Under a small-order key anyone can sign without a seed.
     """
-    keyid = public.hex()
+    problem = key_problem(public)
+    keyid = public.hex() if problem != "not_32_bytes" else None
     states: list[str | None] = [None, None, None]
     notes = ["", "", ""]
     payload = None
     layer = 0
     try:
+        if problem is not None:
+            raise _Fail("public_key_invalid", f"not a key only a seed's holder can sign under: {problem}")
         payload = _layer_signature(envelope, public)
         states[0], notes[0] = "ok", _describe(payload, keyid)
         layer = 1
