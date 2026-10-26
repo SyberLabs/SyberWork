@@ -25,7 +25,9 @@ Derivations (``docs/METRICS.md`` has the full table):
 - ``agent_time``: hours from ``case_created`` to the ``pr_merged`` fact's ``merged_at``; unknown without it.
 - ``fix_rounds``: registrations that follow a failed evaluation (a required check not ``passed``).
 - ``web_lookups`` / ``githits_lookups``: the adapter-declared ``signal.tool_usage`` counts; unknown unless
-  every registration declares them.
+  every registration declares them. When the record holds ``lookup`` facts from GitHits client records (tool
+  ``githits.<op>``, ``claude_code`` with ``githits=True``), ``githits_lookups`` is their number instead: host-observed,
+  and counted for calls whose answer was refused too.
 - ``delivered``: true with a ``pr_merged`` fact; false when no pull request was opened, the thread was
   cancelled, or a ``pr_closed`` fact says the pull request was closed unmerged; unknown while a pull request is
   open and no merge is in the record. ``opened`` is separate. ``syberlabs.settle`` writes the ``pr_*`` facts.
@@ -65,6 +67,7 @@ PR_MERGED = "pr_merged"            # written by the settlement poll, syberlabs.s
 PR_CLOSED = "pr_closed"            # the same poll: closed without a merge
 PR_REVIEW = "pr_review"
 LOOKUP = "lookup"                  # claude_code.LOOKUP; its ``guard`` is query_guard's decision
+CLIENT_LOOKUP = "githits."         # claude_code.CLIENT_TOOL: a lookup fact made from an authentic GitHits client record
 INTERVENTION_KINDS = ("message", "commit", "approve", "edit", "override")
 VERDICTS = ("pass", "fail")
 MAX_NOTE = 500
@@ -358,7 +361,11 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
         return Metric(total, tuple(basis), f"{label} declared by the adapter (signal.tool_usage)")
 
     web = lookups(("web_search", "web_fetch"), "web_search and web_fetch")
-    githits = lookups(("githits",), "githits")
+    # GitHits through the API client: the host journaled one lookup fact per authentic client record.
+    client = [e["hash"] for e in events
+              if isinstance((fact(e, LOOKUP) or {}).get("tool"), str) and fact(e, LOOKUP)["tool"].startswith(CLIENT_LOOKUP)]
+    githits = (Metric(len(client), tuple(client), "host-observed: authentic GitHits client records (lookup facts)")
+               if client else lookups(("githits",), "githits"))
 
     # Lookups the host's query guard blocked: ``lookup`` facts whose ``guard`` names a rule.
     seen = [(e, f) for e, f in ((e, fact(e, LOOKUP)) for e in events) if f is not None]

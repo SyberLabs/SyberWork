@@ -25,13 +25,15 @@ Contamination control, because GitHits indexes public code and SyberLabs' own re
     (case-insensitive; also GitLab, Codeberg, raw and gist hosts, ``<owner>.github.io``, and the URL-decoded
     text) is dropped whole and marked ``contamination_blocked``. This is detection, not prevention: GitHits may
     already have blended an excluded repository into the generated code without citing it, and nothing on this
-    side can see that. Index-side exclusion is asked of GitHits.
+    side can see that. Contamination is resolved on the pilot's side (unpublished work items, both arms local, a
+    pinned base); this layer is the backstop, and index-side exclusion at GitHits is optional.
 
 License policy: permissive only by default (``PERMISSIVE``), because what an agent takes from a result can land in
 this Apache-2.0 repository, which cannot meet a copyleft license's obligations. Server side, every example asks for
 ``license_mode: strict`` (the only license parameter of the five operations; the document does not say which
 licenses ``strict`` admits). Client side, a result that carries a license is dropped and counted
-(``results_dropped_license``) unless the license, an SPDX expression, is on the allow list: copyleft (GPL, LGPL,
+(``results_dropped_license``) unless the license, an SPDX expression (``spdx_allows``: ``AND``, ``OR``, ``WITH``
+and parentheses, ``AND`` binding tighter than ``OR``), is on the allow list: copyleft (GPL, LGPL,
 AGPL, MPL, EPL, EUPL, CDDL, SSPL), ``NOASSERTION``, unlisted and missing licenses are dropped. In the 0.1.0 contract
 only an example carries licenses, as ``(SPDX)`` after each source link of its Markdown; an example with a source
 link that has no license, or with no source link, is dropped whole. Search, grep, list and read results carry no
@@ -39,8 +41,13 @@ license field, so they pass this check unjudged until GitHits adds one. ``SYBERL
 the allow list (a comma list of SPDX ids) or turns the client-side check off (``any``); every record carries the
 digest of the policy in force (``license_policy``).
 
-The exclusion list is ``SyberLabs`` unless ``SYBERLABS_GITHITS_EXCLUDE`` names others (a comma list of owners or
-``owner/repo``); an empty value keeps the default.
+The exclusion list is ``SyberLabs`` plus whatever ``SYBERLABS_GITHITS_EXCLUDE`` adds (a comma list of owners or
+``owner/repo``); the variable never removes the default. Only ``SYBERLABS_GITHITS_EXCLUDE_REPLACE=1``, for tests,
+lets the variable's list replace it.
+
+``doctor`` (``syberlabs githits doctor``) makes one cheap authenticated request, ``GET /v1/languages?query=python
+&limit=1`` (no target, no repository content, a few bytes back), and reports ``ok``, ``auth``, ``rate_limited``,
+``no_token`` or ``error`` without the token.
 
 With ``SYBERLABS_GITHITS_RECORD_DIR`` and ``SYBERLABS_GITHITS_RECORD_KEY`` set, every call, refused ones included,
 appends one JSON line to ``githits-records.jsonl`` in that directory: ``RECORD_FIELDS`` and ``mac``, an
@@ -76,6 +83,7 @@ CLIENT_NAME = "syberlabs"
 TOKEN_ENV, URL_ENV = "GITHITS_API_TOKEN", "GITHITS_API_URL"
 SESSION_ENV, AGENT_ENV = "GITHITS_SESSION_ID", "GITHITS_AGENT"
 EXCLUDE_ENV = "SYBERLABS_GITHITS_EXCLUDE"
+EXCLUDE_REPLACE_ENV = "SYBERLABS_GITHITS_EXCLUDE_REPLACE"  # "1": the list replaces the default; for tests only
 LICENSES_ENV = "SYBERLABS_GITHITS_LICENSES"
 RECORD_DIR_ENV, RECORD_KEY_ENV = "SYBERLABS_GITHITS_RECORD_DIR", "SYBERLABS_GITHITS_RECORD_KEY"
 DEFAULT_EXCLUDE = ("SyberLabs",)
@@ -128,6 +136,12 @@ OPERATIONS = {
     "list": Operation("POST", "/v1/list", "ListRequest", "ListResponse"),
     "grep": Operation("POST", "/v1/grep", "GrepRequest", "GrepResponse"),
 }
+# The readiness check's one request: the lightest authenticated operation in the document (no body, no target, no
+# repository content; an array of at most ``limit`` language names back). Pinned apart from the five, in
+# ``tests/fixtures/githits_openapi_v1_languages.json``.
+DOCTOR = Operation("GET", "/v1/languages", "query", "LanguageResponse")
+DOCTOR_PARAMS = {"query": "python", "limit": 1}
+DOCTOR_STATUSES = ("ok", "auth", "rate_limited", "no_token", "error")
 # The response fields this client reads, as paths through the response schema ("[]" is an array's items).
 # tests/test_githits.py resolves every one in the pinned OpenAPI fixture, so a renamed field fails a test.
 READS = {
@@ -157,9 +171,10 @@ class GitHitsError(Exception):
     never holds the token: the client builds it from status codes and the server's problem ``code`` and ``title``,
     and removes the token from it if the server echoed it."""
 
-    def __init__(self, code: str, message: str, http_status: int | None = None, request_id: str | None = None):
+    def __init__(self, code: str, message: str, http_status: int | None = None, request_id: str | None = None,
+                 problem: str | None = None):
         super().__init__(f"{code}: {message}")
-        self.code, self.http_status, self.request_id = code, http_status, request_id
+        self.code, self.http_status, self.request_id, self.problem = code, http_status, request_id, problem
 
 
 class Request(NamedTuple):
@@ -221,9 +236,13 @@ class Exclusions:
 
     @classmethod
     def from_env(cls, environ=None) -> "Exclusions":
+        """``DEFAULT_EXCLUDE`` plus the owners and repositories ``SYBERLABS_GITHITS_EXCLUDE`` adds; the variable never
+        removes the default. ``SYBERLABS_GITHITS_EXCLUDE_REPLACE=1`` (for tests only) makes its list replace it."""
         environ = _process_environ if environ is None else environ
         listed = [item for item in environ.get(EXCLUDE_ENV, "").split(",") if item.strip()]
-        return cls(listed or DEFAULT_EXCLUDE)
+        if listed and environ.get(EXCLUDE_REPLACE_ENV, "").strip() == "1":
+            return cls(listed)
+        return cls(list(DEFAULT_EXCLUDE) + listed)
 
     def mentioned(self, text) -> bool:
         """True when free text names an excluded owner or repository on a code host (as typed or URL-decoded)."""
@@ -279,18 +298,12 @@ class LicensePolicy:
         return cls(listed or PERMISSIVE)
 
     def allows(self, expression) -> bool:
-        """True for an SPDX expression the policy admits: one ``OR`` branch whose every ``AND`` part (an exception
-        after ``WITH`` aside) is allowed. A missing, blank or unparsable license is not."""
+        """True for an SPDX expression the policy admits (``spdx_allows``): every license an ``AND`` requires, in
+        at least one choice an ``OR`` offers, is allowed; an exception after ``WITH`` is not judged. A missing,
+        blank or unparsable license is not admitted."""
         if self.allowed is None:
             return True
-        if not isinstance(expression, str) or not expression.strip():
-            return False
-        for branch in re.split(r"\s+OR\s+", expression.strip().strip("()"), flags=re.IGNORECASE):
-            parts = [re.sub(r"\s+WITH\s+.*$", "", part.strip().strip("()").strip(), flags=re.IGNORECASE)
-                     for part in re.split(r"\s+AND\s+", branch.strip().strip("()"), flags=re.IGNORECASE)]
-            if parts and all(part.lower() in self._lower for part in parts):
-                return True
-        return False
+        return spdx_allows(expression, self._lower)
 
     def admits(self, item) -> bool:
         """False only when ``item`` carries a license field (``LICENSE_KEYS``) the policy does not allow; an item
@@ -304,6 +317,91 @@ class LicensePolicy:
                     value = value.get("spdx_id") or value.get("id") or value.get("name")
                 return self.allows(value)
         return True
+
+
+# SPDX license expressions (SPDX 2.3, annex D): ``WITH`` binds tighter than ``AND``, ``AND`` tighter than ``OR``;
+# operators are matched ignoring case, as license ids are.
+_SPDX_TOKEN = re.compile(r"\(|\)|[^\s()]+")
+_SPDX_ID = re.compile(r"(?:DocumentRef-[A-Za-z0-9.-]+:)?LicenseRef-[A-Za-z0-9.-]+|[A-Za-z0-9.-]+\+?")
+_SPDX_OPERATORS = ("and", "or", "with")
+MAX_SPDX_TOKENS = 64
+
+
+def spdx_parse(expression: str):
+    """The parse tree of an SPDX license expression: ``("id", name)``, ``("and", left, right)``, ``("or", left,
+    right)``; an exception after ``WITH`` is checked for form and dropped. Raises ValueError when the text is not
+    an expression (an unbalanced parenthesis, a dangling operator, a stray character, more than
+    ``MAX_SPDX_TOKENS`` tokens)."""
+    tokens = _SPDX_TOKEN.findall(expression) if isinstance(expression, str) else []
+    if not tokens or len(tokens) > MAX_SPDX_TOKENS:
+        raise ValueError("not an SPDX expression")
+    position = [0]
+
+    def peek():
+        return tokens[position[0]].lower() if position[0] < len(tokens) else None
+
+    def take():
+        if position[0] >= len(tokens):
+            raise ValueError("the expression ends early")
+        position[0] += 1
+        return tokens[position[0] - 1]
+
+    def license_id(token: str) -> str:
+        if token in ("(", ")") or token.lower() in _SPDX_OPERATORS or not _SPDX_ID.fullmatch(token):
+            raise ValueError("not a license id")
+        return token
+
+    def term():
+        token = take()
+        if token == "(":
+            inner = either()
+            if take() != ")":
+                raise ValueError("an unbalanced parenthesis")
+            return inner
+        node = ("id", license_id(token))
+        if peek() == "with":
+            take()
+            license_id(take())  # the exception: its form is checked, its terms are not judged
+        return node
+
+    def both():
+        node = term()
+        while peek() == "and":
+            take()
+            node = ("and", node, term())
+        return node
+
+    def either():
+        node = both()
+        while peek() == "or":
+            take()
+            node = ("or", node, both())
+        return node
+
+    tree = either()
+    if position[0] != len(tokens):
+        raise ValueError("text after the expression")
+    return tree
+
+
+def spdx_allows(expression, allowed) -> bool:
+    """True when ``expression`` can be satisfied with licenses in ``allowed`` (lower-case ids): an ``AND`` needs
+    both sides, an ``OR`` either. Unparsable, missing or blank expressions are not allowed (fail closed)."""
+    if not isinstance(expression, str) or not expression.strip():
+        return False
+    try:
+        tree = spdx_parse(expression)
+    except ValueError:
+        return False
+
+    def satisfied(node) -> bool:
+        if node[0] == "id":
+            return node[1].lower() in allowed
+        if node[0] == "and":
+            return satisfied(node[1]) and satisfied(node[2])
+        return satisfied(node[1]) or satisfied(node[2])
+
+    return satisfied(tree)
 
 
 _SOURCE_LINK = re.compile(r"\]\((https?://[^)\s]+)\)(?:[ \t]*\(([^()\n]*(?:\([^()\n]*\)[^()\n]*)*)\))?")
@@ -417,6 +515,11 @@ def list_request(target: str, *, paths=None, recursive: bool | None = None, file
                        "intents": list(intents) if intents else None, "limit": limit, "after": after or None,
                        "wait_timeout_ms": wait_timeout_ms})
     return Request("list", body, {}, (str(target),), _wait_timeout(wait_timeout_ms))
+
+
+def doctor_request() -> Request:
+    """The readiness check's request (``DOCTOR``): no target, nothing from the caller."""
+    return Request("doctor", None, dict(DOCTOR_PARAMS), (), DEFAULT_TIMEOUT)
 
 
 def grep_request(pattern: str, targets, *, pattern_type: str | None = None, ignore_case: bool | None = None,
@@ -657,7 +760,7 @@ class Client:
             record.update(http_status=exc.http_status, request_id=exc.request_id)
             self._record(record, None, started, headers=getattr(exc, "headers", None))
             raise
-        request_id = _request_id(headers)
+        request_id = _request_id(headers, self._scrub)
         record.update(http_status=status, request_id=request_id)
         try:
             data = json.loads(raw.decode("utf-8"))
@@ -674,10 +777,51 @@ class Client:
         self._record(record, result, started, headers=headers)
         return result
 
+    def doctor(self) -> dict:
+        """One cheap authenticated request (``DOCTOR``): ``{status, http_status, problem, request_id, latency_ms,
+        rate_limit_remaining, retry_after, base_url, token}``. ``status`` is ``ok`` (200 and a JSON array), ``auth``
+        (401 or 403: a missing, rejected or inactive credential, or terms not accepted; ``problem`` is GitHits'
+        code), ``rate_limited`` (429, with ``retry_after``), ``no_token`` (nothing sent) or ``error``. The token
+        is reported as ``set`` or ``unset``, never shown. Recorded like any call when records are configured."""
+        started = time.monotonic()
+        request = doctor_request()
+        record = {"op": request.op, "query_digest": query_digest(request), "targets_count": 0, "status": ERROR,
+                  "http_status": None, "request_id": None, "results_returned": 0, "results_dropped": 0,
+                  "results_dropped_license": 0, "license_policy": self.licenses.digest,
+                  "contamination_blocked": False, "latency_ms": 0, "rate_limit_remaining": None}
+        report = {"status": "error", "http_status": None, "problem": None, "request_id": None,
+                  "rate_limit_remaining": None, "retry_after": None, "base_url": self.base_url,
+                  "token": "set" if self._token else "unset"}
+        try:
+            status, headers, raw = self._send(request)
+        except GitHitsError as exc:
+            headers = getattr(exc, "headers", None)
+            record.update(http_status=exc.http_status, request_id=exc.request_id)
+            self._record(record, None, started, headers=headers)
+            state = ("no_token" if exc.code == "no_token" else "auth" if exc.http_status in (401, 403)
+                     else "rate_limited" if exc.http_status == 429 else "error")
+            report.update(status=state, http_status=exc.http_status, request_id=exc.request_id,
+                          problem=exc.problem or (exc.code if state == "error" else None),
+                          rate_limit_remaining=_remaining(headers), retry_after=_retry_after(headers),
+                          latency_ms=record["latency_ms"])
+            return report
+        request_id = _request_id(headers, self._scrub)
+        record.update(http_status=status, request_id=request_id)
+        try:
+            ok = isinstance(json.loads(raw.decode("utf-8")), list)
+        except ValueError:
+            ok = False
+        record["status"] = OK if ok else ERROR
+        self._record(record, None, started, headers=headers)
+        report.update(status="ok" if ok else "error", http_status=status, request_id=request_id,
+                      problem=None if ok else "malformed_response", rate_limit_remaining=_remaining(headers),
+                      latency_ms=record["latency_ms"])
+        return report
+
     def _send(self, request: Request) -> tuple[int, object, bytes]:
         if not self._token:
             raise GitHitsError("no_token", f"set {TOKEN_ENV}")
-        operation = OPERATIONS[request.op]
+        operation = DOCTOR if request.op == "doctor" else OPERATIONS[request.op]
         url = self.base_url + operation.path[len(API_PREFIX):]
         if request.params:
             url += "?" + urllib.parse.urlencode(request.params)
@@ -702,10 +846,11 @@ class Client:
             raise error from None
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
             reason = getattr(exc, "reason", None) or type(exc).__name__
-            raise GitHitsError("transport", self._scrub(f"{type(exc).__name__}: {reason}"[:200])) from None
+            # Scrubbed before it is cut: a token across the cut would otherwise leave its first characters.
+            raise GitHitsError("transport", self._scrub(f"{type(exc).__name__}: {reason}")[:200]) from None
 
     def _http_error(self, exc: urllib.error.HTTPError) -> GitHitsError:
-        request_id = _request_id(exc.headers)
+        request_id = _request_id(exc.headers, self._scrub)
         if 300 <= exc.code < 400:
             error = GitHitsError("redirect_refused", f"HTTP {exc.code}: redirects are not followed", exc.code,
                                  request_id)
@@ -715,9 +860,11 @@ class Client:
             except (GitHitsError, ValueError, OSError):
                 problem = None
             problem = problem if isinstance(problem, dict) else {}
-            words = " ".join(str(problem.get(key))[:120] for key in ("code", "title") if problem.get(key))
-            error = GitHitsError(f"http_{exc.code}", self._scrub(words or "no problem document"), exc.code,
-                                 request_id)
+            # Each field scrubbed before it is cut to 120 characters (#129's verification, finding 3).
+            words = " ".join(self._scrub(str(problem.get(key)))[:120] for key in ("code", "title") if problem.get(key))
+            code = self._scrub(str(problem.get("code") or ""))
+            error = GitHitsError(f"http_{exc.code}", words or "no problem document", exc.code, request_id,
+                                 code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code) else None)
         error.headers = exc.headers
         return error
 
@@ -725,10 +872,11 @@ class Client:
         length = headers.get("Content-Length") if headers is not None else None
         if length is not None and length.strip().isdigit() and int(length) > self.max_bytes:
             raise GitHitsError("response_too_large", f"Content-Length {int(length)} > {self.max_bytes} bytes",
-                               status, _request_id(headers))
+                               status, _request_id(headers, self._scrub))
         raw = response.read(self.max_bytes + 1)
         if len(raw) > self.max_bytes:
-            raise GitHitsError("response_too_large", f"more than {self.max_bytes} bytes", status, _request_id(headers))
+            raise GitHitsError("response_too_large", f"more than {self.max_bytes} bytes", status,
+                               _request_id(headers, self._scrub))
         return raw
 
     def _scrub(self, text: str) -> str:
@@ -752,9 +900,20 @@ class Client:
                                record.get("http_status"), record.get("request_id")) from None
 
 
-def _request_id(headers) -> str | None:
+def _request_id(headers, scrub=None) -> str | None:
+    """``X-Request-ID``, with ``scrub`` (the client's token scrub) applied before it is cut to 128 characters: a
+    server that echoes the token there must not put it in a record, an exception or ``--json``."""
     value = headers.get("X-Request-ID") if headers is not None else None
-    return value.strip()[:128] if isinstance(value, str) and value.strip() else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return (scrub(value.strip()) if scrub else value.strip())[:128]
+
+
+def _retry_after(headers) -> str | None:
+    value = headers.get("Retry-After") if headers is not None else None
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9 ,:+-]{1,40}", value.strip()):
+        return value.strip()
+    return None
 
 
 def _remaining(headers) -> int | None:
@@ -904,6 +1063,9 @@ def add_parser(commands) -> None:
     grep.add_argument("--corpus", choices=("source", "documentation", "all"))
     grep.add_argument("--glob", dest="globs", action="append", help="path glob for every target (repeatable)")
 
+    steps.add_parser("doctor", parents=[common], help="one cheap authenticated request: are the token, the base URL "
+                                                      "and the rate limit ready (the token is never printed)")
+
 
 _OPTIONS = {
     "search": ("sources", "limit", "offset", "fields", "path_prefix", "kind", "category", "file_intent", "public_only",
@@ -913,16 +1075,34 @@ _OPTIONS = {
     "list": ("paths", "recursive", "file_types", "languages", "intents", "limit", "after", "wait_timeout_ms"),
     "grep": ("pattern_type", "ignore_case", "context_lines_before", "context_lines_after", "max_matches", "cursor",
              "corpus", "globs", "wait_timeout_ms"),
+    "doctor": (),
 }
 
 
+def render_doctor(report: dict) -> str:
+    """One line: the status, then what explains it; never the token."""
+    parts = [f"HTTP {report['http_status']}" if report.get("http_status") is not None else None,
+             report.get("problem"), f"request {report['request_id']}" if report.get("request_id") else None,
+             f"{report['latency_ms']} ms" if report.get("latency_ms") is not None else None,
+             f"rate limit remaining {report['rate_limit_remaining']}"
+             if report.get("rate_limit_remaining") is not None else None,
+             f"retry after {report['retry_after']}" if report.get("retry_after") else None,
+             f"base {report['base_url']}", f"token {report['token']}"]
+    return f"githits doctor: {report['status']} (" + ", ".join(p for p in parts if p) + ")"
+
+
 def run(args, environ=None, stdout=None, stderr=None) -> int:
-    """``syberlabs githits ...``: 0 a result, 2 refused (an excluded target or a blocked result), 1 an error."""
+    """``syberlabs githits ...``: 0 a result, 2 refused (an excluded target or a blocked result), 1 an error;
+    ``doctor``: 0 ready, 1 not (the status says why)."""
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     op = args.githits_command
     options = {name: getattr(args, name) for name in _OPTIONS[op]}
     try:
         client = Client.from_env(environ, timeout=args.timeout)
+        if op == "doctor":
+            report = client.doctor()
+            stdout.write((json.dumps(report, sort_keys=True) if args.json else render_doctor(report)) + "\n")
+            return 0 if report["status"] == "ok" else 1
         if op == "search":
             request = search_request(args.query, args.targets, **options)
         elif op == "example":

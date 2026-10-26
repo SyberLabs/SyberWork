@@ -9,7 +9,9 @@ from https://api.githits.dev/v1/openapi.json on 2026-10-26 (1,364,570 bytes, SHA
 operations this client calls with every component they reference, values unchanged, as compact sorted ASCII JSON.
 The whole document is over the change-size limit of the contract this repository is built under, so only that
 closed subset is pinned. ``SpecPin`` fails when the fixture changes, and when the client sends or reads a field
-the fixture does not have.
+the fixture does not have. ``tests/fixtures/githits_openapi_v1_languages.json`` pins, the same way and from the same
+document, the one operation ``doctor`` calls (``GET /v1/languages``), apart from the five so that the larger fixture
+stays byte-identical.
 """
 
 import contextlib
@@ -33,9 +35,11 @@ from syberlabs.canonical import canonical
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "githits_openapi_v1.json"
 FIXTURE_SHA256 = "c388ab7e53a25fdfbd914c10634d799ae923b01ab8880750c750e775c21f1b9c"
+DOCTOR_FIXTURE = ROOT / "tests" / "fixtures" / "githits_openapi_v1_languages.json"
+DOCTOR_FIXTURE_SHA256 = "492fcb7f97838a2bed4dfc4618c3858cc8589787f1f3ff92422ffff3fdc8904c"
 UPSTREAM_SHA256 = "e58048e3e56d7b0d6346e24722614d2d8907748960f18f18204895a354ab8a6a"
 ENV_NAMES = (githits.TOKEN_ENV, githits.URL_ENV, githits.SESSION_ENV, githits.AGENT_ENV, githits.EXCLUDE_ENV,
-             githits.LICENSES_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV)
+             githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV)
 
 
 # ----------------------------------------------------------------------------------------------- the pinned contract
@@ -52,10 +56,11 @@ def _refs(node, found: set) -> set:
     return found
 
 
-def openapi_subset(spec: dict) -> dict:
-    """The client's five operations of an OpenAPI document with every component they reference, transitively."""
+def openapi_subset(spec: dict, operations=None) -> dict:
+    """The client's five operations (or ``operations``) of an OpenAPI document with every component they
+    reference, transitively."""
     paths = {}
-    for operation in githits.OPERATIONS.values():
+    for operation in (githits.OPERATIONS.values() if operations is None else operations):
         paths.setdefault(operation.path, {})[operation.method.lower()] = spec["paths"][operation.path][operation.method.lower()]
     wanted, pending = set(), _refs(paths, set())
     while pending:
@@ -72,8 +77,13 @@ def openapi_subset(spec: dict) -> dict:
             "components": components}
 
 
-def fixture_bytes(spec: dict) -> bytes:
-    return json.dumps(openapi_subset(spec), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+def fixture_bytes(spec: dict, operations=None) -> bytes:
+    return json.dumps(openapi_subset(spec, operations), sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True).encode("ascii")
+
+
+def doctor_fixture_bytes(spec: dict) -> bytes:
+    return fixture_bytes(spec, [githits.DOCTOR])
 
 
 def _resolve(spec: dict, ref: str):
@@ -251,6 +261,7 @@ DEFAULTS = {
     "/v1/read": lambda: read_code_response("https://github.com/psf/requests"),
     "/v1/list": lambda: list_response([list_entry("src/api.py")]),
     "/v1/grep": lambda: grep_response([grep_hit(12, repo_url="https://github.com/psf/requests")]),
+    "/v1/languages": lambda: [{"aliases": ["py"], "display_name": "Python", "name": "python"}],
 }
 RATE_LIMITED = ("/v1/searches", "/v1/read", "/v1/list", "/v1/grep")  # the spec documents no rate headers for examples
 
@@ -462,6 +473,29 @@ class SpecPin(unittest.TestCase):
                 parameters = {p["name"] for p in operation_of(spec, op).get("parameters", [])}
                 self.assertFalse({name for name in parameters if "licen" in name})
 
+    def test_the_doctor_operation_is_pinned_apart_and_its_request_and_answer_fit_it(self):
+        raw = DOCTOR_FIXTURE.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), DOCTOR_FIXTURE_SHA256)
+        self.assertEqual(doctor_fixture_bytes(json.loads(raw)), raw, "exactly the closed subset for GET /v1/languages")
+        spec = json.loads(raw.decode("ascii"))
+        operation = spec["paths"][githits.DOCTOR.path][githits.DOCTOR.method.lower()]
+        self.assertEqual(operation["x-githits-mcp-tool"], "search_language")
+        self.assertEqual(operation["security"], [{"bearer_auth": []}], "an authenticated request")
+        params = {p["name"]: p for p in operation["parameters"] if p["in"] == "query"}
+        request = githits.doctor_request()
+        self.assertEqual((request.op, request.body, request.targets), ("doctor", None, ()))
+        self.assertLessEqual(set(request.params), set(params))
+        for name, value in request.params.items():
+            self.assertEqual(problems(spec, params[name]["schema"], value), [], name)
+        headers = {p["name"].lower() for p in operation["parameters"] if p["in"] == "header"}
+        self.assertLessEqual({name.lower() for name in githits.HEADERS_SENT}, headers)
+        answer = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(answer["items"]["$ref"].split("/")[-1], githits.DOCTOR.response)
+        self.assertEqual(problems(spec, answer, DEFAULTS["/v1/languages"]()), [], "the fake's answer is valid")
+        self.assertTrue(problems(spec, answer, [{"name": "python"}]), "the validator bites")
+        self.assertLessEqual({"401", "403", "429"}, set(operation["responses"]))
+        self.assertIn("Retry-After", operation["responses"]["429"]["headers"])
+
 
 class LicensePolicy(unittest.TestCase):
     def test_spdx_expressions_against_the_permissive_default(self):
@@ -476,6 +510,36 @@ class LicensePolicy(unittest.TestCase):
                            "NOASSERTION", "Proprietary", "", None, 7):
             with self.subTest(expression=expression):
                 self.assertFalse(policy.allows(expression))
+
+    def test_nested_spdx_expressions_honour_parentheses_and_precedence(self):
+        """#129's verification, finding 2: ``allows`` split on OR before honouring parentheses, so
+        ``GPL-3.0-only AND (MIT OR Apache-2.0)`` passed. AND binds tighter than OR; WITH tighter than AND."""
+        policy = githits.LicensePolicy()
+        refused = ("GPL-3.0-only AND (MIT OR Apache-2.0)", "GPL-3.0 AND (MIT OR BSD-3-Clause)",
+                   "(MIT OR Apache-2.0) AND GPL-3.0-only", "MIT AND (GPL-2.0-only OR AGPL-3.0)",
+                   "GPL-3.0 OR MIT AND GPL-2.0", "((MIT AND (ISC AND LGPL-2.1)))", "MIT AND (Apache-2.0",
+                   "MIT OR", "AND MIT", "MIT GPL-3.0", "(MIT) (ISC)", "MIT WITH", "(MIT) WITH LLVM-exception",
+                   "(MIT OR GPL-3.0 WITH Classpath-exception-2.0) AND AGPL-3.0",
+                   "MIT;rm", " OR ".join(["MIT"] * 40))
+        for expression in refused:
+            with self.subTest(expression=expression):
+                self.assertFalse(policy.allows(expression))
+        admitted = ("(MIT AND GPL-3.0) OR Apache-2.0", "MIT AND (Apache-2.0 OR GPL-2.0-only)",
+                    "GPL-3.0 OR MIT AND ISC", "MIT AND ISC OR GPL-3.0", "((MIT))", "mit and (isc or gpl-3.0)",
+                    "(Apache-2.0 WITH LLVM-exception) AND (BSD-2-Clause OR GPL-2.0)", "LicenseRef-x OR MIT")
+        for expression in admitted:
+            with self.subTest(expression=expression):
+                self.assertTrue(policy.allows(expression))
+        self.assertEqual(githits.spdx_parse("A AND (B OR C)"), ("and", ("id", "A"), ("or", ("id", "B"), ("id", "C"))))
+        self.assertEqual(githits.spdx_parse("A OR B AND C"), ("or", ("id", "A"), ("and", ("id", "B"), ("id", "C"))))
+        self.fake_example_with("GPL-3.0-only AND (MIT OR Apache-2.0)")
+
+    def fake_example_with(self, license_text):
+        """The same expression as an example's source license: the example is dropped whole."""
+        markdown = f"[Source 1](https://github.com/a/b/blob/1/c.py) ({license_text})"
+        self.assertEqual(githits.example_licenses({"result": markdown}), [license_text])
+        self.assertFalse(all(githits.LicensePolicy().allows(item) for item in githits.example_licenses(
+            {"result": markdown})))
 
     def test_the_environment_replaces_the_list_or_turns_the_check_off(self):
         self.assertEqual(githits.LicensePolicy.from_env({}).digest, githits.LicensePolicy().digest)
@@ -526,12 +590,23 @@ class Exclusion(unittest.TestCase):
         self.assertFalse(exclude.mentioned("SyberLabs/SyberWork is mentioned without a host"))
         self.assertFalse(exclude.mentioned("https://github.com/psf/requests/blob/main/src/requests/api.py"))
 
-    def test_the_environment_replaces_the_default_and_an_empty_value_keeps_it(self):
+    def test_the_environment_adds_to_the_default_and_only_an_explicit_switch_replaces_it(self):
+        """#129's verification, finding 4: the variable replaced the default, so naming an unrelated owner silently
+        stopped excluding SyberLabs. It now adds; ``SYBERLABS_GITHITS_EXCLUDE_REPLACE=1`` (tests only) replaces."""
         custom = githits.Exclusions.from_env({githits.EXCLUDE_ENV: " Acme , Other/Repo "})
         self.assertTrue(custom.names("github:acme/anything"))
         self.assertTrue(custom.names("https://github.com/other/repo"))
         self.assertFalse(custom.names("https://github.com/other/else"))
-        self.assertFalse(custom.names("github:SyberLabs/SyberWork"))
+        self.assertTrue(custom.names("github:SyberLabs/SyberWork"), "the default is kept")
+        self.assertEqual(custom.entries, (("syberlabs",), ("acme",), ("other", "repo")))
+        for switch in ("0", "", "yes", "true"):
+            kept = githits.Exclusions.from_env({githits.EXCLUDE_ENV: "Acme", githits.EXCLUDE_REPLACE_ENV: switch})
+            self.assertTrue(kept.names("github:SyberLabs/x"), f"only 1 replaces, not {switch!r}")
+        replaced = githits.Exclusions.from_env({githits.EXCLUDE_ENV: "Acme", githits.EXCLUDE_REPLACE_ENV: "1"})
+        self.assertFalse(replaced.names("github:SyberLabs/SyberWork"))
+        self.assertTrue(replaced.names("github:acme/x"))
+        empty = githits.Exclusions.from_env({githits.EXCLUDE_ENV: " , ", githits.EXCLUDE_REPLACE_ENV: "1"})
+        self.assertTrue(empty.names("github:SyberLabs/x"), "replacing with nothing keeps the default")
         for value in ("", " , "):
             self.assertTrue(githits.Exclusions.from_env({githits.EXCLUDE_ENV: value}).names("github:SyberLabs/x"))
         with self.assertRaises(githits.GitHitsError):
@@ -576,6 +651,31 @@ class Token(FakeCase):
         self.assertEqual(code, 1)
         self.assertNotIn(self.token, out + err)
         self.assertNotIn(self.token, self.record_text())
+
+    def test_a_token_echoed_across_the_cut_or_in_the_request_id_is_scrubbed(self):
+        """#129's verification, finding 3: the problem's title was cut to 120 characters before the scrub, so a
+        token across the cut left its first characters; ``X-Request-ID`` was never scrubbed."""
+        for offset in (100, 110, 119):
+            title = "t" * offset + self.token + " tail"
+            self.fake.serve("/v1/searches", {"code": "AUTHENTICATION_REQUIRED", "title": title, "status": 401}, 401,
+                            {"Content-Type": "application/problem+json", "X-Request-ID": "req-" + self.token})
+            with self.subTest(offset=offset), self.assertRaises(githits.GitHitsError) as caught:
+                self.client().search("q", ["pypi:requests"])
+            error = caught.exception
+            for leak in (self.token, self.token[:8], self.token[-8:]):
+                self.assertNotIn(leak, str(error) + str(error.request_id), offset)
+            self.assertEqual(error.request_id, "req-[token]")
+            self.assertEqual(error.problem, "AUTHENTICATION_REQUIRED")
+        self.fake.script["/v1/searches"] = lambda request: (
+            200, {"Content-Type": "application/json", "X-Request-ID": "x" * 120 + self.token},
+            json.dumps(search_response([])).encode())
+        result = self.client().search("q", ["pypi:requests"])
+        self.assertEqual(result.request_id, "x" * 120 + "[token]"[:8])
+        code, out, err = run_cli(self.env, "githits", "search", "q", "--target", "pypi:requests", "--json")
+        self.assertEqual(code, 0)
+        text = out + err + self.record_text()
+        for leak in (self.token, self.token[:8], self.token[-8:]):
+            self.assertNotIn(leak, text, "not in --json, the error or a record")
 
     def test_without_a_token_nothing_is_sent_and_the_call_is_recorded(self):
         env = dict(self.env)
@@ -866,6 +966,62 @@ class Records(FakeCase):
         env = {k: v for k, v in self.env.items() if k not in (githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV)}
         githits.Client.from_env(env).search("q", ["pypi:requests"])
         self.assertEqual(self.record_text(), "")
+
+
+class Doctor(FakeCase):
+    """``syberlabs githits doctor``: one cheap authenticated request, ``GET /v1/languages?query=python&limit=1``,
+    against the loopback fake only; the token is never printed."""
+
+    def test_ready(self):
+        code, out, err = run_cli(self.env, "githits", "doctor")
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(out.startswith("githits doctor: ok (HTTP 200, request req0001, "), out)
+        self.assertIn(f"base {self.fake.url}, token set)", out)
+        [request] = self.fake.requests
+        self.assertEqual((request["method"], request["path"], request["query"]),
+                         ("GET", "/v1/languages", {"query": ["python"], "limit": ["1"]}))
+        self.assertEqual(request["headers"]["authorization"], f"Bearer {self.token}")
+        self.assertEqual(request["body"], b"")
+        [record] = self.records().records
+        self.assertEqual((record["op"], record["status"], record["http_status"], record["targets_count"]),
+                         ("doctor", "ok", 200, 0))
+        self.assertNotIn(self.token, out + self.record_text())
+
+    def test_auth_rate_limit_and_errors_are_told_apart_without_the_token(self):
+        cases = (
+            (401, {"code": "AUTHENTICATION_REQUIRED", "title": "Authentication required " + self.token}, {}, "auth"),
+            (403, {"code": "TERMS_ACCEPTANCE_REQUIRED", "title": "Accept the terms"}, {}, "auth"),
+            (429, {"code": "RATE_LIMITED", "title": "Rate limited"}, {"Retry-After": "30", "X-RateLimit-Remaining": "0"},
+             "rate_limited"),
+            (500, {"code": "INTERNAL", "title": "x"}, {}, "error"))
+        for status, problem, headers, expected in cases:
+            self.fake.serve("/v1/languages", problem, status, {"Content-Type": "application/problem+json", **headers})
+            code, out, err = run_cli(self.env, "githits", "doctor", "--json")
+            report = json.loads(out)
+            with self.subTest(status=status):
+                self.assertEqual((code, report["status"], report["http_status"], report["token"]),
+                                 (1, expected, status, "set"))
+                self.assertEqual(report["problem"], problem["code"])
+                self.assertNotIn(self.token, out + err)
+        self.assertEqual((report["retry_after"], report["rate_limit_remaining"]), (None, None))
+        self.fake.serve("/v1/languages", {"code": "RATE_LIMITED"}, 429,
+                        {"Content-Type": "application/problem+json", "Retry-After": "30"})
+        code, out, _ = run_cli(self.env, "githits", "doctor")
+        self.assertEqual(code, 1)
+        self.assertIn("githits doctor: rate_limited (HTTP 429, RATE_LIMITED, request req-scripted", out)
+        self.assertIn("retry after 30", out)
+        self.fake.serve("/v1/languages", b"{not json")
+        self.assertEqual(json.loads(run_cli(self.env, "githits", "doctor", "--json")[1])["status"], "error")
+        self.assertEqual({r["op"] for r in self.records().records}, {"doctor"})
+        self.assertNotIn(self.token, self.record_text())
+
+    def test_no_token_sends_nothing(self):
+        env = {k: v for k, v in self.env.items() if k != githits.TOKEN_ENV}
+        code, out, _ = run_cli(env, "githits", "doctor")
+        self.assertEqual(code, 1)
+        self.assertTrue(out.startswith("githits doctor: no_token ("), out)
+        self.assertIn("token unset", out)
+        self.assertEqual(self.fake.requests, [])
 
 
 def run_cli(env: dict, *argv: str) -> tuple[int, str, str]:

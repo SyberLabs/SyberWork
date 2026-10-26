@@ -172,6 +172,13 @@ def main(argv: list[str] | None = None) -> int:
                          help="for --claude-code: allow Bash or PowerShell in --allowed-tools although --mcp-config "
                               "names an MCP server (refused otherwise: the guard's key is in Claude Code's "
                               "environment); recorded in signal.guard")
+    propose.add_argument("--githits", action="store_true",
+                         help="for --claude-code: GitHits through the API client (arm B of the pilot): a per-call "
+                              "launcher as the only Bash command, guarded, its records journaled as lookups, and the "
+                              "adapted GitHits skill appended (docs/CLAUDE_CODE.md); needs GITHITS_API_TOKEN")
+    propose.add_argument("--githits-arm", default="b", metavar="NAME",
+                         help="for --githits: the arm's name in X-GitHits-Session-ID <thread>-<arm> and "
+                              "X-GitHits-Agent syberfactory/<arm> (default b)")
     propose.add_argument("--max-turns", type=int, help="for --claude-code: claude --max-turns")
     propose.add_argument("--lane", choices=("api", "subscription_local", "seat_team_enterprise", "provider_3p"),
                          help="for --claude-code: the credential lane (default api with --bare, else subscription_local)")
@@ -617,7 +624,9 @@ def _run(kit: Kit, args) -> int:
                                           name=args.name or "claude-code", revision=args.revision,
                                           max_calls=args.max_calls, guard_max_lines=args.guard_max_lines,
                                           guard_max_chars=args.guard_max_chars,
-                                          allow_code_tools_with_mcp=args.allow_code_tools_with_mcp)
+                                          allow_code_tools_with_mcp=args.allow_code_tools_with_mcp,
+                                          githits=args.githits, arm=args.githits_arm,
+                                          thread_label=thread.id if args.githits else None)
             found = thread.propose(provider, seed=args.seed)
         else:
             provider = CommandProvider(split_command(args.provider_command), name=args.name or "command", revision=args.revision,

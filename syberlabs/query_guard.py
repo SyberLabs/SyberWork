@@ -16,7 +16,21 @@ for the queries themselves: before Claude Code runs a GitHits (``mcp__githits__*
   ``tree_lines.txt`` beside the hook before the run; the hook compares hashes and never holds the tree's text).
 
 Anything else passes unchanged. The outbound text is every string of the tool input, dictionary keys included, for
-every matched tool (``WebFetch``'s ``prompt`` too: it is processed off this machine). Each string is judged on its
+every matched tool (``WebFetch``'s ``prompt`` too: it is processed off this machine).
+
+``Bash`` is matched only when the host runs the GitHits client through its launcher (``claude_code``, ``githits=True``;
+``settings(..., bash=True)``), and then a command passes only when it is the launcher's absolute path
+(``SYBERLABS_GUARD_LAUNCHER`` in the hook's environment) followed by arguments the hook can read exactly as the shell
+will (``bash_arguments``): words of plain characters and single- or double-quoted strings, separated by spaces.
+
+- ``not_launcher``: any other command, or a command with no launcher configured;
+- ``shell_syntax``: a control operator, a redirection, an expansion or a substitution anywhere after the launcher
+  (``; & | < > $ ` \\ ( ) { } !``, any control character such as a newline), a glob, tilde or comment character
+  outside quotes, an unterminated quote, or ``run_in_background``.
+
+The arguments that pass the shape check are the outbound text: each one, and all of them joined by spaces, are
+judged by the rules above, so a launcher query carrying a credential, an email, code or a tree line is blocked as a
+GitHits tool call is. Each string is judged on its
 own, as typed and folded (``fold``: NFKC, every format character such as a zero-width space removed, and the
 Cyrillic and Greek letters that look like Latin ones mapped to them); a rule broken by either form blocks. The hook
 blocks the documented way: exit code 2 with a reason on standard error, which Claude Code returns to the model as
@@ -85,8 +99,11 @@ TREE_DIGEST_CHARS = 32   # hex characters of SHA-256 kept per tree line
 MAX_TREE_FILE_BYTES = 1024 * 1024
 LINES_ENV, CHARS_ENV = "SYBERLABS_GUARD_MAX_LINES", "SYBERLABS_GUARD_MAX_CHARS"
 MATCHER = "^(mcp__githits__.*|WebSearch|WebFetch)$"
+MATCHER_BASH = "^(mcp__githits__.*|WebSearch|WebFetch|Bash)$"  # with the GitHits launcher (claude_code githits=True)
 PASS, UNGUARDED, ERROR = "pass", "unguarded", "guard_error"
-RULES = ("secret", "url_credentials", "email", "too_long", "code_fence", "code_lines", "tree_line", ERROR)
+NOT_LAUNCHER, SHELL_SYNTAX = "not_launcher", "shell_syntax"
+RULES = ("secret", "url_credentials", "email", "too_long", "code_fence", "code_lines", "tree_line", NOT_LAUNCHER,
+         SHELL_SYNTAX, ERROR)
 DECISIONS = "decisions"
 DECISION_FIELDS = ("tool_use_id", "tool", "query_digest", "rule")  # what the MAC covers
 POLICY_FILE, TREE_FILE, SETTINGS_FILE = "policy.json", "tree_lines.txt", "settings.json"
@@ -94,6 +111,7 @@ POLICY_FILE, TREE_FILE, SETTINGS_FILE = "policy.json", "tree_lines.txt", "settin
 # documents no per-hook ``env`` field): the per-call MAC key and the SHA-256 of the policy and tree files it wrote.
 # Every other child of Claude Code inherits them too, stdio MCP servers included.
 KEY_ENV = "SYBERLABS_GUARD_KEY"
+LAUNCHER_ENV = "SYBERLABS_GUARD_LAUNCHER"  # the GitHits launcher's absolute path: the one Bash command allowed
 POLICY_DIGEST_ENV, TREE_DIGEST_ENV = "SYBERLABS_GUARD_POLICY_DIGEST", "SYBERLABS_GUARD_TREE_DIGEST"
 BLOCK_EXIT = 2  # Claude Code: a PreToolUse hook that exits 2 blocks the call; its stderr is the reason the model sees
 
@@ -121,15 +139,23 @@ WHY = {
     "code_fence": "it contains a fenced code block",
     "code_lines": "it has more lines than the host allows for one lookup",
     "tree_line": "it contains a line copied from this repository",
+    NOT_LAUNCHER: "the only command allowed here is the GitHits launcher named in your instructions",
+    SHELL_SYNTAX: "the launcher's arguments may hold only plain words and quoted strings, with no shell operators, "
+                  "redirections, substitutions or expansions",
     ERROR: "the guard could not read the call or its policy",
 }
+# What may follow the launcher. Anywhere: none of these (control operators, redirections, expansions, substitution,
+# escapes, grouping, history). Outside quotes: only these word characters (no glob, tilde, comment or brace).
+_SHELL_FORBIDDEN = frozenset(";&|<>$`\\(){}!")
+_PLAIN = re.compile(r"[A-Za-z0-9_./:@=,+%^-]")
 
 
 def query_text(tool_input) -> str:
     """The query of a lookup as the host records it: ``query`` (WebSearch, GitHits search), else ``url``
-    (WebFetch), else the whole input as canonical JSON. Only its digest and length are ever recorded."""
+    (WebFetch), else ``command`` (Bash: the GitHits launcher's command line), else the whole input as canonical
+    JSON. Only its digest and length are ever recorded."""
     if isinstance(tool_input, dict):
-        for key in ("query", "url"):
+        for key in ("query", "url", "command"):
             if isinstance(tool_input.get(key), str):
                 return tool_input[key]
     return canonical(tool_input if tool_input is not None else {})
@@ -169,6 +195,45 @@ def outbound(tool_name: str, tool_input) -> list[str]:
 
     walk(tool_input)
     return found
+
+
+def bash_arguments(command, launcher: str | None) -> tuple[str, list[str]]:
+    """``(rule, arguments)`` for a Bash command: ``pass`` and the arguments the shell would pass to the launcher, or
+    ``not_launcher`` / ``shell_syntax`` and none. The command must be ``launcher`` exactly, alone or followed by a
+    space; what follows may hold plain words (``_PLAIN``), ``'single'`` and ``"double"`` quoted strings and spaces,
+    and none of ``_SHELL_FORBIDDEN`` or a control character anywhere. A word is the concatenation of its adjacent
+    plain and quoted parts, as the shell reads it."""
+    if not isinstance(command, str) or not launcher or not (command == launcher or command.startswith(launcher + " ")):
+        return NOT_LAUNCHER, []
+    rest = command[len(launcher):]
+    if any(ch in _SHELL_FORBIDDEN or unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in rest):
+        return SHELL_SYNTAX, []
+    found: list[str] = []
+    word: list[str] | None = None
+    index = 0
+    while index < len(rest):
+        ch = rest[index]
+        if ch == " ":
+            if word is not None:
+                found.append("".join(word))
+                word = None
+            index += 1
+            continue
+        word = [] if word is None else word
+        if ch in "'\"":
+            end = rest.find(ch, index + 1)
+            if end < 0:
+                return SHELL_SYNTAX, []
+            word.append(rest[index + 1:end])
+            index = end + 1
+            continue
+        if not _PLAIN.fullmatch(ch):
+            return SHELL_SYNTAX, []
+        word.append(ch)
+        index += 1
+    if word is not None:
+        found.append("".join(word))
+    return PASS, found
 
 
 def fold(text: str) -> str:
@@ -249,12 +314,25 @@ def _judge(text: str, *, max_lines: int, max_chars: int, tree: set[str] | frozen
 
 
 def decide(call: dict, *, max_lines: int = DEFAULT_MAX_LINES, max_chars: int = DEFAULT_MAX_CHARS,
-           tree: set[str] | frozenset[str] = frozenset()) -> str:
-    """The rule for one ``PreToolUse`` input (``tool_name``, ``tool_input``): ``pass`` or the first rule broken."""
+           tree: set[str] | frozenset[str] = frozenset(), launcher: str | None = None) -> str:
+    """The rule for one ``PreToolUse`` input (``tool_name``, ``tool_input``): ``pass`` or the first rule broken.
+    A ``Bash`` call must first be the GitHits ``launcher`` with plain arguments (``bash_arguments``); its arguments,
+    each and joined, are then the outbound text."""
     name, tool_input = call.get("tool_name"), call.get("tool_input")
     if not isinstance(name, str):
         return ERROR
-    for text in outbound(name, tool_input):
+    if name == "Bash":
+        if not isinstance(tool_input, dict):
+            return NOT_LAUNCHER
+        if tool_input.get("run_in_background"):
+            return SHELL_SYNTAX  # a background run would outlive the call whose record the host reads
+        rule, arguments = bash_arguments(tool_input.get("command"), launcher)
+        if rule != PASS:
+            return rule
+        texts = arguments + ([" ".join(arguments)] if len(arguments) > 1 else [])
+    else:
+        texts = outbound(name, tool_input)
+    for text in texts:
         rule = judge(text, max_lines=max_lines, max_chars=max_chars, tree=tree)
         if rule != PASS:
             return rule
@@ -296,9 +374,11 @@ def hook_command(directory: Path, python: str | None = None) -> dict:
             "timeout": 30, "onFailure": "block"}
 
 
-def settings(directory: Path, python: str | None = None) -> dict:
-    """The temporary settings document passed with ``--settings``: this hook and nothing else."""
-    return {"hooks": {"PreToolUse": [{"matcher": MATCHER, "hooks": [hook_command(directory, python)]}]}}
+def settings(directory: Path, python: str | None = None, bash: bool = False) -> dict:
+    """The temporary settings document passed with ``--settings``: this hook and nothing else. ``bash`` (the GitHits
+    launcher is in use) adds ``Bash`` to the matcher, so every shell command is judged."""
+    return {"hooks": {"PreToolUse": [{"matcher": MATCHER_BASH if bash else MATCHER,
+                                      "hooks": [hook_command(directory, python)]}]}}
 
 
 def file_digest(path: Path) -> str:
@@ -310,7 +390,7 @@ def _write_read_only(path: Path, text: str) -> None:
     os.chmod(path, stat.S_IREAD)  # read-only for everyone; on Windows, the read-only attribute
 
 
-def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = None) -> Path:
+def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = None, bash: bool = False) -> Path:
     """Write the guard's directory (policy, tree digests and settings, each read-only, and an empty
     ``decisions/``); returns the settings file to pass with ``--settings``. ``directory`` is the host's own,
     outside any worktree. ``hook_environment`` then gives the hook the files' digests and the MAC key."""
@@ -319,16 +399,19 @@ def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = N
     _write_read_only(directory / POLICY_FILE, json.dumps(rules))
     _write_read_only(directory / TREE_FILE, "".join(d + "\n" for d in sorted(tree)))
     path = directory / SETTINGS_FILE
-    _write_read_only(path, json.dumps(settings(directory, python), indent=2))
+    _write_read_only(path, json.dumps(settings(directory, python, bash), indent=2))
     return path
 
 
-def hook_environment(directory: Path, key: str) -> dict:
+def hook_environment(directory: Path, key: str, launcher: str | None = None) -> dict:
     """What the host adds to Claude Code's environment for the hook, which inherits it: the per-call MAC key and
-    the SHA-256 of the policy and tree files ``prepare`` wrote."""
+    the SHA-256 of the policy and tree files ``prepare`` wrote; with the GitHits launcher, its absolute path."""
     directory = Path(directory)
-    return {KEY_ENV: key, POLICY_DIGEST_ENV: file_digest(directory / POLICY_FILE),
-            TREE_DIGEST_ENV: file_digest(directory / TREE_FILE)}
+    found = {KEY_ENV: key, POLICY_DIGEST_ENV: file_digest(directory / POLICY_FILE),
+             TREE_DIGEST_ENV: file_digest(directory / TREE_FILE)}
+    if launcher:
+        found[LAUNCHER_ENV] = launcher
+    return found
 
 
 def remove(directory: Path) -> None:
@@ -421,7 +504,8 @@ def run(directory: Path, stdin, stderr, environ=None) -> int:
             raise ValueError("no tool_use_id: no decision could be matched to this call")
         rules = json.loads(_matching(directory / POLICY_FILE, environ.get(POLICY_DIGEST_ENV, "")).decode("utf-8"))
         tree = set(_matching(directory / TREE_FILE, environ.get(TREE_DIGEST_ENV, "")).decode("utf-8").split())
-        rule = decide(call, max_lines=rules["max_lines"], max_chars=rules["max_chars"], tree=tree)
+        rule = decide(call, max_lines=rules["max_lines"], max_chars=rules["max_chars"], tree=tree,
+                      launcher=environ.get(LAUNCHER_ENV) or None)
     except Exception:  # noqa: BLE001  a guard that cannot judge blocks
         rule = ERROR
     try:
