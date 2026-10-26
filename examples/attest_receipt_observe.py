@@ -73,9 +73,12 @@ def receipt_to_observation(receipt: Any) -> dict[str, Any]:
     if isinstance(after, dict) and after.get("status") == "proven":
         if value is receipt:
             value = dict(receipt)
-        value["destination_verification"] = {
+        # Kane re-checked the app claim. That is not a SyberWork destination
+        # lookup, so the label never says "destination" or "verified".
+        value["app_claim_recheck"] = {
             "status": "proven",
             "method": "Kane re-check",
+            "destination_proof": False,
         }
 
     return {
