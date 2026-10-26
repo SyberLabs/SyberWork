@@ -19,7 +19,11 @@ their caches (``APPDATA``, ``LOCALAPPDATA`` and ``USERPROFILE`` on Windows,
 ``XDG_CACHE_HOME`` on POSIX, and the explicit ``npm_config_cache``,
 ``CARGO_HOME``, ``RUSTUP_HOME``, ``GOPATH``, ``GOCACHE`` and ``GOMODCACHE``
 when set), so a candidate does not re-download every package. ``HOME`` is
-still the temporary home.
+still the temporary home. Every check also gets ``SYBERLABS_CANDIDATE`` (the
+candidate's id) and ``SYBERLABS_BASE`` (the thread's base commit, when the
+candidate names one), so a check can compare the candidate with its base:
+``scripts/run_shards.py`` refuses a test set that shrank against it
+(``docs/TESTING.md``). Both are the host's values, never the candidate's.
 
 A critic check may additionally receive the variables the operator names in
 ``SYBERLABS_CHECK_ENV`` in the host's own environment (comma-separated, for
@@ -73,11 +77,13 @@ CHECK_ENV = "SYBERLABS_CHECK_ENV"
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
 
 
-def _environment(home: Path, candidate: str) -> dict:
+def _environment(home: Path, candidate: str, base: str | None = None) -> dict:
     env = {key: os.environ[key] for key in PASS_ENV if key in os.environ}
     env.update({"HOME": str(home), "TMPDIR": str(home), "TEMP": str(home), "TMP": str(home),
                 "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", "CI": "1",
                 "SYBERLABS_CANDIDATE": candidate})
+    if base:
+        env["SYBERLABS_BASE"] = base
     return env
 
 
@@ -184,7 +190,7 @@ def evaluate(repo: Repo, candidate: dict, evaluation: dict, *, context: dict | N
     diff = None
     setup_failed = False
     with tempfile.TemporaryDirectory(prefix="syberlabs-home-") as home, repo.worktree(candidate["commit"]) as tree:
-        env = _environment(Path(home), candidate["id"])
+        env = _environment(Path(home), candidate["id"], candidate.get("base"))
         for name, check in sorted(evaluation["checks"].items()):
             if setup_failed:
                 results.append({"name": name, "state": "error", "exit_code": None, "duration_ms": 0,

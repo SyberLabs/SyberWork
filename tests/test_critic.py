@@ -4,7 +4,9 @@ import contextlib
 import hashlib
 import io
 import json
+import subprocess
 import sys
+import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -337,6 +339,188 @@ class ReferenceCritic(unittest.TestCase):
     def test_the_same_request_yields_the_same_document(self):
         request = critic.request({"id": "c1", "changed_paths": ["src/a.py"], "base": "b" * 40, "provider": {}}, [], "", None)
         self.assertEqual(critic_rules.review(request), critic_rules.review(json.loads(json.dumps(request))))
+
+
+
+# --- the test-integrity rule ---------------------------------------------------------------------
+
+def _new_file_diff(path, source):
+    lines = source.splitlines()
+    return (f"diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{path}\n"
+            f"@@ -0,0 +1,{len(lines)} @@\n" + "".join(f"+{line}\n" for line in lines))
+
+
+def _added(path, source, scope=None):
+    """A request for a candidate that adds one file, with no repository behind it (the rule rebuilds the file)."""
+    return critic.request({"id": "c1", "changed_paths": [path], "base": "b" * 40,
+                           "provider": {"name": "p", "revision": "1"}}, [], _new_file_diff(path, source),
+                          {"objective": "o", "acceptance": [], "scope": scope or {"paths": ["."], "exclude": []}})
+
+
+HARNESS_CLASS = "import unittest\n\nclass T(unittest.TestCase):\n    def {name}(self, *args):\n        return None\n"
+# rule -> added test code that trips it (each snippet is a whole new test module)
+TRIPS = {
+    "process_exit": [
+        "import os\nos._exit(0)\n",
+        "import os, signal\n\ndef helper():\n    os.kill(os.getppid(), signal.SIGTERM)\n",
+        "import signal\n\ndef helper():\n    signal.raise_signal(signal.SIGINT)\n",
+        "end = __import__('os')._exit\n",
+        "from os import _exit\n\ndef helper():\n    _exit(0)\n",
+        "import os\n\ndef helper():\n    getattr(os, '_exit')(0)\n",
+        "import os\n\ndef helper():\n    os.abort()\n",
+    ],
+    "signal_handler": [
+        "import signal\n\ndef helper():\n    signal.signal(signal.SIGTERM, lambda *a: None)\n",
+        "import signal\n\ndef helper():\n    signal.alarm(5)\n",
+    ],
+    "exit_at_import": [
+        "import sys\nsys.exit(0)\n",
+        "raise SystemExit(0)\n",
+        "import unittest\nunittest.main()\n",
+        "import sys, unittest\n\nclass T(unittest.TestCase):\n    @classmethod\n    def setUpClass(cls):\n        sys.exit(0)\n",
+        "def setUpModule():\n    raise KeyboardInterrupt\n",
+        "def tearDownModule():\n    quit()\n",
+    ],
+    "harness_override": [HARNESS_CLASS.format(name=name) for name in ("run", "__call__", "debug", "id", "_callTestMethod")]
+    + ["from unittest import TestCase as Base\n\nclass T(Base):\n    def _callSetUp(self):\n        pass\n",
+       "class T:\n    def test_a(self):\n        pass\n    run = None\n"],
+    "load_tests": ["def load_tests(loader, tests, pattern):\n    return tests\n", "load_tests = None\n"],
+    "unittest_patch": [
+        "import unittest\nunittest.TestCase.run = lambda self, result=None: result\n",
+        "from unittest import TestResult\nTestResult.addSuccess = print\n",
+        "import unittest\n\nclass T(unittest.TestCase):\n    def test_a(self):\n        self._outcome.result.stop()\n",
+        "from unittest import mock\nmock.patch('unittest.TestCase.run').start()\n",
+        "import unittest\nsetattr(unittest.TestCase, 'run', None)\n",
+        "def helper(result):\n    result.startTest = print\n",
+        "def helper(result):\n    return result.shouldStop\n",
+        "def helper(test):\n    test._testMethodName = 'test_other'\n",
+    ],
+    "sys_modules": [
+        "import sys\nsys.modules['unittest'] = None\n",
+        "import sys\nsys.modules.pop('unittest.case')\n",
+        "import sys\ndel sys.modules['unittest']\n",
+    ],
+    "runner_reach": [
+        "import __main__\n",
+        "import gc\n",
+        "import sys\nmain = sys.modules['__main__']\n",
+        "import sys\n\ndef helper():\n    return sys._getframe(1)\n",
+        "import inspect\n\ndef helper():\n    return inspect.stack()\n",
+        "def helper(tb):\n    return tb.tb_frame.f_back.f_locals\n",
+        "import os\n\ndef helper():\n    os.write(3, b'x')\n",
+        "import ctypes\n",
+        "LOGS = 'syberlabs-' 'shards-'\n",
+    ],
+    "dynamic_code": [
+        "exec('import os')\n",
+        "def helper(text):\n    return eval(text)\n",
+        "import importlib\n\ndef helper(name):\n    return importlib.import_module(name)\n",
+        "import os\n\ndef helper():\n    return getattr(os, '_' + 'exit')\n",
+    ],
+}
+# Added test code that only looks like a pattern, or does it where the runner already copes.
+CLEAN = [
+    "TEXT = 'os._exit(0) and signal.signal and load_tests'  # os._exit(0) in a comment\n",
+    "import unittest\n\nif __name__ == '__main__':\n    unittest.main()\n",
+    "import os\n\ndef alive(pid):\n    os.kill(pid, 0)\n",
+    "import sys, unittest\n\nclass T(unittest.TestCase):\n    def test_a(self):\n        sys.exit(1)\n",
+    "import sys\nsys.modules['mymodule'] = object()\nsys.modules.pop('syberlabs', None)\n",
+    "class Clock:\n    def __call__(self):\n        return 0\n\n    def run(self):\n        return 1\n",
+    "from unittest import mock\nimport os\n\ndef helper():\n    return mock.patch.object(os, 'getcwd')\n",
+    "import unittest\nraise unittest.SkipTest('needs a database')\n",
+    "import re\nPATTERN = re.compile('x')\n\ndef helper():\n    return __import__('csv')\n",
+]
+
+
+class TestIntegrityRule(unittest.TestCase):
+    """The reference critic's high finding for test code that can end, signal or subvert the process it runs in."""
+
+    def rules(self, document):
+        return {f["claim"].split("(")[1].split(")")[0] for f in document["findings"] if f["severity"] == "high"}
+
+    def test_each_pattern_is_a_high_finding_in_a_test_file(self):
+        for rule, snippets in TRIPS.items():
+            for snippet in snippets:
+                with self.subTest(rule=rule, snippet=snippet):
+                    document = critic_rules.review(_added("tests/test_new.py", snippet))
+                    check_schema(document, "finding.schema.json")
+                    self.assertIn(rule, self.rules(document), document["findings"])
+
+    def test_the_same_code_outside_test_files_and_code_that_only_mentions_a_pattern_are_not_flagged(self):
+        for snippet in CLEAN:
+            with self.subTest(snippet=snippet):
+                self.assertEqual(critic_rules.review(_added("tests/test_new.py", snippet))["findings"], [])
+        document = critic_rules.review(_added("src/app.py", "import os\nos._exit(0)\n"))
+        self.assertEqual(critic.counts(critic.parse(json.dumps(document).encode()))["high"], 0)
+        for path in ("tests/helpers.py", "tests/sub/conftest.py", "benchmarks/test_speed.py"):
+            self.assertTrue(critic_rules.is_test_code(path), path)
+        for path in ("src/attest.py", "tests/data.json", "docs/TESTING.md"):
+            self.assertFalse(critic_rules.is_test_code(path), path)
+
+    def test_the_current_suite_has_no_finding(self):
+        """Every test file in this checkout, read as if it were added whole, trips nothing: zero false positives."""
+        root = Path(__file__).resolve().parents[1]
+        paths = [p.relative_to(root).as_posix() for p in root.rglob("*.py")
+                 if not any(part.startswith(".") for part in p.relative_to(root).parts)]
+        tests = [p for p in paths if critic_rules.is_test_code(p)]
+        self.assertGreater(len(tests), 50)
+        found = {p: critic_rules.integrity_findings(p, (root / p).read_text(encoding="utf-8"), None) for p in tests}
+        self.assertEqual({p: f for p, f in found.items() if f}, {})
+
+    def test_a_changed_test_file_the_rule_cannot_read_is_high_not_passed(self):
+        modified = ("diff --git a/tests/test_a.py b/tests/test_a.py\nindex 1..2 100644\n--- a/tests/test_a.py\n"
+                    "+++ b/tests/test_a.py\n@@ -3,0 +4 @@\n+    x = 1\n")
+        truncated = "diff --git a/src/a.py b/src/a.py\n[diff truncated: 2000000 bytes total]\n"
+        not_python = _new_file_diff("tests/test_a.py", "def broken(:\n")
+        for diff, says in ((modified, "could not be read"), (truncated, "could not be read"), (not_python, "does not parse")):
+            with self.subTest(says=says):
+                request = critic.request({"id": "c1", "changed_paths": ["tests/test_a.py"], "base": "b" * 40,
+                                          "provider": {}}, [], diff, None)
+                [finding] = critic_rules.review(request)["findings"]
+                self.assertEqual((finding["severity"], finding["file"]), ("high", "tests/test_a.py"))
+                self.assertIn(says, finding["claim"])
+
+    def test_in_a_repository_only_the_lines_the_candidate_adds_count(self):
+        """Run as the host runs it: in the candidate's worktree, reading the commit and the diff from Git."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false"]
+            body = "import os\nimport unittest\n\n\nclass T(unittest.TestCase):\n    def test_old(self):\n        os._exit(3)\n"
+            (root / "tests").mkdir()
+            (root / "tests" / "test_a.py").write_text(body, encoding="utf-8")
+            (root / "tests" / "test_gone.py").write_text("import os\nos._exit(0)\n", encoding="utf-8")
+            subprocess.run([*git, "init", "-q"], cwd=root, check=True)
+            subprocess.run([*git, "add", "-A"], cwd=root, check=True)
+            subprocess.run([*git, "commit", "-qm", "base"], cwd=root, check=True)
+            base = subprocess.run([*git, "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+            (root / "tests" / "test_a.py").write_text(body + "\n    def test_new(self):\n        os.abort()\n", encoding="utf-8")
+            (root / "tests" / "test_gone.py").unlink()
+            subprocess.run([*git, "add", "-A"], cwd=root, check=True)
+            subprocess.run([*git, "commit", "-qm", "candidate"], cwd=root, check=True)
+            head = subprocess.run([*git, "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+            request = critic.request({"id": "c1", "commit": head, "base": base, "provider": {},
+                                      "changed_paths": ["tests/test_a.py", "tests/test_gone.py"]}, [], "", None)
+            out = subprocess.run([PY, str(RULES)], cwd=root, input=json.dumps(request), capture_output=True, text=True,
+                                 check=True).stdout
+        [finding] = json.loads(out)["findings"]
+        self.assertEqual((finding["file"], finding["line"], finding["severity"]), ("tests/test_a.py", 10, "high"))
+        self.assertIn("(process_exit): os.abort", finding["claim"])
+
+
+class IntegrityThroughTheHost(CriticCase):
+    def test_a_test_that_exits_at_import_passes_unittest_and_the_critic_refuses_it(self):
+        """The `tests` check of this fixture is serial ``unittest discover``, which exits 0 when a module calls
+        ``os._exit(0)`` at import; the reference critic's high finding is what refuses the candidate."""
+        changes = {**GOOD, "tests/test_zz_exit.py": "import os\nos._exit(0)\n"}
+        kit, thread = self.thread([PY, str(RULES)], changes)
+        verdict = thread.check("c1")
+        self.assertEqual([(c.name, c.state) for c in verdict.checks], [("critic", "passed"), ("tests", "passed")])
+        self.assertEqual((verdict.status, verdict.rule), ("denied", "critic.no_high_finding"))
+        self.assertTrue(verdict.reason.startswith("high_finding:critic:"), verdict.reason)
+        [event] = self.observations(thread)
+        claims = [f["claim"] for f in event["body"]["value"]["findings"]]
+        self.assertTrue(any("(process_exit): os._exit" in c for c in claims), claims)
+        self.assertTrue(all(f["file"] == "tests/test_zz_exit.py" for f in event["body"]["value"]["findings"]))
 
 
 if __name__ == "__main__":
