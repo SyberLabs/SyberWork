@@ -24,9 +24,11 @@ as every check does (``syberlabs.checks``): in a detached worktree of the candid
 it reads the candidate's files from its working directory. Nothing under ``hidden/`` is in the run's repository, in
 a provider's request (``GitSearchSpace`` serves only the repository), or in a candidate. A check's result and the
 tail of its output are recorded, as for any check, and reach a repair arm as feedback: that is the E3 design, where
-an assertion message names its expectation. ``import_fixtures`` writes each fixture check's code to
-``hidden/checks.json`` and runs it through ``LOADER``, which compiles it under the file name ``<hidden:NAME>``, so a
-traceback names no host path and prints no line of the check's source.
+an assertion message names its expectation. The checks run the candidate's code, which runs with the host's
+permissions and can read and rewrite the host's copy: the runner refuses to accept on a copy whose files changed
+(``tree_digests``), and nothing stops code that reads the copy or ends its check early. ``import_fixtures`` writes
+each fixture check's code to ``hidden/checks.json`` and runs it through ``LOADER``, which compiles it under the file
+name ``<hidden:NAME>``, so a traceback names no host path and prints no line of the check's source.
 """
 
 from __future__ import annotations
@@ -315,8 +317,9 @@ def materialize(task: dict, dest: Path) -> str:
             target = dest / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-        # Plumbing, not ``git commit``: the same commit for the same files on every host, and no hook runs.
-        _git(dest, "add", "-A")
+        # Plumbing, not ``git commit``: the same commit for the same files on every host, and no hook runs. Forced:
+        # an ignore rule of the host's (``core.excludesFile``, ``~/.config/git/ignore``) must not drop a fixture file.
+        _git(dest, "add", "-A", "--force")
         tree = _git(dest, "write-tree")
         commit = _git(dest, "commit-tree", tree, "-m", f"task {task['id']}", env=FIXTURE_IDENTITY)
         _git(dest, "update-ref", "refs/heads/main", commit)
@@ -373,9 +376,45 @@ def list_tasks(tasks_root: Path) -> list[str]:
     return sorted(p.name for p in root.iterdir() if (p / "task.json").is_file()) if root.is_dir() else []
 
 
+def hidden_path(name: Any) -> bool:
+    """A relative POSIX path that stays under ``hidden/``: no absolute or drive path, backslash, ``.`` or ``..``."""
+    return (isinstance(name, str) and bool(name) and not name.startswith("/") and not any(c in name for c in "\\:\0")
+            and all(part not in ("", ".", "..") for part in name.split("/")))
+
+
+def tree_digests(folder: Path) -> dict[str, str]:
+    """The SHA-256 of every file under ``folder`` as it is on disk, by POSIX path; a symbolic link is named by its
+    target. ``stage_hidden`` writes regular files only, so the staged copy's digests change if anything rewrites,
+    adds, removes or relinks a file in it."""
+    found = {}
+    try:
+        for path in sorted(p for p in Path(folder).rglob("*") if p.is_symlink() or p.is_file()):
+            name = path.relative_to(folder).as_posix()
+            if path.is_symlink():
+                found[name] = "link:" + os.readlink(path)
+                continue
+            sha = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    sha.update(chunk)
+            found[name] = sha.hexdigest()
+    except OSError as exc:  # made unreadable: as changed as rewritten
+        found[""] = f"unreadable: {exc.errno}"
+    return found
+
+
+def hidden_changes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """The paths of a staged copy that differ between two ``tree_digests``: rewritten, removed, relinked or added,
+    except files under a ``.pytest_cache`` directory, which pytest's cache provider writes into its rootdir, and
+    that is the directory of a hidden test file run with no configuration file above it."""
+    added = [path for path in after if path not in before and ".pytest_cache" not in path.split("/")[:-1]]
+    return sorted([path for path in before if after.get(path) != before[path]] + added)
+
+
 def write_task(tasks_root: Path, task: dict, hidden: dict[str, bytes]) -> str:
     """Write a task (used by tests and future adapters); returns its digest."""
     errors = check_task(task)
+    errors += [f"hidden file {name!r}: a relative path under hidden/" for name in hidden if not hidden_path(name)]
     if errors:
         raise Rejected("invalid_task", "; ".join(errors[:8]))
     folder = task_dir(tasks_root, task["id"])

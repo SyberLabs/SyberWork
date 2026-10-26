@@ -18,16 +18,21 @@ what ``run`` asks first: ``spec_unregistered``, ``spec_modified`` (the spec's di
 The schema is JSON Schema (draft 2020-12 vocabulary) held here as a Python value; ``validate`` implements the
 subset it uses (``type``, ``const``, ``enum``, ``properties``, ``required``, ``additionalProperties: false``,
 ``items``, ``minItems``, ``maxItems``, ``uniqueItems``, ``minLength``, ``maxLength``, ``pattern``, ``minimum``,
-``maximum``, ``exclusiveMinimum``), standard library only, then the cross-field rules a schema cannot state
-(``check``): arm names are distinct, the decision rule names two of the spec's arms and its metric is the primary
-metric, each arm is valid for its kind, and the price table is one ``syberlabs.economic.check_prices`` accepts.
+``maximum``, ``exclusiveMinimum``; a number must also be finite, because ``NaN`` passes every comparison), standard
+library only, then the cross-field rules a schema cannot state (``check``): arm names are distinct, the decision
+rule names two of the spec's arms and its metric is the primary metric, each arm is valid for its kind, no two
+cells share a run id (``<task>.<arm>.s<seed>``, where task ids and arm names may hold dots), and the price table is
+one ``syberlabs.economic.check_prices`` accepts. ``read_json`` is strict: a key repeated in one object, ``NaN`` and
+``Infinity`` are refused, so what a reader sees in the file is what the digest freezes.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -154,6 +159,8 @@ def _walk(value: Any, schema: dict, path: str, errors: list[str]) -> None:
             errors.append(f"{path}: length out of range")
         if "pattern" in schema and not re.search(schema["pattern"], value):
             errors.append(f"{path}: does not match {schema['pattern']}")
+    if type(value) is float and not math.isfinite(value):
+        errors.append(f"{path}: must be a finite number")  # NaN passes every comparison below
     if type(value) in (int, float):
         if "minimum" in schema and value < schema["minimum"]:
             errors.append(f"{path}: below {schema['minimum']}")
@@ -208,6 +215,13 @@ def check(doc: Any) -> list[str]:
         errors.append("$.decision_rule: treatment and baseline must be different arms")
     if rule["metric"] != doc["primary_metric"]["name"]:
         errors.append("$.decision_rule.metric: the decision is taken on the primary metric")
+    from syberlabs.eval.runner import run_id
+
+    shared = sorted(found for found, count in Counter(run_id(task, arm, seed) for task in doc["tasks"]["ids"]
+                                                      for arm in names for seed in doc["seeds"]).items() if count > 1)
+    if shared:
+        errors.append(f"$: two cells share the run id {shared[0]} (task ids and arm names may hold dots); "
+                      "rename an arm or a task")
     reason = check_prices(doc["budget"]["prices"])
     if reason:
         errors.append("$.budget." + reason)
@@ -221,9 +235,22 @@ def spec_digest(doc: dict) -> str:
     return digest(doc)
 
 
+def _object(pairs: list) -> dict:
+    found = dict(pairs)
+    if len(found) != len(pairs):
+        raise ValueError("a key appears twice in one object")  # json.loads would keep the last one silently
+    return found
+
+
+def _constant(name: str):
+    raise ValueError(f"{name} is not a JSON number")
+
+
 def read_json(path: Path, code: str) -> Any:
+    """Strict JSON: a key repeated in one object, ``NaN`` and ``Infinity`` are refused with ``code``."""
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=_object,
+                          parse_constant=_constant)
     except OSError as exc:
         raise Rejected(code, f"{path}: {exc.strerror or type(exc).__name__}") from None
     except ValueError as exc:
