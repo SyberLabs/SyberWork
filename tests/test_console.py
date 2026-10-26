@@ -7,6 +7,7 @@ publishing contract v2 in the studio and replaying the case against it. It skips
 """
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import json
@@ -28,9 +29,11 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from syberlabs.admission import approval_roles
+from syberlabs.build import Kit
 from syberlabs.canonical import canonical
+from syberlabs.certificate import certify, write_certificate
 from syberlabs.dsse import CHAIN_HEAD_TYPE, CHECKPOINT_TYPE, sign_chain_head, sign_dsse
-from syberlabs.ed25519 import generate
+from syberlabs.ed25519 import generate, public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import AUTOMATION_ROLES
@@ -38,10 +41,14 @@ from syberlabs.jcs import envelope_jcs
 from syberlabs.metrics import METRICS, UNKNOWN, Metric, _cell
 from syberlabs.tlog import TransparencyLog, merkle_root
 from syberlabs.witness import Witness, WitnessClient, WitnessServer
-from syberwork.cli import _witness_log, _witness_request
+from syberwork import certificates as shelf_module
+from syberwork.certificates import LIMIT as CERTIFICATE_LIMIT, CertificateShelf
+from syberwork.cli import _certificates, _witness_log, _witness_request
 from syberwork.core import Work
 from syberwork.server import POLICY_READERS, make_server
 from syberwork.trace import TraceLog
+from tests.test_build_thread import GOOD, REPORT, TEST_REPORT, git
+from tests.test_certificate import OTHER_PUBLIC, OTHER_SEED, PUBLIC, SEED
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "syberwork" / "examples"
@@ -109,6 +116,35 @@ def wait_until_listening(port: int, proc: subprocess.Popen, timeout: float = 10)
     raise RuntimeError("reference system did not accept connections")
 
 
+def certified_home(folder: Path, seed: bytes = SEED) -> tuple[Path, dict]:
+    """A Build Thread home whose one candidate was checked, accepted and certified, as ``syberlabs certify`` leaves it.
+
+    Two files under ``<home>/certificates``: the default in-toto statement and the ``--bare`` form, each with its ``.pub``.
+    Returns the home and the payload.
+    """
+    root = folder / "project"
+    (root / "src").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "src" / "report.py").write_text(REPORT)
+    (root / "tests" / "test_report.py").write_text(TEST_REPORT)
+    git(folder, "init", "-q", "-b", "main", str(root))
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "initial")
+    home = root / ".syberlabs"
+    kit = Kit.local(home, root, actor="dev@example.test")
+    try:
+        thread = kit.start("Add a CSV export for report rows", paths=["src/", "tests/"])
+        thread.propose(changes=GOOD, message="CSV export")
+        if not thread.check("c1").acceptable or thread.accept("c1").status != "succeeded":
+            raise RuntimeError("the fixture candidate was not accepted")
+        for bare, name in ((False, "c1.json"), (True, "c1.bare.json")):
+            envelope, payload = certify(kit, thread.id, "c1", seed=seed, bare=bare)
+            write_certificate(envelope, public_from_seed(seed), home / "certificates" / f"{thread.id[:8]}-{name}")
+    finally:
+        kit.close()
+    return home, payload
+
+
 def playwright_root() -> str | None:
     """A node_modules holding playwright: NODE_PATH when it has one, else the global one, else None."""
     if not shutil.which("node"):
@@ -128,7 +164,8 @@ def playwright_root() -> str | None:
 class Cell:
     """The included example installed as ``init`` installs it, with sources and actions on ``reference_port``."""
 
-    def __init__(self, folder: Path, reference_port: int = 8999, witness_log=None, witness_client=None, witness_role=None):
+    def __init__(self, folder: Path, reference_port: int = 8999, witness_log=None, witness_client=None, witness_role=None,
+                 certificates=None):
         self.database = folder / "work.sqlite3"
         self.work = Work(self.database)
         self.tokens = {name: "token-" + name for name in IDENTITIES}
@@ -141,7 +178,8 @@ class Cell:
             self.work.install_action(name, retarget(doc))
         for name, doc in json.loads(read_text(EXAMPLES / "sources.json")).items():
             self.work.install_source(name, retarget(doc))
-        self.server = make_server(self.work, users, port=0, witness_log=witness_log, witness_client=witness_client, witness_role=witness_role)
+        self.server = make_server(self.work, users, port=0, witness_log=witness_log, witness_client=witness_client, witness_role=witness_role,
+                                  certificates=certificates)
         self.server.RequestHandlerClass.log_message = lambda *args: None
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"
@@ -174,6 +212,8 @@ class CellCase(unittest.TestCase):
     # serve may ask to sign for witness_role.
     witness = False
     witness_role = "manager"
+    # True: serve reads a Build Thread home holding one certified candidate (certified_home), under PUBLIC.
+    certificates = False
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -207,7 +247,11 @@ class CellCase(unittest.TestCase):
             if self.witness == "server":
                 client = WitnessClient(self.witness_port, self.public, str(self.log_path))
                 self.addCleanup(client.close)
-        self.cell = Cell(Path(folder.name), port, reader, client, self.witness_role if client else None)
+        shelf = None
+        if self.certificates:
+            self.cert_home, self.cert_payload = certified_home(Path(folder.name) / "build")
+            shelf = self.shelf = CertificateShelf(self.cert_home, PUBLIC)
+        self.cell = Cell(Path(folder.name), port, reader, client, self.witness_role if client else None, shelf)
         self.addCleanup(self.cell.close)
 
 
@@ -224,7 +268,8 @@ class ConsoleRoutes(CellCase):
         previous = os.environ.pop("SYBERWORK_PLANNER_URL", None)
         self.addCleanup(lambda: os.environ.__setitem__("SYBERWORK_PLANNER_URL", previous) if previous is not None else os.environ.pop("SYBERWORK_PLANNER_URL", None))
         status, body = self.cell.json("/api/console")
-        self.assertEqual((status, body), (200, {"planner_configured": False, "effects": "inline", "witness": {"log": False, "request_role": None}}))
+        self.assertEqual((status, body), (200, {"planner_configured": False, "effects": "inline", "witness": {"log": False, "request_role": None},
+                                         "certificates": {"configured": False}}))
         os.environ["SYBERWORK_PLANNER_URL"] = url
         status, raw = self.cell.call("/api/console")[0], self.cell.call("/api/console")[2]
         self.assertEqual(json.loads(raw)["planner_configured"], True)
@@ -514,7 +559,7 @@ class ConsoleExplain(CellCase):
 
 
 class ConsoleSideRecords(CellCase):
-    """GET /api/cases/{id}/side: Work.side_channel over HTTP, read only. The certificate has no read route."""
+    """GET /api/cases/{id}/side: Work.side_channel over HTTP, read only. A case has no certificate route."""
 
     def case_with_decision(self):
         case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
@@ -574,13 +619,14 @@ class ConsoleSideRecords(CellCase):
                         "the rule ids are in no hash and nothing checks them", "only Verify history tells them apart"):
             self.assertIn(wording, app)
 
-    def test_the_certificate_is_named_as_missing_not_drawn(self):
+    def test_a_case_has_no_certificate_route(self):
+        """Certificates are about Build Threads, not cases: there is no per-case route, and History says why."""
         case = self.case_with_decision()
         self.assertEqual(self.cell.json(f"/api/cases/{case}/certificate"), (404, {"error": "not_found"}))
         app = read_text(STATIC / "app.js")
-        self.assertIn("GET /api/cases/{id}/certificate", app)
-        self.assertNotIn("casePath('certificate')", app)
-        self.assertIn("h('button', {type: 'button', class: 'btn', disabled: true}, 'Show certificate')", app)
+        self.assertNotIn("GET /api/cases/{id}/certificate", app)
+        self.assertNotIn("'Show certificate'", app)
+        self.assertIn("a case is not a Build Thread and has none", app)
 
 
 class ConsoleWitness(CellCase):
@@ -930,6 +976,213 @@ class ConsoleWitnessRequest(CellCase):
             make_server(self.cell.work, users, port=0, witness_log=other, witness_client=client, witness_role="manager")
 
 
+class ConsoleCertificates(CellCase):
+    """GET /api/certificates: the certificates under a Build Thread home, each verified by serve under the configured key."""
+
+    certificates = True
+
+    def listing(self, who="operator"):
+        status, body = self.cell.json("/api/certificates", who=who)
+        self.assertEqual(status, 200, body)
+        return body
+
+    def rows(self):
+        return {row["file"]: row for row in self.listing()["certificates"]}
+
+    def folder(self) -> Path:
+        return self.cert_home / "certificates"
+
+    def journal(self) -> Path:
+        return self.cert_home / "journal" / "threads" / f"{self.cert_payload['thread']}.jsonl"
+
+    def test_the_route_requires_a_token_and_is_read_by_any_principal(self):
+        self.assertEqual(self.cell.json("/api/certificates", who=None)[0], 401)
+        expected = self.listing()
+        for who in ("manager", "supplier", "planner", "admin"):
+            with self.subTest(who):
+                self.assertEqual(self.listing(who), expected)
+        self.assertEqual(self.cell.json("/api/console", who="supplier")[1]["certificates"], {"configured": True})
+
+    def test_a_certificate_signed_under_the_key_and_matching_its_journal_passes_both_layers(self):
+        body = self.listing()
+        self.assertEqual((body["configured"], body["public_key"], body["total"], body["shown"]), (True, PUBLIC.hex(), 2, 2))
+        self.assertEqual((body["checked"], body["not_checked"]), (["signature", "journal"], ["repository"]))
+        self.assertIn("syberlabs verify FILE --public KEY --repo PATH", body["note"])
+        payload = self.cert_payload
+        thread8 = payload["thread"][:8]
+        rows = self.rows()
+        self.assertEqual(sorted(rows), [f"{thread8}-c1.bare.json", f"{thread8}-c1.json"], "the .pub files are not listed")
+        for name, form in ((f"{thread8}-c1.json", "statement"), (f"{thread8}-c1.bare.json", "bare")):
+            with self.subTest(form):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["signature"], row["journal"], row["journal_present"], row["repository"]),
+                                 ("pass", None, "ok", "ok", True, None))
+                stated = row["statement"]
+                self.assertEqual(stated["form"], form)
+                self.assertEqual(stated["keyid"], PUBLIC.hex())
+                self.assertEqual((stated["thread"], stated["candidate"], stated["objective"]),
+                                 (payload["thread"], "c1", "Add a CSV export for report rows"))
+                self.assertEqual(stated["result"], {k: payload["result"][k] for k in ("commit", "tree", "files")})
+                self.assertEqual((stated["chain"], stated["contract"], stated["target_ref"]),
+                                 (payload["chain"], payload["contract"], payload["admission"]["target_ref"]))
+                self.assertEqual(stated["signing"], "in-process")
+                self.assertEqual([c["name"] for c in stated["checks"]], [c["name"] for c in payload["evaluation"]["checks"]])
+                self.assertNotIn("output_tail", json.dumps(stated))
+        # The home's path is not disclosed, in either separator (json.dumps would double a Windows backslash).
+        def strings(value):
+            if isinstance(value, dict):
+                for item in value.values():
+                    yield from strings(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from strings(item)
+            elif isinstance(value, str):
+                yield value
+        for text in strings(body):
+            for path in {str(self.cert_home), self.cert_home.as_posix(), str(self.cert_home.parent)}:
+                self.assertNotIn(path, text)
+
+    def test_another_key_or_changed_bytes_fail_and_state_nothing(self):
+        """The .pub written beside a file is not read: a certificate under another key fails though its .pub matches it."""
+        payload = self.cert_payload
+        good = json.loads((self.folder() / f"{payload['thread'][:8]}-c1.bare.json").read_text(encoding="utf-8"))
+        foreign = sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), OTHER_SEED)
+        write_certificate(foreign, OTHER_PUBLIC, self.folder() / "foreign.json")
+        changed = dict(payload, objective="Something else")
+        tampered = {**good, "payload": base64.standard_b64encode(canonical(changed).encode()).decode("ascii")}
+        (self.folder() / "tampered.json").write_text(json.dumps(tampered), encoding="utf-8")
+        (self.folder() / "notjson.json").write_text("{not json", encoding="utf-8")
+        (self.folder() / "toolarge.json").write_bytes(b" " * (1_048_576 + 1))
+        (self.folder() / "nested.json").write_bytes(b"[" * 200_000)  # json.loads raises RecursionError, not ValueError
+        rows = self.rows()
+        expected = {"foreign.json": "signature_invalid", "tampered.json": "signature_invalid",
+                    "notjson.json": "certificate_unreadable", "toolarge.json": "certificate_too_large",
+                    "nested.json": "unverifiable"}
+        for name, reason in expected.items():
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["statement"], row["journal"]), ("fail", reason, None, None))
+        self.assertNotIn("Something else", json.dumps(rows), "unsigned content is never answered")
+        self.assertEqual(sum(1 for row in rows.values() if row["verdict"] == "pass"), 2)
+
+    def test_a_link_or_a_folder_is_refused_not_followed(self):
+        os.mkdir(self.folder() / "folder.json")
+        try:
+            os.symlink(self.folder() / f"{self.cert_payload['thread'][:8]}-c1.json", self.folder() / "link.json")
+        except (OSError, NotImplementedError):
+            linked = False  # Windows without the symlink privilege
+        else:
+            linked = True
+        rows = self.rows()
+        self.assertEqual((rows["folder.json"]["verdict"], rows["folder.json"]["reason"]), ("fail", "not_a_regular_file"))
+        if linked:
+            self.assertEqual((rows["link.json"]["verdict"], rows["link.json"]["reason"], rows["link.json"]["statement"]),
+                             ("fail", "not_a_regular_file", None))
+
+    def test_the_journal_decides_and_its_absence_is_said_not_passed_over(self):
+        name = f"{self.cert_payload['thread'][:8]}-c1.json"
+        journal = self.journal().read_bytes()
+        lines = journal.splitlines(keepends=True)
+        # Fewer events than certified: the signature still holds, the journal layer does not.
+        self.journal().write_bytes(b"".join(lines[:3]))
+        row = self.rows()[name]
+        self.assertEqual((row["verdict"], row["reason"], row["signature"], row["journal"]), ("fail", "chain_truncated", "ok", "chain_truncated"))
+        self.assertIsNotNone(row["statement"], "what the key signed is shown beside the failure, not as certified")
+        # No journal for the thread under this home: signature only, and the answer says the journal was not checked.
+        self.journal().unlink()
+        row = self.rows()[name]
+        self.assertEqual((row["verdict"], row["signature"], row["journal"], row["journal_present"]), ("pass", "ok", None, False))
+        # A journal that cannot be read safely (here a folder in its place; a FIFO or a device is refused the same way)
+        # is never passed over as absent: the row fails as unreadable, after the signature-only pass above was cached.
+        self.journal().mkdir()
+        row = self.rows()[name]
+        self.assertEqual((row["verdict"], row["reason"], row["signature"], row["journal"], row["journal_present"]),
+                         ("fail", "journal_unreadable:not_a_regular_file", "ok", "journal_unreadable:not_a_regular_file", True))
+        self.journal().rmdir()
+        # A journal larger than serve will read is refused before the verifier reads it.
+        self.journal().write_bytes(journal)
+        with unittest.mock.patch.object(shelf_module, "MAX_JOURNAL_BYTES", len(journal) - 1):
+            self.assertEqual(self.rows()[name]["reason"], "journal_unreadable:too_large")
+        # The journal back as it was: both layers again. The verdict follows the bytes, not a cached answer.
+        self.journal().write_bytes(journal)
+        row = self.rows()[name]
+        self.assertEqual((row["verdict"], row["journal"], row["journal_present"]), ("pass", "ok", True))
+
+    def test_a_verdict_is_computed_once_per_input_bytes(self):
+        journal = self.journal().read_bytes()
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", wraps=shelf_module.verify_certificate) as spy:
+            first = self.listing()
+            self.assertEqual(spy.call_count, 2)
+            self.assertEqual(self.listing(), first)
+            self.assertEqual(spy.call_count, 2, "a second read of unchanged files verifies nothing again")
+            self.journal().write_bytes(self.journal().read_bytes() + b"\n")
+            self.listing()
+            self.assertEqual(spy.call_count, 4, "a changed journal is judged again")
+            # A write between hashing the inputs and verifying is not cached under the earlier hash: the journal is
+            # corrupted while each file is verified, then put back, and the next read verifies again and passes.
+            self.journal().write_bytes(journal)
+            self.shelf._cache.clear()
+            real = shelf_module.verify_certificate
+            def corrupting(*args, **kwargs):
+                with open(self.journal(), "ab") as handle:
+                    handle.write(b"{not a record}\n")
+                return real(*args, **kwargs)
+            spy.side_effect = corrupting
+            self.assertTrue(all(row["verdict"] == "fail" for row in self.listing()["certificates"]))
+            spy.side_effect = None
+            self.journal().write_bytes(journal)
+            calls = spy.call_count
+            self.assertTrue(all(row["verdict"] == "pass" for row in self.listing()["certificates"]))
+            self.assertEqual(spy.call_count, calls + 2, "the verdicts computed across the write were not kept")
+
+    def test_the_read_writes_nothing(self):
+        def snapshot():
+            return {str(p.relative_to(self.cert_home.parent)): p.read_bytes() if p.is_file() else None
+                    for p in sorted(self.cert_home.parent.rglob("*")) if ".git" not in p.parts}
+        before = snapshot()
+        with connect_db(self.cell.database) as db:
+            dump = list(db.iterdump())
+        self.listing()
+        self.assertEqual(snapshot(), before)
+        with connect_db(self.cell.database) as db:
+            self.assertEqual(list(db.iterdump()), dump)
+
+    def test_at_most_the_limit_is_verified_and_the_total_is_said(self):
+        for index in range(CERTIFICATE_LIMIT):
+            (self.folder() / f"zz-{index:03}.json").write_text("{}", encoding="utf-8")
+        body = self.listing()
+        self.assertEqual((body["total"], body["shown"], len(body["certificates"])), (CERTIFICATE_LIMIT + 2, CERTIFICATE_LIMIT, CERTIFICATE_LIMIT))
+        self.assertEqual(sum(1 for row in body["certificates"] if row["verdict"] == "pass"), 2, "name order: the two genuine files come first")
+
+    def test_without_a_home_the_route_says_so(self):
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.cert_home.parent)), 8999)
+        self.addCleanup(cell.close)
+        status, body = cell.json("/api/certificates")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["configured"], False)
+        self.assertIn("SYBERWORK_CERTIFICATE_HOME", body["note"])
+        self.assertNotIn("certificates", body)
+        self.assertEqual(cell.json("/api/console")[1]["certificates"], {"configured": False})
+
+    def test_serve_reads_certificates_only_when_both_variables_name_them(self):
+        parser = argparse.ArgumentParser()
+        def configured(**names):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertIsNone(configured())
+        home = str(self.cert_home)
+        for names in ({"SYBERWORK_CERTIFICATE_HOME": home}, {"SYBERWORK_CERTIFICATE_PUBLIC": PUBLIC.hex()},
+                      {"SYBERWORK_CERTIFICATE_HOME": home, "SYBERWORK_CERTIFICATE_PUBLIC": "not hex"},
+                      {"SYBERWORK_CERTIFICATE_HOME": home, "SYBERWORK_CERTIFICATE_PUBLIC": "00"},
+                      {"SYBERWORK_CERTIFICATE_HOME": str(self.journal()), "SYBERWORK_CERTIFICATE_PUBLIC": PUBLIC.hex()},
+                      {"SYBERWORK_CERTIFICATE_HOME": home + "-missing", "SYBERWORK_CERTIFICATE_PUBLIC": PUBLIC.hex()}):
+            with self.subTest(sorted(names)), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(**names)
+        shelf = configured(SYBERWORK_CERTIFICATE_HOME=home, SYBERWORK_CERTIFICATE_PUBLIC=PUBLIC.hex() + "\n")
+        self.assertEqual((shelf.home, shelf.public), (self.cert_home, PUBLIC))
+
+
 class ConsolePreview(CellCase):
     """POST /api/cases/{id}/preview: what proposing would record now (Work.preview_admission). It records nothing."""
 
@@ -1116,7 +1369,7 @@ class ConsoleStatic(CellCase):
                 "/api/contracts/purchase-order/1", "/api/contracts/purchase-order/1/artifacts", "/api/policies",
                 "/api/actions", "/api/sources", "/metrics/cases_open", "/metrics/effects_pending", "/metrics/queue_depth",
                 "/metrics/proposals_denied_total", "/metrics/work_items", f"/api/cases/{case}/side", f"/metrics/work_items/{case}",
-                f"/api/cases/{case}/witness"]
+                f"/api/cases/{case}/witness", "/api/certificates"]
         proposal = self.cell.json(f"/api/cases/{case}/proposals", {"action": "record_review", "args": {}}, who="admin")[1]["proposal"]["id"]
         gets += [f"/api/cases/{case}/proposals/{proposal}/explain?when={when}" for when in ("recorded", "now")]
         for path in gets:
@@ -1130,6 +1383,7 @@ class ConsoleStatic(CellCase):
         self.assertIn("headRead('witness', id => '/api/cases/' + encodeURIComponent(id) + '/witness', info)", app)
         self.assertIn("headRead('work_item', id => '/metrics/work_items/' + encodeURIComponent(id), info)", app)
         self.assertIn("api(route(info.case.id))", app)
+        self.assertIn("api('/api/certificates')", app)
         # The admission preview and the witness request post to the case being drawn, like the History reads.
         self.assertIn("api('/api/cases/' + encodeURIComponent(info.case.id) + '/preview', body)", app)
         self.assertIn("api('/api/cases/' + encodeURIComponent(info.case.id) + '/witness', {})", app)
@@ -1145,6 +1399,7 @@ class ConsoleStatic(CellCase):
 
 class ConsoleModel(CellCase):
     witness = "server"
+    certificates = True
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_projections_match_the_python_rules(self):
@@ -1197,6 +1452,14 @@ class ConsoleModel(CellCase):
         self.cell.json(f"/api/cases/{fresh}/proposals", {"action": "record_review", "args": {}}, who="scheduler")
         parity["witness"] = {"events": self.cell.json(f"/api/cases/{fresh}")[1]["events"], "body": self.cell.json(f"/api/cases/{fresh}/witness")[1]}
         self.assertEqual(parity["witness"]["body"]["witnessed_through"], len(parity["witness"]["events"]) - 2)
+        # What GET /api/certificates answers for the two genuine forms and a file signed under another key.
+        good = json.loads((self.cert_home / "certificates" / f"{self.cert_payload['thread'][:8]}-c1.json").read_text(encoding="utf-8"))
+        foreign = sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), OTHER_SEED)
+        write_certificate(foreign, OTHER_PUBLIC, self.cert_home / "certificates" / "foreign.json")
+        thread8 = self.cert_payload["thread"][:8]
+        parity["certificates"] = {"body": self.cell.json("/api/certificates")[1], "count": self.cert_payload["chain"]["count"],
+                                  "expected": [[f"{thread8}-c1.bare.json", "certified", "verified"], [f"{thread8}-c1.json", "certified", "verified"],
+                                               ["foreign.json", "not_signed", "denied"]]}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -1214,6 +1477,7 @@ class ConsoleModel(CellCase):
 class ConsoleBrowser(CellCase):
     reference = True
     witness = "server"
+    certificates = True
 
     def test_the_purchase_order_path_completes_in_a_browser(self):
         # The strict suite allows only the inspector's exact reasons for a missing browser tool.
@@ -1239,7 +1503,7 @@ class ConsoleBrowser(CellCase):
         self.assertTrue(report["self_approval_blocked"])
         self.assertIn("Complete", report["status"])
         self.assertIn("intact", report["verify"])
-        # History: the JCS side records, this case's work item and the witness log, read from the server; no certificate.
+        # History: the JCS side records, this case's work item and the witness log, read from the server; a case has no certificate.
         self.assertRegex(report["side_summary"], r"(\d+) of \1 events carry a side record · 2 of 2 decisions name their deciding rule", report["side_summary"])
         self.assertNotIn("have no side record", report["side_summary"])
         self.assertIn("JCS", report["side_row"])
@@ -1248,8 +1512,18 @@ class ConsoleBrowser(CellCase):
         self.assertEqual(list(cells), list(METRICS), report["work_item"])
         self.assertIn("unknown", cells["cost"], "no model call is metered for a purchase order")
         self.assertIn("no pull request opened", cells["delivered"])
-        self.assertEqual(report["certificate_buttons"], [["Show certificate", True]])
-        self.assertIn("GET /api/cases/{id}/certificate", report["certificate_text"])
+        self.assertEqual(report["certificate_buttons"], [["Open certificates in Studio", False]])
+        self.assertIn("a case is not a Build Thread and has none", report["certificate_text"])
+        self.assertIn("Nothing on this case is drawn as certified", report["certificate_text"])
+        # Studio → Certificates: both genuine forms pass the signature and the journal; the repository is named as not checked.
+        thread8 = self.cert_payload["thread"][:8]
+        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified", "certified"], report["certificate_rows"])
+        for (_, row), name in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json")):
+            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], "certified", "Add a CSV export"):
+                self.assertIn(text, row)
+        for text in ("2 of 2 certificates certified", PUBLIC.hex()[:16], "Not checked: repository", "syberlabs verify FILE --public KEY --repo .",
+                     "the .pub file beside each certificate is not read", "A SyberWork case has none"):
+            self.assertIn(text, report["certificate_page"])
         # Before the witness signs, the log holds nothing for the case; after, every event up to the head is witnessed.
         self.assertIn("not witnessed", report["witness_before"])
         self.assertIn("No leaf in the log names this case", report["witness_before"])

@@ -14,6 +14,7 @@ from syberlabs.evolution import AUTOMATION_ROLES
 from syberlabs.planner import HttpPlanner
 
 from .builder_http import dispatch_get, dispatch_post
+from .certificates import not_configured as certificates_not_configured
 from .core import Rejected, Work, digest
 
 STATIC = Path(__file__).parent / "static"
@@ -106,14 +107,15 @@ def _preview(work: Work, case_id: str, data: dict, name: str, roles: list) -> di
 
 
 def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
-          witness_role=None):
-    httpd = make_server(work, users, host, port, witness_log=witness_log, witness_client=witness_client, witness_role=witness_role)
+          witness_role=None, certificates=None):
+    httpd = make_server(work, users, host, port, witness_log=witness_log, witness_client=witness_client, witness_role=witness_role,
+                        certificates=certificates)
     print(f"SyberWork listening at http://{host}:{httpd.server_port}", flush=True)
     httpd.serve_forever()
 
 
 def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
-                witness_role=None) -> ThreadingHTTPServer:
+                witness_role=None, certificates=None) -> ThreadingHTTPServer:
     """Build the loopback server without starting it. Port 0 picks a free port.
 
     ``witness_log`` is a ``TransparencyLog.open_readonly`` reader of the witness's log, or None. It holds no seed and
@@ -121,6 +123,10 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
     loopback port and ``witness_role`` the one role whose holders ``POST /api/cases/{id}/witness`` lets ask it to sign:
     both or neither, and only beside the log. Nothing in the code chooses that role; ``syberwork serve`` reads it from
     SYBERWORK_WITNESS_ROLE.
+
+    ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the one public key its certificates are
+    verified under, or None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from
+    SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC.
     """
     loopback = host in ("127.0.0.1", "::1", "localhost")
     if not loopback and os.getenv("SYBERWORK_BIND", "") != host:
@@ -197,8 +203,14 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 elif parts == ["api", "console"]:
                     # What the console needs to render honest states; no secret or URL is disclosed.
                     # witness: whether serve reads the witness's log, and the role that may ask it to sign (None: no one).
+                    # certificates: whether serve reads a Build Thread home's certificates; the path is not disclosed.
                     self._json({"planner_configured": _planner_configured(), "effects": work.effects,
-                                "witness": {"log": witness_log is not None, "request_role": witness_role}})
+                                "witness": {"log": witness_log is not None, "request_role": witness_role},
+                                "certificates": {"configured": certificates is not None}})
+                elif parts == ["api", "certificates"]:
+                    # Admission certificates of Build Threads, each verified by serve under the configured key. A case
+                    # has none, so there is no per-case route. Without a configured home the answer says so.
+                    self._json(certificates.listing() if certificates is not None else certificates_not_configured())
                 elif parts == ["api", "cases"]:
                     self._json(work.list_cases())
                 elif parts == ["api", "contracts"]:

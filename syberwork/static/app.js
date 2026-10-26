@@ -18,7 +18,7 @@ const state = {
   verifications: new Map(), replay: null, lastResponse: null, focusProposal: null,
   explaining: new Map(), explained: new Map(), headReads: new Map(), handDraft: null, preview: null,
   studio: {kind: 'contract', id: null, version: null, tab: 'document', artifacts: null, draft: null, error: null},
-  metrics: null, workItems: null, workItemsError: null,
+  metrics: null, workItems: null, workItemsError: null, certificates: null,
 };
 
 // ---------- small DOM kit ----------
@@ -215,6 +215,8 @@ async function refreshAll() {
   if (!state.me) { render(); return; }
   // The witness log moves without the case, so r asks it again.
   for (const key of [...state.headReads.keys()]) if (key.startsWith('witness|')) state.headReads.delete(key);
+  // So does the certificate folder, which serve reads again on the next draw.
+  state.certificates = null;
   await Promise.all([loadCases(), loadPolicies(), loadContracts(), loadRegistry(), loadMetrics()]);
   if (state.selected) await loadCase(state.selected);
   render();
@@ -991,18 +993,22 @@ function workItemView(entry) {
 }
 // Witness: what the witness's transparency log holds for this case, judged by the server under the witness's public
 // key. The log moves without the case, so a read is kept for a case and head only until r asks again. Asking the
-// witness to sign is a POST to the case being drawn, for the one role serve names. Certificate: the server reads none,
-// so it is named as missing instead of drawn.
+// witness to sign is a POST to the case being drawn, for the one role serve names. Certificate: a case has none, since
+// certificates are about Build Threads, so the panel says so and points to Studio, where serve lists the ones it reads.
 function witnessPanel(info) {
   const read = headRead('witness', id => '/api/cases/' + encodeURIComponent(id) + '/witness', info)
     .then(entry => entry.error ? entry : {witness: M.witnessView(entry.body, info.events)});
+  const configured = !!(state.console && state.console.certificates && state.console.certificates.configured);
   return h('div', {class: 'grid-2'},
     section('Witness', h('span', {class: 'muted mono-s'}, 'GET · POST …/witness'), fillSlot(h('div', {class: 'witness'}), read, entry => witnessSummary(entry, info))),
-    section('Certificate', badge('idle', 'none shown'),
-      h('div', {class: 'witness-missing'}, h('div', {class: 'act'},
-        h('button', {type: 'button', class: 'btn', disabled: true}, 'Show certificate'),
-        h('span', {class: 'why'}, 'no read route: needs ', mono('GET /api/cases/{id}/certificate'), ' · admission certificates are written by ',
-          mono('syberlabs certify'), ' for a Build Thread as files under ', mono('<home>/certificates'), '; a case here has none')))));
+    section('Certificate', badge('idle', 'none for a case'),
+      h('div', {class: 'certificate-case'},
+        h('p', {class: 'why'}, 'Admission certificates are written by ', mono('syberlabs certify'), ' for a Build Thread\'s accepted candidate, as files under ',
+          mono('<home>/certificates'), '; a case is not a Build Thread and has none. Nothing on this case is drawn as certified.'),
+        configured
+          ? h('div', {class: 'act'}, h('button', {type: 'button', class: 'btn', onclick: openCertificates}, 'Open certificates in Studio'),
+            h('span', {class: 'why'}, 'the Build Thread certificates serve reads, each verified by serve under the key it was given'))
+          : h('p', {class: 'muted'}, 'serve reads no certificates: set ', mono('SYBERWORK_CERTIFICATE_HOME'), ' and ', mono('SYBERWORK_CERTIFICATE_PUBLIC'), '.'))));
 }
 function witnessSummary(entry, info) {
   if (!entry) return h('span', {class: 'muted'}, 'reading from the server…');
@@ -1176,17 +1182,67 @@ function renderStudio() {
       : (state.policies || []).map(p => item('policy', 'policy', p.version, `policy v${p.version}`, Object.keys(p.body.actions || {}).length + ' actions')),
     h('div', {class: 'group'}, 'Connectors'),
     item('actions', 'actions', 0, 'Actions', admin ? Object.keys(state.registry.actions || {}).length + ' installed' : 'admin only'),
-    item('sources', 'sources', 0, 'Sources', state.registry.sources ? Object.keys(state.registry.sources).length + ' installed' + (admin ? '' : ' · read roles') : state.registryError ? 'unreadable' : '…'));
+    item('sources', 'sources', 0, 'Sources', state.registry.sources ? Object.keys(state.registry.sources).length + ' installed' + (admin ? '' : ' · read roles') : state.registryError ? 'unreadable' : '…'),
+    h('div', {class: 'group'}, 'Build Threads'),
+    item('certificates', 'certificates', 0, 'Certificates', state.console && state.console.certificates && state.console.certificates.configured ? 'verified by serve' : 'not configured'));
   let body;
   if (s.kind === 'contract' && s.id) body = studioContract(contracts.find(c => c.id === s.id && c.version === s.version));
   else if (s.kind === 'policy' && state.policiesError) body = empty('Policy not readable', state.policiesError.code === 'forbidden'
     ? `GET /api/policies requires the ${M.POLICY_READERS.join(' or ')} role, without an automation role. An economic policy carries budget limits.` : state.policiesError.message);
   else if (s.kind === 'policy') body = studioPolicy((state.policies || []).find(p => p.version === s.version));
   else if (s.kind === 'actions' || s.kind === 'sources') body = studioConnectors(s.kind);
+  else if (s.kind === 'certificates') body = studioCertificates();
   else body = empty('Nothing published', 'Publish a contract to begin.');
   return h('div', {class: 'studio'}, h('div', {class: 'studio-head'}, h('h1', {}, 'Contract & connector studio'),
     h('p', {class: 'lead'}, 'Published documents are immutable under their identity. Changing behavior means a higher version, or a new action or source name.')),
   h('div', {class: 'studio-grid'}, nav, h('div', {class: 'studio-body'}, body)));
+}
+function openCertificates() {
+  Object.assign(state.studio, {kind: 'certificates', id: 'certificates', version: 0, tab: 'document', artifacts: null, draft: null, error: null});
+  go('studio');
+}
+// Admission certificates (docs/CERTIFICATE.md) of Build Threads, from GET /api/certificates. serve verifies each file under
+// the key it was given; the console checks no signature, and draws as certified only what M.certificateView reads so.
+function studioCertificates() {
+  if (!state.certificates) {
+    const read = api('/api/certificates').then(body => ({view: M.certificateView(body)}), error => ({error}));
+    state.certificates = read;
+    read.then(entry => { if (entry.error && state.certificates === read) state.certificates = null; });
+  }
+  return h('div', {class: 'certificates'},
+    h('h2', {}, 'Admission certificates'),
+    h('p', {class: 'lead'}, 'One signed statement per accepted Build Thread candidate: which tree was accepted, under which contract and policy, with which host checks, at which point of the thread\'s chain. A SyberWork case has none.'),
+    fillSlot(h('div', {class: 'certificate-list'}), state.certificates, certificatesView));
+}
+function certificatesView(entry) {
+  if (!entry) return h('span', {class: 'muted'}, 'reading from the server…');
+  if (entry.error) return readFailed(entry);
+  const v = entry.view;
+  if (v.state === 'off') return empty('No certificates configured', v.text);
+  if (v.state === 'unknown') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text)];
+  const dash = h('span', {class: 'muted'}, '—');
+  return [
+    h('p', {}, h('b', {}, v.certified), ' of ', v.shown, ' certificate', v.shown === 1 ? '' : 's', ' certified · key ', mono(M.short(v.publicKey, 16) + '…'),
+      v.truncated ? h('span', {class: 'why warn'}, ' · ' + v.total + ' files; only the first ' + v.shown + ' by name were verified') : null),
+    v.rows.length ? h('table', {class: 'grid certificate-rows'}, h('thead', {}, h('tr', {}, ['File', 'Thread · candidate', 'Result', 'Contract', 'Checks', 'Chain', 'Verdict'].map(t => h('th', {}, t)))),
+      h('tbody', {}, v.rows.map(r => {
+        const st = r.statement;
+        return h('tr', {'data-state': r.state},
+          h('td', {class: 'mono-s'}, r.file),
+          h('td', {}, st ? [mono(M.short(st.thread, 8)), ' · ', mono(st.candidate), h('div', {class: 'why'}, st.objective)] : dash),
+          h('td', {}, st ? [mono(M.short(st.result.commit, 10)), h('div', {class: 'why'}, st.result.files + ' file' + (st.result.files === 1 ? '' : 's') + ' · ' + st.target_ref)] : dash),
+          h('td', {}, st ? [mono(st.contract.id + '.v' + st.contract.version), st.act_class ? h('span', {class: 'muted'}, ' · class ' + st.act_class) : null] : dash),
+          // A check reads passed in green only on a certified row; on a signed-only row it is pending, and beside a failure it
+          // is what the key signed, nothing more.
+          h('td', {}, st ? st.checks.map(c => h('div', {}, badge(c.state !== 'passed' ? (r.certified ? 'denied' : 'idle') : r.certified ? 'verified' : r.state === 'signed' ? 'pending' : 'idle', c.name + ' ' + c.state))) : dash),
+          h('td', {class: 'mono-s'}, st ? '#1–#' + st.chain.count + ' · ' + M.short(st.chain.head, 10) : dash),
+          h('td', {}, badge(r.tone, r.label), r.reason ? [' ', mono(r.reason)] : null, h('div', {class: 'why'}, r.text)));
+      })))
+      : h('p', {class: 'muted'}, 'No certificate files under ', mono('<home>/certificates'), '.'),
+    h('p', {class: 'hint'}, 'Checked by serve: ', v.checked.join(' and ') || 'nothing', '. Not checked: ', v.notChecked.join(', ') || 'nothing',
+      ' (the commits, trees and diff in Git); run ', mono('syberlabs verify FILE --public KEY --repo .'), ' for it. The key is serve\'s configuration (',
+      mono('SYBERWORK_CERTIFICATE_PUBLIC'), '); the .pub file beside each certificate is not read. v0 certificates are signed in the certifying process, not witnessed. The console checks no signature.'),
+  ];
 }
 function studioTabs(tabs) {
   const s = state.studio;

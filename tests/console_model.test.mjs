@@ -56,6 +56,13 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   // What GET /api/console answered on a server given a witness to ask for the manager role.
   assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console: cases.console, view: witnessed }).ok, true);
   assert.deepEqual(M.can(ME('operator', ['operator']), 'witness_request', { console: cases.console, view: witnessed }).roles, ['manager']);
+  // What GET /api/certificates answered for a Build Thread home with the two genuine forms and one file under another key.
+  const shelf = M.certificateView(cases.certificates.body);
+  assert.deepEqual([shelf.state, shelf.total, shelf.shown, shelf.certified, shelf.truncated, shelf.notChecked], ['read', 3, 3, 2, false, ['repository']]);
+  assert.deepEqual(shelf.rows.map(r => [r.file, r.state, r.tone]), cases.certificates.expected);
+  assert.equal(shelf.rows.find(r => r.state === 'not_signed').statement, null);
+  assert.equal(shelf.rows.find(r => r.certified).statement.chain.count, cases.certificates.count);
+  assert.equal(cases.console.certificates.configured, true);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -441,4 +448,50 @@ test('asking the witness is for the role serve names, and not for a head already
   assert.match(M.can(ME('manager', ['manager']), 'witness_request', { console, view: conflict }).reason, /does not have/);
   // An unreadable answer: the server decides.
   assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console, view: null }).ok, true);
+});
+
+const CERTIFIED = { thread: '0123abcd-0000-4000-8000-000000000000', candidate: 'c1', objective: 'o', act_class: null, contract: { id: 'repo-change', version: 2 },
+  result: { commit: 'a'.repeat(40), tree: 'b'.repeat(40), files: 2 }, target_ref: 'refs/heads/syberlabs/0123abcd', checks: [{ name: 'tests', required: true, state: 'passed' }],
+  chain: { count: 12, head: 'c'.repeat(64) } };
+const SHELF = (rows, extra = {}) => ({ configured: true, public_key: 'd'.repeat(64), total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
+  not_checked: ['repository'], certificates: rows, note: 'n', ...extra });
+const ROW = extra => ({ file: 'x.json', verdict: 'pass', reason: null, signature: 'ok', journal: 'ok', journal_present: true, repository: null, statement: CERTIFIED, ...extra });
+
+test('a certificate reads certified only when serve passed its signature and its journal', () => {
+  const view = M.certificateView(SHELF([ROW({}), ROW({ file: 'y.json', journal: null, journal_present: false })]));
+  assert.deepEqual(view.rows.map(r => [r.state, r.tone, r.certified]), [['certified', 'verified', true], ['signed', 'pending', false]]);
+  assert.equal(view.certified, 1);
+  assert.match(view.rows[1].text, /only the signature was checked/);
+  // A pass whose journal fields do not agree with each other, or whose statement is not the expected shape, is unknown.
+  for (const extra of [{ journal: null, journal_present: true }, { journal: 'ok', journal_present: false }, { journal: null }, { statement: null },
+    { statement: { ...CERTIFIED, chain: { count: '12', head: 'c' } } }, { signature: 'signature_invalid' }, { reason: 'chain_truncated' }, { verdict: 'trusted' }]) {
+    const row = M.certificateView(SHELF([ROW(extra)])).rows[0];
+    assert.deepEqual([row.state, row.certified, row.statement], ['unknown', false, null], JSON.stringify(extra));
+  }
+});
+
+test('a failed certificate is named as failed, and states nothing unless its signature held', () => {
+  const unsigned = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'signature_invalid', signature: 'signature_invalid', journal: null, journal_present: null, statement: CERTIFIED })])).rows[0];
+  assert.deepEqual([unsigned.state, unsigned.tone, unsigned.reason, unsigned.statement, unsigned.certified], ['not_signed', 'denied', 'signature_invalid', null, false]);
+  const unread = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'not_a_regular_file', signature: null, journal: null, journal_present: null, statement: null })])).rows[0];
+  assert.equal(unread.state, 'not_signed');
+  const differs = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated' })])).rows[0];
+  assert.deepEqual([differs.state, differs.tone, differs.certified], ['journal_differs', 'denied', false]);
+  assert.equal(differs.statement.candidate, 'c1', 'what the key signed is shown beside the failure');
+  assert.match(differs.text, /do not treat it as certified/);
+  const unreadable = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'journal_unreadable:io_error', journal: 'journal_unreadable:io_error' })])).rows[0];
+  assert.deepEqual([unreadable.state, unreadable.tone, unreadable.certified], ['journal_unreadable', 'unknown', false]);
+  // A fail without a reason, or with a signature of ok and no journal verdict, is unknown rather than guessed.
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: null })])).rows[0].state, 'unknown');
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'x', journal: null })])).rows[0].state, 'unknown');
+});
+
+test('a certificate answer of another shape is unknown, and an unconfigured one says so', () => {
+  for (const body of [null, {}, { configured: 'yes' }, { configured: true }, { configured: true, certificates: [], total: '0', public_key: 'd' },
+    { configured: true, certificates: {}, total: 0, public_key: 'd' }]) {
+    assert.equal(M.certificateView(body).state, 'unknown', JSON.stringify(body));
+  }
+  assert.deepEqual(M.certificateView({ configured: false, note: 'serve reads no certificates; set X' }), { state: 'off', text: 'serve reads no certificates; set X' });
+  const capped = M.certificateView(SHELF([ROW({}), 'junk', { file: 3 }], { total: 60 }));
+  assert.deepEqual([capped.shown, capped.total, capped.truncated], [1, 60, true]);
 });

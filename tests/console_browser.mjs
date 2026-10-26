@@ -156,12 +156,12 @@ await page.keyboard.press('5');
 await page.keyboard.press('v');
 await page.waitForSelector('ul.runs li');
 report.verify = await page.textContent('ul.runs li');
-// JCS side records, the case's work item and the witness log fill in place; the certificate is named as missing.
+// JCS side records, the case's work item and the witness log fill in place; a case has no certificate, and says so.
 await rulesSettled('.side-summary, .work-item, .witness');
 report.side_summary = await page.textContent('.side-summary');
 report.work_item = await page.locator('.work-item tbody tr').evaluateAll(rows => rows.map(r => [r.dataset.metric, r.textContent]));
-report.certificate_buttons = await page.locator('.witness-missing button').evaluateAll(bs => bs.map(b => [b.textContent, b.disabled]));
-report.certificate_text = await page.textContent('.witness-missing');
+report.certificate_buttons = await page.locator('.certificate-case button').evaluateAll(bs => bs.map(b => [b.textContent, b.disabled]));
+report.certificate_text = await page.textContent('.certificate-case');
 report.witness_before = await page.textContent('.witness');
 // Asking the witness is the manager's here. The operator is told why and offered the switch.
 const askState = () => page.locator('.witness-ask').evaluate(el => [el.querySelector('button.btn').disabled, el.textContent]);
@@ -190,6 +190,15 @@ await shot('09a-witness');
 await page.locator('.timeline li').first().locator('summary').click();
 report.side_row = await page.locator('.timeline li').first().locator('.side-row').textContent();
 await shot('09-history');
+// History → Open certificates in Studio: the Build Thread certificates serve reads, each verified by serve.
+await page.locator('.certificate-case button', { hasText: 'Open certificates in Studio' }).click();
+await page.waitForSelector('.certificate-rows tbody tr');
+report.certificate_rows = await page.locator('.certificate-rows tbody tr').evaluateAll(rows => rows.map(r => [r.dataset.state, r.textContent]));
+report.certificate_page = await page.textContent('.certificates');
+await shot('09c-certificates');
+await page.keyboard.press('g');
+await page.keyboard.press('c');
+await page.waitForSelector('.history');
 await page.keyboard.press('4');
 await page.waitForSelector('.effects table');
 report.effects = await page.locator('.effects tbody tr').allTextContents();

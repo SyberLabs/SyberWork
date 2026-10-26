@@ -13,6 +13,7 @@ from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import WitnessClient
 
 from .backup import export_cell, restore_cell
+from .certificates import CertificateShelf
 from .core import Work
 from .server import serve
 from .trace import TraceLog
@@ -60,6 +61,30 @@ def _witness_request(parser, log):
         return WitnessClient(int(port), log.public, log.path), role
     except Rejected as exc:
         parser.error(f"witness: {exc.code}: {exc.detail}")
+
+
+def _certificates(parser):
+    """The certificates under a Build Thread home, when SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC name one.
+
+    The home is the one ``syberlabs certify`` wrote under (``.syberlabs``); the key is the hex in the ``.pub`` file it
+    wrote. Which key to trust is the deployment's decision, so serve never reads it from beside the certificates. Half a
+    configuration stops serve.
+    """
+    home, public = os.getenv("SYBERWORK_CERTIFICATE_HOME"), os.getenv("SYBERWORK_CERTIFICATE_PUBLIC")
+    if not home and not public:
+        return None
+    if not home or not public:
+        parser.error("set both SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC, or neither")
+    try:
+        key = bytes.fromhex(public.strip())
+    except ValueError:
+        key = b""
+    if len(key) != 32:
+        parser.error("SYBERWORK_CERTIFICATE_PUBLIC must be the certificate public key: 64 hex characters")
+    try:
+        return CertificateShelf(home, key)
+    except Rejected as exc:
+        parser.error(f"certificates: {exc.code}: {exc.detail}")
 
 
 def main():
@@ -129,8 +154,9 @@ def main():
             parser.error("run init first")
         log = _witness_log(parser)
         client, role = _witness_request(parser, log)
+        shelf = _certificates(parser)
         serve(db, json.loads(userfile.read_text()), host=os.getenv("SYBERWORK_BIND", "127.0.0.1"), port=args.port,
-              witness_log=log, witness_client=client, witness_role=role)
+              witness_log=log, witness_client=client, witness_role=role, certificates=shelf)
     elif args.command == "backup":
         print(json.dumps(export_cell(db, args.directory)))
     elif args.command == "restore":
