@@ -214,6 +214,11 @@ class GroundTruth(ClaudeCodeCase):
         return Ledger(len(served), len(facts), item.githits_lookups, len(paired), unpaired,
                       [entry["request_id"] for entry in served if entry["request_id"] not in paired], facts)
 
+    def server_body(self, path: str) -> bytes:
+        """The one request body the counter received on ``path`` (``FakeGitHits`` keeps each request it served)."""
+        [request] = [request for request in self.server.requests if request["path"] == path]
+        return request["body"]
+
     def stopped(self, thread) -> tuple:
         search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
         return search["stopped"], search["error"]
@@ -302,18 +307,30 @@ class Exact(GroundTruth):
 
     def test_several_lookups_in_one_call_are_one_request_and_one_fact_each_in_order(self):
         kit = self.kit()
-        thread, claude = self.work_item(kit, "several", [launcher(text) for text in (SEARCH, EXAMPLE, READ, LIST, GREP,
-                                                                                    "doctor")])
+        thread, claude = self.work_item(kit, "several", [launcher(text) for text in (SEARCH, EXAMPLE, READ, LIST, GREP)])
         [candidate] = thread.propose(self.arm_b(kit, thread, claude))
         found = self.ledger(thread)
-        self.assertEqual((found.server, found.journal, found.metric.value, found.paired), (6, 6, 6, 6))
+        self.assertEqual((found.server, found.journal, found.metric.value, found.paired), (5, 5, 5, 5))
         self.assertEqual([v["request_id"] for v in found.facts], [e["request_id"] for e in self.server.log],
                          "the journal's order is the order the requests arrived")
         self.assertEqual([(v["tool"], e["path"]) for v, e in zip(found.facts, self.server.log)], [
             ("githits.search", "/v1/searches"), ("githits.example", "/v1/examples/search"),
-            ("githits.read", "/v1/read"), ("githits.list", "/v1/list"), ("githits.grep", "/v1/grep"),
-            ("githits.doctor", "/v1/languages")])
-        self.assertEqual(candidate.signal["tool_usage"]["githits"], 6)
+            ("githits.read", "/v1/read"), ("githits.list", "/v1/list"), ("githits.grep", "/v1/grep")])
+        self.assertEqual(json.loads(self.server_body("/v1/examples/search"))["license_mode"], "strict")
+        self.assertEqual(candidate.signal["tool_usage"]["githits"], 5)
+
+    def test_arm_a_holds_no_githits_route_and_counts_zero(self):
+        """Arm A, the baseline: no launcher, and (#135) no GitHits variable in Claude Code's environment, so the same
+        launcher-shaped command is denied and nothing reaches the server; the count is a known 0."""
+        kit = self.kit()
+        thread, claude = self.work_item(kit, "arm-a", [launcher(SEARCH)], log_env=True)
+        [candidate] = thread.propose(ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=1))
+        found = self.ledger(thread)
+        self.assertEqual((found.server, found.journal, found.metric.value), (0, 0, 0))
+        self.assertEqual(self.server.log, [])
+        [run] = self.runs("arm-a")
+        self.assertNotIn(githits.TOKEN_ENV, run["env"], "arm A holds no GitHits credential")
+        self.assertNotIn("githits", candidate.signal)
 
     def test_launcher_processes_running_at_once_each_leave_one_authentic_record(self):
         """Claude Code may run tool calls side by side; the client appends one line per call to one file."""
@@ -402,6 +419,23 @@ class Unknowable(GroundTruth):
             self.assertIn("(1 recorded)", found.metric.note)
             self.assertEqual(found.metric.basis, tuple(e["hash"] for e in registration.history()
                                                        if e["kind"] == "candidate_registered"))
+
+    def test_a_command_the_launcher_refuses_sends_nothing_and_still_makes_the_count_unknown(self):
+        """#135: the launcher's entry runs only the five lookups, and ``example`` only with ``license_mode: strict``;
+        ``doctor``, ``--help`` and ``--license-mode`` exit 2 before a client exists, so nothing is sent or recorded.
+        The guard passed each, though, so the call reports ``githits_unrecorded`` like any launcher call without a
+        record, and the journal cannot tell these refusals from a request that left without one: unknown."""
+        kit = self.kit()
+        thread, claude = self.work_item(kit, "refused-commands", [
+            launcher(SEARCH), launcher("doctor"), launcher("--help"),
+            launcher('example "retry an HTTP call" --license-mode yolo')])
+        [candidate] = thread.propose(self.arm_b(kit, thread, claude))
+        found = self.ledger(thread)
+        self.assertEqual((found.server, found.journal, found.metric.value), (1, 1, None))
+        self.assertEqual([entry["path"] for entry in self.server.log], ["/v1/searches"], "no doctor, no example")
+        self.assertEqual({k: candidate.signal["githits"].get(k) for k in ("launcher_passed", "records", "mismatch")},
+                         {"launcher_passed": 4, "records": 1, "mismatch": "githits_unrecorded"})
+        self.assertIn("(1 recorded)", found.metric.note)
 
     def test_a_record_with_no_guarded_launcher_call_makes_the_count_unknown(self):
         kit = self.kit()
