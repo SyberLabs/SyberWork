@@ -503,10 +503,10 @@ class ConsoleSideRecords(CellCase):
 
     def test_side_read_appends_nothing_and_an_unknown_case_is_refused(self):
         case = self.case_with_decision()
-        with sqlite3.connect(self.cell.database) as db:
+        with connect_db(self.cell.database) as db:
             before = list(db.iterdump())
         self.cell.call(f"/api/cases/{case}/side")
-        with sqlite3.connect(self.cell.database) as db:
+        with connect_db(self.cell.database) as db:
             self.assertEqual(list(db.iterdump()), before)
         for path in ("/api/cases/no-such-case/side", "/api/cases/%2e%2e/side"):
             with self.subTest(path):
@@ -517,19 +517,19 @@ class ConsoleSideRecords(CellCase):
     def test_the_route_reports_a_stored_digest_as_stored_and_verify_judges_it(self):
         """The route is a read, not a check: an altered row comes back as written, and only verify refuses it."""
         case = self.case_with_decision()
-        with sqlite3.connect(self.cell.database) as db:
+        with connect_db(self.cell.database) as db:
             db.execute("UPDATE event_side SET jcs=? WHERE case_id=? AND seq=1", ("0" * 64, case))
         rows = self.cell.json(f"/api/cases/{case}/side")[1]
         self.assertEqual(rows[0]["jcs"], "0" * 64)
         self.assertEqual(self.cell.json(f"/api/cases/{case}/verify"), (200, {"valid": False}))
-        with sqlite3.connect(self.cell.database) as db:
+        with connect_db(self.cell.database) as db:
             db.execute("DELETE FROM event_side WHERE case_id=? AND seq=1", (case,))
         self.assertEqual([row["seq"] for row in self.cell.json(f"/api/cases/{case}/side")[1]][:1], [2])
         self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True},
                          "verify cannot notice a missing row, which is why the console says so instead of calling it legacy")
         # Nor does verify check a row with no digest, or a rule id: the console presents neither as checked.
         decision = next(e["seq"] for e in self.cell.work.inspect(case)["events"] if e["kind"] == "decision")
-        with sqlite3.connect(self.cell.database) as db:
+        with connect_db(self.cell.database) as db:
             db.execute("UPDATE event_side SET jcs=NULL, rule='invented.rule' WHERE case_id=? AND seq=?", (case, decision))
         row = next(r for r in self.cell.json(f"/api/cases/{case}/side")[1] if r["seq"] == decision)
         self.assertEqual((row["jcs"], row["rule"]), (None, "invented.rule"))
