@@ -742,7 +742,12 @@ class Client:
     def grep(self, pattern: str, targets, **options) -> Result:
         return self.call(grep_request(pattern, targets, **options))
 
-    def call(self, request: Request) -> Result:
+    def call(self, request: Request, deliver=None) -> Result:
+        """Send ``request`` (unless a target is excluded), filter the answer and record the call. ``deliver``, when
+        given, is called with the result before the record is written (the CLI prints there): if it raises
+        ``OSError`` or ``ValueError`` (a closed or broken stream, an unencodable character), the call is recorded
+        ``error`` and ``GitHitsError("output_failed")`` is raised, so a record never says ``ok`` for a result its
+        caller did not receive."""
         started = time.monotonic()
         record = {"op": request.op, "query_digest": query_digest(request), "targets_count": len(request.targets),
                   "status": ERROR, "http_status": None, "request_id": None, "results_returned": 0,
@@ -752,7 +757,7 @@ class Client:
         if any(self.exclude.names(target) for target in request.targets):
             result = Result(request.op, EXCLUDED, None, None, None, 0, 0, False, None,
                             reason="a target names an excluded owner or repository; no request was sent")
-            self._record(record, result, started)
+            self._finish(record, result, started, None, deliver)
             return result
         try:
             status, headers, raw = self._send(request)
@@ -774,8 +779,20 @@ class Client:
         result = Result(request.op, state, kept, status, request_id, returned, dropped, state == BLOCKED,
                         _remaining(headers), unlicensed,
                         "the response cites an excluded owner; it was dropped whole" if state == BLOCKED else None)
-        self._record(record, result, started, headers=headers)
+        self._finish(record, result, started, headers, deliver)
         return result
+
+    def _finish(self, record: dict, result: Result, started: float, headers, deliver) -> None:
+        failure = None
+        if deliver is not None:
+            try:
+                deliver(result)
+            except (OSError, ValueError) as exc:  # UnicodeEncodeError is a ValueError
+                failure = exc
+        self._record(record, result, started, headers=headers, delivered=failure is None)
+        if failure is not None:
+            raise GitHitsError("output_failed", f"the result could not be written: {type(failure).__name__}",
+                               record.get("http_status"), record.get("request_id")) from None
 
     def doctor(self) -> dict:
         """One cheap authenticated request (``DOCTOR``): ``{status, http_status, problem, request_id, latency_ms,
@@ -882,9 +899,9 @@ class Client:
     def _scrub(self, text: str) -> str:
         return text.replace(self._token, "[token]") if self._token else text
 
-    def _record(self, record: dict, result: Result | None, started: float, headers=None) -> None:
+    def _record(self, record: dict, result: Result | None, started: float, headers=None, delivered=True) -> None:
         if result is not None:
-            record.update(status=result.status, results_returned=result.results_returned,
+            record.update(status=result.status if delivered else ERROR, results_returned=result.results_returned,
                           results_dropped=result.results_dropped,
                           results_dropped_license=result.results_dropped_license,
                           contamination_blocked=result.contamination_blocked)
@@ -1111,17 +1128,42 @@ def render_doctor(report: dict) -> str:
     return f"githits doctor: {report['status']} (" + ", ".join(p for p in parts if p) + ")"
 
 
+def write_text(stream, text: str) -> None:
+    """Write ``text`` to ``stream`` and flush it. A character the stream's encoding cannot hold becomes ``?``,
+    whatever error mode the stream has (a cp1252 pipe under ``-I``, say), so encoding never raises here; a closed or
+    broken stream still raises, at the flush at the latest, where the caller can see it."""
+    encoding = getattr(stream, "encoding", None)
+    if isinstance(encoding, str) and encoding:
+        try:
+            text = text.encode(encoding, "replace").decode(encoding)
+        except LookupError:
+            pass
+    stream.write(text)
+    stream.flush()
+
+
 def run(args, environ=None, stdout=None, stderr=None) -> int:
     """``syberlabs githits ...``: 0 a result, 2 refused (an excluded target or a blocked result), 1 an error;
-    ``doctor``: 0 ready, 1 not (the status says why)."""
+    ``doctor``: 0 ready, 1 not (the status says why). A lookup's output is written (``write_text``) before its record,
+    so an output that fails is recorded ``error`` and exits 1 (``Client.call``, ``deliver``)."""
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     op = args.githits_command
     options = {name: getattr(args, name) for name in _OPTIONS[op]}
+
+    def deliver(result: Result) -> None:
+        if args.json:
+            write_text(stdout, json.dumps({**{key: getattr(result, key) for key in Result._fields},
+                                           "refused": result.refused}, ensure_ascii=False, sort_keys=True) + "\n")
+        elif not result.refused:
+            write_text(stdout, render(result) + "\n")
+        if result.refused:
+            write_text(stderr, f"refused: {result.status}: {result.reason}\n")
+
     try:
         client = Client.from_env(environ, timeout=args.timeout)
         if op == "doctor":
             report = client.doctor()
-            stdout.write((json.dumps(report, sort_keys=True) if args.json else render_doctor(report)) + "\n")
+            write_text(stdout, (json.dumps(report, sort_keys=True) if args.json else render_doctor(report)) + "\n")
             return 0 if report["status"] == "ok" else 1
         if op == "search":
             request = search_request(args.query, args.targets, **options)
@@ -1133,16 +1175,11 @@ def run(args, environ=None, stdout=None, stderr=None) -> int:
             request = list_request(args.target, **options)
         else:
             request = grep_request(args.pattern, args.targets, **options)
-        result = client.call(request)
+        result = client.call(request, deliver=deliver)
     except GitHitsError as exc:
-        stderr.write(f"error: {exc}\n")
+        try:
+            write_text(stderr, f"error: {exc}\n")
+        except (OSError, ValueError):
+            pass  # the record already says error; a stderr that cannot be written changes nothing
         return 1
-    if args.json:
-        stdout.write(json.dumps({**{key: getattr(result, key) for key in Result._fields}, "refused": result.refused},
-                                ensure_ascii=False, sort_keys=True) + "\n")
-    elif not result.refused:
-        stdout.write(render(result) + "\n")
-    if result.refused:
-        stderr.write(f"refused: {result.status}: {result.reason}\n")
-        return 2
-    return 0
+    return 2 if result.refused else 0
