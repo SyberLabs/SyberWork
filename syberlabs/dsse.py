@@ -36,14 +36,13 @@ def head_payload(case_id: str, events: list) -> bytes:
     return canonical(document).encode("ascii")
 
 
-def sign_dsse(payload_type: str, payload: bytes, seed: bytes, *, public: bytes | None = None) -> dict:
+def sign_dsse(payload_type: str, payload: bytes, seed: bytes) -> dict:
     """One-signature DSSE envelope. ``keyid`` is the public key, hex-encoded.
 
-    ``public`` is ``public_from_seed(seed)`` when the caller already holds it (a transparency log keeps its own);
-    otherwise it is derived here once and reused by the signature (``ed25519.sign``)."""
-    if public is None:
-        public = public_from_seed(seed)
-    signature = sign(seed, pae(payload_type, payload), public)
+    ``ed25519`` derives the key once per seed and reuses it for the signature, so the first envelope under a seed
+    costs two scalar multiplications and each later one (a transparency log's checkpoints) costs one."""
+    public = public_from_seed(seed)
+    signature = sign(seed, pae(payload_type, payload))
     return {
         "payloadType": payload_type,
         "payload": base64.standard_b64encode(payload).decode("ascii"),

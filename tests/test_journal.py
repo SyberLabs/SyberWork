@@ -403,5 +403,100 @@ class StatBeforeOpen(unittest.TestCase):
         self.assertEqual(after[-1]["body"]["value"], "from another process")
 
 
+class RefusedStaysRefused(unittest.TestCase):
+    """perf-a-followups (verification of #105, finding 4): ``read_new`` moves the read offset past the records it
+    returns before the session checks their chain. A thread refused once was then served from its verified prefix
+    on the next access in the same process, so a long-running reader showed altered history as healthy from the
+    second request on. A thread or a registry that does not verify stays refused, in this session, in another on the
+    same journal and in a new one, until its file verifies from the first record."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name) / "journal"
+
+    def durable(self, journal=None):
+        if journal is None:
+            journal = Journal(self.home)
+            self.addCleanup(journal.close)
+        return Session(journal=journal)
+
+    def assertRefused(self, operation):
+        with self.assertRaises(Rejected) as caught:
+            operation()
+        self.assertEqual(caught.exception.code, "journal_corrupt")
+
+    def test_an_altered_thread_is_refused_on_every_access(self):
+        case = release_gate(self.durable())
+        path = self.home / "threads" / f"{case}.jsonl"
+        original = path.read_bytes()
+        lines = original.splitlines(keepends=True)
+        record = json.loads(lines[3])
+        record["event"]["body"]["actor"] = "someone-else"
+        path.write_bytes(b"".join(lines[:3] + [(json.dumps(record) + "\n").encode()] + lines[4:]))
+        altered = path.read_bytes()
+        session = self.durable()
+        for _attempt in range(3):
+            self.assertRefused(lambda: session.inspect(case))
+            self.assertRefused(lambda: session.history(case))
+            self.assertRefused(lambda: session.verify_chain(case))
+        self.assertRefused(lambda: self.durable(session._journal).inspect(case))
+        self.assertRefused(lambda: self.durable().inspect(case))
+        self.assertEqual(path.read_bytes(), altered, "refusing writes nothing")
+        path.write_bytes(original)
+        self.assertEqual(session.inspect(case)["status"], "complete")
+        self.assertTrue(session.verify_chain(case))
+
+    def test_an_altered_append_to_a_loaded_thread_stays_refused_and_nothing_is_appended_after_it(self):
+        first = self.durable()
+        case = release_gate(first)
+        other = release_gate(first)
+        self.durable().observe(case, "note", "appended by another process", "ops", "v1", "engineer")
+        path = self.home / "threads" / f"{case}.jsonl"
+        lines = path.read_bytes().splitlines(keepends=True)
+        record = json.loads(lines[-1])
+        record["event"]["body"]["value"] = "altered"
+        path.write_bytes(b"".join(lines[:-1] + [(json.dumps(record) + "\n").encode()]))
+        altered = path.read_bytes()
+        self.assertRefused(lambda: first.inspect(other))  # the first operation after the change, as before
+        self.assertEqual(first.inspect(other)["status"], "complete", "other threads are served again")
+        for _attempt in range(2):
+            self.assertRefused(lambda: first.inspect(case))
+            self.assertRefused(lambda: first.observe(case, "note", "after the altered record", "ops", "v2", "engineer"))
+        self.assertEqual(path.read_bytes(), altered, "nothing was appended after the altered record")
+
+    def test_a_registry_that_stops_validating_stays_refused(self):
+        first = self.durable()
+        case = release_gate(first)
+        registry = self.home / "registry.jsonl"
+        original = registry.read_bytes()
+        record = json.loads(original.splitlines()[0])
+        record["doc"]["acceptance"].append({"id": "published", "kind": "effect", "action": "publish"})
+        registry.write_bytes(original + (json.dumps(record) + "\n").encode())
+        for _attempt in range(3):
+            self.assertRefused(lambda: first.inspect(case))
+        registry.write_bytes(original)
+        self.assertEqual(first.inspect(case)["status"], "complete")
+
+    def test_an_honest_append_after_a_torn_line_repair_still_loads(self):
+        first = self.durable()
+        case = release_gate(first)
+        path = self.home / "threads" / f"{case}.jsonl"
+        whole = path.read_bytes()
+        with open(path, "ab") as handle:
+            handle.write(b'{"t":"event","event":{"case_id"')
+        second = self.durable()
+        self.assertEqual(shape(second, case), shape(first, case))
+        self.assertEqual(path.read_bytes(), whole, "the torn record was cut")
+        second.observe(case, "note", "after the repair", "ops", "v1", "engineer")
+        first.observe(case, "note", "and from the first", "ops", "v2", "engineer")
+        third = self.durable()
+        for session in (first, second, third, first):
+            self.assertTrue(session.verify_chain(case))
+            self.assertEqual(shape(session, case), shape(third, case))
+        self.assertEqual([e["body"]["value"] for e in third.inspect(case)["events"] if e["body"].get("key") == "note"],
+                         ["after the repair", "and from the first"])
+
+
 if __name__ == "__main__":
     unittest.main()

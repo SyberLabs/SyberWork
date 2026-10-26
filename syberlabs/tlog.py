@@ -94,7 +94,6 @@ class TransparencyLog:
         self._lock = threading.Lock()
         self._seed = seed
         self.public = public_from_seed(seed)
-        self._seed_public = self.public  # derived once; every checkpoint signature reuses it (sign_dsse ``public``)
         self._db = sqlite3.connect(self.path, timeout=15, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         try:
@@ -167,7 +166,7 @@ class TransparencyLog:
                 self._db.execute("INSERT INTO leaves (idx, body) VALUES (?, ?)", (count, body))
                 entries = [row["body"].encode() for row in self._db.execute("SELECT body FROM leaves ORDER BY idx")]
                 payload = canonical({"root": merkle_root(entries).hex(), "size": count + 1}).encode("ascii")
-                checkpoint = sign_dsse(CHECKPOINT_TYPE, payload, self._seed, public=self._seed_public)
+                checkpoint = sign_dsse(CHECKPOINT_TYPE, payload, self._seed)
                 self._db.execute(
                     "INSERT INTO checkpoints (size, envelope) VALUES (?, ?)",
                     (count + 1, canonical(checkpoint)),
