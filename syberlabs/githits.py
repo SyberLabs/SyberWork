@@ -16,8 +16,8 @@ every call has a timeout, and a response larger than ``max_bytes`` is refused.
 
 Contamination control, because GitHits indexes public code and SyberLabs' own repositories are public:
 
-(a) a request whose target names an excluded owner or repository is refused (``excluded_target``) before any
-    network call;
+(a) a request whose target names an excluded owner or repository, or whose path, glob or path prefix
+    (``request_paths``) mentions one, is refused (``excluded_target``) before any network call;
 (b) a search, grep or list result, or a read, whose source identity (``locator.repo_url``, a grep hit's
     ``repo_url`` or ``page_url``, the served repository of a list or read) is under an excluded owner is dropped
     and counted (``results_dropped``), and so is a search hit, grep hit or list entry whose text mentions one as
@@ -738,6 +738,21 @@ def read_records(directory, key: str) -> RecordRead:
     return RecordRead(found, ignored)
 
 
+def request_paths(request: Request) -> list:
+    """The path arguments a request sends beside its targets: read's ``path``, list's ``paths``, grep's path
+    selectors and search's ``path_prefix``. A server may resolve one against its target as a URL (``//host/...``,
+    ``@host/...``, an absolute URL), so ``call`` refuses one that mentions an excluded owner as it refuses a target."""
+    body = request.body if isinstance(request.body, dict) else {}
+    found = [request.params.get("path"), *(body.get("paths") or [])]
+    filters = body.get("filters") if isinstance(body.get("filters"), dict) else {}
+    found.append(filters.get("path_prefix"))
+    for target in body.get("targets") or []:
+        if isinstance(target, dict):
+            found += [selector.get("value") for selector in target.get("path_selectors") or []
+                      if isinstance(selector, dict)]
+    return [item for item in found if isinstance(item, str)]
+
+
 def query_digest(request: Request) -> str:
     """SHA-256 of the canonical request: the JSON body of a POST, the query parameters of a GET."""
     return hashlib.sha256(utf8(canonical(request.body if request.body is not None else request.params))).hexdigest()
@@ -843,9 +858,10 @@ class Client:
                   "results_dropped": 0, "results_dropped_license": 0, "license_policy": self.licenses.digest,
                   "contamination_blocked": False, "latency_ms": 0,
                   "rate_limit_remaining": None, "sent": False}
-        if any(self.exclude.names(target) for target in request.targets):
+        if (any(self.exclude.names(target) for target in request.targets)
+                or any(self.exclude.mentioned(path) for path in request_paths(request))):
             result = Result(request.op, EXCLUDED, None, None, None, 0, 0, False, None,
-                            reason="a target names an excluded owner or repository; no request was sent")
+                            reason="a target or path names an excluded owner or repository; no request was sent")
             self._record(record, result, started)
             return result
         headers = None
@@ -1058,8 +1074,8 @@ def render(result: Result) -> str:
         more = " | more: yes" if page.get("has_more") else ""
         pending = "" if data.get("completed", True) else f" | incomplete, search_ref {data.get('search_ref')}"
         lines.append(f"search: {result.results_returned} results{dropped}{more}{pending}")
-        for number, hit in enumerate(evidence.get("results") or [], 1):
-            locator = hit.get("locator") or {}
+        for number, hit in enumerate(_objects(evidence.get("results")), 1):
+            locator = hit.get("locator") if isinstance(hit.get("locator"), dict) else {}
             where = _where(locator)
             score = f"[{hit['score']:.2f}] " if isinstance(hit.get("score"), (int, float)) else ""
             lines.append(f"{number}. {score}{where} {_short(hit.get('title'), 100)}".rstrip())
@@ -1086,18 +1102,24 @@ def render(result: Result) -> str:
     elif result.op == "list":
         more = f" | next: {data['next_cursor']}" if data.get("next_cursor") else ""
         lines.append(f"list: {result.results_returned} entries{dropped}{more}")
-        for entry in data.get("entries") or []:
+        for entry in _objects(data.get("entries")):
             count = f"  {entry['line_count']} lines" if entry.get("line_count") is not None else ""
             lines.append(f"{entry.get('kind') or '?'}  {entry.get('path')}{count}")
     elif result.op == "grep":
         more = f" | next: {data['next_cursor']}" if data.get("next_cursor") else ""
         total = f" of {data['total_matches']}" if data.get("total_matches") is not None else ""
         lines.append(f"grep: {result.results_returned} matches{total}{dropped}{more}")
-        for hit in data.get("hits") or []:
+        for hit in _objects(data.get("hits")):
             origin = _bare_url(hit.get("repo_url")) + "/" + str(hit.get("file_path")) if hit.get("repo_url") \
                 else _bare_url(hit.get("page_url"))
             lines.append(f"{origin}:{hit.get('line')}: {_short(hit.get('line_content'), 200)}")
     return "\n".join(lines)
+
+
+def _objects(value) -> list:
+    """The items of a response's list, an item that is not an object read as an empty one: rendering never raises on
+    an answer outside the contract, whose record (``ok``) is already written."""
+    return [item if isinstance(item, dict) else {} for item in value] if isinstance(value, list) else []
 
 
 def _where(locator: dict) -> str:

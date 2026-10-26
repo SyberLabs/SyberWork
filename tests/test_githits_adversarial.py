@@ -34,7 +34,7 @@ from syberlabs import query_guard as guard
 from syberlabs.claude_code import GITHITS_ENTRY, ClaudeCodeProvider, record_lookup
 from tests.test_claude_code import SEARCH, ClaudeCodeCase, launcher_lookup
 from tests.test_githits import (ENV_NAMES, FakeCase, FakeGitHits, example_response, grep_hit, grep_response,
-                                read_doc_response, run_cli, search_hit, search_response)
+                                list_response, read_doc_response, run_cli, search_hit, search_response)
 
 LAUNCHER = "/tmp/syberlabs-guard-x1/githits"  # the form claude_code.write_launcher returns
 
@@ -386,6 +386,65 @@ class ThroughTheLauncher(LauncherCase):
                           ("githits.search", "excluded_target", "pass")])
         self.assertEqual(candidate.signal["githits"]["mismatch"], "githits_unrecorded",
                          "the refused license mode is a usage error: no request, no record")
+
+
+class PathSmuggling(FakeCase):
+    """#135 allows the launcher only the five lookups, but their path arguments were never checked: only targets were.
+    ``read site:docs.python.org --path //syberlabs.io/...`` (a network-path reference), ``@syberlabs.io/...``
+    (userinfo, when a server concatenates site and path) or an absolute URL reach SyberLabs on a server that joins
+    the site and the path as a URL, and the guard passes them as plain words."""
+
+    def test_a_path_glob_or_prefix_naming_an_excluded_owner_is_refused_before_any_request(self):
+        for path in ("//syberlabs.io/projects/syberwork/", "@syberlabs.io/projects/syberwork/",
+                     "https://github.com/SyberLabs/SyberWork/blob/main/README.md"):
+            with self.subTest(path=path):
+                self.assertEqual(guard.decide(bash(f'{LAUNCHER} read site:docs.python.org --path "{path}"'),
+                                              launcher=LAUNCHER), guard.PASS, "the guard passes it")
+        client = self.client()
+        calls = (lambda: client.read("site:docs.python.org", path="//syberlabs.io/projects/syberwork/"),
+                 lambda: client.read("site:docs.python.org", path="@syberlabs.io/projects/syberwork/"),
+                 lambda: client.list("pypi:requests", paths=["https://github.com/SyberLabs/SyberWork"]),
+                 lambda: client.grep("Retry", ["pypi:requests"], globs=["//github.com/SyberLabs/**"]),
+                 lambda: client.search("retry", ["pypi:requests"], path_prefix="https://syberlabs.io/"))
+        for call in calls:
+            self.assertEqual(call().status, githits.EXCLUDED)
+        self.assertEqual(self.fake.requests, [])
+        self.assertEqual({r["targets_count"] for r in self.records().records}, {1}, "targets are counted as before")
+        client.read("pypi:requests", path="src/requests/api.py")
+        client.list("pypi:requests", paths=["src/**"])
+        self.assertEqual(len(self.fake.requests), 2, "ordinary paths still go")
+
+
+class OutputMatchesTheRecord(FakeCase):
+    """The record is written before the CLI renders the result. A hit outside the contract (a locator that is not an
+    object) made ``render`` raise after an ``ok`` record, so the agent saw a traceback while the record said ``ok``.
+    (#138 moves the output before the record; a crash in rendering would then leave no record at all.)"""
+
+    def test_a_result_outside_the_contract_still_renders(self):
+        self.fake.serve("/v1/searches", search_response([
+            {**search_hit("odd", "https://github.com/psf/requests"), "locator": "not-an-object", "score": "high"}]))
+        code, out, _ = run_cli(self.env, "githits", "search", "retry", "--target", "pypi:requests")
+        self.assertEqual((code, out.splitlines()[:1]), (0, ["search: 1 results"]))
+        self.fake.serve("/v1/list", {**list_response([]), "entries": ["not-an-entry"]})
+        code, out, _ = run_cli(self.env, "githits", "list", "pypi:requests")
+        self.assertEqual((code, out.splitlines()[:1]), (0, ["list: 1 entries"]))
+        self.fake.serve("/v1/grep", {**grep_response([]), "hits": ["not-a-hit"]})
+        code, out, _ = run_cli(self.env, "githits", "grep", "x", "--target", "pypi:requests")
+        self.assertEqual((code, out.splitlines()[:1]), (0, ["grep: 1 matches of 0"]))
+        self.assertEqual([r["status"] for r in self.records().records], [githits.OK] * 3)
+
+    @unittest.expectedFailure
+    def test_pr_138_a_delivery_that_fails_in_any_way_is_recorded_as_an_error(self):
+        """#138 (open) adds ``Client.call(request, deliver=...)`` and writes the record after ``deliver``; its
+        ``_finish`` records ``error`` only when ``deliver`` raises OSError or ValueError. Any other exception, or the
+        SystemExit a SIGTERM becomes in the launcher's entry, leaves no record for a request that reached GitHits.
+        Expected to fail until #138 records every failed delivery (here, before #138, ``deliver`` does not exist)."""
+        def deliver(result):
+            raise RuntimeError("the renderer crashed")
+
+        with self.assertRaises(Exception):
+            self.client().call(githits.search_request("retry", ["pypi:requests"]), deliver=deliver)
+        self.assertEqual([r["status"] for r in self.records().records], [githits.ERROR])
 
 
 # --------------------------------------------------- accounting (#139's Findings, pinned there as expected failures)
