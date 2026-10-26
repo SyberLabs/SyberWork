@@ -999,11 +999,27 @@ def _short(text, limit: int) -> str:
     return flat if len(flat) <= limit else flat[:limit - 3] + "..."
 
 
+LOOKUPS = ("search", "example", "read", "list", "grep")  # what the launcher's entry accepts; never ``doctor``
+
+
 def add_parser(commands) -> None:
-    """Register ``syberlabs githits ...`` on the CLI's subcommands."""
+    """Register ``syberlabs githits ...`` on the CLI's subcommands: the five lookups and ``doctor``, the operator's."""
     tool = commands.add_parser("githits", help="look up public dependency code and docs through the GitHits API, "
                                                "with SyberLabs repositories excluded (docs/GITHITS.md)")
-    steps = tool.add_subparsers(dest="githits_command", required=True)
+    _add_operations(tool.add_subparsers(dest="githits_command", required=True), launcher=False)
+
+
+def launcher_parser() -> argparse.ArgumentParser:
+    """The parser of the GitHits launcher's entry (``githits_cli_entry.py``), the one command a model can run: the
+    five ``LOOKUPS`` only (no ``doctor``), and ``example`` with no ``--license-mode`` option, so it always sends
+    ``license_mode: strict``. The operator's own ``syberlabs githits`` keeps both."""
+    parser = argparse.ArgumentParser(prog="githits", description="GitHits lookups through the host's client: "
+                                     + ", ".join(LOOKUPS) + " (docs/GITHITS.md)")
+    _add_operations(parser.add_subparsers(dest="githits_command", required=True), launcher=True)
+    return parser
+
+
+def _add_operations(steps, launcher: bool) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="print the filtered response and counts as JSON")
     common.add_argument("--timeout", type=float, help="seconds for the HTTP call (default: per operation)")
@@ -1029,7 +1045,10 @@ def add_parser(commands) -> None:
     example = steps.add_parser("example", parents=[common], help="a generated example from open-source references")
     example.add_argument("query")
     example.add_argument("--language")
-    example.add_argument("--license-mode", choices=("strict", "yolo", "custom"), default="strict")
+    if launcher:
+        example.set_defaults(license_mode="strict")  # not an option: the model cannot turn GitHits' filter off
+    else:
+        example.add_argument("--license-mode", choices=("strict", "yolo", "custom"), default="strict")
 
     read = steps.add_parser("read", parents=[common, waiting], help="read a documentation page or source lines")
     read.add_argument("target")
@@ -1063,8 +1082,9 @@ def add_parser(commands) -> None:
     grep.add_argument("--corpus", choices=("source", "documentation", "all"))
     grep.add_argument("--glob", dest="globs", action="append", help="path glob for every target (repeatable)")
 
-    steps.add_parser("doctor", parents=[common], help="one cheap authenticated request: are the token, the base URL "
-                                                      "and the rate limit ready (the token is never printed)")
+    if not launcher:
+        steps.add_parser("doctor", parents=[common], help="one cheap authenticated request: are the token, the base "
+                                                          "URL and the rate limit ready (the token is never printed)")
 
 
 _OPTIONS = {

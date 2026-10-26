@@ -38,13 +38,18 @@ launcher). For each call the host writes, in the call's guard directory outside 
 (``write_launcher``) that runs the host checkout's ``syberlabs/githits_cli_entry.py`` under ``python -I``; adds
 ``Bash`` to ``--tools`` and ``Bash(<launcher>:*)`` to ``--allowedTools``; appends the adapted GitHits skill
 (``skills/githits/SKILL.md``, its SHA-256 on ``signal.harness.skill``) to the harness note; matches ``Bash`` in the
-query guard, which passes only the launcher with plain arguments and judges those; and gives Claude Code's
-environment the client's settings (``GITHITS_API_TOKEN`` passed through from the operator's, a per-call record
-directory and record key, ``GITHITS_SESSION_ID`` ``<thread>-<arm>``, ``GITHITS_AGENT`` ``syberfactory/<arm>``, the
-license and exclusion policy). After the call the host reads the client's authentic records
+query guard, which passes only the launcher with plain arguments and judges those (and ``PowerShell`` too, by the
+same rule, under ``allow_code_tools_with_mcp``); and gives Claude Code's environment the client's settings
+(``GITHITS_API_TOKEN`` passed through from the operator's, a per-call record directory and record key,
+``GITHITS_SESSION_ID`` ``<thread>-<arm>``, ``GITHITS_AGENT`` ``syberfactory/<arm>``, the license and exclusion
+policy). The launcher's entry runs only the five lookups (``githits.LOOKUPS``; never ``doctor``) and ``example``
+only with ``license_mode: strict``. After the call the host reads the client's authentic records
 (``githits.read_records``) and journals one ``lookup`` per record, tool ``githits.<op>``; ``signal.tool_usage.githits``
 is their number, cross-checked against the stream's launcher calls (``signal.githits.mismatch``). Without
-``githits=True`` the argv and environment are what they were.
+``githits=True`` the argv is what it was; and with no ``mcp_config`` either (arm A: no GitHits route at all) the
+environment loses every GitHits variable (``githits_variable``: ``GITHITS_*`` and ``SYBERLABS_GITHITS_*``, the token
+included), so arm A holds no GitHits credential. An ``mcp_config`` run keeps them: a GitHits MCP server, its child,
+may read its token from that environment.
 
 The query guard (``syberlabs.query_guard``). Every call runs with ``--settings FILE``, a temporary settings document
 the host writes in its own directory outside the worktree that holds one ``PreToolUse`` hook and nothing else: the
@@ -192,12 +197,19 @@ LAUNCHER_PLACEHOLDER = "{launcher}"
 CLIENT_TOOL = "githits."                  # a lookup fact from a client record: ``githits.<op>``
 GITHITS_UNRECORDED = "githits_unrecorded"           # a launcher call passed the guard and left no authentic record
 GITHITS_UNEXPECTED = "githits_unexpected_records"   # more authentic records than launcher calls the guard passed
+GITHITS_VARIABLES = ("GITHITS_", "SYBERLABS_GITHITS_")  # prefixes arm A never passes (compared ignoring case)
 _LAUNCHER_PATH = re.compile(r"[A-Za-z0-9_./:+-]+")  # typed unquoted by the model, and inside ``Bash(...:*)``
 _ARM = re.compile(r"[A-Za-z0-9_-]{1,16}")
 
 
 def _dropped(name: str) -> bool:
     return any(fnmatch.fnmatchcase(name, pattern) for pattern in LOGIN_LANE_DROPPED_ENV)
+
+
+def githits_variable(name: str) -> bool:
+    """A GitHits variable (``GITHITS_API_TOKEN``, ``GITHITS_API_URL``, ``SYBERLABS_GITHITS_*`` ...): what a provider
+    with no GitHits route (no ``githits=True`` and no ``mcp_config``: arm A) removes from Claude Code's environment."""
+    return name.upper().startswith(GITHITS_VARIABLES)
 
 
 def third_party(env) -> list[str]:
@@ -260,7 +272,9 @@ def built_in_tools(tools: Sequence[str]) -> list[str]:
 def githits_skill() -> tuple[str, str]:
     """``(prompt template, SHA-256 of SKILL.md)``: the adapted GitHits skill from the host checkout, its YAML front
     matter (name, license, source, changes) left out of the prompt. Like the adapter's prompt, it lives in the
-    repository beside the package, not in the wheel."""
+    repository beside the package, not in the wheel. The digest is of the file with CRLF normalized to LF, so a
+    Windows checkout with ``core.autocrlf`` records the committed blob's digest, as a POSIX one does
+    (``.gitattributes`` also checks ``skills/**`` out with LF)."""
     try:
         data = SKILL_PATH.read_bytes()
     except OSError:
@@ -269,7 +283,7 @@ def githits_skill() -> tuple[str, str]:
     if text.startswith("---\n"):
         end = text.find("\n---\n", 4)
         text = text[end + 5:] if end >= 0 else text
-    return text.strip() + "\n", hashlib.sha256(data).hexdigest()
+    return text.strip() + "\n", hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def launcher_text(python: str, entry: Path) -> str:
@@ -300,10 +314,10 @@ def write_launcher(directory: Path, python: str | None = None, entry: Path = GIT
 
 
 def is_launcher_call(use: dict, launcher: str | None) -> bool:
-    """A ``Bash`` tool use whose command names the launcher (``query_guard.bash_arguments``: anything but
-    ``not_launcher``), whatever its arguments."""
+    """A ``Bash`` (or ``PowerShell``) tool use whose command names the launcher (``query_guard.bash_arguments``:
+    anything but ``not_launcher``), whatever its arguments."""
     command = use["input"].get("command") if isinstance(use.get("input"), dict) else None
-    return (use.get("name") == "Bash" and launcher is not None
+    return (use.get("name") in query_guard.SHELL_TOOLS and launcher is not None
             and query_guard.bash_arguments(command, launcher)[0] != query_guard.NOT_LAUNCHER)
 
 
@@ -488,22 +502,23 @@ class Transcript:
         return found
 
     def bash_calls(self, decisions: Sequence[dict] = (), key: str = "", launcher: str | None = None) -> list[dict]:
-        """``{tool, query_digest, query_chars, at, ok, guard, launcher}`` per ``Bash`` tool use, in stream order,
-        matched to the query guard's verified decision as ``lookups`` matches one (exact tool use id, tool and
-        digest of the command line); ``launcher`` is whether the command names the GitHits launcher."""
+        """``{tool, query_digest, query_chars, at, ok, guard, launcher}`` per ``Bash`` or ``PowerShell`` tool use
+        (``query_guard.SHELL_TOOLS``), in stream order, matched to the query guard's verified decision as ``lookups``
+        matches one (exact tool use id, tool and digest of the command line); ``launcher`` is whether the command
+        names the GitHits launcher."""
         found = []
         verified = [d for d in decisions if query_guard.authentic(d, key)]
         for use_id in self.order:
             use = self.uses[use_id]
-            if use["name"] != "Bash":
+            if use["name"] not in query_guard.SHELL_TOOLS:
                 continue
             digest = query_guard.query_digest(use["input"])
-            match = next((d for d in verified if d["tool_use_id"] == use_id and d["tool"] == "Bash"
+            match = next((d for d in verified if d["tool_use_id"] == use_id and d["tool"] == use["name"]
                           and d["query_digest"] == digest), None)
             if match is not None:
                 verified.remove(match)
             guard = match["rule"] if match is not None else query_guard.UNGUARDED
-            found.append({"tool": "Bash", "query_digest": digest, "query_chars": len(query_text(use["input"])),
+            found.append({"tool": use["name"], "query_digest": digest, "query_chars": len(query_text(use["input"])),
                           "at": use["at"], "ok": self.results.get(use_id) is True and guard == query_guard.PASS,
                           "guard": guard, "launcher": is_launcher_call(use, launcher)})
         return found
@@ -634,7 +649,7 @@ class ClaudeCodeProvider(RepairProvider):
                                "Code's environment, which every child inherits, and a code-running tool can read "
                                "them and sign a forged decision or record. Drop the tool, or pass "
                                "--allow-code-tools-with-mcp to accept that (recorded in signal.guard; the guard "
-                               "still blocks every Bash command but the launcher)")
+                               "still blocks every Bash and PowerShell command but the launcher)")
             if not isinstance(arm, str) or not _ARM.fullmatch(arm):
                 raise Rejected("invalid_provider", "the GitHits arm is 1 to 16 letters, digits, '_' or '-'")
             if thread_label is not None and (not isinstance(thread_label, str)
@@ -723,9 +738,12 @@ class ClaudeCodeProvider(RepairProvider):
 
     def environment(self) -> dict:
         """The caller's environment, narrowed: no signing seed on any lane; on a login lane nothing in
-        ``LOGIN_LANE_DROPPED_ENV``. A ``--bare`` api run whose environment routes elsewhere is refused here too, in
+        ``LOGIN_LANE_DROPPED_ENV``; with no GitHits route (neither ``githits=True`` nor ``mcp_config``: arm A) no
+        GitHits variable (``githits_variable``: the token, the base URL and every ``SYBERLABS_GITHITS_*``), so arm A
+        holds no GitHits credential. A ``--bare`` api run whose environment routes elsewhere is refused here too, in
         case the environment changed after the provider was built."""
-        env = {k: v for k, v in os.environ.items() if k not in DROPPED_ENV}
+        route = self.githits or self.mcp_config is not None
+        env = {k: v for k, v in os.environ.items() if k not in DROPPED_ENV and (route or not githits_variable(k))}
         if self.lane in ("subscription_local", "seat_team_enterprise"):
             env = {k: v for k, v in env.items() if not _dropped(k)}
         elif self.bare and self.lane == "api" and third_party(env):
@@ -802,7 +820,8 @@ class ClaudeCodeProvider(RepairProvider):
                 prompt = build_prompt(request, tree)
                 settings = query_guard.prepare(guard_dir, self.guard,
                                                query_guard.tree_digests(tree, self.repo.files(commit)),
-                                               bash=self.githits)
+                                               bash=self.githits,
+                                               powershell=self.githits and self.allow_code_tools_with_mcp)
                 extra: dict = {}
                 if self.githits:
                     launcher = write_launcher(guard_dir)
