@@ -12,8 +12,10 @@ export function seconds(at) {
 export function verifiedReconciliation(event) {
   const body = event && event.body || {};
   const proof = body.proof;
-  return event.kind === 'reconciled' && body.success === true && !!proof && typeof proof === 'object' &&
-    proof.verified === true && !!proof.external_id && !!proof.response_digest;
+  // Python truthiness: an empty list or object is false there, so only a non-empty string counts here.
+  const present = v => (typeof v === 'string' && v !== '') || (typeof v === 'number' && v !== 0) || v === true;
+  return event.kind === 'reconciled' && body.success === true && !!proof && typeof proof === 'object' && !Array.isArray(proof) &&
+    proof.verified === true && present(proof.external_id) && present(proof.response_digest);
 }
 
 // An Attest artifact is observation data only (docs/ATTEST_RECONCILIATION_MAP.md). It is flagged so the
@@ -50,12 +52,13 @@ export function requiredFacts(contract, events, now) {
       const fact = [...rows].reverse().find(row => row.key === need.key) || null;
       let state = 'missing';
       if (fact) {
-        if (need.source && fact.source !== need.source) state = 'wrong_source';
+        if (fact.source !== need.source) state = 'wrong_source';
         else if (need.verified && !fact.verified) state = 'unverified';
-        else if (need.max_age_seconds && fact.at !== null && now - fact.at > need.max_age_seconds) state = 'stale';
+        // The server's default age limit is one day when the contract names none.
+        else if (fact.at !== null && now - fact.at > (need.max_age_seconds ?? 86400)) state = 'stale';
         else state = fact.verified ? 'verified' : 'present';
       }
-      return {key: need.key, source: need.source, needVerified: !!need.verified, maxAge: need.max_age_seconds || null, fact, state};
+      return {key: need.key, source: need.source, needVerified: !!need.verified, maxAge: need.max_age_seconds ?? 86400, fact, state};
     });
   }
   return out;
@@ -146,7 +149,7 @@ export function missingApprovals(contract, policy, proposal) {
 
 const has = (me, role) => !!me && (me.roles || []).includes(role);
 const allow = () => ({ok: true});
-const deny = (reason, roles = [], actor = null) => ({ok: false, reason, roles, actor});
+const deny = (reason, roles = [], actor = null, exclude = null) => ({ok: false, reason, roles, actor, exclude});
 
 // Who may do what, mirroring the checks in syberwork/server.py and syberwork/core.py. `roles` names the
 // credentials that would be allowed, so the console can offer a switch instead of a dead button.
@@ -183,8 +186,8 @@ export function can(me, op, ctx = {}) {
       if (!approvalRoles(ctx.contract, ctx.policy, p.action).length) return deny('this action needs no approval');
       if (!need.length) return deny('every required approval is recorded');
       if (p.effect.state !== 'none') return deny('the effect is already claimed');
-      if (me.name === p.actor) return deny('the proposer cannot approve its own proposal', need);
-      return need.some(r => has(me, r)) ? allow() : deny('approval role required: ' + need.join(', '), need);
+      if (me.name === p.actor) return deny('the proposer cannot approve its own proposal', need, null, p.actor);
+      return need.some(r => has(me, r)) ? allow() : deny('approval role required: ' + need.join(', '), need, null, p.actor);
     }
     case 'commit': {
       const p = ctx.proposal;
@@ -209,13 +212,20 @@ export function can(me, op, ctx = {}) {
     case 'cancel': {
       const role = ctx.contract && ctx.contract.cancel_role || 'manager';
       if (closed) return deny('case is already closed');
-      return has(me, role) ? allow() : deny(role + ' role required', [role]);
+      if (!has(me, role)) return deny(role + ' role required', [role]);
+      // syberwork/core.py cancel_case: refused once an HTTP or economic effect was claimed and not rejected.
+      const kinds = ctx.actionKinds || {};
+      const external = (ctx.proposals || []).some(p => !['none', 'not_applied'].includes(p.effect.state) &&
+        kinds[p.action] !== 'local' && appliedWhere(p.effect.output) !== 'local');
+      return external ? deny('an external effect was claimed; verify its outcome first') : allow();
     }
     case 'resolution_request':
       return has(me, 'operator') ? allow() : deny('operator role required', ['operator']);
     case 'resolution_resolve':
+      if (closed) return deny('case is cancelled');
       return has(me, ctx.task.owner_role) ? allow() : deny('assigned role required: ' + ctx.task.owner_role, [ctx.task.owner_role]);
     case 'resolution_escalate':
+      if (closed) return deny('case is cancelled');
       if (!has(me, ctx.task.escalate_role)) return deny('escalation role required: ' + ctx.task.escalate_role, [ctx.task.escalate_role]);
       return ctx.task.status === 'overdue' ? allow() : deny('the deadline has not passed');
     case 'candidate':

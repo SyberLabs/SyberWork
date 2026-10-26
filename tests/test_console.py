@@ -251,6 +251,9 @@ class ConsoleModel(unittest.TestCase):
             {"kind": "reconciled", "body": {"success": True, "proof": dict(proof, verified="true")}},
             {"kind": "reconciled", "body": {"success": True, "proof": dict(proof, external_id="")}},
             {"kind": "reconciled", "body": {"success": True, "proof": dict(proof, response_digest=None)}},
+            {"kind": "reconciled", "body": {"success": True, "proof": dict(proof, external_id=[])}},
+            {"kind": "reconciled", "body": {"success": True, "proof": dict(proof, response_digest={})}},
+            {"kind": "reconciled", "body": {"success": True, "proof": [proof]}},
             {"kind": "reconciled", "body": {"success": False, "proof": proof}},
             {"kind": "reconciled", "body": {"success": True, "evidence": "manager says so"}},
             {"kind": "reconciliation_checked", "body": {"success": True, "proof": proof}},
@@ -261,7 +264,7 @@ class ConsoleModel(unittest.TestCase):
             "approval": [{"contract": contract, "policy": policy, "action": a, "expected": approval_roles(contract, policy, a)}
                          for a in ("record_review", "issue_order", "absent")],
         }
-        self.assertEqual([c["expected"] for c in parity["reconciliation"]], [True] + [False] * 7)
+        self.assertEqual([c["expected"] for c in parity["reconciliation"]], [True] + [False] * 10)
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)

@@ -145,5 +145,10 @@ Known gaps, stated rather than faked:
   like `attest`). It only adds a warning label; it cannot make anything verified.
 - **Case statuses** in the list come from one `GET /api/cases/{id}` per case, four at a time, capped
   at 60 cases. There is no push: press `r` to reload.
+- **Read scope of the new routes** is a decision for the reviewer: contract and policy bodies are
+  readable by any authenticated principal, including `model` and `compiled` credentials. Contract
+  bodies were already readable through `GET /api/cases/{id}`. Policy bodies are new to non-admins,
+  and an economic policy carries budget limits. Restricting `/api/policies` to admin and operator
+  roles is a one-line change if wanted.
 - The README's API list does not mention the new read routes. README wording is a public claim
   (Class P in `AGENTS.md`), so that line is left for a human key.

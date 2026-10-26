@@ -139,11 +139,16 @@ async function connect(token) {
 async function activate(name) {
   state.active = name;
   state.registry = {actions: null, sources: null};
+  state.registryError = null;
   saveIdentities();
   try {
-    state.me = await api('/api/me');
-    state.console = await api('/api/console').catch(() => null);
+    const me = await api('/api/me');
+    const settings = await api('/api/console').catch(() => null);
+    if (state.active !== name) return; // a later switch won; its own call fills state.me
+    state.me = me;
+    state.console = settings;
   } catch (error) {
+    if (state.active !== name) return;
     state.me = null;
     fail(error);
   }
@@ -152,7 +157,7 @@ async function activate(name) {
 }
 function canSwitchTo(verdict) {
   if (!verdict || verdict.ok) return null;
-  const others = state.identities.filter(i => i.name !== state.active);
+  const others = state.identities.filter(i => i.name !== state.active && i.name !== verdict.exclude);
   if (verdict.actor) return others.find(i => i.name === verdict.actor) || null;
   if (!verdict.roles || !verdict.roles.length) return null;
   return others.find(i => verdict.roles.some(r => i.roles.includes(r))) || null;
@@ -236,7 +241,8 @@ async function loadRegistry() {
   try {
     const [actions, sources] = await Promise.all([api('/api/actions'), api('/api/sources')]);
     state.registry = {actions, sources};
-  } catch { state.registry = {actions: null, sources: null}; }
+    state.registryError = null;
+  } catch (error) { state.registry = {actions: null, sources: null}; state.registryError = error; }
 }
 async function loadMetrics() {
   const keys = ['cases_open', 'effects_pending', 'queue_depth', 'proposals_denied_total'];
@@ -275,7 +281,8 @@ async function mutate(path, data, success) {
   const result = await api(path, data);
   state.lastResponse = {path, result, at: Date.now()};
   // A refusal or an outcome that is not yet known is reported in the warning tone, never as success.
-  const unsettled = result && ((result.decision && result.decision.status === 'denied') || ['unknown', 'pending', 'unverified', 'rejected'].includes(result.status));
+  const unsettled = result && ((result.decision && result.decision.status !== 'allowed' && !result.proposal) ||
+    (result.decision && result.decision.status === 'denied') || ['unknown', 'pending', 'unverified', 'rejected'].includes(result.status));
   if (success) toast(typeof success === 'function' ? success(result) : success, unsettled ? 'warn' : 'ok');
   if (state.selected) await loadCase(state.selected);
   loadMetrics();
@@ -812,7 +819,9 @@ function tabClosure(info) {
     section('Cancel case', badge('denied', 'closes the case'),
       h('p', {class: 'hint'}, 'Cancellation is refused while an external effect has been claimed without a known outcome: verify it first.'),
       h('div', {class: 'inline-form'}, h('label', {class: 'wide'}, 'Reason', reason),
-        action({label: 'Cancel case', op: 'cancel', ctx: {info, contract: info.contract}, tone: 'danger',
+        action({label: 'Cancel case', op: 'cancel', tone: 'danger',
+          ctx: {info, contract: info.contract, proposals: M.proposals(info.events),
+            actionKinds: Object.fromEntries(Object.entries(state.registry.actions || {}).map(([n, d]) => [n, d.kind]))},
           confirm: {title: 'Cancel this case', lines: ['No further work can be admitted. The record stays.']},
           run: () => {
             if (!reason.value.trim()) throw new ApiError('cancellation_denied', 'reason required');
@@ -851,7 +860,7 @@ function tabCandidates(info) {
 
 // ---------- studio ----------
 function renderStudio() {
-  if (state.registry.actions === null && state.me.roles.includes('admin') && !state.registryLoading) {
+  if (state.registry.actions === null && state.me.roles.includes('admin') && !state.registryLoading && !state.registryError) {
     state.registryLoading = true;
     loadRegistry().then(() => { state.registryLoading = false; renderMain(); });
   }
@@ -991,6 +1000,8 @@ function studioConnectors(kind) {
   if (!admin) return empty(label + ' are visible to administrators', `GET /api/${kind} requires the admin role. Switch to an admin credential to inspect or register ${kind}.`,
     ...(canSwitchTo({ok: false, roles: ['admin']}) ? [h('button', {type: 'button', class: 'btn', onclick: () => activate(canSwitchTo({ok: false, roles: ['admin']}).name)}, '⇄ switch to admin')] : []));
   const docs = state.registry[kind];
+  if (state.registryError) return empty('Could not read ' + kind, state.registryError.message,
+    h('button', {type: 'button', class: 'btn', onclick: () => { state.registryError = null; renderMain(); }}, 'Retry'));
   if (!docs) return skeleton(4);
   const name = h('input', {placeholder: kind === 'actions' ? 'issue_order_v2' : 'inventory_v2', 'aria-label': 'Name'});
   // Templates only: a real destination is an HTTPS host on the server's allow list or loopback HTTP with a port.

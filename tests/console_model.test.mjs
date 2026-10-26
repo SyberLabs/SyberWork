@@ -56,6 +56,29 @@ test('the newest observation decides, and freshness and source are checked', () 
   assert.equal(M.requiredFacts(CONTRACT, later, NOW).issue_order.find(f => f.key === 'quote').state, 'unverified');
 });
 
+test('a fact without max_age_seconds is stale after the server default of one day', () => {
+  const contract = { actions: { a: { required_facts: [{ key: 'k', source: 's', verified: true }] } } };
+  const events = history(['observed', { key: 'k', value: 1, source: 's', version: 'v', actor: 'op', verified: true }, NOW - 2 * 86400]);
+  assert.equal(M.requiredFacts(contract, events, NOW).a[0].state, 'stale');
+  assert.equal(M.requiredFacts(contract, events, NOW - 86400).a[0].state, 'verified');
+});
+
+test('cancel is refused once an external effect was claimed', () => {
+  const me = ME('manager', ['manager']);
+  const info = { status: 'in_progress' };
+  const claimed = M.proposals(history(
+    ['proposed', { id: 'p1', action: 'issue_order', args: {}, actor: 'scheduler' }],
+    ['effect_started', { proposal_id: 'p1', action: 'issue_order', actor: 'scheduler' }],
+    ['effect_succeeded', { proposal_id: 'p1', action: 'issue_order', output: { status: 201, body: '{}' } }]));
+  assert.equal(M.can(me, 'cancel', { info, contract: CONTRACT, proposals: claimed }).ok, false);
+  const local = M.proposals(history(
+    ['proposed', { id: 'p1', action: 'record_review', args: {}, actor: 'scheduler' }],
+    ['effect_started', { proposal_id: 'p1', action: 'record_review', actor: 'scheduler' }],
+    ['effect_succeeded', { proposal_id: 'p1', action: 'record_review', output: { recorded: true, args: {} } }]));
+  assert.equal(M.can(me, 'cancel', { info, contract: CONTRACT, proposals: local }).ok, true);
+  assert.equal(M.can(me, 'cancel', { info: { status: 'cancelled' }, contract: CONTRACT }).ok, false);
+});
+
 test('only a destination-matched proof reconciles an effect', () => {
   const base = [
     ['proposed', { id: 'p1', action: 'issue_order', args: {}, actor: 'scheduler', roles: ['compiled'], origin: 'compiled' }],
@@ -97,6 +120,7 @@ test('role affordances mirror the server checks', () => {
   const ctx = { proposal: p, contract: CONTRACT, policy: POLICY, info };
   assert.deepEqual(M.missingApprovals(CONTRACT, POLICY, p), ['manager']);
   assert.equal(M.can(ME('scheduler', ['operator', 'compiled']), 'approve', ctx).ok, false, 'a proposer cannot approve');
+  assert.equal(M.can(ME('scheduler', ['operator', 'compiled']), 'approve', ctx).exclude, 'scheduler', 'never suggest the proposer as approver');
   assert.equal(M.can(ME('operator', ['operator']), 'approve', ctx).roles[0], 'manager');
   assert.equal(M.can(ME('manager', ['manager']), 'approve', ctx).ok, true);
   const commit = M.can(ME('manager', ['manager']), 'commit', ctx);
