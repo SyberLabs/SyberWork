@@ -61,6 +61,16 @@ SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<n
 SYBERWORK_CERTIFICATE_REVOKED=<digest> python -m syberwork.cli --home .syberwork serve
 ```
 
+To stop trusting old certificates, set a validity window in whole seconds (`2592000` is 30 days) and restart `serve`. A
+certificate issued longer ago than that, by `serve`'s clock, then reads *expired*, and one dated more than 5 minutes
+after that clock *not yet valid*. The date is the signer's `issued_at`: the window retires old genuine certificates; it
+does not stop a holder of a listed key from dating a new one. Taking that key off the list does.
+
+```sh
+SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<signer key, 64 hex> \
+SYBERWORK_CERTIFICATE_MAX_AGE=2592000 python -m syberwork.cli --home .syberwork serve
+```
+
 Open the page, press `i`, and paste the `operator`, `scheduler`, `manager`, `planner` and `admin`
 tokens one at a time. They are kept in this tab's `sessionStorage` (as the old console kept one token)
 and are sent only as a bearer header to the loopback service. They never appear in the URL. Leave the
@@ -144,9 +154,9 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
   source's read role and whether they hold it, and *admin or manager role required* in place of the policy
   list. Under **Build Threads**, **Certificates** lists the admission certificates `serve` reads
   (`GET /api/certificates`), each with the verdict `serve` reached under the configured keys: *certified*, *signed ·
-  journal not checked*, *journal differs*, *journal unreadable* or *not certified*, with the thread, candidate, result commit, contract,
-  checks and certified chain prefix of each signed one, and the key that verified it (*key 2 · d75a…* when `serve`
-  trusts more than one).
+  journal not checked*, *journal differs*, *journal unreadable*, *revoked*, *expired*, *not yet valid* or *not certified*,
+  with the thread, candidate, result commit, contract, checks and certified chain prefix of each signed one, the key that
+  verified it (*key 2 · d75a…* when `serve` trusts more than one), its digest, and when it expires under a validity window.
 
 ## Visual system
 
@@ -188,7 +198,7 @@ token (`unauthorized`) and a role the caller lacks (`forbidden`).
 | Route | Who | Returns |
 |---|---|---|
 | `/api/console` | any principal | `{planner_configured, effects, witness: {log, request_role}, certificates: {configured}}`. The planner URL, the witness port and the certificate home are not disclosed; `request_role` is the role `POST …/witness` requires, or `null` when `serve` has no witness to ask. |
-| `/api/certificates` | any principal | Without a configured home: `{configured: false, note}`. With one: `{configured, public_keys, total, shown, checked: ["signature", "journal"], not_checked: ["repository"], certificates, note}`, one row per `*.json` under `<home>/certificates`, at most 50 in name order: `{file, verdict, reason, signature, journal, journal_present, repository: null, statement}`. `verdict` and the layer states are `syberlabs.certificate.verify_certificate`'s, run by `serve` with the home as the journal home, under the keys in `SYBERWORK_CERTIFICATE_PUBLIC` (`public_keys`, in that order) that a signature in the file could match. `statement` (thread, objective, candidate, contract, policy version, base and result commits, target ref, admission actor, approvers and decision, checks, chain prefix, `issued_at`, `signing`, form and key id: the configured key that verified it) is present only when the signature layer passed. A link, a folder or an unreadable file is refused (`not_a_regular_file`, `certificate_unreadable`); a file the verifier raises on (a deeply nested one raises `RecursionError`) is `unverifiable`. A thread journal or `registry.jsonl` that is not a regular file, is over 64 MiB, or cannot be read fails a signed row as `journal_unreadable:not_a_regular_file`, `:too_large` or `:io_error`, and the verifier does not read it. No layer note is returned, so no host path is disclosed. |
+| `/api/certificates` | any principal | Without a configured home: `{configured: false, note}`. With one: `{configured, public_keys, revoked, validity, total, shown, checked: ["signature", "journal"], not_checked: ["repository"], certificates, note}`, one row per `*.json` under `<home>/certificates`, at most 50 in name order: `{file, verdict, reason, signature, journal, journal_present, repository: null, statement, digest, expires_at}`. `revoked` is `SYBERWORK_CERTIFICATE_REVOKED` in configured order; `validity` is `null`, or `{max_age, skew, checked_at}` with `SYBERWORK_CERTIFICATE_MAX_AGE` (seconds, and `checked_at` the instant every row was judged, in microseconds). A signed row's `digest` is `certificate_digest` of its payload and `expires_at` its `issued_at` plus the window (both `null` otherwise); it fails as `revoked`, `expired` or `not_yet_valid`, in that order, after its other layers. `verdict` and the layer states are `syberlabs.certificate.verify_certificate`'s, run by `serve` with the home as the journal home, under the keys in `SYBERWORK_CERTIFICATE_PUBLIC` (`public_keys`, in that order) that a signature in the file could match. `statement` (thread, objective, candidate, contract, policy version, base and result commits, target ref, admission actor, approvers and decision, checks, chain prefix, `issued_at`, `signing`, form and key id: the configured key that verified it) is present only when the signature layer passed. A link, a folder or an unreadable file is refused (`not_a_regular_file`, `certificate_unreadable`); a file the verifier raises on (a deeply nested one raises `RecursionError`) is `unverifiable`. A thread journal or `registry.jsonl` that is not a regular file, is over 64 MiB, or cannot be read fails a signed row as `journal_unreadable:not_a_regular_file`, `:too_large` or `:io_error`, and the verifier does not read it. No layer note is returned, so no host path is disclosed. |
 | `/api/contracts` | any principal | `[{id, version, title, compiled_path, digest}]` |
 | `/api/contracts/{id}/{version}` | any principal | the stored contract (the same document `GET /api/cases/{id}` already returns for a case) |
 | `/api/policies` | `admin` or `manager`, holding no automation role (`model`, `compiled`, `search`); others `403 forbidden` | `[{version, body, digest}]` |
@@ -234,7 +244,7 @@ Gaps from #95, closed or still open:
 | `/api/policies` read scope | **Closed**: admin or manager, without an automation role; `model`, `compiled`, `operator` and observer credentials get `403` | `POLICY_READERS` in `server.py`; `ConsoleReadScope` |
 | JCS side records (`Work.side_channel`) | **Closed**: a read-only route returns `Work.side_channel` as stored; History shows coverage and each event's digest and rule. The console does not recompute digests | `GET /api/cases/{id}/side`; `M.sideRecords`; `ConsoleSideRecords` |
 | Witness | **Closed for reading** (#115): `serve` opens the witness's log read-only when `SYBERWORK_WITNESS_LOG` and `SYBERWORK_WITNESS_PUBLIC` name it, and History draws what the server judged. **Closed for asking** (this branch): with `SYBERWORK_WITNESS_PORT` and `SYBERWORK_WITNESS_ROLE` also set, **Ask witness to sign** has `serve` send the history to the witness, for that role only (below) | `GET` and `POST /api/cases/{id}/witness` (`Work.witness_status`, `Work.request_witness`); `M.witnessView`, `can(…, 'witness_request')`; `ConsoleWitness`, `ConsoleWitnessRequest`; the browser walkthrough |
-| Certificate | **Closed for reading Build Thread certificates** (#121): with `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, `serve` verifies each file under `<home>/certificates` (signature, then the journal) and Studio → Certificates draws the verdicts. **Several keys** (this branch): the variable may list up to 8 keys for a rotation, and each signed row names the key that verified it. **Revocation** (this branch, on #122): `SYBERWORK_CERTIFICATE_REVOKED` lists certificate digests, and a listed one reads *revoked* under every key. **A case still has none**: History says so and links to Studio. The repository layer is not run by `serve`. No validity window | `GET /api/certificates` (`syberwork/certificates.py`); `M.certificateView`; `studioCertificates`, `witnessPanel` in `app.js`; `ConsoleCertificates`, `ConsoleCertificateKeys`, `ConsoleCertificateRevocation`, `test_a_case_has_no_certificate_route`, the browser walkthrough |
+| Certificate | **Closed for reading Build Thread certificates** (#121): with `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, `serve` verifies each file under `<home>/certificates` (signature, then the journal) and Studio → Certificates draws the verdicts. **Several keys** (this branch): the variable may list up to 8 keys for a rotation, and each signed row names the key that verified it. **Revocation** (this branch, on #122): `SYBERWORK_CERTIFICATE_REVOKED` lists certificate digests, and a listed one reads *revoked* under every key. **A case still has none**: History says so and links to Studio. **Validity window** (this branch, on #125): with `SYBERWORK_CERTIFICATE_MAX_AGE`, a certificate issued longer ago reads *expired*, one dated ahead of `serve`'s clock *not yet valid*. The repository layer is not run by `serve` | `GET /api/certificates` (`syberwork/certificates.py`); `M.certificateView`; `studioCertificates`, `witnessPanel` in `app.js`; `ConsoleCertificates`, `ConsoleCertificateKeys`, `ConsoleCertificateRevocation`, `ConsoleCertificateValidity`, `test_a_case_has_no_certificate_route`, the browser walkthrough |
 | Admission before proposing | **Closed**: Propose → By hand binds arguments from the contract and asks the server what proposing would record now, before anything is written | `POST /api/cases/{id}/preview` (`Work.preview_admission`); `M.previewView`, `M.previewCurrent`; `ConsolePreview` |
 | Builder API (`/api/builder/*`) | Open | a separate surface, not part of this console |
 | Push updates | Open | there is no push: press `r` to reload |
@@ -553,11 +563,54 @@ Gaps from #95, closed or still open:
         and then drew a pass with the matching lower-case digest as *certified*.
       - The #122 bullet above still listed revocation as not done.
       - No test signed one payload in both forms; the Mutations bullet claimed a CLI-only duplicate check was tested.
-    - **Not done.** A validity window, or revoking by key, by candidate or by time: a compromised key is still handled by
+    - **Not done** (on #125; the validity window is the next bullet). Revoking by key, by candidate or by time: a compromised key is still handled by
       taking it off `SYBERWORK_CERTIFICATE_PUBLIC`. The list is read at start, not reloaded; a change needs a restart.
       `syberlabs verify` knows no revocation list and still passes a revoked certificate. `syberlabs/`,
       docs/CERTIFICATE.md and `spec/` are unchanged.
-  - **Not done.** The repository layer from `serve`. A validity window (revocation of single certificates is above). Any link from a case to a thread. The witness co-signature, which is docs/CERTIFICATE.md's
+  - **Validity window** (this branch, stacked on #125). #125 left *a validity window* open. This branch adds one,
+    measured from the certificate's own `issued_at`. It adds no revocation by key, candidate or time.
+    - **Configuration.** `SYBERWORK_CERTIFICATE_MAX_AGE`: a whole number of seconds, 1 to `MAX_AGE_LIMIT` (ten years
+      of 366 days), digits only (space around it is ignored). `serve` stops on anything else, a sign, an underscore, a
+      unit, a non-ASCII digit, and on the variable set *empty*: unlike the revocation list, an empty value is refused
+      rather than read as no window, so an unset shell variable expanded into it cannot turn the window off without a
+      word. Set without `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, it stops `serve` too. Unset,
+      nothing changes: no row expires and `validity` is `null`. `CertificateShelf(home, keys, revoked, max_age, clock)`
+      takes only an `int` in range (not `True`, `1.0` or `"60"`)
+      (`test_serve_reads_the_window_in_seconds_and_refuses_anything_else`,
+      `test_the_shelf_takes_a_whole_number_of_seconds_up_to_the_limit`).
+    - **What serve answers.** One clock reading per listing, `checked_at` (microseconds), judges every row. A signed
+      row carries `expires_at`: its `issued_at` plus the window. It fails as `expired` when `checked_at` is past
+      `expires_at` (at exactly `expires_at` it still passes), and as `not_yet_valid` when its `issued_at` is more than
+      `SKEW` (300 s) after `checked_at`. That bound matters: without it, a certificate dated in 2099 would never expire.
+      Its statement and other layers are kept. Revocation names the failure first, then the window, then the journal (whose
+      field still names its failure). A file no configured key signed states no `issued_at` and has no `expires_at`. The
+      window is applied after the verdict cache, as revocation is, so a cached pass expires when the clock passes it
+      without being verified again (`test_a_cached_verdict_expires_when_the_clock_passes_the_window`).
+    - **What the console draws.** `M.certificateView` needs `validity` to be `null` or `{max_age ≥ 1, skew ≥ 0,
+      checked_at ≥ 0}` of safe integers, or the whole answer is *unknown*; a missing `validity` is unknown too. With a
+      window, the console reckons each signed row itself from the same answer: `expires_at` must equal `issued_at` plus
+      `max_age`, and `checked_at` decides *current*, *expired* or *not yet valid*. *expired* and *not yet valid* (denied
+      tone, the statement under *do not treat it as certified*) are drawn only when serve failed the row with that reason
+      and the console's reckoning agrees. Every disagreement is *unknown*: a pass the answer's clock says has expired, an
+      `expired` the clock says is current, an `expires_at` that is not `issued_at` plus the window, an `issued_at` that is
+      not a whole number. Without a window, a row serve failed as `expired` is *unknown*. Studio shows the window and
+      `checked_at` beside the keys, *expires …* or *expired …* in UTC under each signed row's verdict, and says in its
+      hint that the date is the signer's. The browser walkthrough adds a certificate issued 60 days ago under a 30-day
+      window: three rows read *certified*, that one *expired* and the withdrawn one *revoked*. The parity test runs the
+      node projection on a real windowed `CertificateShelf` answer, with the statement form past its window and the bare
+      form not.
+    - **Mutations.** Each of these fails a test: expiring at exactly `expires_at`; dropping `not_yet_valid`; naming
+      expiry before revocation; the shelf taking `True` or `1.0`; reading an empty variable as no window; accepting the
+      variable without the other two; the console reckoning only *expired* and not *not yet valid*; not checking
+      `expires_at` against `issued_at` plus the window; drawing *expired* on serve's word alone; accepting a missing or
+      malformed `validity`. One survived and is equivalent: letting the pass branch also take `reason: expired`, which
+      the branch before it always catches first.
+    - **What it does not do.** `issued_at` is written by the signer and covered by its signature, so a folder writer
+      cannot change it, but a holder of a listed key can date a certificate as it likes. The window retires old genuine
+      certificates; it is no defense against a compromised key, which is still handled by taking the key off
+      `SYBERWORK_CERTIFICATE_PUBLIC`. The clock is `serve`'s own: one set wrong expires certificates early or keeps them
+      late, and nothing checks it. The window is read at start; a change needs a restart.
+  - **Not done.** The repository layer from `serve`. Revocation by key, candidate or time, and a window per key. Any link from a case to a thread. The witness co-signature, which is docs/CERTIFICATE.md's
     next packet; v0 certificates are signed in the certifying process, and the page says so. A push when a new file
     appears (press `r`). `syberlabs/certificate.py`, docs/CERTIFICATE.md and `spec/` are unchanged.
 - **Work item per case** (closed): History reads `GET /metrics/work_items/{id}` (an existing route) and

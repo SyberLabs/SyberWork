@@ -14,7 +14,7 @@ from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import WitnessClient
 
 from .backup import export_cell, restore_cell
-from .certificates import MAX_KEYS, MAX_REVOKED, CertificateShelf
+from .certificates import MAX_AGE_LIMIT, MAX_KEYS, MAX_REVOKED, CertificateShelf
 from .core import Work
 from .server import serve
 from .trace import TraceLog
@@ -75,12 +75,19 @@ def _certificates(parser):
     SYBERWORK_CERTIFICATE_REVOKED lists the digests of certificates no longer to be trusted (the ``digest`` each signed
     row carries), separated by commas, at most ``MAX_REVOKED``. It is read only beside the other two: a revocation list
     with no certificates to apply it to, an empty entry, a malformed digest or one listed twice stops serve.
+
+    SYBERWORK_CERTIFICATE_MAX_AGE is the validity window: a whole number of seconds, from 1 to ``MAX_AGE_LIMIT``. Unlike
+    the revocation list, setting it empty stops serve rather than meaning no window: an unset shell variable expanded
+    into it would otherwise turn the window off without a word. It too is read only beside the other two.
     """
     home, public = os.getenv("SYBERWORK_CERTIFICATE_HOME"), os.getenv("SYBERWORK_CERTIFICATE_PUBLIC")
     listed = os.getenv("SYBERWORK_CERTIFICATE_REVOKED")
+    age = os.getenv("SYBERWORK_CERTIFICATE_MAX_AGE")
     if not home and not public:
         if listed:
             parser.error("SYBERWORK_CERTIFICATE_REVOKED needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
+        if age is not None:
+            parser.error("SYBERWORK_CERTIFICATE_MAX_AGE needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
         return None
     if not home or not public:
         parser.error("set both SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC, or neither")
@@ -105,8 +112,14 @@ def _certificates(parser):
         parser.error(f"SYBERWORK_CERTIFICATE_REVOKED lists more than {MAX_REVOKED} digests")
     if len(set(revoked)) != len(revoked):
         parser.error("SYBERWORK_CERTIFICATE_REVOKED lists a digest twice")
+    max_age = None
+    if age is not None:
+        # Digits only: int() would also take a sign, underscores and other Unicode digits.
+        if not re.fullmatch(r"[0-9]{1,10}", age.strip()) or not 1 <= int(age) <= MAX_AGE_LIMIT:
+            parser.error(f"SYBERWORK_CERTIFICATE_MAX_AGE must be a whole number of seconds from 1 to {MAX_AGE_LIMIT}")
+        max_age = int(age)
     try:
-        return CertificateShelf(home, tuple(keys), tuple(revoked))
+        return CertificateShelf(home, tuple(keys), tuple(revoked), max_age)
     except Rejected as exc:
         parser.error(f"certificates: {exc.code}: {exc.detail}")
 

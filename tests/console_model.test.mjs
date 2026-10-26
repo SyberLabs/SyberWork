@@ -73,6 +73,10 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   const revoked = M.certificateView(cases.certificates.revoked.body);
   assert.deepEqual(revoked.rows.map(r => [r.file, r.state, r.key, r.digest]), cases.certificates.revoked.expected);
   assert.deepEqual(revoked.revoked, cases.certificates.revoked.body.revoked);
+  // And one with a validity window whose clock has passed the statement form's (and so foreign.json's) but not the bare form's.
+  const windowed = M.certificateView(cases.certificates.windowed.body);
+  assert.deepEqual(windowed.rows.map(r => [r.file, r.state, r.expiresAt]), cases.certificates.windowed.expected);
+  assert.equal(windowed.validity.max_age, 1);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -463,11 +467,11 @@ test('asking the witness is for the role serve names, and not for a head already
 const CERTIFIED = { keyid: 'd'.repeat(64), thread: '0123abcd-0000-4000-8000-000000000000', candidate: 'c1', objective: 'o', act_class: null, contract: { id: 'repo-change', version: 2 },
   result: { commit: 'a'.repeat(40), tree: 'b'.repeat(40), files: 2 }, target_ref: 'refs/heads/syberlabs/0123abcd', checks: [{ name: 'tests', required: true, state: 'passed' }],
   chain: { count: 12, head: 'c'.repeat(64) } };
-const SHELF = (rows, extra = {}) => ({ configured: true, public_keys: ['d'.repeat(64)], revoked: [], total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
+const SHELF = (rows, extra = {}) => ({ configured: true, public_keys: ['d'.repeat(64)], revoked: [], validity: null, total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
   not_checked: ['repository'], certificates: rows, note: 'n', ...extra });
 const DIGEST = '9a'.repeat(32);
 const ROW = extra => ({ file: 'x.json', verdict: 'pass', reason: null, signature: 'ok', journal: 'ok', journal_present: true, repository: null, statement: CERTIFIED,
-  digest: DIGEST, ...extra });
+  digest: DIGEST, expires_at: null, ...extra });
 
 test('a certificate reads certified only when serve passed its signature and its journal', () => {
   const view = M.certificateView(SHELF([ROW({}), ROW({ file: 'y.json', journal: null, journal_present: false })]));
@@ -551,6 +555,60 @@ test('a revoked certificate reads revoked only when the same answer lists its di
   for (const extra of [{ revoked: undefined }, { revoked: null }, { revoked: DIGEST }, { revoked: [DIGEST, 3] }, { revoked: [DIGEST.toUpperCase()] },
     { revoked: [' ' + DIGEST] }, { revoked: [DIGEST + '\n'] }, { revoked: [''] }, { revoked: [DIGEST.slice(1)] }]) {
     assert.equal(M.certificateView(SHELF([ROW({})], extra)).state, 'unknown', JSON.stringify(extra));
+  }
+});
+
+test('a certificate outside the validity window reads expired or not yet valid only when serve and the same answer agree', () => {
+  const ISSUED = 1_700_000_000_000_000, AGE = 3600, SKEW = 300, END = ISSUED + AGE * 1e6;
+  const W = (checked, extra = {}) => ({ validity: { max_age: AGE, skew: SKEW, checked_at: checked }, ...extra });
+  const DATED = (extra = {}) => ROW({ statement: { ...CERTIFIED, issued_at: ISSUED }, expires_at: END, ...extra });
+  // Inside the window, to its last microsecond, and up to SKEW before issue (the signer's clock ran ahead): certified.
+  for (const checked of [ISSUED, END, ISSUED - SKEW * 1e6]) {
+    const r = M.certificateView(SHELF([DATED()], W(checked))).rows[0];
+    assert.deepEqual([r.state, r.certified, r.expiresAt], ['certified', true, END], String(checked));
+  }
+  const view = M.certificateView(SHELF([DATED()], W(ISSUED)));
+  assert.deepEqual(view.validity, { max_age: AGE, skew: SKEW, checked_at: ISSUED });
+  const expired = M.certificateView(SHELF([DATED({ verdict: 'fail', reason: 'expired' })], W(END + 1))).rows[0];
+  assert.deepEqual([expired.state, expired.tone, expired.label, expired.certified, expired.expiresAt, expired.key, expired.digest],
+    ['expired', 'denied', 'expired', false, END, 1, DIGEST]);
+  assert.equal(expired.statement.candidate, 'c1', 'what expired is shown');
+  const early = M.certificateView(SHELF([DATED({ verdict: 'fail', reason: 'not_yet_valid' })], W(ISSUED - SKEW * 1e6 - 1))).rows[0];
+  assert.deepEqual([early.state, early.tone, early.label, early.certified], ['not_yet_valid', 'denied', 'not yet valid', false]);
+  // A row expired by the window and listed as revoked reads revoked, as serve names it.
+  const both = M.certificateView(SHELF([DATED({ verdict: 'fail', reason: 'revoked' })], W(END + 1, { revoked: [DIGEST] }))).rows[0];
+  assert.equal(both.state, 'revoked');
+  // Any disagreement between the row, the window and the answer's clock is unknown: never certified, and never expired on
+  // the row's word alone.
+  for (const [extra, checked] of [
+    [{}, END + 1],                                                        // serve passed what the answer's clock says expired
+    [{}, ISSUED - SKEW * 1e6 - 1],                                        // and what it says is not yet valid
+    [{ journal: null, journal_present: false }, END + 1],                 // signed only, but expired
+    [{ verdict: 'fail', reason: 'expired' }, ISSUED],                     // serve says expired, the answer's clock says current
+    [{ verdict: 'fail', reason: 'not_yet_valid' }, END + 1],              // the other failure
+    [{ verdict: 'fail', reason: 'expired' }, ISSUED - SKEW * 1e6 - 1],
+    [{ verdict: 'pass', reason: 'expired' }, END + 1],
+    [{ verdict: 'fail', reason: 'expired', statement: null }, END + 1],
+    [{ verdict: 'fail', reason: 'expired', statement: { ...CERTIFIED, issued_at: ISSUED, keyid: 'f'.repeat(64) } }, END + 1],
+    [{ expires_at: END + 1 }, ISSUED],                                    // an expiry that is not issued_at plus the window
+    [{ expires_at: null }, ISSUED],
+    [{ expires_at: String(END) }, ISSUED],
+    [{ statement: { ...CERTIFIED, issued_at: String(ISSUED) } }, ISSUED],  // an issued_at the console cannot reckon
+    [{ statement: { ...CERTIFIED, issued_at: ISSUED + 0.5 }, expires_at: END + 0.5 }, ISSUED],
+    [{ statement: CERTIFIED }, ISSUED],                                   // none at all
+  ]) {
+    const r = M.certificateView(SHELF([DATED(extra)], W(checked))).rows[0];
+    assert.deepEqual([r.state, r.certified], ['unknown', false], JSON.stringify([extra, checked]));
+  }
+  // Without a window nothing expires: serve saying so is unknown, and a pass shows no expiry.
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'expired' })])).rows[0].state, 'unknown');
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'not_yet_valid' })])).rows[0].state, 'unknown');
+  assert.deepEqual(['certified', null], (r => [r.state, r.expiresAt])(M.certificateView(SHELF([DATED()])).rows[0]));
+  // A window serve would not write makes the whole answer unknown: the console could not tell what has expired.
+  for (const validity of [undefined, {}, 3600, [], { max_age: 0, skew: SKEW, checked_at: ISSUED }, { max_age: 1.5, skew: SKEW, checked_at: ISSUED },
+    { max_age: '3600', skew: SKEW, checked_at: ISSUED }, { max_age: AGE, skew: -1, checked_at: ISSUED }, { max_age: AGE, checked_at: ISSUED },
+    { max_age: AGE, skew: SKEW }, { max_age: AGE, skew: SKEW, checked_at: -1 }, { max_age: AGE, skew: SKEW, checked_at: 2 ** 53 }]) {
+    assert.equal(M.certificateView(SHELF([DATED()], { validity })).state, 'unknown', JSON.stringify(validity));
   }
 });
 

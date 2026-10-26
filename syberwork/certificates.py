@@ -7,8 +7,10 @@ keys to trust (one, or a few during a rotation), and runs ``verify_certificate``
 always, and the journal layer when the thread's journal is under the same home. The repository layer needs Git and is
 not run here. The ``.pub`` file beside each certificate is never read: whoever can write the folder can write that file
 too. A key is trusted until the deployment removes it. A certificate is revoked by listing its digest
-(``certificate_digest``) in ``SYBERWORK_CERTIFICATE_REVOKED``: it then fails as ``revoked`` under every key. There is
-no validity window.
+(``certificate_digest``) in ``SYBERWORK_CERTIFICATE_REVOKED``: it then fails as ``revoked`` under every key. With
+``SYBERWORK_CERTIFICATE_MAX_AGE`` (seconds), a signed certificate issued longer ago than that fails as ``expired``, and
+one dated more than ``SKEW`` after serve's clock as ``not_yet_valid``. ``issued_at`` is the signer's word: the window
+retires old genuine certificates, it does not stop a key holder from dating a new one.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import json
 import re
 import stat
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -26,6 +29,7 @@ from syberlabs.certificate import (MAX_CERTIFICATE_BYTES, PAYLOAD_TYPE, STATEMEN
                                    verify_certificate)
 from syberlabs.ed25519 import _L, _Point, _decode, _mul
 from syberlabs.errors import Rejected
+from syberlabs.clock import stamp
 from syberlabs.jcs import jcs_bytes
 from syberlabs.journal import CASE_ID
 
@@ -40,6 +44,11 @@ MAX_SIGNATURES = 2
 # The most certificate digests serve revokes at once. A digest is 64 lowercase hex characters (certificate_digest).
 MAX_REVOKED = 256
 DIGEST = re.compile(r"[0-9a-f]{64}")
+# The longest validity window serve takes, in seconds: ten years of 366 days.
+MAX_AGE_LIMIT = 10 * 366 * 24 * 3600
+# How far after serve's clock a certificate may be dated and still be read, in seconds, when a window is set: the
+# certifying host's clock may run a little ahead. Without this bound, a certificate dated in 2099 would never expire.
+SKEW = 300
 # Verdicts kept per process. A verdict depends only on the bytes it was computed from, so it is never stale.
 CACHE = 256
 # The largest journal or registry file serve hashes and lets the verifier read. A larger one, or one that is not a
@@ -166,10 +175,13 @@ class CertificateShelf:
     ``keys`` is one public key or a sequence of distinct ones, at most ``MAX_KEYS``. A file passes the signature layer
     when one of them verifies it; the statement names that key. ``revoked`` is a sequence of distinct certificate
     digests, at most ``MAX_REVOKED``: a signed file whose digest is listed fails as ``revoked``, whatever its other layers
-    say.
+    say. ``max_age``, when given, is the validity window in whole seconds, at most ``MAX_AGE_LIMIT``: a signed file
+    issued longer ago than that, by ``clock``, fails as ``expired``, and one dated more than ``SKEW`` seconds after it
+    as ``not_yet_valid``. Revocation names the failure first.
     """
 
-    def __init__(self, home: str | Path, keys: bytes | tuple[bytes, ...] | list[bytes], revoked: tuple[str, ...] | list[str] = ()):
+    def __init__(self, home: str | Path, keys: bytes | tuple[bytes, ...] | list[bytes], revoked: tuple[str, ...] | list[str] = (),
+                 max_age: int | None = None, clock=time.time):
         home = Path(home)
         if not home.is_dir():
             raise Rejected("invalid_runtime", "the certificate home must be a directory (a Build Thread home such as .syberlabs)")
@@ -190,7 +202,9 @@ class CertificateShelf:
             raise Rejected("invalid_runtime", "a revoked certificate digest must be 64 lowercase hex characters")
         if len(set(revoked)) != len(revoked):
             raise Rejected("invalid_runtime", "a revoked certificate digest is listed twice")
-        self.home, self.keys, self.revoked = home, keys, revoked
+        if max_age is not None and (type(max_age) is not int or not 1 <= max_age <= MAX_AGE_LIMIT):
+            raise Rejected("invalid_runtime", f"a certificate validity window is a whole number of seconds from 1 to {MAX_AGE_LIMIT}")
+        self.home, self.keys, self.revoked, self.max_age, self._clock = home, keys, revoked, max_age, clock
         self._cache: OrderedDict[tuple, dict] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -199,11 +213,14 @@ class CertificateShelf:
         files = sorted((p for p in folder.glob("*.json")), key=lambda p: p.name) if folder.is_dir() else []
         # One read at a time: two console tabs opening Studio at once verify each file once, not twice.
         with self._lock:
+            # One clock reading per listing, so every row is judged at the same instant, the one the answer names.
+            now = stamp(self._clock())
             # The registry and a thread's journal are hashed once per listing, however many rows name them.
             seen: dict[Path, tuple] = {}
-            rows = [self._row(path, seen) for path in files[:LIMIT]]
+            rows = [self._row(path, seen, now) for path in files[:LIMIT]]
+        validity = None if self.max_age is None else {"max_age": self.max_age, "skew": SKEW, "checked_at": now}
         return {"configured": True, "public_keys": [key.hex() for key in self.keys], "revoked": list(self.revoked),
-                "total": len(files), "shown": len(rows),
+                "validity": validity, "total": len(files), "shown": len(rows),
                 "checked": ["signature", "journal"], "not_checked": ["repository"], "certificates": rows, "note": NOTE}
 
     def _inputs(self, journal: Path | None, seen: dict | None = None) -> tuple:
@@ -216,9 +233,9 @@ class CertificateShelf:
             return seen[path]
         return (state(self.home / "journal" / "registry.jsonl"), state(journal) if journal else ("absent",))
 
-    def _row(self, path: Path, seen: dict) -> dict:
+    def _row(self, path: Path, seen: dict, now: int) -> dict:
         refused = {"file": path.name, "verdict": "fail", "signature": None, "journal": None, "journal_present": None,
-                   "repository": None, "statement": None, "digest": None}
+                   "repository": None, "statement": None, "digest": None, "expires_at": None}
         if path.is_symlink() or not path.is_file():
             return {**refused, "reason": "not_a_regular_file"}
         try:
@@ -232,7 +249,7 @@ class CertificateShelf:
         key = (hashlib.sha256(data).hexdigest(), *inputs)
         if key in self._cache:
             self._cache.move_to_end(key)
-            return {"file": path.name, **self._revoke(self._cache[key])}
+            return {"file": path.name, **self._judge(self._cache[key], now)}
         verdict = self._verdict(data, inputs)
         # Kept only when nothing was refused and the inputs read the same after verifying: an append in between would
         # otherwise file the new content's verdict under the old content's key.
@@ -240,15 +257,25 @@ class CertificateShelf:
             self._cache[key] = verdict
             while len(self._cache) > CACHE:
                 self._cache.popitem(last=False)
-        return {"file": path.name, **self._revoke(verdict)}
+        return {"file": path.name, **self._judge(verdict, now)}
 
-    def _revoke(self, verdict: dict) -> dict:
-        """A verdict, failed as ``revoked`` when its digest is listed. Applied after the cache, which keeps what the bytes
-        say; the list is fixed for the life of the process. Only a signed file has a digest, so only one can be revoked.
-        What it states and its other layers are kept, so the console can show what was revoked."""
-        if verdict["digest"] is None or verdict["digest"] not in self.revoked:
-            return verdict
-        return {**verdict, "verdict": "fail", "reason": "revoked"}
+    def _judge(self, verdict: dict, now: int) -> dict:
+        """A verdict as of ``now`` (microseconds): failed as ``revoked`` when its digest is listed, else as ``expired`` or
+        ``not_yet_valid`` when its ``issued_at`` is outside the validity window. Applied after the cache, which keeps what
+        the bytes say: the list and the window are fixed for the life of the process, the clock is not. Only a signed file
+        has a digest and an ``issued_at``, so only one can be revoked or expire. What it states and its other layers are
+        kept, so the console can show what failed. ``expires_at`` is ``issued_at`` plus the window, or None."""
+        statement = verdict["statement"]
+        issued = None if statement is None else statement["issued_at"]
+        expires = None if self.max_age is None or issued is None else issued + self.max_age * 1_000_000
+        verdict = {**verdict, "expires_at": expires}
+        if verdict["digest"] is not None and verdict["digest"] in self.revoked:
+            return {**verdict, "verdict": "fail", "reason": "revoked"}
+        if expires is not None and now > expires:
+            return {**verdict, "verdict": "fail", "reason": "expired"}
+        if expires is not None and issued > now + SKEW * 1_000_000:
+            return {**verdict, "verdict": "fail", "reason": "not_yet_valid"}
+        return verdict
 
     def _verdict(self, data: bytes, inputs: tuple) -> dict:
         registry, journal = inputs

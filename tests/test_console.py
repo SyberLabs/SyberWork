@@ -1510,6 +1510,123 @@ class ConsoleCertificateRevocation(CellCase):
             configured(digest, home=None, public=None)
 
 
+class ConsoleCertificateValidity(CellCase):
+    """SYBERWORK_CERTIFICATE_MAX_AGE: a signed certificate issued longer ago than the window, by serve's clock, fails as
+    expired, and one dated more than SKEW after it as not yet valid. Each still shows what it states."""
+
+    certificates = True
+    AGE = 3600
+
+    def setUp(self):
+        super().setUp()
+        # serve's clock, in whole seconds, a little after the fixture certified its candidate; NOW in microseconds.
+        self.seconds = self.cert_payload["issued_at"] // 1_000_000 + 1000
+        self.now = self.seconds * 1_000_000
+
+    def dated(self, name, issued_at, seed=SEED):
+        """The fixture's candidate certified again at ``issued_at`` (microseconds), in the bare form."""
+        payload = dict(self.cert_payload, issued_at=issued_at)
+        envelope = sign_dsse("application/vnd.syberlabs.admission-certificate+json", jcs_bytes(payload), seed)
+        (self.cert_home / "certificates" / name).write_text(json.dumps(envelope), encoding="utf-8")
+        return payload
+
+    def shelf_at(self, *revoked, max_age=AGE):
+        return CertificateShelf(self.cert_home, PUBLIC, revoked, max_age, clock=lambda: self.seconds)
+
+    def rows(self, shelf):
+        body = shelf.listing()
+        return body, {row["file"]: row for row in body["certificates"]}
+
+    def test_without_a_window_nothing_expires(self):
+        self.dated("ancient.json", self.now - 20 * 366 * 24 * 3600 * 1_000_000)
+        self.dated("future.json", self.now + 366 * 24 * 3600 * 1_000_000)
+        status, body = self.cell.json("/api/certificates")
+        self.assertEqual((status, body["validity"]), (200, None))
+        self.assertEqual({row["file"]: (row["verdict"], row["expires_at"]) for row in body["certificates"]},
+                         {row["file"]: ("pass", None) for row in body["certificates"]})
+        self.assertIsNone(self.shelf.max_age, "no window unless the deployment sets one")
+
+    def test_a_certificate_outside_the_window_fails_and_still_states_what_it_says(self):
+        window, skew = self.AGE * 1_000_000, shelf_module.SKEW * 1_000_000
+        cases = {"old.json": (self.now - window - 1, "expired"), "edge.json": (self.now - window, None),
+                 "early.json": (self.now + skew + 1, "not_yet_valid"), "skewed.json": (self.now + skew, None)}
+        for name, (issued, _) in cases.items():
+            self.dated(name, issued)
+        body, rows = self.rows(self.shelf_at())
+        self.assertEqual(body["validity"], {"max_age": self.AGE, "skew": shelf_module.SKEW, "checked_at": self.now})
+        for name, (issued, reason) in cases.items():
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["signature"], row["journal"], row["expires_at"]),
+                                 ("fail" if reason else "pass", reason, "ok", "ok", issued + window))
+                self.assertEqual((row["statement"]["issued_at"], row["statement"]["candidate"]), (issued, "c1"), "what failed is shown")
+                self.assertEqual(row["digest"], shelf_module.certificate_digest(dict(self.cert_payload, issued_at=issued)))
+        thread8 = self.cert_payload["thread"][:8]
+        self.assertEqual(rows[f"{thread8}-c1.bare.json"]["reason"], None, "the fixture's own certificates are inside the window")
+        self.assertEqual(rows[f"{thread8}-c1.bare.json"]["expires_at"], self.cert_payload["issued_at"] + window)
+        # A file no configured key signed states no issued_at, so it has no expiry; it fails as before.
+        self.dated("untrusted.json", self.now - window - 1, THIRD_SEED)
+        _, rows = self.rows(self.shelf_at())
+        self.assertEqual((rows["untrusted.json"]["reason"], rows["untrusted.json"]["expires_at"]), ("signature_invalid", None))
+
+    def test_revocation_names_the_failure_first_and_expiry_comes_before_the_journal(self):
+        old = self.dated("old.json", self.now - self.AGE * 1_000_000 - 1)
+        self.dated("current.json", self.now)
+        shelf = self.shelf_at(shelf_module.certificate_digest(old))
+        self.assertEqual(self.rows(shelf)[1]["old.json"]["reason"], "revoked")
+        journal = self.cert_home / "journal" / "threads" / f"{self.cert_payload['thread']}.jsonl"
+        journal.write_bytes(b"\n".join(journal.read_bytes().splitlines()[:2]) + b"\n")
+        _, rows = self.rows(self.shelf_at())
+        self.assertEqual((rows["old.json"]["reason"], rows["old.json"]["journal"]), ("expired", "chain_truncated"))
+        self.assertEqual(rows["current.json"]["reason"], "chain_truncated")
+
+    def test_a_cached_verdict_expires_when_the_clock_passes_the_window(self):
+        self.dated("aging.json", self.now - self.AGE * 1_000_000)
+        shelf = self.shelf_at()
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", wraps=shelf_module.verify_certificate) as spy:
+            first = self.rows(shelf)[1]["aging.json"]
+            calls = spy.call_count
+            self.seconds += 1
+            later = self.rows(shelf)[1]["aging.json"]
+            self.assertEqual(spy.call_count, calls, "the second read is served from the cache")
+        self.assertEqual((first["verdict"], later["verdict"], later["reason"]), ("pass", "fail", "expired"))
+
+    def test_the_route_answers_the_window_to_any_principal(self):
+        self.dated("old.json", self.now - self.AGE * 1_000_000 - 1)
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.cert_home.parent)), 8999, certificates=self.shelf_at())
+        self.addCleanup(cell.close)
+        status, body = cell.json("/api/certificates", who="supplier")
+        self.assertEqual((status, body["validity"]["max_age"], body["validity"]["checked_at"]), (200, self.AGE, self.now))
+        self.assertEqual({row["file"]: row["reason"] for row in body["certificates"]}["old.json"], "expired")
+
+    def test_the_shelf_takes_a_whole_number_of_seconds_up_to_the_limit(self):
+        for age in (1, shelf_module.MAX_AGE_LIMIT):
+            self.assertEqual(CertificateShelf(self.cert_home, PUBLIC, (), age).max_age, age)
+        for age in (0, -1, True, 1.0, 1.5, "3600", shelf_module.MAX_AGE_LIMIT + 1):
+            with self.subTest(repr(age)), self.assertRaises(Rejected):
+                CertificateShelf(self.cert_home, PUBLIC, (), age)
+
+    def test_serve_reads_the_window_in_seconds_and_refuses_anything_else(self):
+        parser = argparse.ArgumentParser()
+        def configured(age=None, home=str(self.cert_home), public=PUBLIC.hex()):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            names = {k: v for k, v in (("SYBERWORK_CERTIFICATE_HOME", home), ("SYBERWORK_CERTIFICATE_PUBLIC", public),
+                                       ("SYBERWORK_CERTIFICATE_MAX_AGE", age)) if v is not None}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertIsNone(configured().max_age)
+        self.assertEqual(configured("2592000").max_age, 30 * 24 * 3600)
+        self.assertEqual(configured(" 60\n").max_age, 60)
+        self.assertEqual(configured(str(shelf_module.MAX_AGE_LIMIT)).max_age, shelf_module.MAX_AGE_LIMIT)
+        # Empty is refused, not read as no window: an unset shell variable expanded into it would turn the window off.
+        for age in ("", " ", "0", "-1", "+60", "1_000", "1e3", "60.0", "60s", "\u0663", "0x10", str(shelf_module.MAX_AGE_LIMIT + 1),
+                    "99999999999"):
+            with self.subTest(age), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(age)
+        with self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+            configured("3600", home=None, public=None)
+
+
 class ConsolePreview(CellCase):
     """POST /api/cases/{id}/preview: what proposing would record now (Work.preview_admission). It records nothing."""
 
@@ -1799,6 +1916,15 @@ class ConsoleModel(CellCase):
             "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC), (statement,)).listing(),
             "expected": [[f"{thread8}-c1.bare.json", "certified", 2, digest], [f"{thread8}-c1.json", "revoked", 2, statement],
                          ["foreign.json", "revoked", 1, statement]]}
+        # And one with a validity window, its clock set so the statement form has expired and the bare form, certified
+        # later, has not; foreign.json re-signs the statement form's payload, so it has expired too.
+        issued = json.loads(base64.standard_b64decode(bare["payload"]))["issued_at"]
+        statement_issued = json.loads(base64.standard_b64decode(good["payload"]))["predicate"]["issued_at"]
+        self.assertLess(statement_issued, issued, "the fixture certifies the statement form first")
+        parity["certificates"]["windowed"] = {
+            "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC), (), 1, clock=lambda: (statement_issued + issued) / 2e6 + 1).listing(),
+            "expected": [[f"{thread8}-c1.bare.json", "certified", issued + 1_000_000], [f"{thread8}-c1.json", "expired", statement_issued + 1_000_000],
+                         ["foreign.json", "expired", statement_issued + 1_000_000]]}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -1839,6 +1965,11 @@ class ConsoleBrowser(CellCase):
         (self.cert_home / "certificates" / "withdrawn.json").write_text(json.dumps(sign_dsse(good["payloadType"], jcs_bytes(withdrawn), OTHER_SEED)), encoding="utf-8")
         revoked = shelf_module.certificate_digest(withdrawn)
         self.shelf.revoked = (revoked,)
+        # And one certified 60 days ago under the new key, which a 30-day validity window retires.
+        window = 30 * 24 * 3600
+        stale = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] - 2 * window * 1_000_000)
+        (self.cert_home / "certificates" / "stale.json").write_text(json.dumps(sign_dsse(good["payloadType"], jcs_bytes(stale), OTHER_SEED)), encoding="utf-8")
+        self.shelf.max_age = window
         env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens)}
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
@@ -1867,20 +1998,26 @@ class ConsoleBrowser(CellCase):
         self.assertIn("a case is not a Build Thread and has none", report["certificate_text"])
         self.assertIn("Nothing on this case is drawn as certified", report["certificate_text"])
         # Studio → Certificates: both genuine forms pass the signature and the journal under the old key, the rotated file
-        # under the new one, and each row names its key; the revoked file reads revoked, beside what it states and its
-        # digest. The repository is named as not checked.
+        # under the new one, and each row names its key; the revoked file reads revoked and the stale one expired, beside
+        # what each states and its digest. Each signed row says when it expires. The repository is named as not checked.
         thread8 = self.cert_payload["thread"][:8]
-        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified"] * 3 + ["revoked"], report["certificate_rows"])
-        for (_, row), name, key, verdict in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json", "rotated.json", "withdrawn.json"),
-                                                ("key 2 · " + PUBLIC.hex()[:16], "key 2 · " + PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16]),
-                                                ("certified", "certified", "certified", "revoked")):
-            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], verdict, "Add a CSV export", key, "digest "):
+        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified"] * 3 + ["expired", "revoked"], report["certificate_rows"])
+        for (_, row), name, key, verdict in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json", "rotated.json", "stale.json", "withdrawn.json"),
+                                                ("key 2 · " + PUBLIC.hex()[:16], "key 2 · " + PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16],
+                                                 "key 1 · " + OTHER_PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16]),
+                                                ("certified", "certified", "certified", "expired", "revoked")):
+            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], verdict, "Add a CSV export", key, "digest ", "UTC"):
                 self.assertIn(text, row)
-        self.assertIn("digest " + revoked, report["certificate_rows"][3][1])
-        self.assertIn("serve's configuration revokes this certificate: do not treat it as certified", report["certificate_rows"][3][1])
-        for text in ("3 of 4 certificates certified", "2 keys 1 " + OTHER_PUBLIC.hex()[:16] + "…, 2 " + PUBLIC.hex()[:16] + "…",
-                     "1 certificate digest revoked", "Not checked: repository", "syberlabs verify FILE --public KEY --repo .",
-                     "SYBERWORK_CERTIFICATE_REVOKED lists reads revoked under every key; there is no validity window",
+        self.assertIn("digest " + revoked, report["certificate_rows"][4][1])
+        self.assertIn("serve's configuration revokes this certificate: do not treat it as certified", report["certificate_rows"][4][1])
+        stale_end = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime((stale["issued_at"] // 1_000_000) + window))
+        self.assertIn("expired " + stale_end + " UTC", report["certificate_rows"][3][1])
+        self.assertIn("issued longer ago than serve's validity window: do not treat it as certified", report["certificate_rows"][3][1])
+        self.assertIn("expires ", report["certificate_rows"][0][1])
+        for text in ("3 of 5 certificates certified", "2 keys 1 " + OTHER_PUBLIC.hex()[:16] + "…, 2 " + PUBLIC.hex()[:16] + "…",
+                     "1 certificate digest revoked", "valid for 30d after issue, by serve's clock at ", "Not checked: repository",
+                     "syberlabs verify FILE --public KEY --repo .", "SYBERWORK_CERTIFICATE_REVOKED lists reads revoked under every key. ",
+                     "One issued more than 30d before serve's clock reads expired, and one dated more than 5m after it not yet valid",
                      "The .pub file beside each certificate is not read", "A SyberWork case has none"):
             self.assertIn(text, report["certificate_page"])
         # Before the witness signs, the log holds nothing for the case; after, every event up to the head is witnessed.
