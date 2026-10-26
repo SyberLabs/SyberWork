@@ -402,6 +402,9 @@ class Stream(unittest.TestCase):
             "after test code changed TestCase.run":
                 [{"ev": "harness_changed", "id": "m.A.test_2", "what": ["TestCase.run"]}]
                 + _ran("m.A.test_1", "m.A.test_2") + done + [_done(2, skipped=1)],
+            "test code changed A.subTest while m.A.test_1 ran":
+                _ran("m.A.test_1") + [{"ev": "harness_changed", "id": "m.A.test_1", "what": ["A.subTest"], "at": "stop"}]
+                + _ran("m.A.test_2") + done + [_done(2, skipped=1)],
         }
         for expected, events in cases.items():
             with self.subTest(expected=expected):
@@ -510,6 +513,64 @@ DROPS_ITS_RESULT = """
         def test_fails_unreported(self):
             self._outcome.result = None
             raise AssertionError("must fail")
+"""
+SWALLOWS_SUBTEST = """
+    import contextlib
+    import unittest
+
+    class Swallow(unittest.TestCase):
+        @contextlib.contextmanager
+        def subTest(self, msg=None, **params):
+            try:
+                yield
+            except Exception:
+                pass
+        def test_fails_in_a_subtest(self):
+            with self.subTest(i=0):
+                self.fail("must fail")
+"""
+DROPS_CLEANUPS = """
+    import unittest
+
+    class Drop(unittest.TestCase):
+        def doCleanups(self):
+            self._cleanups.clear()
+            return True
+        def test_cleanup_fails(self):
+            self.addCleanup(self.fail, "must fail")
+"""
+SWALLOWS_AT_SETUP = """
+    import contextlib
+    import unittest
+
+    class Swallow(unittest.TestCase):
+        def setUp(self):
+            self.subTest = lambda *args, **params: contextlib.suppress(Exception)
+        def test_fails_in_a_subtest(self):
+            with self.subTest(i=0):
+                self.fail("must fail")
+"""
+SWAPS_SUBTEST_LIKE_HYPOTHESIS = """
+    import contextlib
+    import types
+    import unittest
+
+    @contextlib.contextmanager
+    def quiet_subtest(self, msg=None, **params):
+        yield
+
+    class Given(unittest.TestCase):
+        def test_swaps_and_restores(self):  # what Hypothesis's @given does around its examples
+            subTest = self.subTest
+            try:
+                self.subTest = types.MethodType(quiet_subtest, self)
+                with self.subTest(i=0):
+                    pass
+            finally:
+                self.subTest = subTest
+        def test_fails_after(self):
+            with self.subTest(i=0):
+                self.fail("deliberate")
 """
 PRINTS_PROTOCOL = """
     import unittest
@@ -628,16 +689,15 @@ class Integrity(unittest.TestCase):
     def test_a_test_that_patches_unittest_while_the_shard_runs_fails_it(self):
         ran = self.run_suite({"test_patch.py": RUNTIME_PATCH})
         self.assertEqual(ran.returncode, 1, ran.stdout)
-        self.assertIn("ran test_patch.AAPatch.test_1_body_never_runs after test code changed "
-                      "TestCase._callTestMethod", ran.stdout)
+        self.assertIn("test code changed TestCase._callTestMethod while test_patch.AAPatch.test_0_patch ran",
+                      ran.stdout)
 
     def test_a_test_that_mutes_how_unittest_reports_an_error_fails_the_shard(self):
         """``TestCase.run`` reports errors and skips through functions of ``unittest.case``; a no-op there makes
         every later failure vanish, and serial ``unittest`` says OK."""
         ran = self.run_suite({"test_mute.py": MUTES_ERRORS})
         self.assertEqual(ran.returncode, 1, ran.stdout)
-        self.assertIn("ran test_mute.AAMute.test_1_failure_vanishes after test code changed "
-                      "unittest.case._addError", ran.stdout)
+        self.assertIn("test code changed unittest.case._addError while test_mute.AAMute.test_0_mute ran", ran.stdout)
         self.assertIn("stopped 1 tests that reported no outcome: test_mute.AAMute.test_1_failure_vanishes",
                       ran.stdout)
         self.assertTrue(_summary(_serial_suite({"test_mute.py": MUTES_ERRORS}))[1].startswith("OK"))  # serial unittest is fooled
@@ -663,6 +723,60 @@ class Integrity(unittest.TestCase):
         for name, body, rule in (("test_mute.py", MUTES_ERRORS, "unittest_patch"),
                                  ("test_xpass.py", REPORTS_XPASS_AS_PASS, "harness_override"),
                                  ("test_drop.py", DROPS_ITS_RESULT, "unittest_patch")):
+            with self.subTest(name=name):
+                findings = critic_rules.integrity_findings(f"tests/{name}", textwrap.dedent(body).lstrip(), None)
+                self.assertEqual({f["claim"].split("(")[1].split(")")[0] for f in findings}, {rule})
+                self.assertTrue(all(f["severity"] == "high" for f in findings))
+
+    def test_a_test_that_swallows_its_own_subtest_or_cleanup_failures_is_refused_before_anything_runs(self):
+        for name, body, method, test_id in (("test_swallow.py", SWALLOWS_SUBTEST, "subTest",
+                                             "test_swallow.Swallow.test_fails_in_a_subtest"),
+                                            ("test_cleanups.py", DROPS_CLEANUPS, "doCleanups",
+                                             "test_cleanups.Drop.test_cleanup_fails")):
+            with self.subTest(method=method):
+                ran = self.run_suite({name: body})
+                self.assertEqual(ran.returncode, 1, ran.stdout)
+                self.assertIn(f"run_shards: harness_override: {test_id} takes {method} from outside unittest",
+                              ran.stdout)
+                self.assertEqual(_summary(ran.stdout), (0, "FAILED (harness_override=1)"))
+                self.assertTrue(_summary(_serial_suite({name: body}))[1].startswith("OK"))  # serial unittest is fooled
+
+    def test_each_cleanup_and_subtest_method_is_refused_in_a_test_class_whatever_it_does(self):
+        """Refused by where the method comes from, not by what it does: even ``unittest``'s own function,
+        assigned in the class, is taken from outside ``unittest``."""
+        body = "import unittest\n\n" + "".join(
+            f"class T{i}(unittest.TestCase):\n    {name} = unittest.TestCase.{name}\n    def test_a(self): pass\n\n"
+            for i, name in enumerate(run_shards.CLEANUP_METHODS))
+        ran = self.run_suite({"test_takes.py": body})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        for i, name in enumerate(run_shards.CLEANUP_METHODS):
+            self.assertIn(f"harness_override: test_takes.T{i}.test_a takes {name} from outside unittest", ran.stdout)
+        self.assertEqual(_summary(ran.stdout),
+                         (0, f"FAILED (harness_override={len(run_shards.CLEANUP_METHODS)})"))
+
+    def test_a_test_that_swallows_its_subtests_from_set_up_fails_the_shard(self):
+        """The instance takes ``subTest`` in ``setUp``, after the check at the test's start; the check at its
+        stop sees it."""
+        ran = self.run_suite({"test_setup.py": SWALLOWS_AT_SETUP})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertIn("test code changed Swallow.subTest while test_setup.Swallow.test_fails_in_a_subtest ran",
+                      ran.stdout)
+        self.assertTrue(_summary(_serial_suite({"test_setup.py": SWALLOWS_AT_SETUP}))[1].startswith("OK"))  # serial unittest is fooled
+
+    def test_unittest_s_own_subtest_put_back_on_the_instance_is_not_an_override(self):
+        """Hypothesis's ``@given`` replaces ``subTest`` on the instance while it runs and puts back ``unittest``'s
+        own method, bound to the test: that is not taken from outside, and a later failure still counts."""
+        ran = self.run_suite({"test_given.py": SWAPS_SUBTEST_LIKE_HYPOTHESIS})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertNotIn("harness", ran.stdout)
+        self.assertNotIn("test code changed", ran.stdout)
+        self.assertIn("FAIL: test_fails_after (test_given.Given.test_fails_after)", ran.stdout)
+        self.assertRegex(ran.stdout, r"FAILED \((?:[^)]*, )?failures=1")
+
+    def test_the_critic_flags_each_way_of_swallowing_a_failure(self):
+        for name, body, rule in (("test_swallow.py", SWALLOWS_SUBTEST, "harness_override"),
+                                 ("test_cleanups.py", DROPS_CLEANUPS, "harness_override"),
+                                 ("test_setup.py", SWALLOWS_AT_SETUP, "unittest_patch")):
             with self.subTest(name=name):
                 findings = critic_rules.integrity_findings(f"tests/{name}", textwrap.dedent(body).lstrip(), None)
                 self.assertEqual({f["claim"].split("(")[1].split(")")[0] for f in findings}, {rule})

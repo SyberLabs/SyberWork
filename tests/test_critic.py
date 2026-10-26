@@ -382,9 +382,13 @@ TRIPS = {
         "def tearDownModule():\n    quit()\n",
     ],
     "harness_override": [HARNESS_CLASS.format(name=name) for name in ("run", "__call__", "debug", "id", "_callTestMethod",
-                                                                        "_addExpectedFailure", "_addUnexpectedSuccess")]
+                                                                        "_addExpectedFailure", "_addUnexpectedSuccess",
+                                                                        "addCleanup", "enterContext", "doCleanups",
+                                                                        "addClassCleanup", "enterClassContext",
+                                                                        "doClassCleanups", "subTest")]
     + ["from unittest import TestCase as Base\n\nclass T(Base):\n    def _callSetUp(self):\n        pass\n",
-       "class T:\n    def test_a(self):\n        pass\n    run = None\n"],
+       "class T:\n    def test_a(self):\n        pass\n    run = None\n",
+       "import contextlib, unittest\n\nclass T(unittest.TestCase):\n    subTest = contextlib.nullcontext\n"],
     "load_tests": ["def load_tests(loader, tests, pattern):\n    return tests\n", "load_tests = None\n"],
     "unittest_patch": [
         "import unittest\nunittest.TestCase.run = lambda self, result=None: result\n",
@@ -397,6 +401,9 @@ TRIPS = {
         "def helper(result):\n    result.startTest = print\n",
         "def helper(result):\n    return result.shouldStop\n",
         "def helper(test):\n    test._testMethodName = 'test_other'\n",
+        "import contextlib\n\ndef helper(test):\n    test.subTest = lambda **kw: contextlib.suppress(Exception)\n",
+        "def helper(test):\n    test.doCleanups = lambda: True\n",
+        "def helper(test):\n    setattr(test, 'addCleanup', print)\n",
     ],
     "sys_modules": [
         "import sys\nsys.modules['unittest'] = None\n",
@@ -432,6 +439,9 @@ CLEAN = [
     "from unittest import mock\nimport os\n\ndef helper():\n    return mock.patch.object(os, 'getcwd')\n",
     "import unittest\nraise unittest.SkipTest('needs a database')\n",
     "import re\nPATTERN = re.compile('x')\n\ndef helper():\n    return __import__('csv')\n",
+    "import unittest\n\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.addCleanup(print)\n"
+    "        with self.subTest(i=0):\n            self.doCleanups()\n",
+    "class Steps:\n    def subTest(self):\n        return None\n",
 ]
 
 
@@ -558,7 +568,7 @@ class IntegrityBeyondTests(unittest.TestCase):
         self.assertEqual(self.rules(document, "tests/test_forge.py"), set())
         self.assertEqual(sorted(f["line"] for f in document["findings"]), [1, 2, 6, 7])
         self.assertTrue(all("a test can import this file" in f["claim"] for f in document["findings"]))
-        self.assertEqual(document["reviewer"], {"name": "rules", "revision": "3"})
+        self.assertEqual(document["reviewer"], {"name": "rules", "revision": "4"})
 
     def test_the_harness_families_apply_to_any_python_file(self):
         write_side = ("os.write", "syberlabs-")  # the runner_reach snippets that stay test-scoped (next test)
