@@ -3,6 +3,7 @@
     python scripts/run_shards.py                        # N = min(os.cpu_count(), 8)
     python scripts/run_shards.py --shards 4 --report shards.json
     python scripts/run_shards.py --floor <base commit>  # also refuse a test set that shrank (the host check)
+    python scripts/run_shards.py --shard-timeout 600    # stop a shard after 600 s (default: from the manifest)
 
 The test set is exactly what ``python -m unittest discover -s tests`` finds: the same
 loader, start directory and pattern. Tests are packed into N shards by test id, longest
@@ -36,6 +37,11 @@ Completeness, checked and never assumed:
   test discovered on BASE is discovered here too, unless the diff BASE..HEAD deletes or
   renames its file, removes its ``def``, or renames its class (``test_set_shrank``).
 
+A shard that runs past its time budget (``--shard-timeout``, or by default five times
+its planned seconds and at least five minutes) is stopped with every process it started,
+and the run fails with ``shard_timeout``, naming the last test the shard started.
+Discovery has the same budget (the given one, or five minutes).
+
 Anything else fails the run with a named reason, as does any failure, error, or
 unexpected success. The last lines have the shape ``unittest`` prints: ``Ran N tests
 in Xs``, then ``OK (...)`` or ``FAILED (...)``. Standard library only.
@@ -54,6 +60,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import site
 import statistics
 import subprocess
@@ -74,6 +81,12 @@ DEFAULT_SECONDS = 1.0  # used only when the manifest is missing or empty
 WORK_PREFIX = "syberlabs-shards-"  # the logs; the shards' scratch homes live in a separate directory
 SCRATCH_PREFIX = "syberlabs-shard-scratch-"
 BASE_ENV = "SYBERLABS_BASE"
+# The default time budget of a shard: this many times its planned seconds, and never less than the floor.
+# The floor is also the default budget of a discovery child. The budget is for a hung shard, not a slow
+# one: on the Windows CI runners of 2026-10-26 the slowest shard took 1.9 and then 2.25 times its plan
+# (533 s against 286 s, 646 s against 287 s), so three times would have left too little room.
+SHARD_TIMEOUT_FACTOR = 5.0
+SHARD_TIMEOUT_FLOOR = 300.0
 MAX_CHANNEL_BYTES = 64 * 1024 * 1024
 # The TestCase methods that start a test and report it. A discovered test whose class (or instance)
 # takes one of these from outside the ``unittest`` package is refused: it could report a test that
@@ -242,6 +255,69 @@ def check_plan(shards: list, discovered: list) -> list:
     return problems
 
 
+# --- stopping a child and everything it started ---------------------------------------------
+
+
+def _descendants(pid: int) -> list:
+    """POSIX: the processes below ``pid``, from ``ps`` (empty when ``ps`` cannot be run)."""
+    try:
+        listing = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid="], stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: dict = collections.defaultdict(list)
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
+            children[int(fields[1])].append(int(fields[0]))
+    found, todo = [], [pid]
+    while todo:
+        for child in children.get(todo.pop(), ()):
+            found.append(child)
+            todo.append(child)
+    return found
+
+
+def stop_tree(proc: subprocess.Popen) -> None:
+    """End ``proc`` and every process it started.
+
+    Windows: ``taskkill /T /F``, as ``syberlabs.checks`` does. POSIX: each process of the tree is
+    stopped with SIGSTOP, so none can start another, until a listing finds nothing new; then every
+    one gets SIGKILL. The shards stay in this runner's session, so a host that ends this
+    runner's session still ends them. A process that left the tree before the listing (one that
+    detached itself) is not found here; the host's session kill is what ends it.
+    """
+    if proc.poll() is None:
+        try:
+            if os.name == "nt":
+                taskkill = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "taskkill.exe"
+                subprocess.run([str(taskkill) if taskkill.exists() else "taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=60, check=False)
+            else:
+                frozen: list = []
+                for _ in range(10):
+                    fresh = [pid for pid in [proc.pid, *_descendants(proc.pid)] if pid not in frozen]
+                    if not fresh:
+                        break
+                    for pid in fresh:
+                        try:
+                            os.kill(pid, signal.SIGSTOP)
+                        except OSError:
+                            pass
+                    frozen += fresh
+                for pid in frozen:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if proc.poll() is None:
+            proc.kill()
+    proc.wait()
+
+
 # --- the channel: a private pipe from each child to this process -----------------------------
 
 
@@ -273,6 +349,7 @@ class _Child:
         self.log_path = log_path
         self.lines: list = []
         self.overflow = False
+        self.timed_out = False
         read, write = os.pipe()
         kwargs: dict = {}
         if os.name == "nt":
@@ -314,8 +391,14 @@ class _Child:
                     continue
                 self.lines.append(line)
 
-    def finish(self) -> int:
-        code = self.proc.wait()
+    def finish(self, timeout: float | None = None) -> int:
+        """Wait for the child; past ``timeout`` seconds, stop it and everything it started (``timed_out``)."""
+        try:
+            code = self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.timed_out = True
+            stop_tree(self.proc)
+            code = self.proc.returncode
         self._reader.join(timeout=30)
         if not self.log.closed:
             self.log.close()
@@ -354,7 +437,7 @@ class _Child:
 def _watched() -> dict:
     return {unittest.TestCase: HARNESS_METHODS, unittest.TestSuite: SUITE_METHODS,
             unittest.suite.BaseTestSuite: SUITE_METHODS, unittest.TestResult: RESULT_METHODS,
-            unittest.TextTestResult: RESULT_METHODS, _ShardResult: RESULT_METHODS + ("_send", "_outcome"),
+            unittest.TextTestResult: RESULT_METHODS, _ShardResult: RESULT_METHODS + ("_send", "_report"),
             _Channel: ("send",), unittest.case._Outcome: ("testPartExecutor",)}
 
 
@@ -388,7 +471,7 @@ class _ShardResult(unittest.TextTestResult):
         if self.channel is not None:
             self.channel.send(event, **fields)
 
-    def _outcome(self, kind, test):
+    def _report(self, kind, test):
         case = getattr(test, "test_case", test)  # a skipped subtest is reported against its test
         if isinstance(case, unittest.TestCase):
             self._send("outcome", id=case.id(), kind=kind)
@@ -409,27 +492,27 @@ class _ShardResult(unittest.TextTestResult):
         self._send("stop", id=test.id())
 
     def addSuccess(self, test):
-        self._outcome("success", test)
+        self._report("success", test)
         super().addSuccess(test)
 
     def addFailure(self, test, err):
-        self._outcome("failure", test)
+        self._report("failure", test)
         super().addFailure(test, err)
 
     def addError(self, test, err):
-        self._outcome("error", test)
+        self._report("error", test)
         super().addError(test, err)
 
     def addSkip(self, test, reason):
-        self._outcome("skip", test)
+        self._report("skip", test)
         super().addSkip(test, reason)
 
     def addExpectedFailure(self, test, err):
-        self._outcome("xfail", test)
+        self._report("xfail", test)
         super().addExpectedFailure(test, err)
 
     def addUnexpectedSuccess(self, test):
-        self._outcome("xpass", test)
+        self._report("xpass", test)
         super().addUnexpectedSuccess(test)
 
     def addSubTest(self, test, subtest, err):
@@ -564,12 +647,22 @@ def _git(args: list, cwd, *, binary: bool = False):
     return proc.stdout if binary else proc.stdout.decode("utf-8", errors="replace")
 
 
+def _importable_under(folder: Path) -> str | None:
+    """The first file under ``folder`` that Python could import, relative to it, or None."""
+    for dirpath, _dirs, files in os.walk(folder):
+        for name in sorted(files):
+            if name.endswith(IMPORTABLE):
+                return Path(dirpath, name).relative_to(folder).as_posix()
+    return None
+
+
 def worktree_changes(start: str, cwd=".") -> list:
     """What makes the working tree differ from HEAD in a way a test run could see.
 
     A tracked file modified or deleted anywhere; an untracked or ignored file under the start
-    directory; an untracked or ignored file anywhere that Python could import. An earlier check that
-    ran candidate code in the same worktree could have written any of them.
+    directory; an untracked or ignored file anywhere that Python could import, alone or inside an
+    untracked or ignored directory. An earlier check that ran candidate code in the same worktree
+    could have written any of them.
     """
     root = Path(_git(["rev-parse", "--show-toplevel"], cwd).strip()).resolve()
     start_rel = (_relative(Path(cwd, start), root) or "").rstrip("/")
@@ -583,9 +676,14 @@ def worktree_changes(start: str, cwd=".") -> list:
         if state[0] in "RC":
             next(entries, None)  # the source path of a rename or copy
         if state in ("??", "!!"):
+            what = "untracked" if state == "??" else "ignored"
             inside = start_rel in ("", ".") or path == start_rel or path.startswith(start_rel + "/")
-            if inside or path.endswith(IMPORTABLE) or path.endswith("/"):
-                changes.append(f"{'untracked' if state == '??' else 'ignored'} {path}")
+            if inside or path.endswith(IMPORTABLE):
+                changes.append(f"{what} {path}")
+            elif path.endswith("/"):  # a whole directory (``pip install -e`` leaves an ignored *.egg-info/)
+                held = _importable_under(root / path)
+                if held:
+                    changes.append(f"{what} {path} (holds {held})")
         else:
             changes.append(f"modified {path}")
     return changes
@@ -719,10 +817,14 @@ def _discover_in_child(args, cwd, root: Path, scratch: Path, name: str, log: Pat
     """The ``describe`` records of every test discovered in ``cwd``, from a child, or why there are none."""
     child = _Child({"mode": "discover", "start": args.start, "pattern": args.pattern, "top_level": args.top_level,
                     "root": str(root)}, cwd, _scratch_env(scratch, f"{name}-tmp", f"{name}-home"), log)
+    budget = args.shard_timeout or SHARD_TIMEOUT_FLOOR
     try:
-        code = child.finish()
+        code = child.finish(timeout=budget)
     finally:
         child.kill()
+    if child.timed_out:
+        return None, (f"discovery ran past its budget of {budget:.0f} s and was stopped with its process tree; "
+                      f"log {log}:\n{_tail(log)}")
     messages, broken = child.messages()
     if broken:
         return None, f"{broken} (log {log})"
@@ -759,10 +861,16 @@ def main(argv=None) -> int:
                         help="write the measured seconds per test id here (to refresh the manifest)")
     parser.add_argument("--floor", default=os.environ.get(BASE_ENV) or None, metavar="BASE",
                         help=f"refuse a test set that shrank against this commit (default ${BASE_ENV})")
+    parser.add_argument("--shard-timeout", type=float, default=None, metavar="SECONDS",
+                        help=f"stop a shard (or discovery) that runs longer, with every process it started; default "
+                             f"{SHARD_TIMEOUT_FACTOR:g} times the shard's planned seconds, at least "
+                             f"{SHARD_TIMEOUT_FLOOR:.0f} (discovery: {SHARD_TIMEOUT_FLOOR:.0f})")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.child:
         return run_child()
+    if args.shard_timeout is not None and not args.shard_timeout > 0:
+        parser.error("--shard-timeout must be a positive number of seconds")
     try:
         sys.stdout.reconfigure(errors="backslashreplace")
     except AttributeError:
@@ -848,7 +956,10 @@ def _run(args, shards_wanted: int, began: float, logs: Path, scratch: Path) -> i
           f"{len(shards)} shards on {os.cpu_count()} CPUs; manifest {manifest}: {stats['timed']} timed, "
           f"{stats['unknown']} at the median {stats['median']:.2f} s, {stats['stale']} stale entries ignored"
           + floor_note)
-    print("run_shards: planned seconds per shard: " + ", ".join(f"{s['seconds']:.0f}" for s in shards))
+    budgets = [args.shard_timeout or max(SHARD_TIMEOUT_FLOOR, SHARD_TIMEOUT_FACTOR * s["seconds"]) for s in shards]
+    print("run_shards: planned seconds per shard: " + ", ".join(f"{s['seconds']:.0f}" for s in shards)
+          + "; time budget per shard: " + ", ".join(f"{b:.0f}" for b in budgets)
+          + ("" if args.shard_timeout else f" ({SHARD_TIMEOUT_FACTOR:g}x planned, at least {SHARD_TIMEOUT_FLOOR:.0f})"))
 
     procs = []
     try:
@@ -857,12 +968,14 @@ def _run(args, shards_wanted: int, began: float, logs: Path, scratch: Path) -> i
                     "top_level": args.top_level}
             child = _Child(spec, ".", _scratch_env(scratch, f"{index}t", f"{index}h"), logs / f"shard-{index}.log")
             procs.append({"index": index, "child": child, "ids": shard["ids"], "planned": shard["seconds"],
-                          "launched": time.perf_counter()})
+                          "budget": budgets[index - 1], "launched": time.perf_counter()})
         pending = list(procs)
         while pending:
             for item in list(pending):
                 if item["child"].proc.poll() is None:
-                    continue
+                    if time.perf_counter() - item["launched"] <= item["budget"]:
+                        continue
+                    item["child"].finish(timeout=0)  # past its budget: stop it and everything it started
                 item["code"] = item["child"].finish()
                 item["wall"] = time.perf_counter() - item["launched"]
                 pending.remove(item)
@@ -877,7 +990,7 @@ def _run(args, shards_wanted: int, began: float, logs: Path, scratch: Path) -> i
     # Completeness: every shard accounted for every id it was given, and the totals add up.
     incomplete: list = []
     tampered: list = []
-    crashed = 0
+    crashed = timed_out = 0
     tests_run = skipped = expected = 0
     failures: list = []
     errors: list = []
@@ -889,6 +1002,14 @@ def _run(args, shards_wanted: int, began: float, logs: Path, scratch: Path) -> i
         if item["broken"]:
             tampered.append(f"shard {item['index']}: {item['broken']}; none of its {len(item['ids'])} assigned ids "
                             f"counts (exit code {item['code']}, log {log_path})")
+            continue
+        if item["child"].timed_out:
+            timed_out += 1
+            print(f"run_shards: shard_timeout: shard {item['index']} ran past its budget of {item['budget']:.0f} s "
+                  f"and was stopped with its process tree; last test started: {result['last_started'] or '(none)'}; "
+                  f"log {log_path}")
+            print(_tail(log_path))
+            tests_run += result["found"]["tests_run"]
             continue
         if result["crashed"]:
             crashed += 1
@@ -911,7 +1032,7 @@ def _run(args, shards_wanted: int, began: float, logs: Path, scratch: Path) -> i
         failures += done["failures"] if isinstance(done.get("failures"), list) else []
         errors += done["errors"] if isinstance(done.get("errors"), list) else []
         unexpected += done["unexpected"] if isinstance(done.get("unexpected"), list) else []
-    if accounted != len(discovered_ids) and not (crashed or tampered):
+    if accounted != len(discovered_ids) and not (crashed or tampered or timed_out):
         incomplete.append(f"{accounted} tests accounted for, {len(discovered_ids)} discovered")
     for line in tampered:
         print(f"run_shards: channel_tampered: {line}")
@@ -925,7 +1046,7 @@ def _run(args, shards_wanted: int, began: float, logs: Path, scratch: Path) -> i
         print("Unexpected successes:")
         for item in unexpected:
             print(f"  {item.get('description') if isinstance(item, dict) else item}")
-    if crashed or incomplete or tampered or failures or errors:
+    if crashed or timed_out or incomplete or tampered or failures or errors:
         print(f"run_shards: logs in {logs}")
 
     wall = time.perf_counter() - began
@@ -958,11 +1079,13 @@ def _run(args, shards_wanted: int, began: float, logs: Path, scratch: Path) -> i
         infos.append(f"unexpected successes={len(unexpected)}")
     if crashed:
         infos.append(f"shard_crashed={crashed}")
+    if timed_out:
+        infos.append(f"shard_timeout={timed_out}")
     if tampered:
         infos.append(f"channel_tampered={len(tampered)}")
     if incomplete:
         infos.append(f"shard_incomplete={len(incomplete)}")
-    ok = not (failures or errors or unexpected or crashed or incomplete or tampered)
+    ok = not (failures or errors or unexpected or crashed or timed_out or incomplete or tampered)
     print(("OK" if ok else "FAILED") + (f" ({', '.join(infos)})" if infos else ""))
     return 0 if ok else 1
 
@@ -974,6 +1097,9 @@ def _collect(item: dict, multiplicity: dict, by_id: dict) -> None:
     item["result"] = result = account(messages, item["ids"], multiplicity, by_id)
     if item["broken"]:
         item["summary"] = f"CHANNEL TAMPERED (exit {item['code']}) after {item['wall']:.1f} s"
+        return
+    if item["child"].timed_out:
+        item["summary"] = f"TIMED OUT after {item['wall']:.1f} s (budget {item['budget']:.0f} s), stopped"
         return
     if result["crashed"]:
         item["summary"] = f"CRASHED (exit {item['code']}) after {item['wall']:.1f} s"
@@ -993,7 +1119,8 @@ def _write_report(path: Path, procs: list, discovered: list, wall: float, stats:
         done = result["done"] or {}
         shards.append({
             "index": item["index"], "ids": item["ids"], "planned_seconds": round(item["planned"], 3),
-            "wall_seconds": round(item["wall"], 3), "exit_code": item["code"], "crashed": result["crashed"],
+            "wall_seconds": round(item["wall"], 3), "budget_seconds": round(item["budget"], 3),
+            "timed_out": item["child"].timed_out, "exit_code": item["code"], "crashed": result["crashed"],
             "channel": item["broken"] or "intact", "tests_run": result["found"]["tests_run"],
             "skipped": result["found"]["skipped"],
             "failures": [f.get("id") for f in done.get("failures", []) if isinstance(f, dict)],
