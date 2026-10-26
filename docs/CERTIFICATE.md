@@ -91,7 +91,7 @@ The two forms are the same statement under two `payloadType`s, not two certifica
 
 | Code | Layer | Meaning |
 | --- | --- | --- |
-| `public_key_invalid` | key | `--public` is unreadable, is not 64 hex characters, or is a key no seed derives. In the last case the detail ends in `syberlabs.ed25519.key_problem`'s word: `not_a_point`, `small_order` (the identity included) or `mixed_order`; under a small-order key anyone can sign without a seed (under the identity, `R = B, s = 1` verifies every certificate). A refusal, exit 2, before the file is read |
+| `public_key_invalid` | key | `--public` is unreadable, is not 64 hex characters, or is a key no seed derives. In the last case the detail ends in `syberlabs.ed25519.key_problem`'s word: `not_a_point`, `small_order` (the identity included) or `mixed_order`; under a small-order key anyone can sign without a seed (under the identity, `R = B, s = 1` verifies every certificate). A refusal, exit 2, before the file is read. A library caller of `verify_certificate` handed such a key, or anything but 32 bytes (`not_32_bytes`), gets this code as the signature layer's failure, the word last in its note, without the envelope being read; `dsse.verified_payload` gives `None` under it |
 | `certificate_too_large`, `certificate_unreadable` | signature | the file is over 1 MiB, or not a JSON object |
 | `payload_type_mismatch` | signature | the envelope's `payloadType` is neither `application/vnd.in-toto+json` nor `application/vnd.syberlabs.admission-certificate+json` |
 | `signature_invalid` | signature | no signature verifies under the given public key (forged key, changed bytes, foreign `keyid`, a swapped `payloadType`) |
