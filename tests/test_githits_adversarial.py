@@ -416,9 +416,9 @@ class PathSmuggling(FakeCase):
 
 
 class OutputMatchesTheRecord(FakeCase):
-    """The record is written before the CLI renders the result. A hit outside the contract (a locator that is not an
+    """The record was written before the CLI rendered the result. A hit outside the contract (a locator that is not an
     object) made ``render`` raise after an ``ok`` record, so the agent saw a traceback while the record said ``ok``.
-    (#138 moves the output before the record; a crash in rendering would then leave no record at all.)"""
+    (#138 moves the output before the record; with #142 merged, a delivery that crashes is recorded ``error``.)"""
 
     def test_a_result_outside_the_contract_still_renders(self):
         self.fake.serve("/v1/searches", search_response([
@@ -433,18 +433,24 @@ class OutputMatchesTheRecord(FakeCase):
         self.assertEqual((code, out.splitlines()[:1]), (0, ["grep: 1 matches of 0"]))
         self.assertEqual([r["status"] for r in self.records().records], [githits.OK] * 3)
 
-    @unittest.expectedFailure
     def test_pr_138_a_delivery_that_fails_in_any_way_is_recorded_as_an_error(self):
-        """#138 (open) adds ``Client.call(request, deliver=...)`` and writes the record after ``deliver``; its
-        ``_finish`` records ``error`` only when ``deliver`` raises OSError or ValueError. Any other exception, or the
-        SystemExit a SIGTERM becomes in the launcher's entry, leaves no record for a request that reached GitHits.
-        Expected to fail until #138 records every failed delivery (here, before #138, ``deliver`` does not exist)."""
-        def deliver(result):
-            raise RuntimeError("the renderer crashed")
+        """#138 adds ``Client.call(request, deliver=...)`` and writes the record after ``deliver``; as #138 wrote it,
+        ``_finish`` recorded ``error`` only when ``deliver`` raised OSError or ValueError, so any other exception, or
+        the SystemExit a SIGTERM becomes in the launcher's entry, left no record for a request that reached GitHits.
+        With #142 merged, ``_finish`` records every failed delivery before it propagates: a broken stream as
+        ``output_failed``, anything else raised again as it was."""
+        failures = ((RuntimeError("the renderer crashed"), RuntimeError), (SystemExit(143), SystemExit),
+                    (BrokenPipeError(32, "Broken pipe"), githits.GitHitsError))
+        for failure, raised in failures:
+            def deliver(result, failure=failure):
+                raise failure
 
-        with self.assertRaises(Exception):
-            self.client().call(githits.search_request("retry", ["pypi:requests"]), deliver=deliver)
-        self.assertEqual([r["status"] for r in self.records().records], [githits.ERROR])
+            with self.subTest(failure=type(failure).__name__), self.assertRaises(raised) as caught:
+                self.client().call(githits.search_request("retry", ["pypi:requests"]), deliver=deliver)
+            if raised is githits.GitHitsError:
+                self.assertEqual(caught.exception.code, "output_failed")
+        self.assertEqual([(r["status"], r["sent"]) for r in self.records().records], [(githits.ERROR, True)] * 3,
+                         "one error record per request, each sent, none missing and none twice")
 
 
 # --------------------------------------------------- accounting (#139's Findings, pinned there as expected failures)
