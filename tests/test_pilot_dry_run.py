@@ -250,20 +250,29 @@ class Pieces(unittest.TestCase):
         self.assertIn("cannot cover", pilot.gate(7.01, 1.0, 8.0))
         self.assertIn("unknown", pilot.gate(None, 1.0, 8.0), "an unpriced call stops the run: unknown is never zero")
 
-    def test_only_the_api_route_arm_conflict_is_the_known_issue(self):
-        api = [{"kind": "candidate_registered", "body": {"signal": {"githits": {"arm": "on"}, "harness": {}}}}]
-        plain = [{"kind": "candidate_registered", "body": {"signal": {"harness": {"version": "2.1.309"}}}}]
-        mcp = [{"kind": "candidate_registered", "body": {"signal": {"harness": {"mcp_servers": ["githits:failed"]}}}}]
-        found = {"baseline": "off", "treatment": "on",
-                 "checks": {"arm_conflict": ["A", "B"], "labelled_late": ["C"], "unused": ["A"]},
-                 "rows": [{"item": "A", "threads": {"off": ["a0"], "on": ["a1"]}},
-                          {"item": "B", "threads": {"off": ["b0"], "on": ["b1"]}},
-                          {"item": "C", "threads": {"off": ["c0"], "on": ["c1"]}}]}
-        records = {"a0": plain, "a1": api, "b0": plain, "b1": mcp, "c0": plain, "c1": api}
-        known, real = pilot.report_exclusions(found, records)
-        self.assertEqual(known, ["A"])
-        self.assertEqual(real, {"arm_conflict": ["B"], "labelled_late": ["C"]},
-                         "an MCP server that failed to connect is a real conflict; a kept check is no exclusion")
+    def test_the_report_must_compare_every_item_and_a_kept_check_is_a_warning(self):
+        rule = {"met": False}
+
+        def rows(checks, compared, not_run=()):
+            reasons = []
+            found = {"items": {"compared": compared}, "checks": checks, "not_run": list(not_run), "rule": rule}
+            return [(r["status"], r["name"], r["detail"]) for r in pilot.report_rows(found, 3, reasons)], reasons
+
+        found, reasons = rows({"unused": ["C"], "use_unknown": ["B"]}, 3)
+        self.assertEqual(found, [("PASS", "report", "3 of 3 items compared; rule not met"),
+                                 ("WARN", "unused", f"C: {experiment.CHECKS['unused']}"),
+                                 ("WARN", "use_unknown", f"B: {experiment.CHECKS['use_unknown']}")])
+        self.assertEqual(reasons, [], "a check that keeps an item fails nothing")
+        for flag in ("arm_conflict", "contaminated", "missing_arm"):  # every exclusion fails, the API arm's included
+            with self.subTest(flag):
+                found, reasons = rows({flag: ["B"]}, 2)
+                self.assertEqual(found, [("FAIL", "report", f"2 of 3 items compared; {flag}: B")])
+                self.assertEqual(reasons, [f"the paired report did not compare every item: 2 of 3 items compared; "
+                                           f"{flag}: B"])
+        found, _ = rows({"missing_arm": ["A"]}, 0, not_run=["B", "C"])
+        self.assertEqual(found, [("FAIL", "report", "0 of 3 items compared; missing_arm: A; not run: B, C")])
+        self.assertEqual(pilot.report_rows(None, 3, []), [{"status": "FAIL", "name": "report",
+                                                          "detail": "the report could not be read"}])
 
 
 class DryRun(DryRunCase):
@@ -338,19 +347,19 @@ class DryRun(DryRunCase):
         sessions = {r["headers"]["x-githits-session-id"] for r in self.fake.requests[2:]}
         self.assertEqual(sessions, {f"{t['thread']}-on" for t in threads if t["arm"] == "on"})
 
-        # The report ran on the registered list; an arm_conflict exclusion is the known API-route issue, if it is there.
+        # The report ran on the registered list and compared every item: it read each treatment's GitHits from the
+        # host's launcher ledger (#141), so no API-route item is excluded as arm_conflict, and no check fired.
         self.assertEqual((self.out / "items.txt").read_text(encoding="utf-8").splitlines()[1:],
                          ["LIB-1 needs_lookup", "LIB-2 needs_lookup", "LIB-3 routine"])
         found = json.loads((self.out / "report.json").read_text(encoding="utf-8"))
-        self.assertEqual(found["items"]["labelled"], 3)
-        self.assertNotIn("labelled_late", found["checks"])
-        self.assertNotIn("base_mismatch", found["checks"])
+        self.assertEqual(found["items"], {"labelled": 3, "compared": 3, "excluded": 0})
+        self.assertEqual((found["checks"], found["not_run"]), ({}, []))
+        lookups = found["metrics"]["githits_lookups"]
+        self.assertEqual((lookups["pairs"], lookups["baseline_mean"], lookups["treatment_mean"]), (3, 0.0, 1.0),
+                         "the report pairs the treatment's lookups with the baseline's none, item by item")
+        self.assertEqual(receipt["report"]["compared"], 3)
+        self.assertIn("PASS  report: 3 of 3 items compared; rule not met", printed)
         self.assertTrue((self.out / "report.md").read_text(encoding="utf-8").startswith("| Metric |"))
-        conflict = found["checks"].get("arm_conflict", [])
-        known = receipt["report"]["known_issue"]
-        self.assertEqual(known["arm_conflict"] if known else [], sorted(conflict))
-        if conflict:  # main today: the report reads GitHits from an MCP server (fix/experiment-report-githits-api-arm)
-            self.assertIn("WARN  known issue: arm_conflict excluded LIB-1, LIB-2, LIB-3", printed)
 
         # Spend: the host's own, every call priced, under the cap.
         spend = receipt["spend"]

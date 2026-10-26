@@ -80,14 +80,15 @@ already spent plus one share fit under the cap. Every call is bounded by the pla
 stays under the cap plus the cost of one call, and the receipt says what it was. Spend is the host's own: tokens
 priced at the plan's ``prices`` through the host's meter (``docs/METRICS.md``), never Claude Code's estimate.
 
-Known issue
------------
+The paired report
+----------------
 
-On ``main`` today the report excludes every item as ``arm_conflict``: it reads the treatment's GitHits route from a
-connected MCP server, and the API-client arm records none. The branch ``fix/experiment-report-githits-api-arm``
-fixes the report. This script reports such an exclusion as a known issue (WARN) when the records show the API
-route in the treatment and no GitHits server in the baseline; any other exclusion fails the run. Per-thread metrics
-do not depend on it.
+It must compare every item: an item the report excludes (``experiment.EXCLUDE``: ``arm_conflict``,
+``contaminated``, ``missing_arm``, ...) or a registered item it never saw fails the run, and a check that keeps an
+item but says something about it (``unused``, ``use_unknown``, ``outcome_mismatch``, ...) is printed as a warning.
+The report reads the treatment's GitHits from the host's launcher ledger (``signal.githits``, SyberWork #141, branch
+``fix/experiment-report-githits-api-arm``); a report without that change excludes every item as ``arm_conflict``,
+and the run fails.
 
 Standard library only; nothing in ``syberlabs`` is changed. Tests: ``tests/test_pilot_dry_run.py`` (a stand-in
 ``claude`` and a loopback GitHits; no model, no network).
@@ -138,7 +139,6 @@ PAIRED = {"agent_time": "time_to_pass", "delivered": "reviewed"}  # read as the 
 LABELS = {"cost": "cost", "turns": "turns", "agent_time": "agent time", "fix_rounds": "fix", "web_lookups": "web",
           "githits_lookups": "githits", "delivered": "delivered", "review_rejections": "rejections",
           "human_interventions": "interventions"}
-FIX_BRANCH = "fix/experiment-report-githits-api-arm"
 PASS, FAIL, WARN = "PASS", "FAIL", "WARN"
 SCRUB_ENV = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"
 API_KEY_ENV = "ANTHROPIC_API_KEY"
@@ -869,29 +869,6 @@ def evaluate(entries: list, records: list[dict], name: str) -> None:
         entry["unknown"] = [m for m in NINE if not entry["metrics"][m]["known"]]
 
 
-def report_exclusions(found: dict | None, records: dict) -> tuple[list, dict]:
-    """The report's excluded items: ``arm_conflict`` items whose record shows the API-client route in every treatment
-    thread and no GitHits server in any baseline thread (the known report issue), and every other exclusion."""
-    if not found:
-        return [], {}
-    known, real = [], {}
-    rows = {row["item"]: row for row in found.get("rows", [])}
-    for flag, items in (found.get("checks") or {}).items():
-        if flag not in experiment.EXCLUDE:
-            continue
-        for item in items:
-            row = rows.get(item, {})
-            threads = row.get("threads", {})
-            treated = [harness_of(records.get(t, [])) for t in threads.get(found.get("treatment", TREATMENT), [])]
-            based = [harness_of(records.get(t, [])) for t in threads.get(found.get("baseline", BASELINE), [])]
-            api_route = bool(treated) and all(h.get("githits_route") and not h.get("githits_mcp") for h in treated)
-            if flag == "arm_conflict" and api_route and not any(h.get("githits_mcp") for h in based):
-                known.append(item)
-            else:
-                real.setdefault(flag, []).append(item)
-    return sorted(set(known)), real
-
-
 # --------------------------------------------------------------------------------------------------------- printing
 
 def cell(metric: dict, name: str) -> str:
@@ -1280,17 +1257,16 @@ class DryRun:
         receipt["spend"]["total"] = self.spent()
         receipt["spend"]["by_thread"] = {thread: self.spent(thread) for thread in self.exports}
         found = self.report()
-        known, real = report_exclusions(found, {thread: self.events(thread) for thread in self.exports})
         receipt["report"] = None if found is None else {
             "compared": found["items"]["compared"], "excluded": found["items"]["excluded"], "checks": found["checks"],
-            "rule": found["rule"], "known_issue": {"arm_conflict": known, "fix_branch": FIX_BRANCH} if known else None}
+            "not_run": found.get("not_run"), "rule": found["rule"]}
         rows, reasons = receipt["checks"], receipt["reasons"]
         unknown = [entry for entry in self.entries if entry["unknown"]]
         reasons += [f"run {e['order']} ({e['item']} {e['arm']}): unknown " + ", ".join(LABELS[m] for m in e["unknown"])
                     for e in unknown]
         rows.append({"status": PASS if self.entries and not unknown else FAIL, "name": "nine metrics",
                      "detail": f"known for {len(self.entries) - len(unknown)} of {len(self.entries)} threads"})
-        rows += report_rows(found, known, real, reasons)
+        rows += report_rows(found, len(plan["items"]), reasons)
         lanes = sorted({lane for entry in self.entries for lane in entry["harness"].get("lane", [])})
         bases = sorted({basis for entry in self.entries for basis in entry["harness"].get("cost_basis", [])})
         if lanes and (lanes != ["api"] or bases != ["billed"]):
@@ -1359,29 +1335,28 @@ class DryRun:
         say(render(receipt, out))
 
 
-def report_rows(found: dict | None, known: list, real: dict, reasons: list) -> list[dict]:
-    """The table's rows about the report: read or not, its exclusions (the known issue apart), and the checks that keep
-    an item but say something about the treatment."""
+def report_rows(found: dict | None, expected: int, reasons: list) -> list[dict]:
+    """The table's rows about the report: it compares all ``expected`` items of the plan, or the run fails with what
+    kept the others out (a check that excludes an item, or a registered item that never ran); then a warning for each
+    check that keeps an item but says something about it."""
     if found is None:
         reasons.append("the paired report could not be read")
         return [{"status": FAIL, "name": "report", "detail": "the report could not be read"}]
-    rows = []
-    if real:
-        detail = "; ".join(f"{flag}: {', '.join(items)}" for flag, items in sorted(real.items()))
-        rows.append({"status": FAIL, "name": "report", "detail": f"items excluded: {detail}"})
-        reasons.append(f"the report excluded items: {detail}")
+    checks = found.get("checks") or {}
+    why = [f"{flag}: {', '.join(items)}" for flag, items in sorted(checks.items()) if flag in experiment.EXCLUDE]
+    if found.get("not_run"):
+        why.append("not run: " + ", ".join(found["not_run"]))
+    compared = found["items"]["compared"]
+    detail = f"{compared} of {expected} items compared"
+    if why or compared != expected:
+        detail += "".join(f"; {reason}" for reason in why)
+        reasons.append(f"the paired report did not compare every item: {detail}")
+        rows = [{"status": FAIL, "name": "report", "detail": detail}]
     else:
-        rows.append({"status": PASS, "name": "report", "detail": f"{found['items']['compared']} of "
-                     f"{found['items']['labelled']} items compared; rule {experiment.VERDICT[found['rule']['met']]}"})
-    if known:
-        rows.append({"status": WARN, "name": "known issue", "detail": (
-            f"arm_conflict excluded {', '.join(known)}: the report reads the treatment's GitHits route from an MCP "
-            f"server and the API-client arm records none; {FIX_BRANCH} fixes the report (per-thread metrics are "
-            "unaffected)")})
-    for flag in ("unused", "contamination_unknown", "arm_unverified"):
-        if flag in found["checks"]:
-            rows.append({"status": WARN, "name": flag,
-                         "detail": f"{', '.join(found['checks'][flag])}: {experiment.CHECKS[flag]}"})
+        verdict = experiment.VERDICT[found["rule"]["met"]]
+        rows = [{"status": PASS, "name": "report", "detail": f"{detail}; rule {verdict}"}]
+    rows += [{"status": WARN, "name": flag, "detail": f"{', '.join(items)}: {experiment.CHECKS.get(flag, flag)}"}
+             for flag, items in sorted(checks.items()) if flag not in experiment.EXCLUDE]
     return rows
 
 
