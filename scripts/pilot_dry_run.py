@@ -57,9 +57,9 @@ contracts the run installs.
 The canary is one cheap call in the treatment's mode (``propose --claude-code --bare --githits``, one call, a few
 turns, without the web tools so the launcher is its only way to look anything up) whose objective asks for two
 launcher lookups, one the guard must refuse (it holds an email address). It passes when the guard refused a lookup
-and passed one that reached GitHits (an authentic client record), every decision verified and none ``unguarded``,
-and every model the call used is priced; a call that shows only one of the two is inconclusive and fails, since it
-proves either no refusal or no GitHits. Then each item runs in both arms from the same ``HEAD``, both arms back to
+for what it says and passed one that GitHits answered (an authentic client record), every decision verified and none
+``unguarded``, and every model the call used is priced; a call that shows only one of the two is inconclusive and
+fails, since it proves either no refusal or no GitHits. Then each item runs in both arms from the same ``HEAD``, both arms back to
 back, the items and which arm goes first set by a seeded shuffle: ``start --unattended``, ``experiment label``
 (before the first candidate), ``propose --claude-code --bare [--githits]``, ``run --once`` (accepts on the host's
 checks), ``export``. Then the blind review (``review --record``), ``experiment report --items FILE --delivered
@@ -86,8 +86,8 @@ an equal share of it (``--thread-budget``; default the cap over the runs plus th
 stops a thread's next call past its share and its promotion is refused; and a run starts only while the dollars
 already spent plus one share fit under the cap. Every call is bounded by the plan's ``max_turns``. So the total
 stays under the cap plus the cost of one call, and the receipt says what it was. A call that ended
-``provider_failed`` or ``provider_timeout`` after Claude Code ran was never priced (``claude_code`` raises before
-its meter), so its thread's cost and the total are unknown and no further run starts. Spend is the host's own: tokens
+``provider_failed``, ``provider_timeout`` or ``provider_error`` after Claude Code ran was never priced (it raised
+before the meter), so its thread's cost and the total are unknown and no further run starts. Spend is the host's own: tokens
 priced at the plan's ``prices`` through the host's meter (``docs/METRICS.md``), never Claude Code's estimate. A fee
 the API charges per server-side web search is not a token, so neither the meter nor the cap sees it; each thread's
 web lookups in the receipt say how many searches there were.
@@ -150,8 +150,15 @@ PILOT_TOOLS = (*claude_code.DEFAULT_TOOLS, *WEB_TOOLS)
 # Every rate of a priced model: Claude Code's calls are mostly cache reads and writes, and a cache rate left out is
 # priced at the input rate (economic.price_usage), one at 0 makes those tokens free. Either way the cost is wrong.
 RATES = ("input_per_million", "output_per_million", "cache_read_per_million", "cache_creation_per_million")
-# claude_code raises these after Claude Code ran and before the host's meter priced the call: what it spent is lost.
-UNMETERED = ("provider_failed", "provider_timeout")
+# claude_code raises the first two after Claude Code ran and before the host's meter priced the call, and the search
+# records an unexpected fault there as the third: what such a call spent is lost.
+UNMETERED = ("provider_failed", "provider_timeout", "provider_error")
+# The guard's rules that judge what a lookup says. Its others refuse a command that is not the launcher, or report the
+# guard's own failure: a refusal under them shows neither that a content rule fires nor that Claude Code obeys a refused
+# launcher call (under dontAsk it would not run a command outside its allowed tools anyway).
+CONTENT_RULES = tuple(rule for rule in query_guard.RULES
+                      if rule not in (query_guard.NOT_LAUNCHER, query_guard.SHELL_SYNTAX, query_guard.ERROR))
+REACHED = (githits.OK, githits.BLOCKED)  # a client record of a request GitHits answered
 BASELINE, TREATMENT = experiment.BASELINE, experiment.TREATMENT  # "off" and "on", the report's defaults
 CANARY_CONTRACT = "pilot-canary"
 CANARY_TURNS = 6
@@ -746,8 +753,8 @@ def contracts_of(records: list[dict]) -> dict:
 
 def unmetered(events: list) -> str | None:
     """Why the host's meter missed part of what the threads in ``events`` spent, or None: a call that ended
-    ``provider_failed`` or ``provider_timeout`` after Claude Code ran (``claude_code`` raises those before it prices
-    the call), or a search that never finished (the process died inside it)."""
+    ``provider_failed``, ``provider_timeout`` or ``provider_error`` (``UNMETERED``: raised after Claude Code ran and
+    before the host's meter priced the call), or a search that never finished (the process died inside it)."""
     threads: dict = {}
     for event in events:
         threads.setdefault(event.get("case_id"), []).append(event)
@@ -818,17 +825,19 @@ def claude_flags(plan: dict, arm: str, max_calls: int, max_turns: int, tools: st
 
 
 def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
-    """PASS when the guard refused at least one lookup and passed at least one that reached GitHits (an authentic
-    client record), every decision verified and none ``unguarded``, and every model the call used is priced; FAIL
-    otherwise, with the reason. A call that shows only one of the two proves too little: a model that leaves the
-    address out, or a launcher Claude Code will not run, would pass a weaker test and leave the arms unguarded or
-    without GitHits."""
+    """PASS when the guard refused at least one lookup for what it says (``CONTENT_RULES``) and passed at least one
+    that GitHits answered (an authentic client record, ``REACHED``), every decision verified and none ``unguarded``,
+    and every model the call used is priced; FAIL otherwise, with the reason. A refused launcher call proves that the
+    content rules fire and that Claude Code obeys the hook: had it run the call anyway, its client record would match
+    no passed call and every record would be ``unguarded``. A call that shows only one of the two proves too little:
+    a model that leaves the address out, or a launcher Claude Code will not run, would pass a weaker test and leave
+    the arms unguarded or without GitHits."""
     lookups = facts(events, claude_code.LOOKUP)
     finished = last_search(events) or {}
     unguarded = [x for x in lookups if x.get("guard") == query_guard.UNGUARDED]
     decided = [x for x in lookups if isinstance(x.get("guard"), str) and x["guard"] != query_guard.UNGUARDED]
-    refused = [x for x in decided if x["guard"] != query_guard.PASS]
-    reached = [x for x in decided if x["guard"] == query_guard.PASS
+    refused = [x for x in decided if x["guard"] in CONTENT_RULES]
+    reached = [x for x in decided if x["guard"] == query_guard.PASS and x.get("status") in REACHED
                and str(x.get("tool", "")).startswith(claude_code.CLIENT_TOOL)]
     spend = finished.get("spend") if isinstance(finished.get("spend"), dict) else {}
     data = {"lookups": [{"tool": x.get("tool"), "guard": x.get("guard"), "ok": x.get("ok")} for x in lookups],
@@ -840,9 +849,9 @@ def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
                       "(unguarded): under this Claude Code and --bare the --settings hook did not run, or its record "
                       "was not the hook's. Do not run the pilot in this mode"), data
     if not refused or not reached:
-        missing = ([] if refused else ["no lookup the guard refused (the canary asks for one holding an email "
-                                       "address)"]) + \
-                  ([] if reached else ["no lookup the guard passed that reached GitHits (the launcher did not run, "
+        missing = ([] if refused else ["no lookup the guard refused for what it says (the canary asks for one "
+                                       "holding an email address)"]) + \
+                  ([] if reached else ["no lookup the guard passed that GitHits answered (the launcher did not run, "
                                        "or GitHits did not answer)"])
         why = f"; the call ended {finished['error']}" if finished.get("error") else ""
         return FAIL, (f"inconclusive: {' and '.join(missing)}{why}; run again, and read the canary's thread in "
@@ -855,8 +864,8 @@ def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
     if spend.get("host_observed") is not True or data["spend"] is None:
         return FAIL, "no usage of the call crossed the host's meter, so cost could not be known", data
     rules = ", ".join(sorted({x["guard"] for x in refused}))
-    return PASS, (f"the guard refused {len(refused)} lookup(s) ({rules}) and passed {len(reached)} that reached "
-                  f"GitHits, every decision verified, 0 unguarded; ${data['spend']:.4f}"), data
+    return PASS, (f"the guard refused {len(refused)} lookup(s) ({rules}) and passed {len(reached)} that GitHits "
+                  f"answered, every decision verified, 0 unguarded; ${data['spend']:.4f}"), data
 
 
 # ------------------------------------------------------------------------------------------------------------- runs
@@ -1035,7 +1044,8 @@ def render(receipt: dict, out: Path) -> str:
         lines.append("canary")
         lines.append(f"  {receipt['canary']['status']}  {receipt['canary']['detail']}")
     if receipt["threads"]:
-        lines.append("runs (agent time = time to a passing change; delivered = accepted and passed the blind review)")
+        lines.append("runs (agent time = time to a passing change, not to a merge; delivered = accepted and passed the "
+                     "blind review)")
         head = ["#", "item", "arm", "thread"] + [LABELS[m] for m in NINE] + ["verdict"]
         rows = [head]
         for entry in receipt["threads"]:

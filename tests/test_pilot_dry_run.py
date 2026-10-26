@@ -326,7 +326,7 @@ class DryRun(DryRunCase):
         self.assertEqual(canary["status"], "PASS", canary["detail"])
         self.assertEqual([(x["tool"], x["guard"], x["ok"]) for x in canary["lookups"]],
                          [("Bash", "email", False), ("githits.search", "pass", True)])
-        self.assertIn("the guard refused 1 lookup(s) (email) and passed 1 that reached GitHits", canary["detail"])
+        self.assertIn("the guard refused 1 lookup(s) (email) and passed 1 that GitHits answered", canary["detail"])
         self.assertEqual(canary["spend"], COST)
 
         # Every item in both arms, from the one base, in the seeded order, each thread labelled before its candidate.
@@ -475,12 +475,21 @@ class Canary(DryRunCase):
         self.assertEqual((code, receipt["canary"]["status"]), (1, "FAIL"))
         self.assertIn("inconclusive", receipt["canary"]["detail"])
 
-    def test_a_canary_needs_both_a_refusal_and_a_lookup_that_reached_githits(self):
-        # A model that leaves the address out proves no refusal; a launcher that never runs proves no GitHits. Each
-        # would pass a weaker test and send the arms out unguarded or without GitHits.
-        for number, (lookups, words) in enumerate(((LOOKUPS[1:], "no lookup the guard refused"),
-                                                   (LOOKUPS[:1], "no lookup the guard passed that reached GitHits"))):
-            with self.subTest(words):
+    def test_a_canary_needs_both_a_refusal_for_content_and_a_lookup_githits_answered(self):
+        # A model that leaves the address out proves no refusal, and a probe outside the launcher (not_launcher) proves
+        # neither a content rule nor that Claude Code obeys a refused launcher call; a launcher that never runs, or a
+        # GitHits that does not answer, proves no GitHits. Each would pass a weaker test.
+        probe = ["Bash", {"command": "which githits", "description": "find the launcher"}]
+        error = {"code": "INTERNAL", "title": "x", "status": 500}
+        for number, (lookups, words, down) in enumerate((
+                (LOOKUPS[1:], "no lookup the guard refused for what it says", False),
+                ([probe, LOOKUPS[1]], "no lookup the guard refused for what it says", False),
+                (LOOKUPS[:1], "no lookup the guard passed that GitHits answered", False),
+                (LOOKUPS, "no lookup the guard passed that GitHits answered", True))):
+            with self.subTest(number=number, words=words):
+                self.fake.script.pop("/v1/searches", None)
+                if down:  # every search fails: the client's record says error, not ok
+                    self.fake.serve("/v1/searches", error, 500, {"Content-Type": "application/problem+json"})
                 self.claude(f"half-{number}", lookups=lookups)
                 code, _, receipt = self.dry_run(out=f"half-{number}")
                 self.assertEqual((code, receipt["canary"]["status"]), (1, "FAIL"))
