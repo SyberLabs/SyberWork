@@ -288,7 +288,9 @@ def main(argv: list[str] | None = None) -> int:
     comparing.add_argument("--baseline", default="off")
     comparing.add_argument("--treatment", default="on")
     comparing.add_argument("--server", default="githits",
-                           help="the MCP server whose recorded connection must match each arm; none to skip that check")
+                           help="what the record must show in the treatment's calls and in no baseline call: this MCP "
+                                "server connected, or for githits (the default) also the host's GitHits API launcher "
+                                "(signal.githits, --githits); none to skip the arm, contamination and use checks")
     comparing.add_argument("--items", metavar="FILE",
                            help="the item list registered before the first run, one 'ITEM-ID [tag ...]' per line: items "
                                 "outside it, or with other tags, are excluded, and listed items that never ran are named")
