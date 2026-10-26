@@ -560,7 +560,7 @@ class ConsolePreview(CellCase):
         return self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
 
     def dump(self):
-        with sqlite3.connect(self.cell.database) as db:
+        with connect_db(self.cell.database) as db:
             return list(db.iterdump())
 
     def assert_preview_is_what_propose_records(self, case, body, who):
