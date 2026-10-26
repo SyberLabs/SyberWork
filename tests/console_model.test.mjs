@@ -23,6 +23,39 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   const cases = JSON.parse(readFileSync(process.env.PARITY, 'utf8'));
   for (const c of cases.reconciliation) assert.equal(M.verifiedReconciliation(c.event), c.expected, JSON.stringify(c.event));
   for (const c of cases.approval) assert.deepEqual(M.approvalRoles(c.contract, c.policy, c.action), c.expected);
+  assert.deepEqual([...M.POLICY_READERS].sort(), cases.read_scope.policy_readers);
+  assert.deepEqual([...M.AUTOMATION_ROLES].sort(), cases.read_scope.automation_roles);
+  assert.ok(cases.explain.length);
+  for (const c of cases.explain) {
+    const view = c.when === 'now' ? M.admissionNow(c.body) : M.decidingRule(c.body);
+    assert.equal(view.state, c.when === 'now' ? 'now' : 'recorded');
+    assert.equal(view.rule, c.rule);
+    assert.ok(M.provenanceText(view.provenance).startsWith(c.provenance), M.provenanceText(view.provenance));
+  }
+  assert.deepEqual(M.WORK_METRICS, cases.work_metrics, 'the console lists syberlabs.metrics.METRICS in order');
+  // What GET /api/cases/{id}/side answered for a case this server wrote: every event has its row.
+  const side = M.sideRecords(cases.side.events, cases.side.rows);
+  assert.deepEqual([side.state, side.covered, side.total, side.bare, side.noJcs, side.newer], ['read', cases.side.events.length, cases.side.events.length, [], [], 0]);
+  assert.equal(side.ruled, side.decisions);
+  assert.ok(side.decisions >= 1);
+  const item = M.workItemRows(cases.work_item.body, cases.side.events, cases.work_item.case);
+  assert.equal(item.state, 'read');
+  assert.deepEqual(item.rows.map(r => [r.name, r.text]), cases.work_item.cells);
+  // What POST .../preview answered for the same case before anything was proposed, read as the console reads it.
+  for (const c of cases.preview) {
+    const view = M.previewView(c.body);
+    assert.deepEqual([view.state, view.status, view.reason, view.rule, view.bound, view.head], ['preview', ...c.expected]);
+    assert.ok(M.provenanceText(view.provenance).startsWith('syberlabs/admission.py:'), M.provenanceText(view.provenance));
+    assert.deepEqual(M.previewCurrent(view, {action: view.action, origin: view.origin, args: view.args}, view.head), {state: 'current'});
+  }
+  // What GET .../witness answered for a case the witness signed, with two events after the signed head.
+  const witnessed = M.witnessView(cases.witness.body, cases.witness.events);
+  const n = cases.witness.events.length;
+  assert.deepEqual([witnessed.state, witnessed.through, witnessed.unwitnessed, witnessed.moved, witnessed.checkpoint], ['witnessed', n - 2, [n - 1, n], false, true]);
+  assert.deepEqual(witnessed.entries.map(e => [e.verdict, e.tone, e.label]), [['included', 'verified', 'in the log']]);
+  // What GET /api/console answered on a server given a witness to ask for the manager role.
+  assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console: cases.console, view: witnessed }).ok, true);
+  assert.deepEqual(M.can(ME('operator', ['operator']), 'witness_request', { console: cases.console, view: witnessed }).roles, ['manager']);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -190,4 +223,222 @@ test('drafts only ever add a version', () => {
   assert.equal(M.parseInput('integer', ' 2 '), 2);
   assert.throws(() => M.parseInput('integer', '2.5'));
   assert.equal(M.parseInput('string', '2'), '2');
+});
+
+// GET /api/cases/{id}/proposals/{p}/explain bodies, shaped as syberwork/server.py _explanation returns them.
+const EXPLAINED = {
+  proposal_id: 'p1', when: 'recorded', status: 'needs_approval', reason: 'approval_required:manager', rule: 'approval.required',
+  provenance: { module: 'syberlabs/admission.py', symbol: 'approval_required', line: 300 },
+  recorded: { seq: 9, status: 'needs_approval', reason: 'approval_required:manager', phase: 'propose', rule: 'approval.required' },
+};
+
+test('the deciding rule is the one the server wrote beside the decision', () => {
+  const view = M.decidingRule(EXPLAINED);
+  assert.deepEqual([view.state, view.rule, view.seq, view.drift], ['recorded', 'approval.required', 9, null]);
+  assert.equal(M.provenanceText(view.provenance), 'syberlabs/admission.py:300 approval_required');
+});
+
+test('a re-derivation that disagrees is shown as drift, never as the deciding rule', () => {
+  const view = M.decidingRule({ ...EXPLAINED, status: 'denied', reason: 'amount_exceeds_limit', rule: 'limits.amount' });
+  assert.equal(view.state, 'recorded');
+  assert.equal(view.rule, 'approval.required');
+  assert.equal(view.provenance, null, 'provenance belongs to the re-derived rule, so it is not attached to the written one');
+  assert.equal(view.drift, 'limits.amount (denied · amount_exceeds_limit)');
+});
+
+test('an older decision without a written rule uses the re-derived rule only when it reproduces the outcome', () => {
+  const older = { ...EXPLAINED, recorded: { ...EXPLAINED.recorded, rule: null } };
+  const view = M.decidingRule(older);
+  assert.deepEqual([view.state, view.rule], ['rederived', 'approval.required']);
+  const moved = M.decidingRule({ ...older, status: 'allowed', reason: 'all_checks_passed', rule: 'admission.passed' });
+  assert.equal(moved.state, 'unknown');
+  assert.equal(moved.rule, undefined);
+});
+
+test('a missing, malformed or wrong-kind answer is unknown rather than guessed', () => {
+  for (const body of [null, undefined, {}, 'limits.amount', { ...EXPLAINED, when: 'now' }, { ...EXPLAINED, recorded: null },
+    { ...EXPLAINED, rule: '', recorded: { ...EXPLAINED.recorded, rule: '' } }, { ...EXPLAINED, rule: 7, recorded: { ...EXPLAINED.recorded, rule: ['x'] } }]) {
+    const view = M.decidingRule(body);
+    assert.equal(view.state, 'unknown', JSON.stringify(body));
+    assert.equal(view.rule, undefined);
+  }
+  assert.equal(M.admissionNow(EXPLAINED).state, 'unknown', 'a recorded answer is not a forecast of now');
+  assert.equal(M.admissionNow({ ...EXPLAINED, when: 'now', rule: null }).state, 'unknown');
+  const now = M.admissionNow({ ...EXPLAINED, when: 'now', status: 'allowed', reason: 'all_checks_passed', rule: 'admission.passed' });
+  assert.deepEqual([now.state, now.rule, now.status], ['now', 'admission.passed', 'allowed']);
+});
+
+test('provenance text omits a withheld module', () => {
+  assert.equal(M.provenanceText({ module: null, symbol: 'custom_rule', line: 4 }), 'custom_rule');
+  assert.equal(M.provenanceText(null), '');
+});
+
+test('policy bodies are offered to admin or manager credentials without an automation role', () => {
+  assert.equal(M.policyReader(ME('manager', ['manager'])), true);
+  assert.equal(M.policyReader(ME('admin', ['admin', 'operator'])), true);
+  for (const roles of [['operator'], ['operator', 'compiled'], ['operator', 'model'], ['manager', 'model'], ['observer'], []]) {
+    assert.equal(M.policyReader(ME('x', roles)), false, roles.join(','));
+  }
+});
+
+test('a refresh names the source read role it needs, or says the source is not installed', () => {
+  const op = ME('operator', ['operator']);
+  const mgr = ME('manager', ['manager']);
+  assert.equal(M.can(op, 'refresh', { source: 'supplier', sourceRoles: ['operator'] }).ok, true);
+  const denied = M.can(mgr, 'refresh', { source: 'supplier', sourceRoles: ['operator'] });
+  assert.deepEqual([denied.ok, denied.reason, denied.roles], [false, 'source read role required: operator', ['operator']]);
+  const missing = M.can(op, 'refresh', { source: 'crm', sourceRoles: null, sourceMissing: true });
+  assert.deepEqual([missing.ok, missing.reason], [false, 'source "crm" is not installed']);
+  assert.equal(M.can(op, 'refresh', {}).note, 'the source read role is checked by the server');
+});
+
+test('event numbers collapse into runs', () => {
+  assert.equal(M.seqRanges([5, 1, 2, 3, 7, 8, 3]), '#1–#3, #5, #7–#8');
+  assert.equal(M.seqRanges([]), '');
+});
+
+test('side records line up with events without being checked here', () => {
+  const events = history(['case_created', {}], ['proposed', { action: 'issue_order' }], ['decision', { status: 'denied', reason: 'amount_required' }],
+    ['observed', { key: 'k' }], ['decision', { status: 'allowed', reason: 'all_checks_passed' }]);
+  // #1 has no row (written before the side table, or absent); #4 has no digest; #5 has no rule; #9 is newer than this read.
+  const rows = [{ seq: 2, jcs: 'h2', rule: null }, { seq: 3, jcs: 'other', rule: 'limits.amount' }, { seq: 4, jcs: null, rule: null },
+    { seq: 5, jcs: 'h5', rule: '' }, { seq: 9, jcs: 'h9', rule: null }, { seq: 'x' }, null];
+  const v = M.sideRecords(events, rows);
+  assert.deepEqual([v.state, v.covered, v.total, v.bare, v.noJcs, v.differs, v.decisions, v.ruled, v.newer],
+    ['read', 4, 5, [1], [4], [3], 2, 1, 1]);
+  assert.deepEqual(v.bySeq.get(2), { seq: 2, kind: 'proposed', present: true, jcs: 'h2', rule: null, sameAsHash: true });
+  assert.equal(v.bySeq.get(3).rule, 'limits.amount');
+  assert.equal(v.bySeq.get(5).rule, null, 'an empty rule is no rule');
+  for (const bad of [undefined, null, {}, 'rows']) assert.equal(M.sideRecords(events, bad).state, 'unknown');
+});
+
+test('a work item keeps unknown as unknown and maps each basis to event numbers', () => {
+  const events = history(['case_created', {}], ['proposed', { action: 'a' }]);
+  const item = { thread: 'c1', cost_basis: 'none', lane: null, pull_request: null, cancelled: false, opened: { value: false },
+    cost: { value: 'unknown', basis: [], note: 'no model call crossed the host meter' },
+    turns: { value: 3, basis: ['h2', 'h7'], note: 'declared' },
+    delivered: { value: false, basis: [], note: 'no pull request opened' },
+    human_interventions: { value: 1, basis: ['h2'], note: 'acts by people' } };
+  const v = M.workItemRows({ items: [{ thread: 'other' }, item] }, events, 'c1');
+  assert.equal(v.state, 'read');
+  const row = name => v.rows.find(r => r.name === name);
+  assert.deepEqual([row('cost').known, row('cost').text, row('cost').unit], [false, 'unknown', '$']);
+  assert.deepEqual([row('turns').text, row('turns').basis, row('turns').unmatched], ['3', [2], 1]);
+  assert.deepEqual([row('delivered').known, row('delivered').text], [true, 'no']);
+  assert.deepEqual([row('agent_time').known, row('agent_time').note], [false, 'not returned'], 'a metric the server left out is unknown');
+  assert.equal(M.workItemRows({ items: [item] }, events, 'c1').rows.length, M.WORK_METRICS.length);
+  assert.equal(M.workItemRows({ items: [{ ...item, cost: { value: 1.5, basis: [] } }] }, events, 'c1').rows[0].text, '$1.5000');
+  assert.equal(M.workItemRows({ items: [] }, events, 'c1').state, 'unknown');
+  assert.equal(M.workItemRows(null, events, 'c1').state, 'unknown');
+});
+
+const PREVIEW = { status: 'needs_approval', reason: 'approval_required:manager', rule: 'approval.required',
+  provenance: { module: 'syberlabs/admission.py', symbol: 'approval_required', line: 371 }, action: 'issue_order',
+  args: { part_number: 'P-104', amount: 10 }, bound: true, origin: 'human', policy_version: 1, head: { seq: 7, hash: 'h7' }, written: false };
+
+test('an admission preview is read as the server gave it', () => {
+  const view = M.previewView(PREVIEW);
+  assert.deepEqual([view.state, view.status, view.reason, view.rule, view.bound, view.head, view.policy], ['preview', 'needs_approval', 'approval_required:manager', 'approval.required', true, 7, 1]);
+  assert.equal(M.provenanceText(view.provenance), 'syberlabs/admission.py:371 approval_required');
+  assert.equal(M.previewView({ ...PREVIEW, bound: 'yes' }).bound, false);
+});
+
+test('a preview of another shape, or one that says it was written, is unknown', () => {
+  for (const body of [null, 'denied', [], {}, { ...PREVIEW, written: true }, { ...PREVIEW, written: undefined }, { ...PREVIEW, rule: '' },
+    { ...PREVIEW, rule: null }, { ...PREVIEW, status: 1 }, { ...PREVIEW, reason: null }, { ...PREVIEW, action: 3 }]) {
+    assert.equal(M.previewView(body).state, 'unknown', JSON.stringify(body));
+  }
+  const { args: _dropped, ...noArgs } = PREVIEW;
+  assert.equal(M.previewView(noArgs).state, 'unknown');
+  // Arguments that are not an object are the server's answer (proposal.shape), shown as given.
+  for (const args of [[], null, 'x', 1]) {
+    const view = M.previewView({ ...PREVIEW, status: 'denied', reason: 'invalid_proposal_shape', rule: 'proposal.shape', args, bound: false });
+    assert.deepEqual([view.state, view.rule], ['preview', 'proposal.shape'], JSON.stringify(args));
+    assert.equal(M.previewCurrent(view, { action: 'issue_order', origin: 'human', args }, 7).state, 'current');
+  }
+  assert.deepEqual(M.previewCurrent(M.previewView(null), {}, 1), { state: 'none' });
+  assert.deepEqual(M.previewCurrent(null, {}, 1), { state: 'none' });
+});
+
+test('a preview is out of date once the case or the form moves', () => {
+  const view = M.previewView(PREVIEW);
+  const draft = { action: 'issue_order', origin: 'human', args: { amount: 10, part_number: 'P-104' } };
+  assert.deepEqual(M.previewCurrent(view, draft, 7), { state: 'current' }, 'key order does not matter');
+  const moved = M.previewCurrent(view, draft, 9);
+  assert.equal(moved.state, 'case_moved');
+  assert.match(moved.text, /#7 → #9/);
+  for (const changed of [{ ...draft, action: 'record_review' }, { ...draft, origin: 'compiled' }, { ...draft, args: { ...draft.args, amount: 11 } },
+    { ...draft, args: { part_number: 'P-104' } }, { ...draft, args: undefined }, { ...draft, args: { ...draft.args, amount: '10' } }, null]) {
+    assert.equal(M.previewCurrent(view, changed, 7).state, 'changed', JSON.stringify(changed));
+  }
+  const nested = M.previewView({ ...PREVIEW, args: { quote: { id: 'Q-7', price: 10 } } });
+  assert.equal(M.previewCurrent(nested, { ...draft, args: { quote: { price: 10, id: 'Q-7' } } }, 7).state, 'current');
+  assert.equal(M.previewCurrent(nested, { ...draft, args: { quote: { price: 10, id: 'Q-8' } } }, 7).state, 'changed');
+});
+
+const WITNESS = (entries, extra = {}) => ({ case_id: 'c', configured: true, count: 4, head: { seq: 4, hash: 'h4' }, public_key: 'ab'.repeat(32),
+  checkpoint: true, entries, witnessed_through: null, note: 'read', ...extra });
+const FOUR = () => history(['case_opened', {}], ['observed', {}], ['proposal', {}], ['decision', {}]);
+
+test('a signed head witnesses the events it counts, never the ones after it', () => {
+  const view = M.witnessView(WITNESS([{ index: 3, count: 2, head: 'h2', verdict: 'included' }, { index: 9, count: 3, head: 'h3', verdict: 'not_included' }]), FOUR());
+  assert.deepEqual([view.state, view.through, view.unwitnessed, view.moved], ['witnessed', 2, [3, 4], false]);
+  assert.deepEqual(view.entries.map(e => [e.index, e.tone, e.label]), [[3, 'verified', 'in the log'], [9, 'pending', 'not covered now']]);
+  const none = M.witnessView(WITNESS([], { checkpoint: false }), FOUR());
+  assert.deepEqual([none.state, none.through, none.unwitnessed, none.checkpoint], ['none', null, [1, 2, 3, 4], false]);
+  assert.equal(M.witnessView(WITNESS([{ index: 0, count: 0, head: '0'.repeat(64), verdict: 'included' }]), FOUR()).state, 'none', 'a head over no events witnesses nothing');
+  assert.equal(M.witnessView(WITNESS([], { count: 5 }), FOUR()).moved, true);
+  // The server read a sixth event this page does not hold: its head is not drawn as witnessing what is shown.
+  const ahead = M.witnessView(WITNESS([{ index: 0, count: 6, head: 'h6', verdict: 'included' }], { count: 6 }), FOUR());
+  assert.deepEqual([ahead.state, ahead.through, ahead.moved], ['none', null, true]);
+});
+
+test('a head this history does not have outranks a witnessed one', () => {
+  for (const verdict of ['head_differs', 'beyond_history', 'chain_broken']) {
+    const view = M.witnessView(WITNESS([{ index: 0, count: 4, head: 'h4', verdict: 'included' }, { index: 1, count: 4, head: 'x', verdict }]), FOUR());
+    assert.deepEqual([view.state, view.through, view.conflicts.map(e => e.tone)], ['conflict', 4, ['denied']], verdict);
+  }
+  const unsigned = M.witnessView(WITNESS([{ index: 0, count: null, head: null, verdict: 'bad_signature' }, { index: 1, count: null, head: null, verdict: 'malformed' }]), FOUR());
+  assert.deepEqual([unsigned.state, unsigned.entries.map(e => e.tone)], ['none', ['unverified', 'unknown']]);
+});
+
+test('a witness answer of another shape, or one that disagrees with this page, is unknown', () => {
+  for (const body of [null, [], {}, { configured: 'yes' }, WITNESS(undefined), WITNESS([], { count: '4' })]) {
+    assert.equal(M.witnessView(body, FOUR()).state, 'unknown', JSON.stringify(body));
+  }
+  const disagree = M.witnessView(WITNESS([{ index: 0, count: 2, head: 'other', verdict: 'included' }]), FOUR());
+  assert.equal(disagree.state, 'unknown');
+  assert.match(disagree.text, /another hash at #2/);
+  const odd = M.witnessView(WITNESS([{ index: 0, count: 2, head: 'h2', verdict: 'trusted' }, { index: 1, count: null, head: 'h2', verdict: 'included' }, { index: 'x', verdict: 'included' }]), FOUR());
+  assert.deepEqual([odd.state, odd.entries.map(e => e.verdict)], ['none', ['unknown', 'unknown']]);
+  const off = M.witnessView({ case_id: 'c', configured: false, count: 4, head: null, note: 'serve has no witness log' }, FOUR());
+  assert.deepEqual(off, { state: 'off', text: 'serve has no witness log' });
+});
+
+test('asking the witness is for the role serve names, and not for a head already covered or a conflicting log', () => {
+  const console = { witness: { log: true, request_role: 'manager' } };
+  const none = M.witnessView(WITNESS([]), FOUR());
+  assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console, view: none }).ok, true);
+  const operator = M.can(ME('operator', ['operator']), 'witness_request', { console, view: none });
+  assert.deepEqual([operator.ok, operator.reason, operator.roles], [false, 'manager role required to ask the witness', ['manager']]);
+  const agent = M.can(ME('agent', ['manager', 'model']), 'witness_request', { console, view: none });
+  assert.deepEqual([agent.ok, agent.reason], [false, 'an automation credential cannot ask the witness']);
+  // Not configured: no role is named, so no identity is suggested.
+  for (const settings of [null, {}, { witness: { log: true, request_role: null } }, { witness: { log: false, request_role: '' } }]) {
+    const off = M.can(ME('manager', ['manager']), 'witness_request', { console: settings, view: none });
+    assert.deepEqual([off.ok, off.roles], [false, []], JSON.stringify(settings));
+    assert.match(off.reason, /SYBERWORK_WITNESS_PORT and SYBERWORK_WITNESS_ROLE/);
+  }
+  // A head covering every event shown: the server would refuse already_witnessed.
+  const covered = M.witnessView(WITNESS([{ index: 0, count: 4, head: 'h4', verdict: 'included' }]), FOUR());
+  assert.match(M.can(ME('manager', ['manager']), 'witness_request', { console, view: covered }).reason, /already covers #1–#4/);
+  // Covered through #2 of four, or the server read more events than shown: asking is allowed and the server judges again.
+  const partly = M.witnessView(WITNESS([{ index: 0, count: 2, head: 'h2', verdict: 'included' }]), FOUR());
+  assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console, view: partly }).ok, true);
+  const moved = M.witnessView(WITNESS([{ index: 0, count: 4, head: 'h4', verdict: 'included' }], { count: 5 }), FOUR());
+  assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console, view: moved }).ok, true);
+  const conflict = M.witnessView(WITNESS([{ index: 0, count: 4, head: 'x', verdict: 'head_differs' }]), FOUR());
+  assert.match(M.can(ME('manager', ['manager']), 'witness_request', { console, view: conflict }).reason, /does not have/);
+  // An unreadable answer: the server decides.
+  assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console, view: null }).ok, true);
 });

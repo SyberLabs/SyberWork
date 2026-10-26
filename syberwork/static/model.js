@@ -148,6 +148,15 @@ export function missingApprovals(contract, policy, proposal) {
 }
 
 const has = (me, role) => !!me && (me.roles || []).includes(role);
+
+// syberwork/server.py POLICY_READERS and syberlabs/evolution.py AUTOMATION_ROLES: GET /api/policies answers
+// a credential that holds a reader role and no automation role. The console only uses this to name the role
+// and suggest a saved identity; the server's 403 is what decides.
+export const POLICY_READERS = ['admin', 'manager'];
+export const AUTOMATION_ROLES = ['model', 'compiled', 'search'];
+export function policyReader(me) {
+  return POLICY_READERS.some(r => has(me, r)) && !AUTOMATION_ROLES.some(r => has(me, r));
+}
 const allow = () => ({ok: true});
 const deny = (reason, roles = [], actor = null, exclude = null) => ({ok: false, reason, roles, actor, exclude});
 
@@ -163,6 +172,7 @@ export function can(me, op, ctx = {}) {
       return (me.sources || []).includes(ctx.source) ? allow()
         : deny(`this credential may not attest source "${ctx.source || '…'}"`);
     case 'refresh': {
+      if (ctx.sourceMissing) return deny(`source "${ctx.source}" is not installed`);
       const roles = ctx.sourceRoles || null;
       if (!roles) return {ok: true, note: 'the source read role is checked by the server'};
       return roles.some(r => has(me, r)) ? allow() : deny('source read role required: ' + roles.join(' or '), roles);
@@ -235,6 +245,17 @@ export function can(me, op, ctx = {}) {
         : deny('an evaluator credential without model, compiled or search roles is required', ['evaluator']);
     case 'publish':
       return has(me, 'admin') ? allow() : deny('admin role required', ['admin']);
+    case 'witness_request': {
+      // syberwork/server.py POST /api/cases/{id}/witness and Work.request_witness. The role is serve's configuration;
+      // `view` is M.witnessView of the last read, and the server judges the log again before it asks.
+      const role = ctx.console && ctx.console.witness ? ctx.console.witness.request_role : null;
+      const view = ctx.view || {};
+      if (typeof role !== 'string' || !role) return deny('serve was given no witness to ask: SYBERWORK_WITNESS_PORT and SYBERWORK_WITNESS_ROLE, beside the log and its key');
+      if (view.state === 'conflict') return deny('the log holds a head this history does not have; the server will not ask the witness to sign this one');
+      if (view.state === 'witnessed' && !view.moved && view.through === view.shown) return deny('a signed head in the log already covers #1–#' + view.through);
+      if (AUTOMATION_ROLES.some(r => has(me, r))) return deny('an automation credential cannot ask the witness', [role]);
+      return has(me, role) ? allow() : deny(role + ' role required to ask the witness', [role]);
+    }
     default:
       return allow();
   }
@@ -390,4 +411,187 @@ export function nextVersion(doc, published) {
   const top = Math.max(doc.version, ...published.map(p => p.version));
   draft.version = top + 1;
   return draft;
+}
+
+// The deciding rule of a proposal's original decision, from GET /api/cases/{id}/proposals/{p}/explain
+// ?when=recorded (syberwork/server.py, Work.explain_admission and Work.recorded_decision). The rule
+// shown is the one the server wrote beside the decision. A rule re-derived today stands in only when
+// the server wrote none (a row older than the side table) and the re-derivation reproduces the
+// recorded status and reason. Anything else is reported as unknown, never guessed.
+const named = rule => typeof rule === 'string' && rule !== '';
+export function decidingRule(explained) {
+  if (!explained || typeof explained !== 'object' || explained.when !== 'recorded') return {state: 'unknown', text: 'not returned by the server'};
+  const recorded = explained.recorded;
+  if (!recorded || typeof recorded !== 'object') return {state: 'unknown', text: 'the server holds no decision for this proposal'};
+  const reproduced = named(explained.rule) && explained.status === recorded.status && explained.reason === recorded.reason;
+  if (named(recorded.rule)) {
+    const same = reproduced && explained.rule === recorded.rule;
+    return {state: 'recorded', rule: recorded.rule, seq: recorded.seq, provenance: same ? explained.provenance : null,
+      drift: same ? null : named(explained.rule) ? `${explained.rule} (${explained.status} · ${explained.reason})` : 'nothing'};
+  }
+  if (reproduced) return {state: 'rederived', rule: explained.rule, seq: recorded.seq, provenance: explained.provenance};
+  return {state: 'unknown', seq: recorded.seq, text: 'no rule was written with this decision, and re-deriving it does not reproduce the recorded outcome'};
+}
+
+// Admission as commit would see it now (?when=now). The server's answer, shown as given.
+export function admissionNow(explained) {
+  if (!explained || typeof explained !== 'object' || explained.when !== 'now' || !named(explained.rule)) return {state: 'unknown', text: 'not returned by the server'};
+  return {state: 'now', rule: explained.rule, status: explained.status, reason: explained.reason, provenance: explained.provenance};
+}
+
+// What admission answers now for a proposal not yet made (POST /api/cases/{id}/preview, Work.preview_admission).
+// Nothing was recorded and nothing is reserved: proposing admits again and writes its own decision, which can
+// differ once the case, the policy in force, the clock or another case's reservation moves. The arguments are
+// whatever was admitted, an object or not (a non-object meets proposal.shape). An answer of another shape is
+// unknown, never guessed.
+export function previewView(body) {
+  if (!body || typeof body !== 'object' || body.written !== false || !named(body.rule) || typeof body.status !== 'string' ||
+      typeof body.reason !== 'string' || typeof body.action !== 'string' || !('args' in body)) {
+    return {state: 'unknown', text: 'not returned by the server'};
+  }
+  const head = body.head && typeof body.head === 'object' && Number.isInteger(body.head.seq) ? body.head.seq : 0;
+  return {state: 'preview', status: body.status, reason: body.reason, rule: body.rule, provenance: body.provenance,
+    action: body.action, args: body.args, origin: typeof body.origin === 'string' ? body.origin : 'human', bound: body.bound === true,
+    head, policy: Number.isInteger(body.policy_version) ? body.policy_version : null};
+}
+
+// The same JSON value whatever the key order.
+function stable(value) {
+  if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + stable(value[k])).join(',') + '}';
+  return JSON.stringify(value);
+}
+
+// Whether a preview still describes what the form would send now: the same action, origin and arguments, against
+// the case head it was read at. `draft.args` is the parsed form value, or undefined when it does not parse. The
+// clock and the policy can still move without a new event, which is why the console also shows when it was read.
+export function previewCurrent(view, draft, headSeq) {
+  if (!view || view.state !== 'preview') return {state: 'none'};
+  if (view.head !== headSeq) return {state: 'case_moved', text: `the case moved since this check (#${view.head} → #${headSeq}); check again`};
+  if (!draft || view.action !== draft.action || view.origin !== draft.origin || draft.args === undefined || stable(view.args) !== stable(draft.args)) {
+    return {state: 'changed', text: 'the form changed since this check; check again'};
+  }
+  return {state: 'current'};
+}
+
+// "syberlabs/admission.py:185 limits_amount". The server withholds an absolute module path.
+export function provenanceText(provenance) {
+  if (!provenance || typeof provenance !== 'object') return '';
+  const where = typeof provenance.module === 'string' ? provenance.module + (Number.isInteger(provenance.line) ? ':' + provenance.line : '') : '';
+  return [where, typeof provenance.symbol === 'string' ? provenance.symbol : ''].filter(Boolean).join(' ');
+}
+
+// "#1–#4, #7": a sorted list of event numbers, runs collapsed.
+export function seqRanges(seqs) {
+  const sorted = [...new Set(seqs)].filter(Number.isInteger).sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    out.push(j > i ? `#${sorted[i]}–#${sorted[j]}` : `#${sorted[i]}`);
+    i = j;
+  }
+  return out.join(', ');
+}
+
+// The JCS side records of a case (GET /api/cases/{id}/side, Work.side_channel) laid against its events. Each
+// row holds the RFC 8785 SHA-256 of the fields the chain hashes and, for a decision, the deciding rule id;
+// neither is inside the event hash. This only lines them up: the server's verify route is what checks each
+// stored digest against its event, and it cannot notice a row that is absent, so an event without a row is
+// reported as such and never called legacy for certain. Verify skips a row whose digest is null (a value RFC 8785
+// cannot encode, or a changed row), and the rule id is in no hash, so neither is presented as checked.
+export function sideRecords(events, rows) {
+  if (!Array.isArray(rows)) return {state: 'unknown', text: 'not returned by the server'};
+  const bySeq = new Map();
+  for (const row of rows) if (row && typeof row === 'object' && Number.isInteger(row.seq)) bySeq.set(row.seq, row);
+  const known = new Set(events.map(e => e.seq));
+  const entries = events.map(e => {
+    const row = bySeq.get(e.seq);
+    if (!row) return {seq: e.seq, kind: e.kind, present: false};
+    const jcs = typeof row.jcs === 'string' && row.jcs ? row.jcs : null;
+    return {seq: e.seq, kind: e.kind, present: true, jcs, rule: named(row.rule) ? row.rule : null, sameAsHash: jcs !== null && jcs === e.hash};
+  });
+  const decisions = entries.filter(r => r.kind === 'decision');
+  return {
+    state: 'read', entries, bySeq: new Map(entries.map(r => [r.seq, r])),
+    covered: entries.filter(r => r.present).length, total: entries.length,
+    bare: entries.filter(r => !r.present).map(r => r.seq),
+    noJcs: entries.filter(r => r.present && r.jcs === null).map(r => r.seq),
+    differs: entries.filter(r => r.jcs !== null && r.present && !r.sameAsHash).map(r => r.seq),
+    decisions: decisions.length, ruled: decisions.filter(r => r.rule).length,
+    // Rows for events this case read does not hold (appended since, or a row with no event): not drawn, only counted.
+    newer: [...bySeq.keys()].filter(s => !known.has(s)).length,
+  };
+}
+
+// syberlabs/metrics.py METRICS, in the server's order, with the unit docs/METRICS.md gives each.
+export const WORK_METRICS = ['cost', 'turns', 'agent_time', 'fix_rounds', 'web_lookups', 'githits_lookups', 'delivered', 'review_rejections', 'human_interventions'];
+const METRIC_UNIT = {cost: '$', turns: 'calls', agent_time: 'hours'};
+
+// One case's work item from GET /metrics/work_items/{id} (Work.work_items, docs/METRICS.md). A value is shown
+// as syberlabs/metrics.py _cell writes it: "unknown" stays unknown, a boolean is yes or no, cost has four
+// decimals. A whole-number float (2.0) reaches the page as 2, since JSON does not keep the difference. Each number's basis (event hashes) is mapped to the event numbers this case read holds.
+export function workItemRows(body, events, caseId) {
+  const items = body && Array.isArray(body.items) ? body.items : null;
+  if (!items) return {state: 'unknown', text: 'not returned by the server'};
+  const item = items.find(i => i && i.thread === caseId);
+  if (!item) return {state: 'unknown', text: 'the server returned no work item for this case'};
+  const seqOf = new Map(events.map(e => [e.hash, e.seq]));
+  const rows = WORK_METRICS.map(name => {
+    const m = item[name] && typeof item[name] === 'object' ? item[name] : {value: 'unknown', basis: [], note: 'not returned'};
+    const unknown = m.value === 'unknown' || m.value === null || m.value === undefined;
+    let text = 'unknown';
+    if (!unknown) {
+      if (typeof m.value === 'boolean') text = m.value ? 'yes' : 'no';
+      else if (name === 'cost' && typeof m.value === 'number') text = '$' + m.value.toFixed(4);
+      else text = String(m.value);
+    }
+    const basis = Array.isArray(m.basis) ? m.basis : [];
+    const seqs = basis.map(hash => seqOf.get(hash)).filter(Number.isInteger);
+    return {name, unit: METRIC_UNIT[name] || '', known: !unknown, text, note: typeof m.note === 'string' ? m.note : '',
+      basis: seqs, unmatched: basis.length - seqs.length};
+  });
+  return {state: 'read', rows, costBasis: item.cost_basis || 'none', lane: item.lane || null,
+    pullRequest: item.pull_request || null, opened: item.opened && item.opened.value === true, cancelled: item.cancelled === true};
+}
+
+// What the witness's transparency log holds for a case (GET /api/cases/{id}/witness, Work.witness_status), as the
+// server judged each signed chain head against the events. A signed head covers events #1–#count, so it still holds
+// once later events arrive; those later events are not witnessed. The console checks no signature. A verdict it
+// does not know is unknown, and a head that differs from this history, or one beyond it, outranks any witnessed one.
+export const WITNESS_VERDICT = {
+  included: ['verified', 'in the log', 'the signed head matches this history and the log\'s newest signed checkpoint covers it'],
+  not_included: ['pending', 'not covered now', 'signed for this history, but the log\'s newest signed checkpoint does not cover the log as read'],
+  head_differs: ['denied', 'head differs', 'the witness signed another hash for this event: this history is not the one witnessed'],
+  chain_broken: ['denied', 'chain broken', 'the head matches the hash stored on this event, but the events before it no longer hash to it: this history was changed'],
+  beyond_history: ['denied', 'beyond this history', 'the witness signed more events than this case holds: events were removed, or this is another database'],
+  bad_signature: ['unverified', 'not signed by this key', 'names this case but is not signed by the configured witness key'],
+  malformed: ['unknown', 'unreadable', 'signed by the configured key, but not a chain head this server can read'],
+};
+// Verdicts that carry no event count of their own.
+const COUNTLESS = new Set(['bad_signature', 'malformed']);
+export function witnessView(body, events) {
+  const unknown = text => ({state: 'unknown', text});
+  if (!body || typeof body !== 'object' || typeof body.configured !== 'boolean') return unknown('not returned by the server');
+  if (!body.configured) return {state: 'off', text: typeof body.note === 'string' ? body.note : 'no witness log is configured'};
+  if (!Array.isArray(body.entries) || !Number.isInteger(body.count)) return unknown('not returned by the server');
+  const hashAt = new Map(events.map(e => [e.seq, e.hash]));
+  const entries = body.entries.filter(e => e && typeof e === 'object' && Number.isInteger(e.index)).map(e => {
+    const count = Number.isInteger(e.count) && e.count >= 0 ? e.count : null;
+    const known = Object.hasOwn(WITNESS_VERDICT, e.verdict) && (count !== null || COUNTLESS.has(e.verdict));
+    const [tone, label, text] = known ? WITNESS_VERDICT[e.verdict] : ['unknown', 'unknown', 'a verdict this console does not know'];
+    return {index: e.index, count, head: typeof e.head === 'string' ? e.head : null, verdict: known ? e.verdict : 'unknown', tone, label, text};
+  });
+  // The server judged against the events it read. An entry it calls included must name the hash this page shows at
+  // that event; otherwise the two reads disagree and the console names neither as witnessed.
+  const disagree = entries.filter(e => e.verdict === 'included' && hashAt.has(e.count) && hashAt.get(e.count) !== e.head);
+  if (disagree.length) return unknown(`the answer names another hash at #${disagree[0].count} than this page shows; press r`);
+  // A head over no events witnesses nothing, and one past the events this page holds is not drawn as witnessing them.
+  const included = entries.filter(e => e.verdict === 'included' && e.count > 0 && hashAt.has(e.count));
+  const through = included.length ? Math.max(...included.map(e => e.count)) : null;
+  const conflicts = entries.filter(e => ['head_differs', 'beyond_history', 'chain_broken'].includes(e.verdict));
+  return {state: conflicts.length ? 'conflict' : through !== null ? 'witnessed' : 'none', entries, through, conflicts,
+    unwitnessed: events.filter(e => through === null || e.seq > through).map(e => e.seq), count: body.count,
+    shown: events.length, moved: body.count !== events.length, checkpoint: body.checkpoint === true,
+    publicKey: typeof body.public_key === 'string' ? body.public_key : null};
 }

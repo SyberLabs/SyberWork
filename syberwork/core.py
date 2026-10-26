@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import threading
@@ -19,6 +20,7 @@ from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
 from syberlabs.clock import stamp
 from syberlabs.contracts import check_case_inputs, compile_path, prepare_contract
+from syberlabs.dsse import CHAIN_HEAD_TYPE, head_payload, verified_payload
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
@@ -48,6 +50,8 @@ __all__ = ["METRIC_KEYS", "Rejected", "Work", "canonical", "digest", "trusted_or
 # ``GET /metrics/<key>`` (plus ``uptime_seconds``, which is the process's, not the store's).
 METRIC_KEYS = ("cases_open", "cases_total", "proposals_admitted_total", "proposals_denied_total", "effects_pending",
                "effects_settled_applied_total", "effects_settled_not_applied_total", "queue_depth")
+# Witness verdicts that mean the log holds a head this history does not have (``Work.witness_status``).
+WITNESS_CONFLICTS = ("head_differs", "beyond_history", "chain_broken")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -58,6 +62,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 HTTP = urllib.request.build_opener(NoRedirect)
+
+
+class StatusNotAuthoritative(Exception):
+    """A status lookup answered with a 2xx other than 200: 202 Accepted, 203 Non-Authoritative, 206 Partial."""
 
 
 def _destination_code(exc: BaseException) -> str:
@@ -71,6 +79,32 @@ def _destination_code(exc: BaseException) -> str:
     return "destination_error"
 
 
+def _decoded(payload) -> bytes | None:
+    try:
+        return base64.standard_b64decode(payload) if isinstance(payload, str) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _head_document(payload: bytes | None) -> dict | None:
+    """The ``{case_id, count, head}`` a chain-head payload names, or None when it names none."""
+    if payload is None:
+        return None
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _linked(events: list) -> bool:
+    """True when each event's hash is its own digest and names the one before: the chain a witness signs."""
+    try:
+        return verify_events(events)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 class Work:
     def __init__(self, database: str | Path, *, effects: str = "inline", trace=None):
         if effects not in ("inline", "worker"):
@@ -80,6 +114,7 @@ class Work:
         self.trace = trace
         self.metrics = {"admission": 0, "effect_claim": 0, "effect_settlement": 0, "effect_unknown": 0, "reconciliation": 0}
         self._lock = threading.Lock()
+        self._witness_lock = threading.Lock()
         self._db = open_store(database)
 
     def close(self) -> None:
@@ -670,6 +705,8 @@ class Work:
         request = urllib.request.Request(target, headers=headers)
         try:
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
+                if getattr(response, "status", None) != 200:
+                    raise StatusNotAuthoritative(getattr(response, "status", None))
                 raw = response.read(65537)
                 if len(raw) > 65536:
                     raise ValueError("status response exceeds 64 KB")
@@ -681,6 +718,8 @@ class Work:
             status, reason, record = "unverified", "destination_record_ambiguous", None
         except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
             status, reason, record = "pending", "status_unavailable", None
+        except StatusNotAuthoritative:
+            status, reason, record = "pending", "status_not_authoritative", None
         else:
             matched = False
             if config.get("kind") == "economic_http":
@@ -892,6 +931,106 @@ class Work:
             events = self._events(db, case_id)
         return client.submit(events)
 
+    def witness_status(self, case_id: str, log) -> dict:
+        """What a read-only transparency log says about this case's history. Appends nothing, signs nothing.
+
+        ``log`` is ``TransparencyLog.open_readonly`` under the witness's public key, or None when none is
+        configured. Each leaf naming this case is judged against the events as they are now. A signed head
+        covers the first ``count`` events, so it stays ``included`` as later events arrive. ``head_differs``
+        (event ``count`` has another hash) and ``beyond_history`` (the witness signed more events than the case
+        holds) mean this history is not the one that was witnessed, and so does ``chain_broken``: the head
+        matches the hash stored on event ``count``, but events #1 to ``count`` no longer hash to it.
+        ``bad_signature`` is a leaf the configured key did not sign, ``malformed`` one it signed that is not a
+        chain head, and ``not_included`` a matching head the log's newest signed checkpoint does not cover.
+        ``witnessed_through`` is the largest ``included`` count above zero, and None while any leaf conflicts.
+        """
+        with self.tx() as db:
+            self._case(db, case_id)
+            events = self._events(db, case_id)
+        return self._witness_judgement(case_id, events, log)
+
+    @staticmethod
+    def _witness_judgement(case_id: str, events: list, log) -> dict:
+        """``witness_status`` for events already read: each leaf naming the case, judged against exactly these events."""
+        head = {"seq": events[-1]["seq"], "hash": events[-1]["hash"]} if events else None
+        if log is None:
+            return {"case_id": case_id, "configured": False, "count": len(events), "head": head,
+                    "note": "serve has no witness log; set SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC to read one"}
+        leaves, covered = log.entries()
+        linked = {}
+        judged = []
+        for index, envelope in leaves:
+            # The unsigned payload only selects this case's leaves; every verdict is reached under the public key.
+            if (_head_document(_decoded(envelope.get("payload"))) or {}).get("case_id") != case_id:
+                continue
+            payload = verified_payload(envelope, log.public, CHAIN_HEAD_TYPE)
+            signed = _head_document(payload)
+            count = signed.get("count") if signed else None
+            if payload is None:
+                verdict, count, signed = "bad_signature", None, None
+            elif signed is None or type(count) is not int or count < 0 or not isinstance(signed.get("head"), str):
+                verdict, count, signed = "malformed", None, None
+            elif count > len(events):
+                verdict = "beyond_history"
+            elif payload != head_payload(case_id, events[:count]):
+                verdict = "head_differs"
+            elif not linked.setdefault(count, _linked(events[:count])):
+                verdict = "chain_broken"
+            else:
+                # The checkpoint signs the Merkle root of every leaf read with it, so it covers this one or none.
+                verdict = "included" if covered else "not_included"
+            judged.append({"index": index, "count": count, "head": signed["head"] if signed else None, "verdict": verdict})
+        conflict = any(entry["verdict"] in WITNESS_CONFLICTS for entry in judged)
+        through = None if conflict else max((entry["count"] for entry in judged if entry["verdict"] == "included" and entry["count"] > 0), default=None)
+        return {"case_id": case_id, "configured": True, "count": len(events), "head": head, "public_key": log.public.hex(),
+                "checkpoint": covered, "entries": judged, "witnessed_through": through,
+                "note": "Read from the witness's log under its public key. The witness holds the seed; this read appends nothing"}
+
+    def request_witness(self, case_id: str, client, log, actor: str, principal: str | None = None) -> dict:
+        """Ask the witness to sign this case's head, judged first against what its log already holds. Writes nothing to the case.
+
+        ``client`` is a ``WitnessClient`` on the witness's loopback port and ``log`` the read-only reader
+        ``witness_status`` takes, under the same public key. The events are read once, in one transaction: the log is
+        judged against them, ``verify`` is run on them, and exactly they are sent, so no rewrite between the check and
+        the send can be signed unchecked. ``witness_conflict``: the log holds a head this history does not have
+        (``head_differs``, ``chain_broken``, ``beyond_history``), and the witness, which checks only the links it is
+        sent, would sign the changed history beside it. ``already_witnessed``: a covered head already names every event.
+        ``invalid_chain``: this server's own ``verify`` fails. ``witness_unavailable``: nothing answered, no answer came
+        in time (the witness may still have signed), or the answer was unreadable. Requests are made one at a time, so
+        two presses cannot append the same head twice. The log does not record who asked, so each request is counted
+        and traced with its actor, principal and outcome.
+        """
+        with self._witness_lock:
+            try:
+                with self.tx() as db:
+                    self._case(db, case_id)
+                    events = self._events(db, case_id)
+                    intact = self.chain_ok(db, case_id)
+                status = self._witness_judgement(case_id, events, log)
+                conflict = next((e for e in status["entries"] if e["verdict"] in WITNESS_CONFLICTS), None)
+                if conflict:
+                    raise Rejected("witness_conflict", f"log leaf #{conflict['index']} is {conflict['verdict']}: the witness signed a head this history does not have")
+                if status["witnessed_through"] == status["count"]:
+                    raise Rejected("already_witnessed", f"a signed head in the log already covers #1 to #{status['count']}")
+                if not intact:
+                    raise Rejected("invalid_chain", "case history does not verify")
+                try:
+                    envelope = client.submit(events)
+                except TimeoutError:
+                    raise Rejected("witness_unavailable", "the witness did not answer in time; it may still have signed, so read its log again") from None
+                except OSError:
+                    raise Rejected("witness_unavailable", "the witness did not answer on its port") from None
+                except ValueError:
+                    raise Rejected("witness_unavailable", "the witness's answer was unreadable") from None
+            except Rejected as error:
+                self._emit("witness_request", case_id=case_id, actor=actor, principal=principal, status=error.code)
+                raise
+        # WitnessClient.submit returned only after the signature matched the events sent and the log's checkpoint covered it.
+        signed = _head_document(verified_payload(envelope, client.public, CHAIN_HEAD_TYPE))
+        self._emit("witness_request", case_id=case_id, actor=actor, principal=principal, status="signed", count=signed["count"], head=signed["head"])
+        return {"case_id": case_id, "count": signed["count"], "head": signed["head"], "envelope": envelope, "written": False,
+                "note": "The witness signed this head and appended it to its own log; nothing was written to the case"}
+
     def chain_ok(self, db, case_id: str) -> bool:
         """Check one case on a connection the caller already holds."""
         events = self._events(db, case_id)
@@ -934,6 +1073,13 @@ class Work:
         guard_request(action["url"])
         req = urllib.request.Request(action["url"], data=canonical(args).encode(), headers=headers, method=action.get("method", "POST"))
         with HTTP.open(req, timeout=min(30, action.get("timeout_seconds", 10))) as response:
+            # A settlement receipt counts only from a completed write; 202 Accepted and the rest stay unknown.
+            if action["kind"] == "economic_http" and response.status not in (200, 201):
+                raise ValueError("settlement receipt status is not a completed write")
+            # A plain write counts only from 200, 201 or 204. 202 Accepted has not completed, 203 is a proxy's
+            # answer, 205-226 are not write completions; each, and a missing status, leaves the effect unknown.
+            if action["kind"] == "http" and getattr(response, "status", None) not in (200, 201, 204):
+                raise Rejected("destination_not_completed", "write acknowledged without a completion status")
             raw = response.read(32768)
             if action["kind"] == "economic_http":
                 record = destination_record(raw)
@@ -1033,6 +1179,56 @@ class Work:
             elif when != "now":
                 raise Rejected("invalid_explain", "when must be now or recorded")
             return explain(self._context(contract, policy, history, proposal, now, db))
+
+    def preview_admission(self, case_id: str, action: str, args: Any, actor: str, roles: list[str], origin: str = "human",
+                          *, bind: bool = False) -> dict:
+        """Admission for a proposal not yet made, with the deciding rule. Appends nothing.
+
+        The origin is checked as ``propose`` checks it, and admission runs on the same history, policy and
+        clock ``propose`` would use, with a fresh proposal id. A proposal made at once gets this answer unless
+        the case, the policy in force, the clock or another case's reservation moves first; the answer
+        reserves nothing. ``bind`` ignores ``args`` and binds them from the contract, as ``compiled_propose`` does;
+        otherwise ``args`` is admitted as given, so a value that is not an object meets ``proposal.shape`` as it would
+        in ``propose``. Each answer is counted and traced like a decision, though no event records it.
+        """
+        if origin not in ("human", "model", "compiled"):
+            raise Rejected("invalid_origin", "origin must be human, model or compiled")
+        if origin != "human" and origin not in roles:
+            raise Rejected("origin_denied", "the actor cannot claim this proposer origin")
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+            policy = self._policy(db)
+            history = self._events(db, case_id)
+            bound = bind
+            if bound:
+                if action not in contract["actions"]:
+                    raise Rejected("action_not_in_contract", "only a contract action has argument bindings")
+                args = bind_arguments(contract, history, action)
+            proposal = {"id": str(uuid.uuid4()), "action": action, "args": args, "actor": actor, "roles": roles, "origin": origin}
+            found = explain(self._context(contract, policy, history, proposal, time.time(), db))
+            head = history[-1] if history else None
+            self._emit("admission_preview", case_id=case_id, actor=actor, action=action, status=found["status"],
+                       reason=found["reason"], rule=found["rule"])
+            return {**found, "action": action, "args": args, "bound": bound, "origin": origin,
+                    "policy_version": policy["version"], "head": {"seq": head["seq"], "hash": head["hash"]} if head else None}
+
+    def recorded_decision(self, case_id: str, proposal_id: str) -> dict | None:
+        """The proposal's first decision as stored, with the rule id written beside it.
+
+        ``rule`` comes from the side channel and is None for a decision written before that table
+        existed. None overall when the proposal has no decision. Read only.
+        """
+        with self.tx() as db:
+            self._case(db, case_id)
+            history = self._events(db, case_id)
+            self._proposal(history, proposal_id)
+            decision = next((e for e in history if e["kind"] == "decision" and e["body"].get("proposal_id") == proposal_id), None)
+            if decision is None:
+                return None
+            side = next((row for row in EventStore(db).side(case_id) if row["seq"] == decision["seq"]), None)
+            return {"seq": decision["seq"], "status": decision["body"]["status"], "reason": decision["body"]["reason"],
+                    "phase": decision["body"].get("phase", "propose"), "rule": side["rule"] if side else None}
 
     def bind_organization(self, organization: str) -> dict:
         """Bind this database to one organization. A second organization is refused."""
