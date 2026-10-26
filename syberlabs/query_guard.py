@@ -100,6 +100,9 @@ MAX_TREE_FILE_BYTES = 1024 * 1024
 LINES_ENV, CHARS_ENV = "SYBERLABS_GUARD_MAX_LINES", "SYBERLABS_GUARD_MAX_CHARS"
 MATCHER = "^(mcp__githits__.*|WebSearch|WebFetch)$"
 MATCHER_BASH = "^(mcp__githits__.*|WebSearch|WebFetch|Bash)$"  # with the GitHits launcher (claude_code githits=True)
+# With the launcher and the operator's --allow-code-tools-with-mcp: an allowed PowerShell is judged as Bash is.
+MATCHER_SHELLS = "^(mcp__githits__.*|WebSearch|WebFetch|Bash|PowerShell)$"
+SHELL_TOOLS = ("Bash", "PowerShell")  # judged by the launcher-only rule (``bash_arguments``) when matched
 PASS, UNGUARDED, ERROR = "pass", "unguarded", "guard_error"
 NOT_LAUNCHER, SHELL_SYNTAX = "not_launcher", "shell_syntax"
 RULES = ("secret", "url_credentials", "email", "too_long", "code_fence", "code_lines", "tree_line", NOT_LAUNCHER,
@@ -316,12 +319,12 @@ def _judge(text: str, *, max_lines: int, max_chars: int, tree: set[str] | frozen
 def decide(call: dict, *, max_lines: int = DEFAULT_MAX_LINES, max_chars: int = DEFAULT_MAX_CHARS,
            tree: set[str] | frozenset[str] = frozenset(), launcher: str | None = None) -> str:
     """The rule for one ``PreToolUse`` input (``tool_name``, ``tool_input``): ``pass`` or the first rule broken.
-    A ``Bash`` call must first be the GitHits ``launcher`` with plain arguments (``bash_arguments``); its arguments,
-    each and joined, are then the outbound text."""
+    A ``Bash`` or ``PowerShell`` call (``SHELL_TOOLS``) must first be the GitHits ``launcher`` with plain arguments
+    (``bash_arguments``); its arguments, each and joined, are then the outbound text."""
     name, tool_input = call.get("tool_name"), call.get("tool_input")
     if not isinstance(name, str):
         return ERROR
-    if name == "Bash":
+    if name in SHELL_TOOLS:
         if not isinstance(tool_input, dict):
             return NOT_LAUNCHER
         if tool_input.get("run_in_background"):
@@ -374,11 +377,12 @@ def hook_command(directory: Path, python: str | None = None) -> dict:
             "timeout": 30, "onFailure": "block"}
 
 
-def settings(directory: Path, python: str | None = None, bash: bool = False) -> dict:
+def settings(directory: Path, python: str | None = None, bash: bool = False, powershell: bool = False) -> dict:
     """The temporary settings document passed with ``--settings``: this hook and nothing else. ``bash`` (the GitHits
-    launcher is in use) adds ``Bash`` to the matcher, so every shell command is judged."""
-    return {"hooks": {"PreToolUse": [{"matcher": MATCHER_BASH if bash else MATCHER,
-                                      "hooks": [hook_command(directory, python)]}]}}
+    launcher is in use) adds ``Bash`` to the matcher, so every shell command is judged; ``powershell`` (with
+    ``bash``, under the operator's code-tools override) adds ``PowerShell`` too, judged by the same rule."""
+    matcher = (MATCHER_SHELLS if powershell else MATCHER_BASH) if bash else MATCHER
+    return {"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [hook_command(directory, python)]}]}}
 
 
 def file_digest(path: Path) -> str:
@@ -390,7 +394,8 @@ def _write_read_only(path: Path, text: str) -> None:
     os.chmod(path, stat.S_IREAD)  # read-only for everyone; on Windows, the read-only attribute
 
 
-def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = None, bash: bool = False) -> Path:
+def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = None, bash: bool = False,
+            powershell: bool = False) -> Path:
     """Write the guard's directory (policy, tree digests and settings, each read-only, and an empty
     ``decisions/``); returns the settings file to pass with ``--settings``. ``directory`` is the host's own,
     outside any worktree. ``hook_environment`` then gives the hook the files' digests and the MAC key."""
@@ -399,7 +404,7 @@ def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = N
     _write_read_only(directory / POLICY_FILE, json.dumps(rules))
     _write_read_only(directory / TREE_FILE, "".join(d + "\n" for d in sorted(tree)))
     path = directory / SETTINGS_FILE
-    _write_read_only(path, json.dumps(settings(directory, python, bash), indent=2))
+    _write_read_only(path, json.dumps(settings(directory, python, bash, powershell), indent=2))
     return path
 
 

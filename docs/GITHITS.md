@@ -86,8 +86,9 @@ checked for form and not judged. So `MIT OR GPL-2.0-only` and `(MIT AND GPL-3.0)
 unbalanced parenthesis, a dangling operator, a stray character, more than 64 tokens) is not admitted.
 
 - **Server side, preferred where it exists.** Of the five operations, only `example` has a license parameter
-  (`license_mode`: `strict`, `yolo`, `custom`). The client always sends `strict`. The OpenAPI document does not
-  say which licenses `strict` admits. `custom` applies an account-level policy that this API cannot set, so the
+  (`license_mode`: `strict`, `yolo`, `custom`). The client always sends `strict` unless the operator's own
+  `syberlabs githits example --license-mode` says otherwise; the launcher a model runs (`--githits`, below) has
+  no such option and always sends `strict`. The OpenAPI document does not say which licenses `strict` admits. `custom` applies an account-level policy that this API cannot set, so the
   client cannot ask the server for this exact list.
 - **Client side, wherever a result carries a license.** A result that is not admitted is dropped and counted in
   `results_dropped_license`, apart from the contamination count. Contamination is judged first. In contract
@@ -170,9 +171,21 @@ with `--json`, and exits 0 only when the status is `ok`:
 
 The token is reported as `set` or `unset`, never shown. The operation sends no rate-limit headers in the spec, so
 `rate limit remaining` appears only if GitHits adds them. With records configured, the check is recorded like any
-call (`op: doctor`). Its operation is pinned apart from the five, in
+call (`op: doctor`), and such a record is never counted as a lookup (`githits_lookups` leaves `githits.doctor`
+facts out). Its operation is pinned apart from the five, in
 `tests/fixtures/githits_openapi_v1_languages.json` (15,285 bytes, the same closed-subset form from the same
 document), so the larger fixture stays byte-identical. This is what a first live canary runs before any lookup.
+`doctor` is the operator's command only: the launcher a model can run does not accept it (next section).
+
+## The launcher's entry (`--githits`)
+
+`syberlabs/githits_cli_entry.py` is what the per-call launcher of `syberlabs propose --claude-code --githits`
+runs (`docs/CLAUDE_CODE.md`, GitHits through the launcher), the one command a model can run. It accepts only the
+five lookups, `search`, `example`, `read`, `list` and `grep` (`githits.LOOKUPS`, parsed by
+`githits.launcher_parser`), with the same options as `syberlabs githits`, except that `example` has no
+`--license-mode`: through the launcher an example always asks for `license_mode: strict`. `doctor`, `--help`, an
+unknown operation and a usage error exit 2 with a usage message before a client exists, so nothing is sent and
+nothing is recorded. The operator keeps `syberlabs githits doctor` and `--license-mode`.
 
 ## The pinned contract
 

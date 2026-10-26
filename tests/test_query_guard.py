@@ -134,6 +134,18 @@ class Rules(unittest.TestCase):
             self.assertNotRegex(name, guard.MATCHER_BASH)
         self.assertNotRegex("Bash", guard.MATCHER, "without the launcher Bash is not matched, as before")
 
+    def test_powershell_joins_the_matcher_only_with_the_launcher_and_the_override(self):
+        """githits-pilot-hardening, item 5 (#134 verification finding 3)."""
+        [group] = guard.settings(Path("D:/guard"), bash=True, powershell=True)["hooks"]["PreToolUse"]
+        self.assertEqual(group["matcher"], guard.MATCHER_SHELLS)
+        for name in ("Bash", "PowerShell", "mcp__githits__search", "WebSearch", "WebFetch"):
+            self.assertRegex(name, guard.MATCHER_SHELLS)
+        for name in ("PowerShellX", "BashOutput", "Read", "mcp__powershell__x"):
+            self.assertNotRegex(name, guard.MATCHER_SHELLS)
+        self.assertEqual(guard.settings(Path("D:/guard"), powershell=True)["hooks"]["PreToolUse"][0]["matcher"],
+                         guard.MATCHER, "no launcher: the matcher is the plain one")
+        self.assertEqual(guard.SHELL_TOOLS, ("Bash", "PowerShell"))
+
     def test_policy_reads_arguments_then_environment_then_defaults(self):
         self.assertEqual(guard.policy(), {"version": guard.VERSION, "max_lines": 3, "max_chars": 400})
         with self.assertRaises(ValueError):
@@ -207,6 +219,26 @@ class BashLauncher(unittest.TestCase):
         self.assertEqual(decide(long_description), guard.PASS, "the description stays on this machine")
         self.assertEqual(guard.query_text({"command": LAUNCHER + " search q", "description": "d"}),
                          LAUNCHER + " search q", "a Bash call's digest is its command line's")
+
+    def test_a_powershell_call_is_judged_by_the_same_launcher_only_rule(self):
+        """githits-pilot-hardening, item 5: under the override PowerShell is matched, and then any command but the
+        launcher is refused, as for Bash (before, a matched PowerShell call was judged as plain outbound text, so
+        ``Get-ChildItem env:`` passed)."""
+        def powershell(command, **extra):
+            return {"tool_name": "PowerShell", "tool_input": {"command": command, "description": "d", **extra}}
+
+        decide = lambda call: guard.decide(call, launcher=LAUNCHER)
+        for command in ("Get-ChildItem env:", "dir", "Get-Content ~/.ssh/id_rsa", "& " + LAUNCHER + " search q",
+                        LAUNCHER.replace("/", "\\") + " search q", "", None):
+            with self.subTest(command=command):
+                self.assertEqual(decide(powershell(command)), guard.NOT_LAUNCHER)
+        self.assertEqual(decide(powershell(LAUNCHER + " search q; Get-ChildItem env:")), guard.SHELL_SYNTAX)
+        self.assertEqual(decide(powershell(LAUNCHER + " search q", run_in_background=True)), guard.SHELL_SYNTAX)
+        self.assertEqual(decide(powershell(LAUNCHER + f' search "{SECRET}" --target pypi:x')), "secret")
+        self.assertEqual(decide({"tool_name": "PowerShell", "tool_input": "dir"}), guard.NOT_LAUNCHER)
+        self.assertEqual(guard.decide(powershell("Get-ChildItem")), guard.NOT_LAUNCHER, "no launcher, no pass")
+        self.assertEqual(decide(powershell(LAUNCHER + ' search "csv dialects" --target pypi:x')), guard.PASS,
+                         "the same rule as Bash: only the launcher with plain arguments")
 
 
 KEY = "k" * 64  # a test key; a real one is secrets.token_hex(32), per call

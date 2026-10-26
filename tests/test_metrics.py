@@ -172,6 +172,28 @@ class Derivations(unittest.TestCase):
         self.assertEqual(self.item_a.lookups_blocked.value, None, "lookups counted, no lookup facts: unknown, not 0")
         self.assertEqual(self.item_a.to_dict()["lookups_blocked"]["value"], "unknown")
 
+    def test_a_githits_doctor_fact_is_never_counted_as_a_lookup(self):
+        """githits-pilot-hardening, item 1: a readiness check (``githits.doctor``) is the operator's, not a lookup,
+        whether it sits beside client lookups or alone (no fallback to the declared count either)."""
+        j = Journal("thread-d")
+        j.add("case_created", {"actor": "agent@example.test", "contract": ["repo-change", 4], "inputs": {}}, at=T0)
+        search = j.fact("lookup", {"tool": "githits.search", "ok": True, "guard": "pass"}, version="s1.1.1")
+        j.fact("lookup", {"tool": "githits.doctor", "ok": True, "guard": "pass"}, version="s1.1.2")
+        example = j.fact("lookup", {"tool": "githits.example", "ok": False, "guard": "pass"}, version="s1.1.3")
+        j.add("candidate_registered", {"id": "c1", "operator": "patch", "actor": HOST, "signal": {
+            "model_usage": U[0], "tool_usage": {"web_search": 0, "web_fetch": 0, "githits": 3}}})
+        [item] = metrics.work_items(j.events)
+        self.assertEqual((item.githits_lookups.value, item.githits_lookups.basis), (2, (search, example)))
+        self.assertIn("doctor excluded", item.githits_lookups.note)
+        alone = Journal("thread-e")
+        alone.add("case_created", {"actor": "agent@example.test", "contract": ["repo-change", 4], "inputs": {}}, at=T0)
+        alone.fact("lookup", {"tool": "githits.doctor", "ok": True, "guard": "pass"}, version="s1.1.1")
+        alone.add("candidate_registered", {"id": "c1", "operator": "patch", "actor": HOST, "signal": {
+            "model_usage": U[0], "tool_usage": {"web_search": 0, "web_fetch": 0, "githits": 1}}})
+        [item] = metrics.work_items(alone.events)
+        self.assertEqual((item.githits_lookups.value, item.githits_lookups.basis), (0, ()),
+                         "a doctor record alone is still host-observed, and still not a lookup")
+
     def test_the_cancelled_thread_says_unknown_where_nothing_was_recorded(self):
         b, e = self.item_b, self.eb
         self.assertEqual((b.act_class, b.unattended, b.cancelled, b.pull_request), ("C", False, True, None))
