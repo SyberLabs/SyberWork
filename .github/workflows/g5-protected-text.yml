@@ -1,0 +1,49 @@
+name: g5-protected-text
+
+# Factory gate G5 for SyberWork (FACTORY red-team rubric section 3, rubric R2),
+# modeled on attest #33. Additive: its own workflow, so it does not touch ci.yml
+# (G8), factory-gates.yml (G6) or the G2/G3/G4 workflows. Branch protection
+# decides whether it is required. Gate status lives in docs/G5_PROTECTED_TEXT.md;
+# update it only from real run output.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # G5 Protected-text diff: protected requirement text (docs/attest.policy.yaml
+  # match rules) must be byte-identical between base and head unless an approved
+  # change decision already on the base branch binds the exact before/after digests.
+  g5-protected-text:
+    name: G5 Protected-text diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      # Controls first, on frozen fixtures: the checker must refuse every weakening
+      # and pass a descriptive edit, or the diff check below proves nothing.
+      - name: Gate controls
+        run: PYTHONPATH=. python -m unittest -v tests.test_g5_protected_text
+      # On a PR, HEAD is the merge commit and HEAD^1 is the base branch tip it
+      # was merged onto. On push, compare with the previous main tip.
+      - name: Protected-text diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            base=$(git rev-parse HEAD^1)
+          else
+            base="$BEFORE"
+          fi
+          python scripts/g5_protected_text.py --base "$base" --head HEAD
