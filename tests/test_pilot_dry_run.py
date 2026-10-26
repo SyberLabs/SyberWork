@@ -17,6 +17,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,7 +25,7 @@ from unittest import mock
 from syberlabs import claude_code, experiment, githits, metrics, query_guard
 from syberlabs.cli import main as cli
 from tests.test_build_thread import git
-from tests.test_claude_code import COST, PRICES, ClaudeCodeCase, launcher_lookup
+from tests.test_claude_code import BROKEN, COST, PRICES, ClaudeCodeCase, launcher_lookup
 from tests.test_githits import FakeGitHits
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,7 +84,6 @@ class DryRunCase(ClaudeCodeCase):
         for name in FOREIGN:
             os.environ.pop(name, None)
         self.claude("claude")
-        self.runs_made = 0
 
     def claude(self, name, **options):
         """Install a stand-in ``claude`` (``SYBERLABS_CLAUDE_BIN``) that makes ``LOOKUPS`` and writes ``GOOD``."""
@@ -111,10 +111,6 @@ class DryRunCase(ClaudeCodeCase):
             code = pilot.main(argv, ask=ask or answers(*["pass"] * 12), runner=runner)
         receipt = json.loads((self.out / "receipt.json").read_text(encoding="utf-8"))
         return code, printed.getvalue(), receipt
-
-    def threads_in_home(self) -> list:
-        journal = self.out / "home" / "journal"
-        return sorted(p.name for p in journal.iterdir()) if journal.exists() else []
 
     def check(self, receipt, name) -> dict:
         return next(c for c in receipt["preflight"] if c["name"] == name)
@@ -174,6 +170,35 @@ class Plan(unittest.TestCase):
         for why, doc in refused.items():
             with self.subTest(why), self.assertRaises(pilot.PlanError):
                 pilot.validate_plan(doc)
+
+
+class Arguments(unittest.TestCase):
+    def run_main(self, *argv):
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            code = pilot.main(list(argv), ask=answers(), runner=in_process)
+        return code, printed.getvalue()
+
+    def test_the_template_and_the_arguments_refused_before_anything_is_written(self):
+        code, printed = self.run_main("--template")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(printed)["items"][0]["id"], "LIB-1")
+        with self.assertRaises(pilot.PlanError, msg="the template must be filled in"):
+            pilot.validate_plan(json.loads(printed))
+        with tempfile.TemporaryDirectory() as folder:
+            busy = Path(folder) / "busy"
+            busy.mkdir()
+            (busy / "x").write_text("x", encoding="utf-8")
+            for argv, words in ((["--repo", folder], "--plan is required"),
+                                (["--plan", "p.json", "--reviewer", "two words"], "--reviewer must be a short name"),
+                                (["--plan", "p.json", "--repo", str(Path(folder) / "nowhere")], "is not a directory"),
+                                (["--plan", "p.json", "--repo", folder, "--out", str(busy)], "is not empty")):
+                with self.subTest(words):
+                    code, printed = self.run_main(*argv)
+                    self.assertEqual(code, 2)
+                    self.assertIn(words, printed)
+            self.assertFalse((Path(folder) / "nowhere").exists(), "nothing is created for a refused argument")
+            self.assertEqual(sorted(p.name for p in busy.iterdir()), ["x"])
 
 
 class Pieces(unittest.TestCase):
@@ -350,6 +375,17 @@ class DryRun(DryRunCase):
         self.assertNotIn("Add a CSV export for report rows", (self.out / "report.md").read_text(encoding="utf-8"))
         self.assertTrue(git(self.root, "status", "--porcelain") == "", "the run's directory is outside the tree")
 
+    def test_a_change_that_never_passes_has_no_time_to_pass_and_fails_the_bar(self):
+        self.claude("broken", first=BROKEN)  # the host's checks fail every call's change
+        code, printed, receipt = self.dry_run(plan=self.plan(max_calls=1))
+        self.assertEqual((code, receipt["verdict"]), (1, "FAIL"))
+        self.assertEqual([t["accepted"] for t in receipt["threads"]], [False] * 6)
+        self.assertEqual([t["unknown"] for t in receipt["threads"]], [["agent_time"]] * 6,
+                         "not accepted: delivered is known (no), and so is everything but the time to a passing change")
+        self.assertTrue(all(t["metrics"]["delivered"]["value"] is False for t in receipt["threads"]))
+        self.assertNotIn("Blind review", printed, "nothing was accepted, so nothing is reviewed")
+        self.assertIn("FAIL  nine metrics: known for 0 of 6 threads", printed)
+
     def test_a_skipped_review_leaves_delivered_unknown_and_fails_the_bar(self):
         code, printed, receipt = self.dry_run(ask=answers("", "maybe", "skip", *["pass"] * 5))
         self.assertEqual((code, receipt["verdict"]), (1, "FAIL"))
@@ -407,7 +443,7 @@ class Preflight(DryRunCase):
         code, printed, receipt = self.dry_run(*flags, plan=plan, out=f"refused-{self.out_count}")
         self.assertEqual((code, receipt["verdict"]), (2, "REFUSED"), why)
         self.assertEqual(self.runs(self.bin), [], f"{why}: no Claude Code call ran")
-        self.assertEqual(self.threads_in_home(), [], f"{why}: no thread started")
+        self.assertFalse((self.out / "home").exists(), f"{why}: refused before the run's home, or any thread, existed")
         self.assertNotIn(self.token, printed)
         return receipt, printed
 

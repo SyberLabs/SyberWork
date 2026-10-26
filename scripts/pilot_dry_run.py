@@ -943,9 +943,10 @@ def render(receipt: dict, out: Path) -> str:
     canary = "" if spend.get("canary") is None else f" (canary ${spend['canary']:.4f})"
     cap = "no valid cap" if spend.get("cap") is None else f"${spend['cap']:.2f}"
     lines.append(f"spend   {total} of {cap}{canary}")
-    for reason in receipt["reasons"]:
-        lines.append(f"reason  {reason}")
-    lines.append(f"receipt {out / 'receipt.json'} (send it with report.md; the rest stays here)")
+    shown = {f"preflight {c['name']}: {c['detail']}" for c in receipt["preflight"] if c["status"] == FAIL}
+    lines += [f"reason  {reason}" for reason in receipt["reasons"] if reason not in shown]  # a FAIL row says it
+    send = " (send it with report.md; the rest stays here)" if (out / "report.md").is_file() else ""
+    lines.append(f"receipt {out / 'receipt.json'}{send}")
     return "\n".join(lines)
 
 
@@ -1408,6 +1409,9 @@ def main(argv: list | None = None, *, ask: Ask | None = None, runner: Runner | N
         say("error: --reviewer must be a short name (letters, digits, _ . @ + -)")
         return 2
     repo = Path(args.repo).resolve()
+    if not repo.is_dir():
+        say(f"error: --repo {repo} is not a directory")
+        return 2
     seed = args.seed if args.seed is not None else secrets.randbelow(2 ** 31)
     runs_dir = repo / ".syberlabs" / "pilot-dry-run"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
