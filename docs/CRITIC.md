@@ -32,7 +32,7 @@ The host runs the command in the candidate's worktree with the usual scrubbed en
 Checks run in the order the stored contract lists them, which is by name because a published contract is kept as canonical JSON; `critic` therefore runs before `tests` and sees `result: []`, while a check named to sort before it (`a_lint`) is in `result` with its state, exit code, digest and tail. The command must print a findings document (`spec/finding.schema.json`, identity `sdk.syberlabs.space/critic/1`):
 
 ```json
-{"version": 1, "reviewer": {"name": "rules", "revision": "1"},
+{"version": 1, "reviewer": {"name": "rules", "revision": "2"},
  "findings": [{"severity": "high|medium|low", "file": "src/export.py", "line": 12,
                "claim": "what is wrong", "falsifier": "what would show the claim false", "acceptance_ref": "accepted"}],
  "summary": "optional, 4000 characters at most"}
@@ -99,7 +99,8 @@ False positives on this repository: none. Every Python file was read as if it we
 What it took outside test files:
 - The test-scoped parts above.
 - Anchored computed imports. `syberlabs/__init__.py` resolves its lazy names with `import_module(f"syberlabs.{module}")`, and both scenario loaders (`benchmarks/run_scenarios.py`, `benchmarks/scenarios/runner.py`) use `import_module(f"benchmarks.scenarios.{name}")`. A name whose package is fixed in the source can only import that package's submodules, and a changed submodule is read itself.
-- One rename. The runner's own result class named its reporting method `_outcome`, the name of `unittest`'s internal, so it read as `unittest_patch`. It is now `_report`. The exemptions that make it so are deliberate: `os.kill(pid, 0)` (`tests/test_checks.py` asks whether a process is alive), `sys.exit` inside a test method (`unittest` records it as an error, and the runner counts it), writes to `sys.modules` under other names (the G2, G3 and G5 tests register the gate modules they load), helper classes with `__call__` or `run` that are not test cases, and every pattern inside a string (the runner's own tests carry their adversarial fixtures as strings).
+- One rename. The runner's own result class named its reporting method `_outcome`, the name of `unittest`'s internal, so it read as `unittest_patch`. It is now `_report`.
+- The exemptions that make it so are deliberate: `os.kill(pid, 0)` (`tests/test_checks.py` asks whether a process is alive), `sys.exit` inside a test method (`unittest` records it as an error, and the runner counts it), writes to `sys.modules` under other names (the G2, G3 and G5 tests register the gate modules they load), helper classes with `__call__` or `run` that are not test cases, and every pattern inside a string (the runner's own tests carry their adversarial fixtures as strings).
 
 What it does not catch:
 - anything outside the listed names: another route to the same objects, such as `getattr(self, "_out" + "come")` on a test or an alias built at run time from data;
