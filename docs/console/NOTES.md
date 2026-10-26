@@ -599,6 +599,12 @@ Gaps from #95, closed or still open:
       window: three rows read *certified*, that one *expired* and the withdrawn one *revoked*. The parity test runs the
       node projection on a real windowed `CertificateShelf` answer, with the statement form past its window and the bare
       form not.
+    - **Mutations.** Each of these fails a test: expiring at exactly `expires_at`; dropping `not_yet_valid`; naming
+      expiry before revocation; the shelf taking `True` or `1.0`; reading an empty variable as no window; accepting the
+      variable without the other two; the console reckoning only *expired* and not *not yet valid*; not checking
+      `expires_at` against `issued_at` plus the window; drawing *expired* on serve's word alone; accepting a missing or
+      malformed `validity`. One survived and is equivalent: letting the pass branch also take `reason: expired`, which
+      the branch before it always catches first.
     - **What it does not do.** `issued_at` is written by the signer and covered by its signature, so a folder writer
       cannot change it, but a holder of a listed key can date a certificate as it likes. The window retires old genuine
       certificates; it is no defense against a compromised key, which is still handled by taking the key off
