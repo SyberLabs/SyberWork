@@ -81,6 +81,15 @@ class SkillCommands(api.FakeCase):
         self.assertEqual({"three": 3}.get(budget), len(self.commands), "the worked example fits the stated budget")
         self.assertLessEqual(len(self.template.encode("utf-8")), PROMPT_BUDGET)
 
+    def test_the_registries_it_names_are_ones_the_client_accepts(self):
+        """A registry the client does not know fails a search before any request (``bad_target``), unrecorded."""
+        named = re.search(r"`<registry>:<package>@<installed version>` \(([a-z, ]+)\.\.\.\)", self.template)[1]
+        for registry in named.split(", "):
+            with self.subTest(registry=registry):
+                self.assertIn(registry, githits.REGISTRIES)
+                self.assertEqual(githits.search_target(f"{registry}:somepkg@1.2.3")["version"], "1.2.3")
+        self.assertNotIn("version", githits.search_target("pypi:somepkg"), "no @version means the latest")
+
     def test_every_command_passes_the_guard_with_this_checkouts_tree(self):
         root = SKILL_PATH.parents[2]
         tree = query_guard.tree_digests(root, tracked_files(root))
