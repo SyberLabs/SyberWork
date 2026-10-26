@@ -37,7 +37,19 @@ jobs:
       - name: Install test extras
         run: python -m pip install -e ".[test]"
       - name: Unit tests
-        run: PYTHONPATH=. python scripts/run_shards.py
+        # On a pull request, the floor: every test discovered on the merge base with the target branch is
+        # discovered here too, or the diff says where it went (docs/TESTING.md). A push runs without one.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            git fetch --no-tags --quiet --depth=100 origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF" "$GITHUB_SHA"
+            SYBERLABS_BASE="$(git merge-base "origin/$BASE_REF" HEAD)"
+            export SYBERLABS_BASE
+            echo "floor base: $SYBERLABS_BASE (merge base of origin/$BASE_REF and HEAD)"
+          fi
+          PYTHONPATH=. python scripts/run_shards.py
       - name: Conformance
         run: PYTHONPATH=. python -m conformance.run
 
@@ -58,7 +70,20 @@ jobs:
       - name: Install test extras
         run: python -m pip install -e ".[test]"
       - name: Unit tests
-        run: $env:PYTHONPATH='.'; python scripts/run_shards.py
+        # The same floor as the test job, on a pull request.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          $env:PYTHONPATH = '.'
+          if ($env:EVENT -eq 'pull_request') {
+            git fetch --no-tags --quiet --depth=100 origin "+refs/heads/$($env:BASE_REF):refs/remotes/origin/$($env:BASE_REF)" "$env:GITHUB_SHA"
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            $env:SYBERLABS_BASE = git merge-base "origin/$($env:BASE_REF)" HEAD
+            if ($LASTEXITCODE -ne 0 -or -not $env:SYBERLABS_BASE) { exit 1 }
+            Write-Output "floor base: $env:SYBERLABS_BASE (merge base of origin/$($env:BASE_REF) and HEAD)"
+          }
+          python scripts/run_shards.py
 
   # FACTORY gate G8 (Existing tests). g8-suite runs the same unit suite and conformance as
   # `test`, through scripts/g8_existing_suite.py, which also fails when a test skips for any

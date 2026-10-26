@@ -127,7 +127,20 @@ otherwise:
 
 A shard that exits without `done` (killed, crashed, or a test that called
 `os._exit`, even with exit code 0) is `shard_crashed`, and the runner prints
-the last test its stream started and the tail of its log. Any gap in the
+the last test its stream started and the tail of its log. A shard still
+running past its time budget is `shard_timeout`. The budget is
+`--shard-timeout SECONDS`, or by default three times the shard's planned
+seconds and at least 300 s; the runner prints it beside the plan. On the CI
+runners of 2026-10-26 the slowest shard took 1.9 times its plan (Windows,
+533 s against 286 s planned). The runner stops a timed-out shard with every
+process it started. On Windows it runs `taskkill /T /F`. On POSIX it sends
+each process of the tree SIGSTOP until a `ps` listing finds nothing new, then
+SIGKILL, and the shards stay in the runner's session, so a host that ends
+that session still ends them. It then prints the last test the stream
+started and the tail of the log. Discovery has the same budget (the given
+one, or 300 s), and a discovery past it is `discovery_failed`. Before this
+budget a sleeping test was bounded only by the host check's own timeout,
+which records `timed_out` and names no test. Any gap in the
 accounting is `shard_incomplete`. Either one, any failure, error or
 unexpected success, or a shard exit code that disagrees with its stream, ends
 the run with `FAILED`. `tests/test_run_shards.py` proves each of these on a
@@ -148,7 +161,9 @@ ends the run with `Ran 0 tests` and `FAILED`.
    from `HEAD`, any untracked or ignored file under the start directory
    (`__pycache__` included: Python loads an unchecked-hash `.pyc` whatever its
    `.py` says), and any untracked or ignored file anywhere that Python could
-   import (`.py`, `.pyc`, `.pyd`, `.pth`, `.so`, `.dll`). The host's checks run
+   import (`.py`, `.pyc`, `.pyd`, `.pth`, `.so`, `.dll`), alone or inside an
+   untracked or ignored directory. An ignored directory that holds none (the
+   `*.egg-info/` that `pip install -e .` leaves) is not a change. The host's checks run
    with `PYTHONDONTWRITEBYTECODE=1`, so a fresh worktree after `conformance`,
    the critic and `scenarios` has none of these (checked on this
    repository). In a developer checkout with `__pycache__` directories the
@@ -187,6 +202,20 @@ test set that depends on the environment (a dependency that is not
 installed, the platform) is the same on both sides and does not trip the
 floor.
 
+**On CI.** The `Unit tests` step of the `test` matrix and of the `windows`
+job (`.github/workflows/ci.yml`) sets `SYBERLABS_BASE` on a `pull_request`
+event. It fetches the target branch and the tested commit 100 commits deep,
+and sets the base to `git merge-base origin/<target> HEAD`. On the merge
+commit GitHub checks out, that is the target branch's tip it was merged
+onto. The step prints `floor base: <sha>`, and the runner's first line ends
+`floor: all N tests discovered on the base are here or excused by the diff`.
+A merge base it cannot compute fails the step. A `push` (to `main`, or to a
+scratch branch) runs without a floor: it has no base to compare with. CI runs
+the candidate's own runner, so a pull request that edits
+`scripts/run_shards.py` is floored by its own copy. The host check, which
+runs the host checkout's runner, does not have that weakness. The `g8-suite`
+job is unchanged.
+
 ### Test integrity: what is caught, by what, and what is not
 
 In the factory, test code is candidate code written by a model, and it runs
@@ -210,6 +239,8 @@ critic finding, and the honest rows still pass:
 | A test patches `TestCase._callTestMethod` at run time (new) | **0** | 1, `harness_changed` | high (`unittest_patch`) |
 | A test writes a line without the nonce to the channel (new) | n/a | 1, `channel_tampered` | high (`runner_reach`) |
 | A test finds the runner in its own process and writes a consistent, false stream (new) | n/a | **0: not caught** | high (`runner_reach`, `process_exit`) |
+| The same forgery moved verbatim into a non-test module that the test imports and calls (verification of #116) | n/a | **0: not caught** | before: none; now high (`runner_reach`, 4 lines of the helper) |
+| A test that sleeps (verification of #116) | host check `timed_out` | 1, `shard_timeout`, naming the test | none |
 | A module exits at import only in the shard's environment (new) | 1 | 1, `shard_crashed` | high (`exit_at_import`, `process_exit`) |
 | A test prints protocol lines to stdout (new) | 0, all ran | 0, all ran (the lines go to the log) | none |
 | Test calls `os._exit(0)` / self-`SIGTERM` / raises `KeyboardInterrupt` | 1 | 1, `shard_crashed` | high (`process_exit`) for the first two |
@@ -228,15 +259,21 @@ shard's own process, defeats the runner from inside (reaches the runner's
 objects or memory and writes a stream consistent with the plan, or patches
 something the harness check does not watch) and does it in a form the
 critic's patterns do not match (for example through a name the patterns do
-not list, code built at run time from data, or a C extension). Same-process
-code can always do that: the nonce and the stream are in its own memory. Two
-further gaps are named in `spec/GAPS.md` 58: test code that keeps every test
-in the set but makes tests vacuous (its own in the diff, or another's at run
-time by replacing its method), which no count can see; and the critic's
-patterns covering only test files, while non-test code the tests import also
-runs in the shard. A container or VM sandbox per shard, research
-register item N4, is the eventual answer: the runner would then read the
-outcome from outside the process that produced it.
+not list, code built at run time from data, or a compiled module already installed). Same-process
+code can always do that: the nonce and the stream are in its own memory. The
+critic reads every Python file the candidate adds or changes, not only test
+files (`docs/CRITIC.md`), so moving the code into a module the test imports
+does not hide it. Code the candidate did not change is the base's, and the
+host already trusts it. Two further gaps are named in `spec/GAPS.md` 58:
+- Test code can keep every test in the set but make tests vacuous: its own
+  in the diff, or another's at run time by replacing its method. No count can
+  see this.
+- Outside test files, the patterns that end the process or write to raw
+  descriptors do not apply, because production code does both.
+
+A container or VM sandbox per shard, research register item N4, is the
+eventual answer: the runner would then read the outcome from outside the
+process that produced it.
 
 ### Refreshing `tests/durations.json`
 
@@ -315,7 +352,9 @@ directory is the candidate's worktree, so discovery, the tests and
 `tests/durations.json` are the candidate's. The candidate's test code still
 runs in the shard's process; what that leaves open, and which critic rule is
 the second layer, is under "Test integrity" above. Run the reference critic
-(`critic.rules`) as a required check beside it.
+(`critic.rules`) as a required check beside it. Keep the check's
+`timeout_seconds` above the slowest shard's budget, so a hung shard is named
+by the runner (`shard_timeout`) before the host stops the whole check.
 
 ## G8: the existing suite as one fail-closed check
 
