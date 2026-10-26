@@ -29,7 +29,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from syberlabs import cli, githits
+from syberlabs import cli, githits, githits_cli_entry
 from syberlabs.canonical import canonical
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1079,3 +1079,67 @@ class Cli(FakeCase):
         code, out, _ = run_cli(self.env, "githits", "example", "retry", "--language", "python")
         self.assertTrue(out.startswith("example: complete, solution 6f1c1a52"))
         self.assertTrue(all(record["status"] == "ok" for record in self.records().records))
+
+
+def run_entry(env: dict, *argv: str) -> tuple[int, str, str]:
+    """The GitHits launcher's entry (``githits_cli_entry.main``), what the launcher a model can run executes."""
+    out, err = io.StringIO(), io.StringIO()
+    with mock.patch.dict(os.environ, env):
+        for name in ENV_NAMES:
+            if name not in env:
+                os.environ.pop(name, None)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = githits_cli_entry.main(list(argv))
+    return code, out.getvalue(), err.getvalue()
+
+
+class LauncherEntry(FakeCase):
+    """githits-pilot-hardening, item 1 (#134 verification finding 2): the launcher's entry, the one command a model
+    can run, accepts only the five lookups, and ``example`` only with ``license_mode: strict``; ``doctor`` and
+    ``--license-mode`` stay the operator's, through ``syberlabs githits``."""
+
+    def test_only_the_five_lookups_run_and_anything_else_exits_2_with_usage_and_no_record(self):
+        self.assertEqual(githits.LOOKUPS, ("search", "example", "read", "list", "grep"))
+        [steps] = [a for a in githits.launcher_parser()._actions if a.dest == "githits_command"]
+        self.assertEqual(tuple(steps.choices), githits.LOOKUPS, "no doctor among the launcher's operations")
+        for argv in (["doctor"], ["doctor", "--json"], [], ["-h"], ["--help"], ["search", "-h"], ["DOCTOR"],
+                     ["Search", "q", "--target", "pypi:requests"], ["serch", "q"], ["shell"],
+                     ["--json", "search", "q", "--target", "pypi:requests"], ["search", "q"],
+                     ["grep", "x", "--target", "pypi:requests", "--yolo"]):
+            with self.subTest(argv=argv):
+                code, out, err = run_entry(self.env, *argv)
+                self.assertEqual(code, 2)
+                self.assertIn("usage: githits", out + err)
+        self.assertEqual(self.fake.requests, [], "nothing reached GitHits")
+        self.assertEqual(self.record_text(), "", "and nothing was recorded, so nothing becomes a lookup fact")
+        code, _, err = run_entry(self.env, "doctor")
+        self.assertIn("the launcher runs only search, example, read, list, grep", err)
+        code, out, _ = run_cli(self.env, "githits", "doctor")
+        self.assertEqual(code, 0, "doctor is still the operator's, through syberlabs githits")
+        self.assertTrue(out.startswith("githits doctor: ok"))
+
+    def test_each_lookup_runs_through_the_entry_and_is_recorded(self):
+        for argv in (["search", "q", "--target", "pypi:requests"], ["example", "retry", "--language", "python"],
+                     ["read", "pypi:requests"], ["list", "pypi:requests"],
+                     ["grep", "Retry", "--target", "pypi:requests", "--literal"]):
+            with self.subTest(op=argv[0]):
+                code, out, err = run_entry(self.env, *argv)
+                self.assertEqual((code, err), (0, ""))
+                self.assertTrue(out.startswith(argv[0] + ": "), out)
+        self.assertEqual([r["op"] for r in self.records().records], list(githits.LOOKUPS))
+
+    def test_example_always_sends_license_mode_strict_and_takes_no_license_option(self):
+        code, _, _ = run_entry(self.env, "example", "retry")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(self.fake.requests[-1]["body"])["license_mode"], "strict")
+        for extra in (["--license-mode", "yolo"], ["--license-mode=custom"], ["--license-mode", "strict"],
+                      ["--license", "yolo"], ["--lic", "yolo"]):
+            with self.subTest(extra=extra):
+                code, out, err = run_entry(self.env, "example", "retry", *extra)
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("unrecognized arguments", err)
+        self.assertEqual(len(self.fake.requests), 1)
+        self.assertEqual(len(self.records().records), 1)
+        code, _, _ = run_cli(self.env, "githits", "example", "retry", "--license-mode", "yolo")
+        self.assertEqual(code, 0, "the operator's own CLI keeps the option")
+        self.assertEqual(json.loads(self.fake.requests[-1]["body"])["license_mode"], "yolo")
