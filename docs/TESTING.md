@@ -36,13 +36,18 @@ how the work is spread, never which tests run.
 
 ### How it works
 
-1. **Discovery.** The runner discovers the suite exactly as
+1. **Discovery, in a child.** The runner discovers the suite exactly as
    `python -m unittest discover -s tests` does: a fresh `unittest.TestLoader()`
    (what `unittest.defaultTestLoader` is in a process that has not used it
    yet), start directory `tests`, pattern `test*.py`, with the working directory
    first on `sys.path`. (`--start`, `--pattern` and `--top-level` mirror
    discover's `-s`, `-p` and `-t`.) A module that cannot be imported is a test
-   that errors, as under discover.
+   that errors, as under discover. Discovery imports every test module, so it
+   runs in a child process, never in the runner itself: a module that exits or
+   crashes at import ends that child, and the run fails with
+   `discovery_failed` instead of ending with whatever exit code the module
+   chose. The child reports, for each test, its id, class, method, the file
+   that defines it and its fixture group.
 2. **Packing.** Tests are packed by test id, not by module, from the timing
    manifest `tests/durations.json` (test id to seconds). A test the manifest
    does not name, for example one added after the manifest, gets the
@@ -54,19 +59,37 @@ how the work is spread, never which tests run.
    that defines `setUpModule`, form one unit and stay in one shard, so the
    fixture is built once and its tests share it as they do in one process.
 3. **Running.** N defaults to `min(os.cpu_count(), 8)`; `--shards N` sets it.
-   Each shard is a subprocess (`python scripts/run_shards.py --child ...`) that
+   Each shard is a subprocess (`python scripts/run_shards.py --child`) that
    discovers the suite again, keeps its assigned ids in discovery order, and
    runs them with `unittest.TextTestRunner` (warnings `default`, as
    `python -m unittest` sets). Its output, one line per test, goes to its own
    log, `shard-<k>.log`, in a new temporary directory or `--log-dir`.
-4. **Isolation.** Each shard gets its own scratch `TMP`, `TEMP` and `TMPDIR`
-   and its own `HOME` and `USERPROFILE`, removed after the run (the logs are
-   kept). So that the scratch home changes where tests write and not what
-   they read, a shard keeps reading the parent's Git global configuration
+4. **The result channel.** A child reports to the runner over a pipe it
+   inherits as an extra handle (`pass_fds` on POSIX, a `STARTUPINFO` handle
+   list on Windows), never over its stdout or stderr, which are the log. The
+   runner hands the child its spec on stdin, with the pipe's handle and a
+   random 128-bit nonce; the child opens the pipe, makes it non-inheritable
+   (a process a test starts does not get it) and only then imports a test
+   module. Every message is one JSON line carrying the nonce and a sequence
+   number. A shard sends `start` when a test starts, `outcome` for each
+   success, failure, error, skip, expected failure, unexpected success and
+   failed subtest, `stop` when it stops, `fixture` for a class or module
+   fixture that skipped or failed, and `done` with the totals and the
+   tracebacks. The runner counts from the stream, not from `done`: `done`
+   must agree with the stream, every assigned test must have started (or be
+   held by a fixture, below), starts and stops must pair, and nothing may
+   follow `done`. A line without this child's nonce or out of sequence
+   discards the whole stream (`channel_tampered`); a stream without `done` is
+   `shard_crashed`. There are no result files.
+5. **Isolation.** Each shard, and each discovery child, gets its own scratch
+   `TMP`, `TEMP` and `TMPDIR` and its own `HOME` and `USERPROFILE`, in a
+   temporary directory apart from the logs, removed after the run (the logs
+   are kept). So that the scratch home changes where tests write and not what
+   they read, a child keeps reading the parent's Git global configuration
    (`GIT_CONFIG_GLOBAL` names the parent's `~/.gitconfig` when it exists and
    the variable is unset) and the parent's Python user site
    (`PYTHONUSERBASE`). Everything else in the environment is inherited.
-5. **Summary.** The runner prints one line per shard as it finishes, the
+6. **Summary.** The runner prints one line per shard as it finishes, the
    failures and errors of every shard in `unittest`'s format, and ends with
    the lines `unittest` prints: `Ran N tests in Xs`, a blank line, then
    `OK (...)` or `FAILED (...)`. N counts exactly what a serial run counts.
@@ -79,25 +102,141 @@ A test may never be dropped silently. The runner checks, and fails the run
 otherwise:
 
 - **Before running:** the union of the shards' ids equals the discovered set,
-  and no id is in two shards.
-- **After running:** every shard wrote a result file (written last, by
-  rename); it discovered every id it was assigned; and it started every one of
-  them, except a test that `unittest` itself never starts because its class's
+  and no id is in two shards. No discovered test may take a method that
+  starts or reports it (`run`, `__call__`, `debug`, `id`, `_callTestMethod`,
+  `_callSetUp`, `_callTearDown`, `_callCleanup`) from a class outside the
+  `unittest` package or from the instance, and its `id()` must be
+  `module.Class.method` (`harness_override`). Such a test could report a run
+  that did not happen, or take another test's id.
+- **While running:** each shard records the functions that start, run and
+  report a test (those methods of `TestCase`, the suite's `run` and fixture
+  handling, the result's `startTest` to `stop`, its own channel) before it
+  imports a test module, and reports a test that starts after any of them
+  changed (`harness_changed`): a test that patched `TestCase._callTestMethod`
+  would otherwise have every later test pass without running its body.
+- **After running:** every shard's stream is intact and ends with `done`; it
+  started every id it was assigned, as many times as discovery found it,
+  except a test that `unittest` itself never starts because its class's
   `setUpClass` or its module's `setUpModule` skipped or failed, which the
-  shard names. Across shards, tests started plus tests held back by a fixture
-  equals the discovered count. (`Ran N` counts started tests, skipped ones
-  included, which is what `unittest` counts; the held-back tests are the only
-  discovered tests it leaves out, and they are reported as one skip or one
-  error per fixture, as under discover.)
+  stream names; it started nothing it was not assigned. Across shards, tests
+  started plus tests held back by a fixture equals the discovered count.
+  (`Ran N` counts started tests, skipped ones included, which is what
+  `unittest` counts; the held-back tests are the only discovered tests it
+  leaves out, and they are reported as one skip or one error per fixture, as
+  under discover.)
 
-A shard that exits without a result (killed, crashed, or a test that called
+A shard that exits without `done` (killed, crashed, or a test that called
 `os._exit`, even with exit code 0) is `shard_crashed`, and the runner prints
-the last test it started and the tail of its log. Any gap in the accounting
-is `shard_incomplete`. Either one, any failure, error or unexpected success,
-or a shard exit code that disagrees with its result, ends the run with
-`FAILED`. `tests/test_run_shards.py` proves each of these on a small
-synthetic suite, and that the `Ran` and `OK`/`FAILED` lines equal a serial
-`unittest discover` of the same suite.
+the last test its stream started and the tail of its log. Any gap in the
+accounting is `shard_incomplete`. Either one, any failure, error or
+unexpected success, or a shard exit code that disagrees with its stream, ends
+the run with `FAILED`. `tests/test_run_shards.py` proves each of these on a
+small synthetic suite, and that the `Ran` and `OK`/`FAILED` lines equal a
+serial `unittest discover` of the same suite.
+
+### The floor: the test set may not shrink unless the diff says so
+
+`--floor BASE`, or `SYBERLABS_BASE` in the environment (the Build Thread host
+sets it for every check to the thread's base commit, `syberlabs/checks.py`),
+adds three checks before anything runs. Each failure names its reason and
+ends the run with `Ran 0 tests` and `FAILED`.
+
+1. **The working tree is the committed tree** (`worktree_changed`). Checks run
+   in name order in one worktree, and `conformance` and `scenarios` run
+   candidate code before `tests` does, so they could write files the tests
+   then import. The runner asks Git and refuses a tracked file that differs
+   from `HEAD`, any untracked or ignored file under the start directory
+   (`__pycache__` included: Python loads an unchecked-hash `.pyc` whatever its
+   `.py` says), and any untracked or ignored file anywhere that Python could
+   import (`.py`, `.pyc`, `.pyd`, `.pth`, `.so`, `.dll`). The host's checks run
+   with `PYTHONDONTWRITEBYTECODE=1`, so a fresh worktree after `conformance`,
+   the critic and `scenarios` has none of these (checked on this
+   repository). In a developer checkout with `__pycache__` directories the
+   floor refuses; run without it there.
+2. **The base's tests.** The runner reads the whole tree of BASE from Git's
+   object database (`git archive`, extracted to a scratch directory; the
+   repository and its worktrees are not touched) and discovers it in a child,
+   exactly as it discovers the candidate. That runs the base's test modules'
+   import code: the operator's own code at the base commit, which the host
+   already trusts. If BASE is not a commit here, or its discovery fails, the
+   run fails with `floor_unavailable`: a floor the host asked for and cannot
+   build is not skipped.
+3. **No base test is missing** (`test_set_shrank`). A test discovered on BASE
+   and not on HEAD is excused only when the diff `BASE..HEAD` (renames
+   detected) says it went:
+   - the file that defines its class, or the file that defines its test
+     method, is deleted or renamed;
+   - a line `def <method>(` (or `async def`) is removed from either of those
+     files; or
+   - a line `class <Name>` for its class is removed from its module's file,
+     and HEAD has a test of the same module and method name that BASE did not
+     (a class renamed in the diff); each new test excuses one missing test.
+
+   Tests whose class lives in `unittest` itself (a module that failed to
+   import, or skipped at import, on the base) are not part of the floor. The
+   rule is conservative: a test that disappears because a conditional deletes
+   it (`del Keep.test_b`), because its class stops being a `TestCase`, or
+   because an assignment hides it, is refused, since the diff shows none of
+   the three. So is a test lost by deleting a package's `__init__.py`. A test
+   that is still discovered but skipped is not missing: the floor counts the
+   set, not what runs green, and a new `@skip` is for the critic and the
+   reviewer to see in the diff.
+
+Discovery of the base and of the candidate run in the same environment, so a
+test set that depends on the environment (a dependency that is not
+installed, the platform) is the same on both sides and does not trip the
+floor.
+
+### Test integrity: what is caught, by what, and what is not
+
+In the factory, test code is candidate code written by a model, and it runs
+in the process whose report judges it. Three layers stand between a candidate
+and a `tests` check that passes with a test unrun: the runner (discovery in a
+child, the channel, the harness checks), the floor, and the reference
+critic's test-integrity rule (`docs/CRITIC.md`), whose high finding refuses
+admission through `critic.no_high_finding`. The adversarial suite of the
+independent verification of #114, extended with the rows below, ran through
+`run_shards.py --shards 2` before (`main` at `be1660f`) and after this
+change, and the critic's rule ran over every file of every row. Before, five
+rows exited 0 with a test unrun; after, every one exits non-zero or is a high
+critic finding, and the honest rows still pass:
+
+| Row | Before | After: runner | Critic |
+|---|---|---|---|
+| Test module calls `os._exit(0)` at import | **0, nothing ran** | 1, `discovery_failed` | high (`exit_at_import`, `process_exit`) |
+| Test forges its shard's result file, then `os._exit(0)` | **0** | 1 (there is no result file; the test errors) | high (`process_exit`) |
+| Test forges another shard's result; that shard dies | **0** | 1, `shard_crashed` | high (`process_exit`) |
+| `run()` overridden to fake `startTest`/`addSuccess` | **0** | 1, `harness_override` | high (`harness_override`) |
+| A test patches `TestCase._callTestMethod` at run time (new) | **0** | 1, `harness_changed` | high (`unittest_patch`) |
+| A test writes a line without the nonce to the channel (new) | n/a | 1, `channel_tampered` | high (`runner_reach`) |
+| A test finds the runner in its own process and writes a consistent, false stream (new) | n/a | **0: not caught** | high (`runner_reach`, `process_exit`) |
+| A module exits at import only in the shard's environment (new) | 1 | 1, `shard_crashed` | high (`exit_at_import`, `process_exit`) |
+| A test prints protocol lines to stdout (new) | 0, all ran | 0, all ran (the lines go to the log) | none |
+| Test calls `os._exit(0)` / self-`SIGTERM` / raises `KeyboardInterrupt` | 1 | 1, `shard_crashed` | high (`process_exit`) for the first two |
+| `id()` overridden to collide with a fixture class | 1 (a traceback) | 1, `harness_override` | high (`harness_override`) |
+| `run()` overridden to do nothing; a test calls `result.stop()` | 1 | 1, `harness_override`; `shard_incomplete` | high (`harness_override`; `unittest_patch`) |
+| `load_tests` that differs per process | 1 | 1, `shard_incomplete` | high (`load_tests`) |
+| A test removed by a conditional, its `def` still in the diff (floor) | 0 | 1, `test_set_shrank` | none |
+| Import error, `sys.exit(0)` in a test, fixture errors | 1 | 1 | none |
+| Skips, fixture skips, `expectedFailure`, subtests, duplicate ids, a test added after the manifest | as serial | as serial | `load_tests` row only |
+
+The guarantee, exactly: with the factory's `tests` check (the host
+checkout's runner, `SYBERLABS_BASE` set) and the reference critic required, a
+candidate passes `tests` with a discovered test unrun, or with a base test
+gone that the diff does not delete, only if its test code, running in the
+shard's own process, defeats the runner from inside (reaches the runner's
+objects or memory and writes a stream consistent with the plan, or patches
+something the harness check does not watch) and does it in a form the
+critic's patterns do not match (for example through a name the patterns do
+not list, code built at run time from data, or a C extension). Same-process
+code can always do that: the nonce and the stream are in its own memory. Two
+further gaps are named in `spec/GAPS.md` 58: test code that keeps every test
+in the set but makes tests vacuous (its own in the diff, or another's at run
+time by replacing its method), which no count can see; and the critic's
+patterns covering only test files, while non-test code the tests import also
+runs in the shard. A container or VM sandbox per shard, research
+register item N4, is the eventual answer: the runner would then read the
+outcome from outside the process that produced it.
 
 ### Refreshing `tests/durations.json`
 
@@ -160,8 +299,8 @@ runner now uses a fresh loader); all 646 tests ran, so the time stands.
 ### The `tests` check of a Build Thread contract
 
 The Build Thread's `tests` check is a contract `argv`; this repository's
-contracts are written outside it. To run the check sharded, a contract should
-use:
+contracts are written outside it. The factory's contract `repo-change.v5`
+runs the check sharded:
 
 ```json
 "tests": {"argv": ["<python>", "<host checkout>/scripts/run_shards.py"], "timeout_seconds": 3000}
@@ -170,13 +309,13 @@ use:
 with `<python>` the interpreter's absolute path (`sys.executable`) and the
 runner named by absolute path in the host's own checkout, as `docs/CRITIC.md`
 does for the critic, so that a candidate cannot edit the runner: it runs from
-the host checkout. The candidate's test code still runs in the shard's
-process, so it can defeat the count by exiting or by forging a result, as it
-can under plain `unittest`; a test-integrity packet is planned. The check's
-working directory is the candidate's worktree, so discovery, the tests and
-`tests/durations.json` are the candidate's. A contract is immutable under its
-identity, so the switch is a new contract version, not an edit of
-`repo-change.v4`.
+the host checkout. The host sets `SYBERLABS_BASE` to the thread's base
+commit, so the floor above applies without a flag. The check's working
+directory is the candidate's worktree, so discovery, the tests and
+`tests/durations.json` are the candidate's. The candidate's test code still
+runs in the shard's process; what that leaves open, and which critic rule is
+the second layer, is under "Test integrity" above. Run the reference critic
+(`critic.rules`) as a required check beside it.
 
 ## G8: the existing suite as one fail-closed check
 
