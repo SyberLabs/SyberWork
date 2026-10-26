@@ -14,6 +14,11 @@ A completed write whose body names an ``idempotency_key`` or ``request_digest`` 
 acknowledged a different write (``destination_record_mismatch``), and a body with no single meaning cannot say
 which (``destination_record_ambiguous``). Either leaves the effect ``unknown``. A body that names neither
 field, or is not a JSON object, is not judged.
+
+A body that opens a JSON object but is not strict JSON (a ``NaN``, nesting deeper than 64, trailing data, or cut
+off at the 32 KB read, a raw control character in a string) is judged on the identity fields it names at its
+top level before its first field that cannot be read, so none of those alone hides another write's key or digest.
+The same body that names nothing else still counts from its status.
 """
 
 import io
@@ -446,6 +451,43 @@ NAMES_NOTHING_ELSE = {
 }
 
 
+def text(template):
+    """A write reply as raw bytes: ``template`` with ``{key}`` and ``{digest}`` filled in for this write."""
+    return lambda key, args, _record: template.replace("{key}", key).replace("{digest}", digest(args)).encode()
+
+
+DEEP = "[" * 65 + "]" * 65  # one level past the strict parser's 64
+CUT = '"pad": "' + "z" * 40000 + '"}'  # the reply is longer than the 32 KB that is read, so it arrives cut off
+
+# Write replies that are not strict JSON and name another write before their first unreadable field.
+NOT_STRICT_OTHER_WRITE = {
+    "NaN after another key": text('{"idempotency_key": "other-{key}", "weight": NaN}'),
+    "Infinity before another digest": text('{"weight": Infinity, "request_digest": "%s"}' % ("0" * 64)),
+    "the key is NaN": text('{"idempotency_key": NaN, "request_digest": "{digest}"}'),
+    "trailing data after another key": text('{"idempotency_key": "other-{key}"} written'),
+    "deeper than 64 before another digest": text('{"trace": %s, "request_digest": "%s"}' % (DEEP, "0" * 64)),
+    "cut off after another key": text('{"idempotency_key": "other-{key}", ' + CUT),
+    "raw newline in a note before another key": text('{"note": "line 1\nline 2", "idempotency_key": "other-{key}"}'),
+    "this key, then another digest, cut off": text('{"idempotency_key": "{key}", "request_digest": "%s", %s'
+                                                   % ("0" * 64, CUT)),
+}
+
+# The same shapes naming nothing else, plus the limits: a field after an unreadable one, a nested field,
+# and a body that is not an object are not read, so these count from the status alone.
+NOT_STRICT_NAMES_NOTHING_ELSE = {
+    "NaN, no identity": text('{"id": "SHIP-1", "weight": NaN}'),
+    "NaN, this key and digest": text('{"idempotency_key": "{key}", "request_digest": "{digest}", "weight": NaN}'),
+    "trailing data after this key": text('{"idempotency_key": "{key}"} written'),
+    "deeper than 64, this digest": text('{"trace": %s, "request_digest": "{digest}"}' % DEEP),
+    "cut off after this key": text('{"idempotency_key": "{key}", ' + CUT),
+    "cut off before any identity": text('{' + CUT),
+    "NaN, another key nested": text('{"data": {"idempotency_key": "other-{key}"}, "weight": NaN}'),
+    "another key after an unreadable field": text('{"weight": undefined, "idempotency_key": "other-{key}"}'),
+    "NaN array": text('[{"idempotency_key": "other-{key}"}, NaN]'),
+    "raw newline in a note, this key": text('{"note": "line 1\nline 2", "idempotency_key": "{key}"}'),
+}
+
+
 class WriteAckIdentity(Ship):
     """A completed write whose own body names another key or digest did not acknowledge this write."""
 
@@ -495,6 +537,33 @@ class WriteAckIdentity(Ship):
         self.assertEqual(self.work.commit(case, key, "operator")["status"], "queued")
         self.assert_unknown(case, key, run_once(self.work), "destination_record_mismatch")
         self.assertEqual(self.work.metric("queue_depth"), 0)
+
+    def test_not_strict_write_ack_naming_another_write_is_unknown(self):
+        for index, (name, ack) in enumerate(NOT_STRICT_OTHER_WRITE.items()):
+            code = (200, 201)[index % 2]
+            with self.subTest(ack=name, code=code):
+                self.fresh()
+                case, key, result = self.committed_with(ack, code)
+                self.assert_unknown(case, key, result, "destination_record_mismatch")
+                self.resolved_only_by_lookup(case, key)
+
+    def test_not_strict_write_ack_naming_the_key_twice_is_ambiguous(self):
+        # Last-wins reads this write's key; first-wins reads another's. The NaN keeps the strict parser from saying so.
+        case, key, result = self.committed_with(
+            text('{"idempotency_key": "other-{key}", "idempotency_key": "{key}", "weight": NaN}'))
+        self.assert_unknown(case, key, result, "destination_record_ambiguous")
+        self.resolved_only_by_lookup(case, key)
+
+    def test_positive_control_not_strict_write_ack_naming_nothing_else_succeeds(self):
+        for index, (name, ack) in enumerate(NOT_STRICT_NAMES_NOTHING_ELSE.items()):
+            code = (200, 201)[index % 2]
+            with self.subTest(ack=name, code=code):
+                self.fresh()
+                case, key, result = self.committed_with(ack, code)
+                self.assertEqual(result["status"], "succeeded")
+                self.assertTrue(self.work.inspect(case)["complete"])
+                self.assertEqual(self.work.metric("effects_settled_applied_total"), 1)
+                self.assertEqual(self.dest.posts, 1)
 
     def test_positive_control_write_ack_naming_nothing_else_succeeds(self):
         for index, (name, ack) in enumerate(NAMES_NOTHING_ELSE.items()):

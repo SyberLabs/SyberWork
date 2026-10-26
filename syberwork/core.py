@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -79,18 +80,58 @@ def _destination_code(exc: BaseException) -> str:
     return "destination_error"
 
 
+WRITE_IDENTITY = ("idempotency_key", "request_digest")
+_BLANK = re.compile(r"[ \t\n\r]*")
+_LENIENT = json.JSONDecoder(strict=False)
+
+
+def _leading_fields(raw: bytes):
+    """The top-level fields of a body that opens a JSON object, in order, up to the first one that cannot be read.
+
+    Values are read Python's lenient way (``NaN``, control characters in strings, any depth the stack allows),
+    so a body the strict parser refuses (a ``NaN``, too deep, trailing data, cut off at the read limit) still
+    shows what it names first.
+    """
+    text = raw.decode(json.detect_encoding(raw), errors="replace")
+    index = _BLANK.match(text).end()
+    if text[index:index + 1] != "{":
+        return
+    index += 1
+    while True:
+        index = _BLANK.match(text, index).end()
+        if text[index:index + 1] != '"':
+            return
+        try:
+            name, index = json.decoder.scanstring(text, index + 1, False)
+            index = _BLANK.match(text, index).end()
+            if text[index:index + 1] != ":":
+                return
+            value, index = _LENIENT.raw_decode(text, _BLANK.match(text, index + 1).end())
+        except (ValueError, RecursionError):
+            return
+        yield name, value
+        index = _BLANK.match(text, index).end()
+        if text[index:index + 1] != ",":
+            return
+        index += 1
+
+
 def _acknowledged_other_write(raw: bytes, key: str, request_digest: str) -> str | None:
     """Code for a write acknowledgement whose body names another write, or None.
 
     A body that names ``idempotency_key`` or ``request_digest`` at its top level must name this write's.
-    A body with no single meaning is ambiguous; a body that is not strict JSON or not an object names nothing.
+    A body with no single meaning is ambiguous. A body that opens a JSON object but is not strict JSON is
+    judged on the identity fields it names before its first unreadable field; any other body names nothing.
     """
     try:
         record = destination_record(raw)
     except AmbiguousRecord:
         return "destination_record_ambiguous"
     except ValueError:
-        return None
+        named = [(name, value) for name, value in _leading_fields(raw) if name in WRITE_IDENTITY]
+        if len({name for name, _ in named}) < len(named):
+            return "destination_record_ambiguous"
+        record = dict(named)
     if not isinstance(record, dict):
         return None
     if (("idempotency_key" in record and record["idempotency_key"] != key) or
