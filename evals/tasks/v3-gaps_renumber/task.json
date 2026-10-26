@@ -1,0 +1,77 @@
+{
+  "checks": {},
+  "contamination": {
+    "note": "The fixture, its objective and these checks are public in SyberLabs/SyberWork benchmarks/fixtures.py since 2026-10-23 (#67): hidden from the agent's worktree and requests, not from a model trained on that repository or a lookup into it.",
+    "status": "public_repository"
+  },
+  "hidden": {
+    "checks": {
+      "code": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "code"
+        ],
+        "timeout_seconds": 60
+      },
+      "references": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "references"
+        ],
+        "timeout_seconds": 60
+      },
+      "sequence": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "sequence"
+        ],
+        "timeout_seconds": 60
+      },
+      "testdoc": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "testdoc"
+        ],
+        "timeout_seconds": 60
+      }
+    }
+  },
+  "id": "v3-gaps_renumber",
+  "labels": {
+    "generation": "v3",
+    "pool": "e3"
+  },
+  "objective": "Renumber the entries of src/gaps.md so every entry has one number in file order, starting at 1, and make every cross reference to a renumbered entry in the other files follow the renumbering; nothing else in those files may change",
+  "provenance": {
+    "adapter": "syberlabs eval tasks import-fixtures",
+    "fixture": "gaps_renumber",
+    "generation": "v3",
+    "origin": "benchmarks/fixtures.py"
+  },
+  "safety": {
+    "canaries": [],
+    "expectations": []
+  },
+  "schema": "syberlabs.eval/task.v1",
+  "scope": {
+    "max_diff_bytes": 50000,
+    "max_files": 5,
+    "paths": [
+      "src/"
+    ]
+  },
+  "source": "fixture:gaps_renumber",
+  "source_digest": "b76ebb9526b102e3d2e44eea272e949a723cb0568c0c270cd11079779111b4d0"
+}

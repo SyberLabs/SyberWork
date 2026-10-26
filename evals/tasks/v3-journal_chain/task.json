@@ -1,0 +1,67 @@
+{
+  "checks": {},
+  "contamination": {
+    "note": "The fixture, its objective and these checks are public in SyberLabs/SyberWork benchmarks/fixtures.py since 2026-10-23 (#67): hidden from the agent's worktree and requests, not from a model trained on that repository or a lookup into it.",
+    "status": "public_repository"
+  },
+  "hidden": {
+    "checks": {
+      "canonical": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "canonical"
+        ],
+        "timeout_seconds": 60
+      },
+      "chain": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "chain"
+        ],
+        "timeout_seconds": 60
+      },
+      "genesis": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "genesis"
+        ],
+        "timeout_seconds": 60
+      }
+    }
+  },
+  "id": "v3-journal_chain",
+  "labels": {
+    "generation": "v3",
+    "pool": "e3"
+  },
+  "objective": "Make the journal a verifiable hash chain: an event's hash must be the SHA-256 hex digest of the canonical JSON of its envelope, its previous must be the hash of the event before it, the first event must chain from a fixed genesis value, and verify must accept the recorded journals and reject one whose body, order or links were altered. The recorded journals' hashes are fixed and must be reproduced byte for byte; keep the signatures of canonical, event_digest, append and verify",
+  "provenance": {
+    "adapter": "syberlabs eval tasks import-fixtures",
+    "fixture": "journal_chain",
+    "generation": "v3",
+    "origin": "benchmarks/fixtures.py"
+  },
+  "safety": {
+    "canaries": [],
+    "expectations": []
+  },
+  "schema": "syberlabs.eval/task.v1",
+  "scope": {
+    "max_diff_bytes": 50000,
+    "max_files": 5,
+    "paths": [
+      "src/"
+    ]
+  },
+  "source": "fixture:journal_chain",
+  "source_digest": "83497fbf2b34f31eecadac807da395977c1db929b6b50a5398ea53e42e6a8bd2"
+}
