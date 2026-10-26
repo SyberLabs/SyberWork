@@ -36,6 +36,13 @@ async function switchTo(name) {
   await page.waitForFunction(n => document.querySelector('#identity-name').textContent === n, name);
 }
 // Click a governed button. Confirmed actions arm on the first press and run on the second.
+// Rule slots fill in place from GET .../explain; wait until none is still reading.
+async function rulesSettled(selector) {
+  await page.waitForFunction(sel => {
+    const slots = [...document.querySelectorAll(sel)];
+    return slots.length && !slots.some(s => s.textContent.includes('reading from the server'));
+  }, selector, { timeout: 15000 });
+}
 async function press(label, { confirm = false, scope = '.next' } = {}) {
   const button = page.locator(scope + ' button.btn', { hasText: label }).first();
   await button.click();
@@ -87,6 +94,9 @@ await page.keyboard.press('1');
 await waitNext('Propose issue_order');
 await press('Propose next compiled step');
 await waitNext('independent manager approval');
+// The deciding rule of each step's decision, as the server wrote it.
+await rulesSettled('.path .rule-slot');
+report.flow_rules = await page.locator('.path .rule-line').allTextContents();
 await shot('06-awaiting-approval');
 // The proposer cannot approve its own proposal.
 report.self_approval_blocked = await page.locator('.next button.btn', { hasText: 'Approve' }).isDisabled();
@@ -97,6 +107,11 @@ await shot('07-confirm-approve');
 await page.locator('.btn.armed').click();
 await waitNext('Its proposer (scheduler) executes it');
 step('approved');
+await page.keyboard.press('3');
+await rulesSettled('.proposal .rule-slot[data-when="now"]');
+report.now_rule = await page.locator('.proposal .rule-slot[data-when="now"]').first().textContent();
+await page.keyboard.press('1');
+await waitNext('Its proposer (scheduler) executes it');
 
 await switchTo('scheduler');
 await press('Execute', { confirm: true });
@@ -121,7 +136,30 @@ await shot('10-effects');
 await page.keyboard.press('3');
 await page.waitForSelector('.propose');
 report.planner = await page.textContent('.propose .grid-3 .panel:nth-child(3)');
+await rulesSettled('.proposal .rule-slot');
+report.propose_rules = await page.locator('.proposal .rule-slot[data-when="recorded"]').allTextContents();
+report.placeholder = await page.getByText('not exposed over HTTP').count();
 await shot('11-propose-planner');
+await page.locator('.proposal summary').first().click();
+await shot('11b-deciding-rule');
+
+// Fail closed: an answer that names a rule but does not reproduce the decision, and a refused read.
+await page.route('**/explain?*', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+  proposal_id: 'x', when: 'recorded', status: 'allowed', reason: 'all_checks_passed', rule: 'invented.rule', provenance: {},
+  recorded: { seq: 1, status: 'denied', reason: 'something_else', phase: 'propose', rule: null } }) }));
+await page.reload();
+await page.waitForSelector('.propose');
+await rulesSettled('.proposal .rule-slot');
+report.mismatch_rules = await page.locator('.proposal .rule-slot').allTextContents();
+await page.locator('.proposal summary').first().click();
+await shot('11c-rule-unknown');
+await page.unroute('**/explain?*');
+await page.route('**/explain?*', route => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'unknown_case', detail: 'gone' }) }));
+await page.reload();
+await page.waitForSelector('.propose');
+await rulesSettled('.proposal .rule-slot');
+report.refused_rules = await page.locator('.proposal .rule-slot').allTextContents();
+await page.unroute('**/explain?*');
 
 // Studio: publish contract v2 with a lower order limit, then replay the case against it.
 await switchTo('admin');

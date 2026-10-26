@@ -391,3 +391,36 @@ export function nextVersion(doc, published) {
   draft.version = top + 1;
   return draft;
 }
+
+// The deciding rule of a proposal's original decision, from GET /api/cases/{id}/proposals/{p}/explain
+// ?when=recorded (syberwork/server.py, Work.explain_admission and Work.recorded_decision). The rule
+// shown is the one the server wrote beside the decision. A rule re-derived today stands in only when
+// the server wrote none (a row older than the side table) and the re-derivation reproduces the
+// recorded status and reason. Anything else is reported as unknown, never guessed.
+const named = rule => typeof rule === 'string' && rule !== '';
+export function decidingRule(explained) {
+  if (!explained || typeof explained !== 'object' || explained.when !== 'recorded') return {state: 'unknown', text: 'not returned by the server'};
+  const recorded = explained.recorded;
+  if (!recorded || typeof recorded !== 'object') return {state: 'unknown', text: 'the server holds no decision for this proposal'};
+  const reproduced = named(explained.rule) && explained.status === recorded.status && explained.reason === recorded.reason;
+  if (named(recorded.rule)) {
+    const same = reproduced && explained.rule === recorded.rule;
+    return {state: 'recorded', rule: recorded.rule, seq: recorded.seq, provenance: same ? explained.provenance : null,
+      drift: same ? null : named(explained.rule) ? `${explained.rule} (${explained.status} · ${explained.reason})` : 'nothing'};
+  }
+  if (reproduced) return {state: 'rederived', rule: explained.rule, seq: recorded.seq, provenance: explained.provenance};
+  return {state: 'unknown', seq: recorded.seq, text: 'no rule was written with this decision, and re-deriving it does not reproduce the recorded outcome'};
+}
+
+// Admission as commit would see it now (?when=now). The server's answer, shown as given.
+export function admissionNow(explained) {
+  if (!explained || typeof explained !== 'object' || explained.when !== 'now' || !named(explained.rule)) return {state: 'unknown', text: 'not returned by the server'};
+  return {state: 'now', rule: explained.rule, status: explained.status, reason: explained.reason, provenance: explained.provenance};
+}
+
+// "syberlabs/admission.py:185 limits_amount". The server withholds an absolute module path.
+export function provenanceText(provenance) {
+  if (!provenance || typeof provenance !== 'object') return '';
+  const where = typeof provenance.module === 'string' ? provenance.module + (Number.isInteger(provenance.line) ? ':' + provenance.line : '') : '';
+  return [where, typeof provenance.symbol === 'string' ? provenance.symbol : ''].filter(Boolean).join(' ');
+}

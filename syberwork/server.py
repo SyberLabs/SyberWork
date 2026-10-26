@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from syberlabs.planner import HttpPlanner
 
@@ -16,6 +16,8 @@ from .builder_http import dispatch_get, dispatch_post
 from .core import Rejected, Work, digest
 
 STATIC = Path(__file__).parent / "static"
+# The directory holding syberlabs/ and syberwork/. Explained rule modules are named relative to it.
+PACKAGES = Path(__file__).resolve().parents[1]
 # The console's files. Anything else under static/ is not served.
 ASSETS = {"app.js": "text/javascript", "model.js": "text/javascript", "style.css": "text/css"}
 
@@ -33,6 +35,39 @@ def _version(text: str) -> int:
     if not text.isdecimal() or len(text) > 9:
         raise Rejected("not_found", "contract version must be a positive integer")
     return int(text)
+
+
+def _module(module) -> str | None:
+    """A rule's module relative to the installed packages, or None when it lies outside them.
+
+    Provenance names the module relative to the working directory, else to the packages, else in
+    full (syberlabs/admission.py ``_rule_provenance``). From ``/`` the first form carries this host's
+    layout, so the file is found again in the same order and named from the packages only.
+    """
+    if not isinstance(module, str) or not module:
+        return None
+    for root in (Path.cwd(), PACKAGES):
+        try:
+            found = (root / module).resolve()
+            if found.is_file():
+                return found.relative_to(PACKAGES).as_posix()
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _explanation(work: Work, case_id: str, proposal_id: str, when: str) -> dict:
+    """Work.explain_admission for an HTTP reader, plus the decision as recorded. Appends nothing.
+
+    A rule module outside the installed packages (a rule loaded from elsewhere) is withheld rather
+    than disclose this host's filesystem layout; the rule and symbol are still answered.
+    """
+    explained = work.explain_admission(case_id, proposal_id, when=when)
+    found = explained.get("provenance") or {}
+    module = _module(found.get("module"))
+    return {"proposal_id": proposal_id, "when": when, "status": explained["status"], "reason": explained["reason"],
+            "rule": explained["rule"], "provenance": {"module": module, "symbol": found.get("symbol"), "line": found.get("line")},
+            "recorded": work.recorded_decision(case_id, proposal_id)}
 
 
 def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
@@ -131,6 +166,10 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._json(work.candidates(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
                     self._json({"valid": work.verify_chain(parts[2])})
+                elif len(parts) == 6 and parts[:2] == ["api", "cases"] and parts[3] == "proposals" and parts[5] == "explain":
+                    # The deciding rule for a stored proposal: ?when=recorded (the original decision) or now (the default).
+                    when = parse_qs(urlsplit(self.path).query).get("when", ["now"])[-1]
+                    self._json(_explanation(work, unquote(parts[2]), unquote(parts[4]), when))
                 elif parts[:2] == ["api", "builder"]:
                     outcome = dispatch_get(work, user, parts, urlsplit(self.path).query, self.headers.get("Last-Event-ID"))
                     if isinstance(outcome, dict):

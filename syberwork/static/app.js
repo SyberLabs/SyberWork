@@ -16,6 +16,7 @@ const state = {
   cases: null, casesError: null, meta: new Map(), filter: '',
   contracts: null, policies: null, registry: {actions: null, sources: null},
   verifications: new Map(), replay: null, lastResponse: null, focusProposal: null,
+  explaining: new Map(), explained: new Map(),
   studio: {kind: 'contract', id: null, version: null, tab: 'document', artifacts: null, draft: null, error: null},
   metrics: null,
 };
@@ -507,6 +508,7 @@ function stepAction(step, info) {
       step.attempts > 1 ? h('span', {class: 'muted'}, step.attempts + ' proposals') : null),
     step.facts.length ? h('div', {class: 'facts'}, step.facts.map(factChip)) : null,
     p ? proposalLine(p, info) : null,
+    p ? h('div', {class: 'rule-line'}, h('span', {class: 'muted'}, 'Deciding rule '), ruleSlot(p, 'recorded')) : null,
     h('div', {class: 'step-actions'},
       !p && step.state === 'next' ? compiledButton(info) : null,
       p && p.effect.state === 'none' && step.state === 'approval' ? approveButton(p, info) : null,
@@ -554,6 +556,47 @@ function proposalLine(p, info) {
     missing.map(r => badge('pending', 'needs ' + r)),
     effectBadge(p.effect),
     p.latest && p.latest.phase === 'commit' && p.latest.status !== 'allowed' ? badge('denied', 'refused at commit · ' + p.latest.reason) : null);
+}
+
+// The deciding rule as the server explains it (GET .../proposals/{id}/explain). The slot fills in place
+// when the read returns, so a slow read never re-renders a form someone is typing in. Only a recorded
+// answer is kept: it cannot change. A "now" answer also depends on the policy in force, the clock and
+// other cases' reservations, so each slot sends its own read, never one started before the latest
+// change, and shows when it was read. A failed read is shown and not kept; nothing re-renders on its own.
+function ruleSlot(p, when) {
+  const key = [state.selected, p.id].join('|');
+  const slot = h('span', {class: 'rule-slot', 'data-when': when});
+  const fill = entry => slot.replaceChildren(...[ruleView(entry, when)].flat(Infinity).filter(Boolean));
+  if (when === 'recorded' && state.explained.has(key)) { fill(state.explained.get(key)); return slot; }
+  fill(null);
+  const path = '/api/cases/' + encodeURIComponent(state.selected) + '/proposals/' + encodeURIComponent(p.id) + '/explain?when=' + when;
+  const read = () => api(path).then(body => ({body, at: Date.now()}), error => ({error}));
+  if (when === 'now') { read().then(fill); return slot; }
+  if (!state.explaining.has(key)) {
+    state.explaining.set(key, read().then(entry => {
+      state.explaining.delete(key);
+      if (!entry.error) state.explained.set(key, entry);
+      return entry;
+    }));
+  }
+  state.explaining.get(key).then(fill);
+  return slot;
+}
+function ruleView(entry, when) {
+  if (!entry) return h('span', {class: 'muted'}, 'reading from the server…');
+  if (entry.error) return [badge('unknown', 'unavailable'), ' ', mono(entry.error.code || 'error'), entry.error.detail ? h('span', {class: 'why'}, ' ' + entry.error.detail) : null];
+  const v = when === 'now' ? M.admissionNow(entry.body) : M.decidingRule(entry.body);
+  if (v.state === 'unknown') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text)];
+  const where = M.provenanceText(v.provenance);
+  return [
+    when === 'now' ? [decisionBadge({status: v.status, reason: v.reason}), ' ', h('span', {class: 'muted mono-s'}, v.reason), ' '] : null,
+    mono(v.rule, 'rule-name'),
+    v.state === 'recorded' ? h('span', {class: 'muted'}, ' · written with decision #' + v.seq) : null,
+    v.state === 'rederived' ? h('span', {class: 'muted'}, ' · re-derived: decision #' + v.seq + ' predates written rules') : null,
+    where ? h('span', {class: 'muted mono-s'}, ' · ' + where) : null,
+    when === 'now' && entry.at ? h('span', {class: 'muted'}, ' · read ' + new Date(entry.at).toLocaleTimeString()) : null,
+    v.drift ? h('div', {class: 'why warn'}, 'Re-deriving this decision today gives ' + v.drift + '; the rule above is the one written at the time.') : null,
+  ];
 }
 
 // ---------- the governed buttons ----------
@@ -702,7 +745,8 @@ function proposalCard(p, info) {
     h('div', {class: 'proposal-body'},
       kv([['Proposal', mono(p.id)], ['Proposer', `${p.actor} (${p.roles.join(', ')}) · origin ${p.origin}`], ['Decision', p.decision ? `${p.decision.status} · ${p.decision.reason} · policy v${p.decision.policy}` : '—'],
         p.latest && p.latest.phase === 'commit' ? ['At commit', `${p.latest.status} · ${p.latest.reason}`] : null,
-        ['Deciding rule', h('span', {class: 'muted'}, 'not exposed over HTTP · Work.explain_admission has no route')]]),
+        ['Deciding rule', ruleSlot(p, 'recorded')],
+        p.effect.state === 'none' && p.decision && p.decision.status !== 'denied' ? ['If executed now', ruleSlot(p, 'now')] : null]),
       h('pre', {class: 'json'}, pretty(p.args)),
       h('div', {class: 'step-actions'},
         p.effect.state === 'none' && M.missingApprovals(info.contract, policy(), p).length ? approveButton(p, info) : null,

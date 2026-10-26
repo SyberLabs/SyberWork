@@ -51,8 +51,8 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
 - **Case list**: status per case, plus *effect unknown* and *needs approval* flags. `/` filters,
   `j`/`k` move.
 - **Case tabs** (`1`–`8`):
-  1. *Flow*: the compiled path as steps, each with its required facts, proposal, decision, approvals
-     and effect, and a **Next** banner that names the move and the role that can make it.
+  1. *Flow*: the compiled path as steps, each with its required facts, proposal, decision, deciding
+     rule, approvals and effect, and a **Next** banner that names the move and the role that can make it.
   2. *Evidence*: required facts per action, refresh from a configured source, observations newest
      first (superseded rows dimmed), and a collapsed, amber **Manual assertion** form. A typed value is
      stored `verified: false` and labelled *unverified*. An Attest receipt is labelled *Attest claim ·
@@ -60,7 +60,8 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
   3. *Propose*: the compiled step, a proposal by hand (origins the credential does not hold are
      disabled), and the external planner. When `SYBERWORK_PLANNER_URL` is unset the planner panel is an
      empty state naming the variable; when set, **Ask configured planner** is enabled for a `model`
-     credential. All proposals with their decisions and actions.
+     credential. All proposals with their decisions and actions. An expanded proposal shows its
+     deciding rule and, while it has not been executed and was not denied, what admission answers now.
   4. *Effects*: every claimed effect with its outcome, idempotency key, destination response or proof,
      and status checks. Attest observations on the case are called out as reconciling nothing.
   5. *History*: the hash chain, head first. Each row shows its hash; expanded, its predecessor hash and
@@ -104,7 +105,7 @@ refreshes and proposals act at once, because they are either read-only or pass t
 ## Routes added
 
 All are `GET`, require a bearer token, and append nothing (`tests/test_console.py`
-`test_reads_append_nothing`).
+`test_reads_append_nothing`, `test_explain_appends_nothing_and_writes_no_row`).
 
 | Route | Who | Returns |
 |---|---|---|
@@ -113,6 +114,7 @@ All are `GET`, require a bearer token, and append nothing (`tests/test_console.p
 | `/api/contracts/{id}/{version}` | any principal | the stored contract (the same document `GET /api/cases/{id}` already returns for a case) |
 | `/api/policies` | any principal | `[{version, body, digest}]` |
 | `/api/actions`, `/api/sources` | admin | installed definitions by name. They contain credential variable names, never values. |
+| `/api/cases/{id}/proposals/{proposal}/explain?when=recorded\|now` | any principal, like `/api/cases/{id}` | `Work.explain_admission` (`status`, `reason`, `rule`, `provenance: {module, symbol, line}`) and `recorded`: the proposal's first decision as stored, with the rule id written beside it on the side channel (`null` for rows older than that table). `when` defaults to `now`, as in `Work`. |
 
 A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 not_found` instead of
 `500 internal_error`.
@@ -134,8 +136,16 @@ A malformed version in `/api/contracts/{id}/{version}[/artifacts]` is now `404 n
 
 Known gaps, stated rather than faked:
 
-- **Deciding rule**: `Work.explain_admission` has no HTTP route. Each proposal shows *Deciding rule:
-  not exposed over HTTP* instead of guessing it.
+- **Deciding rule** (closed): the Flow step and the Propose card read
+  `GET /api/cases/{id}/proposals/{p}/explain`. The rule shown is the one the server wrote beside the
+  decision (*written with decision #n*). A rule re-derived today stands in only when no rule was written
+  (an older row) and the re-derivation reproduces the recorded status and reason; if it does not, the
+  console says *unknown* instead of naming a rule. A re-derivation that disagrees with the written rule
+  is shown as a warning below it, never in its place. A failed read shows *unavailable* and the error
+  code. *If executed now* is never cached: the answer also depends on the policy in force, the clock and
+  other cases' reservations, so each render asks again and shows when the server answered. The route
+  names the rule's module relative to the installed packages, whatever directory `serve` runs from, and
+  withholds a module outside them, so it never discloses the host's filesystem layout.
 - **JCS side records** (`Work.side_channel`), **witness and certificate**, and **per-work-item metrics**
   (`/metrics/work_items`) are not shown in the console.
 - **Builder API** (`/api/builder/*`) is a separate surface and is not part of this console.
@@ -149,6 +159,8 @@ Known gaps, stated rather than faked:
   readable by any authenticated principal, including `model` and `compiled` credentials. Contract
   bodies were already readable through `GET /api/cases/{id}`. Policy bodies are new to non-admins,
   and an economic policy carries budget limits. Restricting `/api/policies` to admin and operator
-  roles is a one-line change if wanted.
+  roles is one line on the server, but the console reads the policy's `approval_role` to forecast who
+  may approve, and the `manager` identity (the approver) holds neither role. The restriction therefore
+  also needs a policy-free approval forecast for that identity. It is not made here.
 - The README's API list does not mention the new read routes. README wording is a public claim
   (Class P in `AGENTS.md`), so that line is left for a human key.

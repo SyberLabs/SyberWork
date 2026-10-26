@@ -231,6 +231,8 @@ ol.path { list-style: none; margin: 0 0 var(--s4); padding: 0; display: grid; ga
 .fact { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; font-size: 12px; }
 .fact-state { color: var(--ink-2); }
 .proposal-line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.rule-line { font-size: 12px; }
+.rule-line .why.warn, .rule-slot .why.warn { margin-top: 2px; }
 .step-actions { display: flex; gap: var(--s3); flex-wrap: wrap; align-items: flex-start; }
 .step-actions:empty { display: none; }
 details.response summary { font-weight: 500; }

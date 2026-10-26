@@ -23,6 +23,13 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   const cases = JSON.parse(readFileSync(process.env.PARITY, 'utf8'));
   for (const c of cases.reconciliation) assert.equal(M.verifiedReconciliation(c.event), c.expected, JSON.stringify(c.event));
   for (const c of cases.approval) assert.deepEqual(M.approvalRoles(c.contract, c.policy, c.action), c.expected);
+  assert.ok(cases.explain.length);
+  for (const c of cases.explain) {
+    const view = c.when === 'now' ? M.admissionNow(c.body) : M.decidingRule(c.body);
+    assert.equal(view.state, c.when === 'now' ? 'now' : 'recorded');
+    assert.equal(view.rule, c.rule);
+    assert.ok(M.provenanceText(view.provenance).startsWith(c.provenance), M.provenanceText(view.provenance));
+  }
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -190,4 +197,52 @@ test('drafts only ever add a version', () => {
   assert.equal(M.parseInput('integer', ' 2 '), 2);
   assert.throws(() => M.parseInput('integer', '2.5'));
   assert.equal(M.parseInput('string', '2'), '2');
+});
+
+// GET /api/cases/{id}/proposals/{p}/explain bodies, shaped as syberwork/server.py _explanation returns them.
+const EXPLAINED = {
+  proposal_id: 'p1', when: 'recorded', status: 'needs_approval', reason: 'approval_required:manager', rule: 'approval.required',
+  provenance: { module: 'syberlabs/admission.py', symbol: 'approval_required', line: 300 },
+  recorded: { seq: 9, status: 'needs_approval', reason: 'approval_required:manager', phase: 'propose', rule: 'approval.required' },
+};
+
+test('the deciding rule is the one the server wrote beside the decision', () => {
+  const view = M.decidingRule(EXPLAINED);
+  assert.deepEqual([view.state, view.rule, view.seq, view.drift], ['recorded', 'approval.required', 9, null]);
+  assert.equal(M.provenanceText(view.provenance), 'syberlabs/admission.py:300 approval_required');
+});
+
+test('a re-derivation that disagrees is shown as drift, never as the deciding rule', () => {
+  const view = M.decidingRule({ ...EXPLAINED, status: 'denied', reason: 'amount_exceeds_limit', rule: 'limits.amount' });
+  assert.equal(view.state, 'recorded');
+  assert.equal(view.rule, 'approval.required');
+  assert.equal(view.provenance, null, 'provenance belongs to the re-derived rule, so it is not attached to the written one');
+  assert.equal(view.drift, 'limits.amount (denied · amount_exceeds_limit)');
+});
+
+test('an older decision without a written rule uses the re-derived rule only when it reproduces the outcome', () => {
+  const older = { ...EXPLAINED, recorded: { ...EXPLAINED.recorded, rule: null } };
+  const view = M.decidingRule(older);
+  assert.deepEqual([view.state, view.rule], ['rederived', 'approval.required']);
+  const moved = M.decidingRule({ ...older, status: 'allowed', reason: 'all_checks_passed', rule: 'admission.passed' });
+  assert.equal(moved.state, 'unknown');
+  assert.equal(moved.rule, undefined);
+});
+
+test('a missing, malformed or wrong-kind answer is unknown rather than guessed', () => {
+  for (const body of [null, undefined, {}, 'limits.amount', { ...EXPLAINED, when: 'now' }, { ...EXPLAINED, recorded: null },
+    { ...EXPLAINED, rule: '', recorded: { ...EXPLAINED.recorded, rule: '' } }, { ...EXPLAINED, rule: 7, recorded: { ...EXPLAINED.recorded, rule: ['x'] } }]) {
+    const view = M.decidingRule(body);
+    assert.equal(view.state, 'unknown', JSON.stringify(body));
+    assert.equal(view.rule, undefined);
+  }
+  assert.equal(M.admissionNow(EXPLAINED).state, 'unknown', 'a recorded answer is not a forecast of now');
+  assert.equal(M.admissionNow({ ...EXPLAINED, when: 'now', rule: null }).state, 'unknown');
+  const now = M.admissionNow({ ...EXPLAINED, when: 'now', status: 'allowed', reason: 'all_checks_passed', rule: 'admission.passed' });
+  assert.deepEqual([now.state, now.rule, now.status], ['now', 'admission.passed', 'allowed']);
+});
+
+test('provenance text omits a withheld module', () => {
+  assert.equal(M.provenanceText({ module: null, symbol: 'custom_rule', line: 4 }), 'custom_rule');
+  assert.equal(M.provenanceText(null), '');
 });
