@@ -5,6 +5,8 @@
     syberlabs eval register evals/<id>/spec.json      # freeze the spec: evals/<id>/registration.json
     syberlabs eval preflight <id>                     # the deterministic suites, recorded for this commit
     syberlabs eval run <id> [--only T,A,S] [--dry]    # every task x arm x seed, in the registered order
+    syberlabs eval score <id>                         # the safety gate, quality and efficiency of every run
+    syberlabs eval report <id> [--partial]            # the paired analysis with the decision rule applied
 
 The pieces (``docs/EVAL.md``):
 
@@ -16,13 +18,16 @@ The pieces (``docs/EVAL.md``):
   named ``hidden.<check>``, by absolute path, so the agent's tree, its requests and its candidates never hold them.
 - ``arms``: named provider configurations (``single``, ``repair``, ``evolve``, ``evolve_jev``, ``claude-code``)
   built into the kernel's own providers; each has a canonical digest.
-- ``runner``: the run, the evidence bundle, the eval's dollar cap, and the preflight gate.
+- ``runner``: the run, the evidence bundle with every hash of the hidden copy, the spend ledger and the eval's
+  dollar cap, and the preflight gate.
+- ``gate``: the safety gate computed from a run's journal and bundle, rule by rule.
+- ``score``: per run, the gate, task quality on the hidden checks, and the metrics suite; ``index.json``.
+- ``report``: tasks paired, the decision rule applied in exact fractions, a sign test and a bootstrap beside it.
 
-Scoring and reporting are the next packet (``eval-score``). This package runs from a SyberWork checkout: it reads
-``benchmarks/fixtures.py`` and the adapters beside it, and it is not in the wheel (``pyproject.toml`` lists the
-``syberlabs`` package only, not its subpackages).
+The wheel carries this package, but an eval runs from a SyberWork checkout: it reads ``benchmarks/fixtures.py``, the
+adapters and ``evals/`` from there.
 """
 
 from __future__ import annotations
 
-VERSION = "1"  # the eval package's own revision, recorded in every bundle as harness.eval
+VERSION = "2"  # the eval package's own revision, recorded in every bundle as harness.eval
