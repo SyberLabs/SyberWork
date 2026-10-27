@@ -523,7 +523,8 @@ class Fixed(GroundTruth):
         folder, key = self.root.parent / "transport-records", secrets.token_hex(32)
         self.server.plan = {"/v1/searches": [HOLD]}
         for base_url in (self.server.url, dead_url()):
-            client = githits.Client(token=self.token, base_url=base_url, record_dir=folder, record_key=key, timeout=1)
+            client = githits.Client(token=self.token, base_url=base_url, record_dir=folder, record_key=key,
+                                    timeout=1 if base_url == self.server.url else 5)
             with self.assertRaises(githits.GitHitsError):
                 client.search("requests retry", ["pypi:requests"])
         self.assertEqual(len(self.server.log), 1, "the timed-out request reached the server; the refused one did not")

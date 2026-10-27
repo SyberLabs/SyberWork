@@ -467,8 +467,10 @@ class SentOrNot(FakeCase):
         self.fake.server.handle_error = lambda request, address: None
         self.fake.script["/v1/searches"] = lambda request: (release.wait(30), (200, {}, b"{}"))[1]
         for base_url in (self.fake.url, dead_url()):
+            # A Windows refused connect can take ~2 seconds. Do not turn that
+            # known pre-send case into an ambiguous one-second connect timeout.
             client = githits.Client(token=self.token, base_url=base_url, record_dir=self.folder.name,
-                                    record_key=self.key, timeout=1)
+                                    record_key=self.key, timeout=1 if base_url == self.fake.url else 5)
             with self.assertRaises(githits.GitHitsError) as caught:
                 client.search("requests retry", ["pypi:requests"])
             self.assertEqual(caught.exception.code, "transport")

@@ -918,12 +918,11 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.fake = FakeGitHits()
         self.addCleanup(self.fake.close)
         self.token = "ghtest_" + secrets.token_hex(16)
-        patcher = mock.patch.dict(os.environ, {githits.TOKEN_ENV: self.token, githits.URL_ENV: self.fake.url})
+        env = {k: v for k, v in os.environ.items() if not claude_code.githits_variable(k)}
+        env.update({githits.TOKEN_ENV: self.token, githits.URL_ENV: self.fake.url})
+        patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in (githits.EXCLUDE_ENV, githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.SESSION_ENV,
-                     githits.AGENT_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV):
-            os.environ.pop(name, None)
 
     def arm_b(self, kit, claude, **kwargs):
         kwargs.setdefault("max_calls", 1)
