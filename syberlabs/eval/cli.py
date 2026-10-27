@@ -1,4 +1,4 @@
-"""``syberlabs eval ...``: register, tasks, run, preflight; ``score`` and ``report`` wait for the eval-score packet."""
+"""``syberlabs eval ...``: register, tasks, run, preflight, score, report."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 
 from syberlabs.eval.spec import HARNESS
-
-NOT_YET = "not yet: eval-score packet"
 
 
 def add_parser(commands) -> None:
@@ -33,24 +31,55 @@ def add_parser(commands) -> None:
     run.add_argument("--only", metavar="TASK,ARM,SEED", help="only these runs; empty or * is any")
     run.add_argument("--dry", action="store_true", help="print the order and what is done; run nothing")
     run.add_argument("--work", help="where runs' temporary repositories go (default: the system temporary directory)")
-    run.add_argument("--keep-work", action="store_true", help="keep each run's repository and kit home")
+    run.add_argument("--keep-work", action="store_true", help="keep each run's repository, kit home and hidden copy")
+    run.add_argument("--hidden-root", metavar="DIR",
+                     help="the host root for each run's kit home and hidden copy, each under a random name "
+                          "(default: <system temp>/syberlabs-eval-host)")
     run.add_argument("--seed-env", default="SYBERLABS_CERTIFICATE_SEED", metavar="NAME",
                      help="the variable naming the certificate seed (unset: runs are recorded uncertified)")
     run.add_argument("--json", action="store_true")
     preflight = steps.add_parser("preflight", help="run the deterministic suites and record them for this commit")
     preflight.add_argument("id")
-    for name in ("score", "report"):
-        stub = steps.add_parser(name, help=NOT_YET)
-        stub.add_argument("id", nargs="?")
+    scoring = steps.add_parser("score", help="the safety gate, task quality and efficiency of every run: "
+                                             "runs/<run>/score.json and index.json")
+    scoring.add_argument("id")
+    scoring.add_argument("--json", action="store_true")
+    reporting = steps.add_parser("report", help="the paired analysis with the decision rule applied: report.md and "
+                                                "report.json")
+    reporting.add_argument("id")
+    reporting.add_argument("--partial", action="store_true",
+                           help="report although registered runs are missing; labelled partial everywhere")
+    reporting.add_argument("--json", action="store_true")
 
 
 def run(args) -> int:
     from syberlabs.eval import runner, spec, tasks
 
     root = Path(args.evals)
-    if args.eval_command in ("score", "report"):
-        print(NOT_YET)
-        return 2
+    if args.eval_command == "score":
+        from syberlabs.eval import score
+
+        index = score.score_eval(root, args.id, log=None if args.json else print)
+        if args.json:
+            print(json.dumps(index, indent=2, sort_keys=True))
+        else:
+            gates = [row["gate"] for row in index["runs"].values()]
+            print(f"{args.id}: scored {len(gates)} run(s); gate pass {gates.count('pass')}, fail {gates.count('fail')}, "
+                  f"incomplete {gates.count('incomplete')}; index {score.sha256(root / args.id / 'index.json')[:12]}")
+        return 0
+    if args.eval_command == "report":
+        from syberlabs.eval import report
+
+        found, md, js = report.write(root, args.id, partial=args.partial)
+        if args.json:
+            print(json.dumps(found, indent=2, sort_keys=True))
+        else:
+            print(found["decision"]["line"])
+            print(f"safety gate: pass {found['safety']['gate']['pass']}, fail {found['safety']['gate']['fail']}, "
+                  f"incomplete {found['safety']['gate']['incomplete']}"
+                  + ("; a run failed the gate: no capability claim" if found["safety"]["claim_blocked"] else ""))
+            print(f"wrote {md} ({report.digest_of(md)[:12]}) and {js} ({report.digest_of(js)[:12]})")
+        return 0
     if args.eval_command == "register":
         found = spec.register(args.spec)
         print(f"registered {found['eval']}: spec {found['spec_digest'][:12]}, {len(found['task_digests'])} tasks "
@@ -80,7 +109,8 @@ def run(args) -> int:
               + (" (checkout differs from its commit: run will refuse it)" if found["dirty"] else ""))
         return 0 if found["passed"] else 1
     found = runner.run_eval(root, args.id, only=args.only, dry=args.dry, work_root=args.work,
-                            keep_work=args.keep_work, seed_env=args.seed_env, log=None if args.json else print)
+                            keep_work=args.keep_work, seed_env=args.seed_env, log=None if args.json else print,
+                            hidden_root=args.hidden_root)
     if args.json:
         print(json.dumps(found, indent=2, sort_keys=True))
     else:

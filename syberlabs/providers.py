@@ -306,18 +306,25 @@ class RepairProvider:
     and ends the search with its code, as for ``CommandProvider``. ``trace`` holds one entry per call,
     ``{call, parent, feedback, outcome, candidate, score}`` (``outcome``: ``passed``, ``failed``, ``out_of_scope``,
     ``unevaluated``, ``refused:<reason>`` or ``provider_error``), then ``{stopped, calls, refused}``.
+
+    ``feedback_filter`` is an optional host hook: a callable that receives each ``feedback`` object before it is
+    put on a request and returns the object to send, or None to send no ``feedback`` at all. The default, None,
+    sends ``repair_feedback`` unchanged, so every caller that does not set it gets the requests it always got.
+    ``syberlabs.eval`` sets it to enforce an eval's ``hidden_feedback`` mode (``docs/EVAL.md``).
     """
 
     operators = ("patch",)
 
     def __init__(self, argv: Sequence[str], *, name: str = "repair", revision: str = "1", timeout: int = 300,
-                 cwd: str | Path | None = None, max_calls: int | None = None):
+                 cwd: str | Path | None = None, max_calls: int | None = None,
+                 feedback_filter: Callable[[dict], dict | None] | None = None):
         if not argv or any(not isinstance(arg, str) for arg in argv):
             raise Rejected("invalid_provider", "argv must be a non-empty list of strings")
         if max_calls is not None and (type(max_calls) is not int or max_calls < 1):
             raise Rejected("invalid_provider", "max_calls must be a positive integer, or None for the candidate budget")
         self.argv, self.name, self.revision, self.timeout, self.cwd = list(argv), name, revision, timeout, cwd
         self.max_calls = max_calls
+        self.feedback_filter = feedback_filter
         self.calls, self.usage = 0, []
         self.trace: list[dict] = []
 
@@ -345,6 +352,8 @@ class RepairProvider:
             "seed": rng.randrange(2**31),
         }
         feedback = repair_feedback(space, previous) if previous is not None else None
+        if feedback is not None and self.feedback_filter is not None:
+            feedback = self.feedback_filter(feedback)
         if feedback is not None:
             request["feedback"] = feedback
         return request
