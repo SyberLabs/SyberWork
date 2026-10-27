@@ -61,6 +61,8 @@ def main() -> None:
         # The venv comes first; the rest of PATH is kept so the Build Thread example can find git.
         env = {"PATH": os.pathsep.join([str(python.parent), os.environ.get("PATH", "")]), "HOME": str(outside),
                "PYTHONNOUSERSITE": "1"}
+        # Windows' TLS provider needs the system directory even in a clean venv.
+        env.update({name: os.environ[name] for name in ("SystemRoot", "WINDIR") if name in os.environ})
         origin = run([str(python), "-c", "import syberlabs, syberwork; print(syberlabs.__file__); print(syberwork.__file__)"],
                      cwd=outside, env=env).split()
         if any(str(ROOT) in path or "site-packages" not in path for path in origin):
