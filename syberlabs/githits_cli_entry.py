@@ -13,6 +13,10 @@ It accepts only the five lookups (``githits.LOOKUPS``: search, example, read, li
 exists, so they write no record; ``doctor`` is the operator's, through ``syberlabs githits doctor``. ``example`` has
 no ``--license-mode`` here and always sends ``license_mode: strict``.
 
+A ``SIGTERM`` (how a Bash tool ends a command past its timeout) becomes ``SystemExit`` once a lookup is parsed, so
+a launcher ended after its request left still writes that call's record (``githits.Client.call`` records any
+interruption) before it exits. A ``SIGKILL`` cannot be caught: that call stays unrecorded, and the host flags
+``githits_unrecorded``.
 Before it prints anything it runs ``cli.survive_unicode()``, as ``syberlabs`` itself does: under ``-I`` on Windows a
 piped stdout is cp1252, and a result holding a character outside it (a box-drawing line, an emoji) must print with
 that character replaced, not raise. The client delivers the output before it writes the call's record, so a print
@@ -21,10 +25,15 @@ that still fails is recorded ``error`` and never follows an ``ok`` record (``git
 
 from __future__ import annotations
 
+import signal
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent  # <host checkout>/syberlabs
+
+
+def _terminated(signum, frame):
+    raise SystemExit(128 + signum)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -48,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(words)
     except SystemExit as exc:  # argparse: a usage error (2), or an operation's --help (0), which is no lookup either
         return 2 if exc.code in (0, None) else exc.code
+    try:
+        signal.signal(signal.SIGTERM, _terminated)
+    except (AttributeError, ValueError, OSError):  # no SIGTERM here, or not the main thread: run as before
+        pass
     return githits.run(args)
 
 

@@ -925,6 +925,44 @@ class Transport(FakeCase):
 
 
 class Records(FakeCase):
+    def test_an_ambiguous_write_error_cannot_claim_that_nothing_was_sent(self):
+        arrived = threading.Event()
+        def answer(request):
+            arrived.set()
+            return 200, {}, b"{}"
+        self.fake.script["/v1/searches"] = answer
+        self.fake.server.handle_error = lambda *args: None  # the intentionally closed client may break its pipe
+        original = githits.http.client.HTTPConnection.request
+        def after_send(connection, *args, **kwargs):
+            original(connection, *args, **kwargs)
+            self.assertTrue(arrived.wait(3), "the real loopback server received the request")
+            raise BrokenPipeError("injected after the real request")
+        with mock.patch.object(githits.http.client.HTTPConnection, "request", after_send):
+            with self.assertRaises(githits.GitHitsError):
+                self.client().search("q", ["pypi:requests"])
+        self.assertEqual(len(self.fake.requests), 1)
+        [record] = self.records().records
+        self.assertEqual(record["status"], "error")
+        self.assertIsNone(record["sent"], "a wrapped write error cannot establish a pre-send refusal")
+
+    def test_an_interrupted_tail_is_ignored_without_hiding_the_next_record(self):
+        client = self.client()
+        client.search("first", ["pypi:requests"])
+        path = Path(self.folder.name) / githits.RECORD_FILE
+        with open(path, "ab") as handle:
+            handle.write(b'{"op":"search","partial":"\xff')
+        client.search("second", ["pypi:requests"])
+        read = self.records()
+        self.assertEqual((len(read.records), read.ignored), (2, 1))
+        self.assertEqual([r["request_id"] for r in read.records], ["req0001", "req0002"])
+
+    def test_a_write_failure_never_fabricates_a_record(self):
+        with mock.patch.object(githits, "write_record", side_effect=OSError("write refused")):
+            with self.assertRaises(githits.GitHitsError) as caught:
+                self.client().search("q", ["pypi:requests"])
+        self.assertEqual(caught.exception.code, "record_failed")
+        self.assertEqual((len(self.fake.requests), self.records().records), (1, []))
+
     def test_records_hold_digests_and_counts_never_the_query_and_verify_by_mac(self):
         query = "private-looking query " + secrets.token_hex(8)
         client = self.client()

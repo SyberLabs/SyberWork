@@ -16,28 +16,40 @@ every call has a timeout, and a response larger than ``max_bytes`` is refused.
 
 Contamination control, because GitHits indexes public code and SyberLabs' own repositories are public:
 
-(a) a request whose target names an excluded owner or repository is refused (``excluded_target``) before any
-    network call;
+(a) a request whose target names an excluded owner or repository, or whose path, glob or path prefix
+    (``request_paths``) mentions one, is refused (``excluded_target``) before any network call;
 (b) a search, grep or list result, or a read, whose source identity (``locator.repo_url``, a grep hit's
     ``repo_url`` or ``page_url``, the served repository of a list or read) is under an excluded owner is dropped
-    and counted (``results_dropped``);
+    and counted (``results_dropped``), and so is a search hit, grep hit or list entry whose text mentions one as
+    in (c) (a summary is a preview of up to 16 KiB of the content);
 (c) an example, or a read body, whose text or structured references mention ``github.com/<excluded owner>/``
-    (case-insensitive; also GitLab, Codeberg, raw and gist hosts, ``<owner>.github.io``, and the URL-decoded
-    text) is dropped whole and marked ``contamination_blocked``. This is detection, not prevention: GitHits may
-    already have blended an excluded repository into the generated code without citing it, and nothing on this
-    side can see that. Contamination is resolved on the pilot's side (unpublished work items, both arms local, a
-    pinned base); this layer is the backstop, and index-side exclusion at GitHits is optional.
+    (case-insensitive; also GitLab, Codeberg, raw and gist hosts, ``<owner>.github.io``, the owner's own domains
+    ``<owner>.<tld>`` and their subdomains) is dropped whole and marked ``contamination_blocked``. This is
+    detection, not prevention: GitHits may already have blended an excluded repository into the generated code
+    without citing it, and nothing on this side can see that. Contamination is resolved on the pilot's side
+    (unpublished work items, both arms local, a pinned base); this layer is the backstop, and index-side exclusion
+    at GitHits is optional.
+
+Every layer reads a text as typed and as a URL parser (WHATWG URL with IDNA) or a lenient server may read it
+(``_readings``): percent-decoded to a fixed point, NFKC-folded (fullwidth letters are plain) with format
+characters such as a zero-width space removed, the ideographic and fullwidth full stops read as ``.``, a backslash
+as ``/``, a host's port or root dot ignored, and, for a target or locator, ``.``/``..`` path segments resolved and
+whitespace removed. So ``https://github.com:443/SyberLabs/x``, ``https://github.com/x/../SyberLabs/x``, the same
+URL in fullwidth letters and ``github: SyberLabs/x`` are refused as ``github:SyberLabs/x`` is.
 
 License policy: permissive only by default (``PERMISSIVE``), because what an agent takes from a result can land in
 this Apache-2.0 repository, which cannot meet a copyleft license's obligations. Server side, every example asks for
 ``license_mode: strict`` (the only license parameter of the five operations; the document does not say which
-licenses ``strict`` admits). Client side, a result that carries a license is dropped and counted
-(``results_dropped_license``) unless the license, an SPDX expression (``spdx_allows``: ``AND``, ``OR``, ``WITH``
-and parentheses, ``AND`` binding tighter than ``OR``), is on the allow list: copyleft (GPL, LGPL,
-AGPL, MPL, EPL, EUPL, CDDL, SSPL), ``NOASSERTION``, unlisted and missing licenses are dropped. In the 0.1.0 contract
-only an example carries licenses, as ``(SPDX)`` after each source link of its Markdown; an example with a source
-link that has no license, or with no source link, is dropped whole. Search, grep, list and read results carry no
-license field, so they pass this check unjudged until GitHits adds one. ``SYBERLABS_GITHITS_LICENSES`` replaces
+licenses ``strict`` admits); the Claude Code launcher's parser (``launcher_parser``) offers no other. Client side, a
+result that carries a license is dropped and counted (``results_dropped_license``) unless the license, an SPDX
+expression (``spdx_allows``: ``AND``, ``OR``, ``WITH`` and parentheses, ``AND`` binding tighter than ``OR``), is on
+the allow list: copyleft (GPL, LGPL, AGPL, MPL, EPL, EUPL, CDDL, SSPL), ``NOASSERTION``, unlisted and missing
+licenses are dropped. In the 0.1.0 contract only an example carries licenses, as ``(SPDX)`` after each source link
+of its Markdown (a link to a code host in any Markdown or HTML form: inline, titled, angle-bracketed, a reference
+definition, an autolink, an anchor, or a bare URL directly followed by its license), plus any
+``SPDX-License-Identifier:`` tag in its code; an example with a source link that has no license, or with no source
+link, is dropped whole. Search, grep, list and read results carry no license field, so they pass this check
+unjudged until GitHits adds one. ``SYBERLABS_GITHITS_LICENSES`` replaces
 the allow list (a comma list of SPDX ids) or turns the client-side check off (``any``); every record carries the
 digest of the policy in force (``license_policy``).
 
@@ -50,10 +62,15 @@ lets the variable's list replace it.
 ``no_token`` or ``error`` without the token.
 
 With ``SYBERLABS_GITHITS_RECORD_DIR`` and ``SYBERLABS_GITHITS_RECORD_KEY`` set, every call, refused ones included,
+and failed or interrupted ones (an answer this client cannot read, a signal the caller turned into an exception),
 appends one JSON line to ``githits-records.jsonl`` in that directory: ``RECORD_FIELDS`` and ``mac``, an
 HMAC-SHA256 over the record's canonical JSON under the key (``query_guard.sign``, the MAC the query guard's
 decisions use). No query text, no result and no token is stored; ``query_digest`` is the SHA-256 of the canonical
-request. ``read_records`` returns the records whose MAC verifies and counts the rest.
+request. ``sent`` says whether the request was written to the server: false when it never left (an excluded
+target, no token, a connection, TLS or proxy failure), true once it was (an answer, an HTTP error, a read timeout,
+a connection closed before the answer), null when the call was interrupted in flight. So a timeout after GitHits
+received the request and a refused connection no longer leave the same record. ``read_records`` returns the
+records whose MAC verifies and counts the rest.
 """
 
 from __future__ import annotations
@@ -63,7 +80,10 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import os
 import re
+import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -75,7 +95,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from syberlabs.canonical import canonical
-from syberlabs.query_guard import sign, utf8, verify
+from syberlabs.query_guard import fold, sign, utf8, verify
 
 DEFAULT_BASE_URL = "https://api.githits.dev/v1"
 API_PREFIX = "/v1"  # the OpenAPI paths start with it; the base URL ends with it
@@ -96,7 +116,7 @@ LICENSE_KEYS = ("license_spdx_id", "spdx_id", "license_id", "license")  # none i
 RECORD_FILE = "githits-records.jsonl"
 RECORD_FIELDS = ("op", "query_digest", "targets_count", "status", "http_status", "request_id", "results_returned",
                  "results_dropped", "results_dropped_license", "license_policy", "contamination_blocked", "latency_ms",
-                 "rate_limit_remaining", "at")
+                 "rate_limit_remaining", "at", "sent")
 
 OK, EXCLUDED, BLOCKED, ERROR = "ok", "excluded_target", "contamination_blocked", "error"
 STATUSES = (OK, EXCLUDED, BLOCKED, ERROR)
@@ -169,12 +189,14 @@ HEADERS_SENT = ("X-GitHits-Client-Name", "X-GitHits-Client-Version", "X-GitHits-
 class GitHitsError(Exception):
     """A call that failed: ``code`` is stable (``no_token``, ``http_429``, ``malformed_response``, ...). The message
     never holds the token: the client builds it from status codes and the server's problem ``code`` and ``title``,
-    and removes the token from it if the server echoed it."""
+    and removes the token from it if the server echoed it. ``sent`` says whether the request had been written to
+    the server when the call failed (None: not known), as the call's record does."""
 
     def __init__(self, code: str, message: str, http_status: int | None = None, request_id: str | None = None,
-                 problem: str | None = None):
+                 problem: str | None = None, sent: bool | None = None):
         super().__init__(f"{code}: {message}")
         self.code, self.http_status, self.request_id, self.problem = code, http_status, request_id, problem
+        self.sent = sent
 
 
 class Request(NamedTuple):
@@ -212,7 +234,8 @@ class RecordRead(NamedTuple):
 
 class Exclusions:
     """Owners (``SyberLabs``) and repositories (``SyberLabs/SyberWork``) whose content must not reach a result,
-    matched case-insensitively."""
+    matched case-insensitively in every reading ``_readings`` gives (as a URL parser or a lenient target parser
+    would read the text)."""
 
     def __init__(self, entries):
         parsed = []
@@ -227,9 +250,13 @@ class Exclusions:
         mentions, bare = [], []
         for owner, *repo in self.entries:
             tail = (r"/" + re.escape(repo[0]) + r"(?:\.git)?(?![a-z0-9_.-])") if repo else r"(?![a-z0-9_-])"
-            mentions.append(r"(?<![a-z0-9_.-])(?:" + _HOSTS + r")[/:]+(?:repos/)?" + re.escape(owner) + tail)
+            # A host may carry the root label's dot and a port (github.com.:443), which a URL parser drops.
+            mentions.append(r"(?<![a-z0-9_.-])(?:" + _HOSTS + r")\.?(?::\d+)?[/:]+(?:repos/)?"
+                            + re.escape(owner) + tail)
             mentions.append(r"(?<![a-z0-9_.-])" + re.escape(owner) + r"\.github\.io"
                             + (r"/" + re.escape(repo[0]) + r"(?![a-z0-9_.-])" if repo else r"(?![a-z0-9_.-])"))
+            if not repo:  # the owner's own domains: syberlabs.io, www.syberlabs.io, rise.syberlabs.io
+                mentions.append(r"(?<![a-z0-9_-])" + re.escape(owner) + r"\.[a-z0-9-]*[a-z][a-z0-9-]*")
             bare.append(r"^(?:[a-z0-9+.-]+:)?[@/]*" + re.escape(owner) + tail)
         self._mention = re.compile("|".join(mentions), re.IGNORECASE)
         self._bare = re.compile("|".join(bare), re.IGNORECASE)
@@ -245,18 +272,66 @@ class Exclusions:
         return cls(list(DEFAULT_EXCLUDE) + listed)
 
     def mentioned(self, text) -> bool:
-        """True when free text names an excluded owner or repository on a code host (as typed or URL-decoded)."""
+        """True when free text names an excluded owner or repository on a code host, or one of an excluded owner's
+        own domains (``<owner>.<tld>`` and its subdomains), in any of its ``_readings``."""
         if not isinstance(text, str) or not text:
             return False
-        return bool(self._mention.search(text) or self._mention.search(urllib.parse.unquote(text)))
+        return any(self._mention.search(reading) for reading in _readings(text))
 
     def names(self, locator) -> bool:
         """True when a target or repository locator is under an excluded owner: a URL or ``github:owner/repo`` as
-        ``mentioned`` reads it, or a bare ``owner/repo``, ``@owner/package`` or ``registry:owner``."""
+        ``mentioned`` reads it, or a bare ``owner/repo``, ``@owner/package`` or ``registry:owner``, in any of its
+        ``_readings`` as a locator (with ``.`` and ``..`` path segments resolved and whitespace removed too)."""
         if not isinstance(locator, str) or not locator.strip():
             return False
-        text = locator.strip()
-        return self.mentioned(text) or bool(self._bare.search(text) or self._bare.search(urllib.parse.unquote(text)))
+        return any(self._mention.search(reading) or self._bare.search(reading)
+                   for reading in _readings(locator.strip(), locator=True))
+
+
+# The full stops IDNA (UTS 46) reads as a label separator besides ".", after NFKC: ideographic and fullwidth.
+_IDNA_DOTS = str.maketrans({"\u3002": ".", "\uff0e": "."})
+_DOT_SEGMENT = re.compile(r"(?:(?<=[^/]/)|(?<=:)|^)\.(?:/|$)")                              # "./"
+_UP_SEGMENT = re.compile(r"(?:(?<=[^/]/)|(?<=:)|^)(?!\.\.(?:/|$))[^/:]+/\.\.(?:/|$)")        # "segment/../"
+_ROOT_UP = re.compile(r"(?<=//)([^/]+)/\.\.(?=/|$)|(?<=:)\.\.(?:/|$)")  # ".." with nothing to pop: after an
+                                                                        # authority, or a shorthand's colon
+
+
+def _decoded(text: str) -> str:
+    """Percent-decoded to a fixed point, at most four times (a value encoded twice is decoded twice)."""
+    for _ in range(4):
+        once = urllib.parse.unquote(text)
+        if once == text:
+            break
+        text = once
+    return text
+
+
+def _resolved(text: str) -> str:
+    """``.`` and ``..`` path segments resolved as a URL parser resolves them (``https://github.com/x/../o/r`` is
+    ``https://github.com/o/r``), the authority of a ``scheme://`` URL never removed."""
+    for _ in range(64):
+        reduced = _UP_SEGMENT.sub("", _DOT_SEGMENT.sub("", text))
+        reduced = _ROOT_UP.sub(lambda match: match.group(1) or "", reduced)
+        if reduced == text:
+            break
+        text = reduced
+    return text
+
+
+def _readings(text: str, locator: bool = False) -> list:
+    """``text`` as typed, URL-decoded once, and as a URL parser with IDNA (WHATWG URL) or a lenient server may read
+    it: decoded to a fixed point, folded (``query_guard.fold``: NFKC, so fullwidth letters and stops are plain;
+    format characters such as a zero-width space removed; Latin lookalikes mapped), the IDNA full stops read as
+    ``.`` and a backslash as ``/``. A ``locator`` (a target, a repository URL) is also read with its ``.`` and
+    ``..`` segments resolved, and with its whitespace removed (``github: SyberLabs/x``, ``pypi: syberlabs``)."""
+    plain = _decoded(text)
+    if not plain.isascii():
+        plain = _decoded(fold(plain).translate(_IDNA_DOTS))
+    plain = plain.replace("\\", "/")
+    found = [text, urllib.parse.unquote(text), plain]
+    if locator:
+        found += [_resolved(plain), _resolved("".join(plain.split()))]
+    return list(dict.fromkeys(found))
 
 
 def _strings(value):
@@ -404,23 +479,39 @@ def spdx_allows(expression, allowed) -> bool:
     return satisfied(tree)
 
 
-_SOURCE_LINK = re.compile(r"\]\((https?://[^)\s]+)\)(?:[ \t]*\(([^()\n]*(?:\([^()\n]*\)[^()\n]*)*)\))?")
+_LICENSE_AFTER = r"(?:[ \t]*\(([^()\n]*(?:\([^()\n]*\)[^()\n]*)*)\))?"  # "(SPDX)" after a link, one nesting level
+_LINK_TITLE = r"(?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'))?"
+# A link in any form Markdown (or the HTML it allows) writes one, each with the "(SPDX)" that may follow it:
+# [text](url), [text](<url>), [text](url "title"); a reference definition [label]: url; an autolink <url>;
+# <a href="url">text</a>; and a bare URL directly followed by "(...)".
+_SOURCE_LINK = re.compile(
+    r"\]\([ \t]*<?(https?://[^)\s>]+)>?" + _LINK_TITLE + r"[ \t]*\)" + _LICENSE_AFTER
+    + r"|^[ \t]*\[[^\]\n]+\]:[ \t]*<?(https?://[^\s>]+)>?" + _LINK_TITLE + _LICENSE_AFTER
+    + r"|<(https?://[^\s>]+)>" + _LICENSE_AFTER
+    + r"|href[ \t]*=[ \t]*[\"'](https?://[^\"'\s>]+)[\"'][^>\n]*>[^<\n]*</a>" + _LICENSE_AFTER
+    + r"|(?<![\w(<\"'=/])(https?://[^\s<>()\"']+)(?=[ \t]*\()" + _LICENSE_AFTER,
+    re.IGNORECASE | re.MULTILINE)
 _CODE_HOST = re.compile(r"^https?://(?:[a-z0-9-]+\.)*(?:github\.com|gitlab\.com|codeberg\.org|bitbucket\.org"
-                        r"|githubusercontent\.com)/", re.IGNORECASE)
+                        r"|githubusercontent\.com)(?::\d+)?/", re.IGNORECASE)
 _LICENSE_LINE = re.compile(r"^[ \t]*(?:[-*][ \t]*)?\**licen[cs]es?\**[ \t]*:[ \t]*(.+?)[ \t]*$",
                            re.IGNORECASE | re.MULTILINE)
+_SPDX_TAG = re.compile(r"SPDX-License-Identifier:[ \t]*(.*?)[ \t]*(?:\*/|-->)?[ \t]*$", re.IGNORECASE | re.MULTILINE)
 
 
 def example_licenses(data: dict) -> list:
     """The licenses an example names for its sources: the ``(SPDX)`` after each code-host link of its Markdown,
-    ``License:`` lines, and structured ``references`` when present. ``None`` stands for a source with no license,
-    and an example with no source at all is ``[None]``."""
+    whatever form the link takes (``_SOURCE_LINK``), ``License:`` lines, ``SPDX-License-Identifier:`` tags (in its
+    code too), and structured ``references`` when present. ``None`` stands for a source with no license, and an
+    example with no source at all is ``[None]``."""
     found = []
     text = data.get("result") if isinstance(data.get("result"), str) else ""
-    for url, license_text in _SOURCE_LINK.findall(text):
+    for match in _SOURCE_LINK.finditer(text):
+        groups = match.groups()
+        url, license_text = next((groups[i], groups[i + 1]) for i in range(0, len(groups), 2) if groups[i])
         if _CODE_HOST.match(url):
-            found.append(license_text.strip() or None)
+            found.append((license_text or "").strip() or None)
     found += [line.strip("* ") or None for line in _LICENSE_LINE.findall(text)]
+    found += [tag.strip() or None for tag in _SPDX_TAG.findall(text)]
     references = data.get("references") if isinstance(data.get("references"), list) else []
     for reference in references:
         if isinstance(reference, dict):
@@ -562,7 +653,7 @@ def _filter(op: str, data: dict, exclude: Exclusions, licenses: LicensePolicy) -
         if any(exclude.names(item) for item in identities):
             return OK, None, 0, 1, 0
         content = data.get("content") if isinstance(data.get("content"), dict) else {}
-        if exclude.mentioned(content.get("body")):
+        if any(exclude.mentioned(text) for text in _strings(data)):  # the body, and its title and breadcrumbs
             return BLOCKED, None, 0, 1, 0
         if not (licenses.admits(data) and licenses.admits(data.get("metadata"))):
             return OK, None, 0, 0, 1
@@ -578,8 +669,9 @@ def _filter(op: str, data: dict, exclude: Exclusions, licenses: LicensePolicy) -
     if op == "grep":
         hits = data.get("hits") if isinstance(data.get("hits"), list) else []
         clean = [hit for hit in hits if not (isinstance(hit, dict) and (
-            exclude.names(hit.get("repo_url")) or exclude.mentioned(hit.get("page_url"))
-            or exclude.names(((hit.get("read") or {}) if isinstance(hit.get("read"), dict) else {}).get("target"))))]
+            exclude.names(hit.get("repo_url")) or exclude.names(hit.get("page_url"))
+            or exclude.names(((hit.get("read") or {}) if isinstance(hit.get("read"), dict) else {}).get("target"))
+            or any(exclude.mentioned(text) for text in _strings(hit))))]  # the line and its context, as a read body
         kept = [hit for hit in clean if licenses.admits(hit)]
         return OK, {**data, "hits": kept}, len(kept), len(hits) - len(clean), len(clean) - len(kept)
     if op == "list":
@@ -590,18 +682,23 @@ def _filter(op: str, data: dict, exclude: Exclusions, licenses: LicensePolicy) -
         if any(exclude.names(item) for item in identities):
             clean = []
         else:
-            clean = [entry for entry in entries if not (isinstance(entry, dict) and any(
+            clean = [entry for entry in entries if not (isinstance(entry, dict) and (any(
                 exclude.names((entry.get(action) or {}).get("target"))
-                for action in ("read", "browse") if isinstance(entry.get(action), dict)))]
+                for action in ("read", "browse") if isinstance(entry.get(action), dict))
+                or any(exclude.mentioned(text) for text in _strings(entry))))]
         kept = [entry for entry in clean if licenses.admits(entry)] if licenses.admits(data) else []
         return OK, {**data, "entries": kept}, len(kept), len(entries) - len(clean), len(clean) - len(kept)
     raise GitHitsError("unknown_operation", op)
 
 
 def _hit_excluded(hit, exclude: Exclusions) -> bool:
-    locator = hit.get("locator") if isinstance(hit, dict) and isinstance(hit.get("locator"), dict) else {}
-    return (exclude.names(locator.get("repo_url")) or exclude.mentioned(locator.get("source_url"))
-            or exclude.names(locator.get("docs_read_target")))
+    """A search hit served from an excluded owner (its locator), or whose text cites one as a read body would
+    (its title and summary, a preview of up to 16 KiB of the content)."""
+    if not isinstance(hit, dict):
+        return False
+    locator = hit.get("locator") if isinstance(hit.get("locator"), dict) else {}
+    return (any(exclude.names(locator.get(key)) for key in ("repo_url", "source_url", "docs_read_target"))
+            or any(exclude.mentioned(text) for text in _strings(hit)))
 
 
 # ------------------------------------------------------------------------------------------------------------ records
@@ -616,8 +713,22 @@ def write_record(directory, key: str, record: dict) -> None:
     entry["mac"] = record_mac(entry, key)
     folder = Path(directory)
     folder.mkdir(parents=True, exist_ok=True)
-    with open(folder / RECORD_FILE, "a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
+    # Windows' append seek and write are not atomic across launcher processes. Use the
+    # journal's existing OS lock; open the append handle only after acquiring it.
+    from syberlabs.journal import Journal
+    journal = Journal(folder)
+    try:
+        with journal.locked():
+            with open(folder / RECORD_FILE, "a+b") as handle:
+                if handle.tell():
+                    handle.seek(-1, os.SEEK_END)
+                    if handle.read(1) != b"\n":
+                        handle.write(b"\n")  # keep an interrupted tail separate; the reader still rejects it
+                handle.write((json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+    finally:
+        journal.close()
 
 
 def read_records(directory, key: str) -> RecordRead:
@@ -625,7 +736,7 @@ def read_records(directory, key: str) -> RecordRead:
     path = Path(directory) / RECORD_FILE
     found, ignored = [], 0
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except FileNotFoundError:
         return RecordRead([], 0)
     for line in lines:
@@ -642,6 +753,21 @@ def read_records(directory, key: str) -> RecordRead:
             continue
         found.append({field: entry[field] for field in RECORD_FIELDS})
     return RecordRead(found, ignored)
+
+
+def request_paths(request: Request) -> list:
+    """The path arguments a request sends beside its targets: read's ``path``, list's ``paths``, grep's path
+    selectors and search's ``path_prefix``. A server may resolve one against its target as a URL (``//host/...``,
+    ``@host/...``, an absolute URL), so ``call`` refuses one that mentions an excluded owner as it refuses a target."""
+    body = request.body if isinstance(request.body, dict) else {}
+    found = [request.params.get("path"), *(body.get("paths") or [])]
+    filters = body.get("filters") if isinstance(body.get("filters"), dict) else {}
+    found.append(filters.get("path_prefix"))
+    for target in body.get("targets") or []:
+        if isinstance(target, dict):
+            found += [selector.get("value") for selector in target.get("path_selectors") or []
+                      if isinstance(selector, dict)]
+    return [item for item in found if isinstance(item, str)]
 
 
 def query_digest(request: Request) -> str:
@@ -745,7 +871,7 @@ class Client:
     def call(self, request: Request, deliver=None) -> Result:
         """Send ``request`` (unless a target is excluded), filter the answer and record the call. ``deliver``, when
         given, is called with the result before the record is written (the CLI prints there): if it raises
-        ``OSError`` or ``ValueError`` (a closed or broken stream, an unencodable character), the call is recorded
+        any exception (including an interruption), the call is recorded
         ``error`` and ``GitHitsError("output_failed")`` is raised, so a record never says ``ok`` for a result its
         caller did not receive."""
         started = time.monotonic()
@@ -753,32 +879,44 @@ class Client:
                   "status": ERROR, "http_status": None, "request_id": None, "results_returned": 0,
                   "results_dropped": 0, "results_dropped_license": 0, "license_policy": self.licenses.digest,
                   "contamination_blocked": False, "latency_ms": 0,
-                  "rate_limit_remaining": None}
-        if any(self.exclude.names(target) for target in request.targets):
+                  "rate_limit_remaining": None, "sent": False}
+        if (any(self.exclude.names(target) for target in request.targets)
+                or any(self.exclude.mentioned(path) for path in request_paths(request))):
             result = Result(request.op, EXCLUDED, None, None, None, 0, 0, False, None,
-                            reason="a target names an excluded owner or repository; no request was sent")
+                            reason="a target or path names an excluded owner or repository; no request was sent")
             self._finish(record, result, started, None, deliver)
             return result
+        headers = None
         try:
-            status, headers, raw = self._send(request)
-        except GitHitsError as exc:
-            record.update(http_status=exc.http_status, request_id=exc.request_id)
-            self._record(record, None, started, headers=getattr(exc, "headers", None))
-            raise
-        request_id = _request_id(headers, self._scrub)
-        record.update(http_status=status, request_id=request_id)
-        try:
-            data = json.loads(raw.decode("utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("not an object")
-        except ValueError:
+            record["sent"] = None  # in flight: an interruption from here on may come before or after the request left
+            try:
+                status, headers, raw = self._send(request)
+            except GitHitsError as exc:
+                record.update(http_status=exc.http_status, request_id=exc.request_id, sent=exc.sent)
+                headers = getattr(exc, "headers", None)
+                raise
+            request_id = _request_id(headers, self._scrub)
+            record.update(http_status=status, request_id=request_id, sent=True)
+            try:
+                data = json.loads(raw.decode("utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("not an object")
+            except (ValueError, RecursionError):
+                raise GitHitsError("malformed_response", f"HTTP {status} with a body that is not a JSON object",
+                                   status, request_id) from None
+            try:
+                state, kept, returned, dropped, unlicensed = _filter(request.op, data, self.exclude, self.licenses)
+            except (AttributeError, TypeError, KeyError, ValueError, RecursionError):
+                raise GitHitsError("malformed_response", f"HTTP {status} with a body outside the pinned contract",
+                                   status, request_id) from None
+            result = Result(request.op, state, kept, status, request_id, returned, dropped, state == BLOCKED,
+                            _remaining(headers), unlicensed,
+                            "the response cites an excluded owner; it was dropped whole" if state == BLOCKED else None)
+        except BaseException:
+            # The request may have left: every failure is recorded, an interruption (a signal turned into an
+            # exception, as the launcher's entry does with SIGTERM) included, before it propagates.
             self._record(record, None, started, headers=headers)
-            raise GitHitsError("malformed_response", f"HTTP {status} with a body that is not a JSON object",
-                               status, request_id) from None
-        state, kept, returned, dropped, unlicensed = _filter(request.op, data, self.exclude, self.licenses)
-        result = Result(request.op, state, kept, status, request_id, returned, dropped, state == BLOCKED,
-                        _remaining(headers), unlicensed,
-                        "the response cites an excluded owner; it was dropped whole" if state == BLOCKED else None)
+            raise
         self._finish(record, result, started, headers, deliver)
         return result
 
@@ -787,10 +925,12 @@ class Client:
         if deliver is not None:
             try:
                 deliver(result)
-            except (OSError, ValueError) as exc:  # UnicodeEncodeError is a ValueError
+            except BaseException as exc:  # includes interruptions after the response arrived
                 failure = exc
         self._record(record, result, started, headers=headers, delivered=failure is None)
         if failure is not None:
+            if not isinstance(failure, Exception):
+                raise failure
             raise GitHitsError("output_failed", f"the result could not be written: {type(failure).__name__}",
                                record.get("http_status"), record.get("request_id")) from None
 
@@ -805,7 +945,7 @@ class Client:
         record = {"op": request.op, "query_digest": query_digest(request), "targets_count": 0, "status": ERROR,
                   "http_status": None, "request_id": None, "results_returned": 0, "results_dropped": 0,
                   "results_dropped_license": 0, "license_policy": self.licenses.digest,
-                  "contamination_blocked": False, "latency_ms": 0, "rate_limit_remaining": None}
+                  "contamination_blocked": False, "latency_ms": 0, "rate_limit_remaining": None, "sent": None}
         report = {"status": "error", "http_status": None, "problem": None, "request_id": None,
                   "rate_limit_remaining": None, "retry_after": None, "base_url": self.base_url,
                   "token": "set" if self._token else "unset"}
@@ -813,20 +953,23 @@ class Client:
             status, headers, raw = self._send(request)
         except GitHitsError as exc:
             headers = getattr(exc, "headers", None)
-            record.update(http_status=exc.http_status, request_id=exc.request_id)
+            record.update(http_status=exc.http_status, request_id=exc.request_id, sent=exc.sent)
             self._record(record, None, started, headers=headers)
             state = ("no_token" if exc.code == "no_token" else "auth" if exc.http_status in (401, 403)
                      else "rate_limited" if exc.http_status == 429 else "error")
             report.update(status=state, http_status=exc.http_status, request_id=exc.request_id,
                           problem=exc.problem or (exc.code if state == "error" else None),
-                          rate_limit_remaining=_remaining(headers), retry_after=_retry_after(headers),
+                          rate_limit_remaining=_remaining(headers), retry_after=_retry_after(headers, self._scrub),
                           latency_ms=record["latency_ms"])
             return report
+        except BaseException:
+            self._record(record, None, started)  # interrupted: the request may have left
+            raise
         request_id = _request_id(headers, self._scrub)
-        record.update(http_status=status, request_id=request_id)
+        record.update(http_status=status, request_id=request_id, sent=True)
         try:
             ok = isinstance(json.loads(raw.decode("utf-8")), list)
-        except ValueError:
+        except (ValueError, RecursionError):
             ok = False
         record["status"] = OK if ok else ERROR
         self._record(record, None, started, headers=headers)
@@ -837,7 +980,7 @@ class Client:
 
     def _send(self, request: Request) -> tuple[int, object, bytes]:
         if not self._token:
-            raise GitHitsError("no_token", f"set {TOKEN_ENV}")
+            raise GitHitsError("no_token", f"set {TOKEN_ENV}", sent=False)
         operation = DOCTOR if request.op == "doctor" else OPERATIONS[request.op]
         url = self.base_url + operation.path[len(API_PREFIX):]
         if request.params:
@@ -861,10 +1004,21 @@ class Client:
             with exc:
                 error = self._http_error(exc)
             raise error from None
-        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as exc:
-            reason = getattr(exc, "reason", None) or type(exc).__name__
-            # Scrubbed before it is cut: a token across the cut would otherwise leave its first characters.
-            raise GitHitsError("transport", self._scrub(f"{type(exc).__name__}: {reason}")[:200]) from None
+        except ValueError as exc:
+            raise self._transport(exc, sent=False) from None
+        except urllib.error.URLError as exc:
+            # urllib also wraps failures while writing: those may follow a partial
+            # or complete request. Only demonstrably pre-send failures are false.
+            before = isinstance(exc.reason, (ConnectionRefusedError, socket.gaierror, ssl.SSLCertVerificationError))
+            raise self._transport(exc, sent=False if before else None) from None
+        except (http.client.HTTPException, OSError) as exc:
+            # After it was written: no answer in time, a connection closed or reset, a body cut short.
+            raise self._transport(exc, sent=True) from None
+
+    def _transport(self, exc: BaseException, sent: bool | None) -> GitHitsError:
+        reason = getattr(exc, "reason", None) or type(exc).__name__
+        # Scrubbed before it is cut: a token across the cut would otherwise leave its first characters.
+        return GitHitsError("transport", self._scrub(f"{type(exc).__name__}: {reason}")[:200], sent=sent)
 
     def _http_error(self, exc: urllib.error.HTTPError) -> GitHitsError:
         request_id = _request_id(exc.headers, self._scrub)
@@ -882,18 +1036,18 @@ class Client:
             code = self._scrub(str(problem.get("code") or ""))
             error = GitHitsError(f"http_{exc.code}", words or "no problem document", exc.code, request_id,
                                  code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code) else None)
-        error.headers = exc.headers
+        error.headers, error.sent = exc.headers, True  # an answer came back: the request reached the server
         return error
 
     def _body(self, response, headers, status: int) -> bytes:
         length = headers.get("Content-Length") if headers is not None else None
         if length is not None and length.strip().isdigit() and int(length) > self.max_bytes:
             raise GitHitsError("response_too_large", f"Content-Length {int(length)} > {self.max_bytes} bytes",
-                               status, _request_id(headers, self._scrub))
+                               status, _request_id(headers, self._scrub), sent=True)
         raw = response.read(self.max_bytes + 1)
         if len(raw) > self.max_bytes:
             raise GitHitsError("response_too_large", f"more than {self.max_bytes} bytes", status,
-                               _request_id(headers, self._scrub))
+                               _request_id(headers, self._scrub), sent=True)
         return raw
 
     def _scrub(self, text: str) -> str:
@@ -926,11 +1080,14 @@ def _request_id(headers, scrub=None) -> str | None:
     return (scrub(value.strip()) if scrub else value.strip())[:128]
 
 
-def _retry_after(headers) -> str | None:
+def _retry_after(headers, scrub=None) -> str | None:
+    """``Retry-After`` (a delay or an HTTP date), with ``scrub`` applied first as ``_request_id`` does: a server
+    that echoes the token there must not put it in ``doctor``'s report."""
     value = headers.get("Retry-After") if headers is not None else None
-    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9 ,:+-]{1,40}", value.strip()):
-        return value.strip()
-    return None
+    if not isinstance(value, str):
+        return None
+    value = scrub(value.strip()) if scrub else value.strip()
+    return value if re.fullmatch(r"[A-Za-z0-9 ,:+-]{1,40}", value) else None
 
 
 def _remaining(headers) -> int | None:
@@ -955,8 +1112,8 @@ def render(result: Result) -> str:
         more = " | more: yes" if page.get("has_more") else ""
         pending = "" if data.get("completed", True) else f" | incomplete, search_ref {data.get('search_ref')}"
         lines.append(f"search: {result.results_returned} results{dropped}{more}{pending}")
-        for number, hit in enumerate(evidence.get("results") or [], 1):
-            locator = hit.get("locator") or {}
+        for number, hit in enumerate(_objects(evidence.get("results")), 1):
+            locator = hit.get("locator") if isinstance(hit.get("locator"), dict) else {}
             where = _where(locator)
             score = f"[{hit['score']:.2f}] " if isinstance(hit.get("score"), (int, float)) else ""
             lines.append(f"{number}. {score}{where} {_short(hit.get('title'), 100)}".rstrip())
@@ -983,18 +1140,24 @@ def render(result: Result) -> str:
     elif result.op == "list":
         more = f" | next: {data['next_cursor']}" if data.get("next_cursor") else ""
         lines.append(f"list: {result.results_returned} entries{dropped}{more}")
-        for entry in data.get("entries") or []:
+        for entry in _objects(data.get("entries")):
             count = f"  {entry['line_count']} lines" if entry.get("line_count") is not None else ""
             lines.append(f"{entry.get('kind') or '?'}  {entry.get('path')}{count}")
     elif result.op == "grep":
         more = f" | next: {data['next_cursor']}" if data.get("next_cursor") else ""
         total = f" of {data['total_matches']}" if data.get("total_matches") is not None else ""
         lines.append(f"grep: {result.results_returned} matches{total}{dropped}{more}")
-        for hit in data.get("hits") or []:
+        for hit in _objects(data.get("hits")):
             origin = _bare_url(hit.get("repo_url")) + "/" + str(hit.get("file_path")) if hit.get("repo_url") \
                 else _bare_url(hit.get("page_url"))
             lines.append(f"{origin}:{hit.get('line')}: {_short(hit.get('line_content'), 200)}")
     return "\n".join(lines)
+
+
+def _objects(value) -> list:
+    """The items of a response's list, an item that is not an object read as an empty one: rendering never raises on
+    an answer outside the contract, whose record (``ok``) is already written."""
+    return [item if isinstance(item, dict) else {} for item in value] if isinstance(value, list) else []
 
 
 def _where(locator: dict) -> str:

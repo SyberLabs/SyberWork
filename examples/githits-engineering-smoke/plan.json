@@ -1,0 +1,16 @@
+{
+  "_purpose": "ENGINEERING SMOKE only: synthetic, visible checks, no formal items or held-out data; not an unbiased cost experiment",
+  "_formal_pack": "SyberLabs/MasterMind claude/githits-pilot-pack at 09864ac6633832cc5d7c082ec731aff7a5689cad; proposal and formal baseline unchanged",
+  "_configuration": {"provider": "Anthropic direct API through Claude Code", "model": "claude-sonnet-5-5", "cli": "2.1.311", "effort": "medium", "cache_ttl": "5m", "pricing_checked": "2026-10-26", "pricing_source": "https://platform.claude.com/docs/en/about-claude/pricing"},
+  "experiment": "githits-engineering-smoke-v1",
+  "items": [
+    {"id": "ENGSMOKE-CSV", "tags": ["synthetic", "routine"], "objective": "Implement render(rows) in src/smoke_csv.py. Return CSV text for a list of name/qty dictionaries, with header name,qty, CRLF record endings and standard CSV quoting. Preserve names containing commas, quotes, Unicode and newlines, serialize integer quantities including negatives, and emit the header for empty input. Use only Python's standard library. Change only this new module; the visible host checks must pass.", "paths": ["src/smoke_csv.py"]},
+    {"id": "ENGSMOKE-COUNTS", "tags": ["synthetic", "routine"], "objective": "Implement summarize(values) in src/smoke_counts.py. Count a list of case-sensitive Unicode strings and return a JSON-serializable dict with keys inserted in ascending Python string order. Empty input returns an empty dict; duplicates increment counts. Use only Python's standard library. Change only this new module; the visible host checks must pass.", "paths": ["src/smoke_counts.py"]},
+    {"id": "ENGSMOKE-UTF8", "tags": ["synthetic", "routine"], "objective": "Implement decode_chunks(chunks) in src/smoke_utf8.py. Decode an iterable of byte chunks as one strict UTF-8 stream, including multibyte characters split between chunks. Return the complete string, return empty text for no chunks, and raise UnicodeDecodeError for invalid bytes or an incomplete final sequence. Use only Python's standard library. Change only this new module; the visible host checks must pass.", "paths": ["src/smoke_utf8.py"]}
+  ],
+  "prices": {"claude-sonnet-5-5": {"input_per_million": 2, "output_per_million": 10, "cache_read_per_million": 0.1, "cache_creation_per_million": 2.5}},
+  "allowed_tools": "Read,Edit,Write,Glob,Grep",
+  "max_calls": 2,
+  "max_turns": 8,
+  "canary_paths": ["README.md"]
+}
