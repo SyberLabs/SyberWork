@@ -14,7 +14,14 @@ Arms, each run through the same Build Thread so every candidate is host-evaluate
 - ``evolve_empirical``: the same provider, mutator, population, generations and K, branching by
   ``EmpiricalPolicy`` (the fixed schedule with the round kind learned by Thompson sampling);
 - ``evolve_jev``: the same, branching by ``JevPolicy`` (each action bought by expected admission per
-  dollar; its price prior comes from the contract's ``budget.prices`` when present).
+  dollar; its price prior comes from the contract's ``budget.prices`` when present);
+- ``evolve_jevapi``: the same, branching by ``TypeSafeJevPolicy`` (``syberlabs.jev_api``): ``JevPolicy``'s
+  offered actions chosen by TypeSafe's Jev API, with ``JevPolicy`` as the fallback. It calls
+  ``https://api.typesafe.ai/v1/systemone`` with ``TYPESAFE_API_KEY`` from the environment, so it is not
+  among the default arms: name it with ``--arms`` to run it. Its row adds ``jev_api`` (Jev's calls,
+  decisions by source, fallbacks by reason, agreement with the local choice, input tokens, Jev's dollars
+  at TypeSafe's published input rate, and the median latency); Jev's dollars are outside the host's
+  ``host_dollars``, which observes the model adapter only.
 
 The three ``evolve*`` arms differ in the branch policy and in nothing else, so a
 difference between them is policy against policy, not "fill the population first"
@@ -63,11 +70,14 @@ from examples.evolve import git  # noqa: E402
 from syberlabs import Kit, Rejected  # noqa: E402
 from benchmarks.simulated_model import PROFILES  # noqa: E402
 from syberlabs.evolve import CommandMutator, EmpiricalPolicy, EvolutionaryProvider, JevPolicy  # noqa: E402
+from syberlabs.jev_api import REASONS as JEV_REASONS, SOURCES as JEV_SOURCES, TypeSafeJevPolicy  # noqa: E402
 from syberlabs.providers import model_usage, run_json, split_command, tool_usage  # noqa: E402
 
 SIMULATED = f"{sys.executable} {ROOT / 'benchmarks' / 'simulated_model.py'}"
-ARMS = ("single", "best_of_k", "repair", "evolve", "evolve_empirical", "evolve_jev")
-EVOLVE_ARMS = {"evolve": "fixed", "evolve_empirical": "empirical", "evolve_jev": "jev"}
+ARMS = ("single", "best_of_k", "repair", "evolve", "evolve_empirical", "evolve_jev")  # the default arms
+JEV_API_ARM = "evolve_jevapi"  # a live TypeSafe call per decision: run only when named
+ALL_ARMS = ARMS + (JEV_API_ARM,)
+EVOLVE_ARMS = {"evolve": "fixed", "evolve_empirical": "empirical", "evolve_jev": "jev", JEV_API_ARM: "jev_api"}
 # Dollars per million tokens: input, output. Cache reads bill at 0.1x input, cache writes at 1.25x.
 PRICES = {"claude-opus-5": (5.0, 25.0), "claude-opus-5-5": (4.0, 20.0), "claude-opus-4-8": (5.0, 25.0),
           "claude-sonnet-5": (2.0, 10.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-4-5": (1.0, 5.0),
@@ -155,10 +165,26 @@ class Patches:
         return []
 
 
+def jev_summary(policy: TypeSafeJevPolicy, trace: list[dict]) -> dict:
+    """The ``evolve_jevapi`` row's account of Jev: from the policy's counters and its decision entries."""
+    decisions = [e for e in trace if "decision" in e]
+    asked = [e for e in decisions if e.get("source") == "jev_api"]
+    fallbacks = [e["fallback"]["reason"] for e in decisions if e.get("fallback")]
+    latencies = sorted(e["latency_ms"] for e in decisions if e.get("latency_ms") is not None)
+    return {"model": policy.model, "calls": policy.calls,
+            "by_source": {s: sum(1 for e in decisions if e.get("source") == s) for s in JEV_SOURCES},
+            "fallbacks": {r: fallbacks.count(r) for r in JEV_REASONS if r in fallbacks},
+            "switched_to_local": any((e.get("fallback") or {}).get("switched_to_local") for e in decisions),
+            "agreed": sum(1 for e in asked if e["action"] == e["local_action"]), "asked": len(asked),
+            "input_tokens": policy.input_tokens, "dollars": policy.jev_dollars,
+            "latency_ms_median": statistics.median(latencies) if latencies else None}
+
+
 def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Path,
-        journals: Path | None = None, profile: str | None = None) -> dict:
+        journals: Path | None = None, profile: str | None = None, jev_transport=None) -> dict:
     """One run. ``journals`` is a directory to export the thread's journal into, or None to keep nothing.
-    ``profile`` names a simulated profile (``SIM_PROFILE`` for the adapter) or clears it."""
+    ``profile`` names a simulated profile (``SIM_PROFILE`` for the adapter) or clears it. ``jev_transport``
+    replaces the ``evolve_jevapi`` arm's HTTP call (``syberlabs.jev_api.http_transport``), for tests."""
     if profile is not None and profile not in PROFILES:
         raise ValueError(f"profile must be one of {sorted(PROFILES)}")
     if profile is None:
@@ -195,9 +221,12 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
         elif EVOLVE_ARMS[arm] == "empirical":
             provider = EvolutionaryProvider(mutator, **shape,
                                             policy=EmpiricalPolicy(**shape, stop_on_first_pass=True, salt=seed))
-        else:
+        elif EVOLVE_ARMS[arm] == "jev":
             provider = EvolutionaryProvider(mutator, **shape,
                                             policy=JevPolicy(generations=shape["generations"], prices=jev_prices(doc)))
+        else:
+            provider = EvolutionaryProvider(mutator, **shape, policy=TypeSafeJevPolicy(
+                generations=shape["generations"], prices=jev_prices(doc), transport=jev_transport))
         thread.propose(provider, seed=seed)
         used, usage = mutator.calls, mutator.usage
         policy = next((dict(e["policy"]) for e in provider.trace if "decision" in e), None)
@@ -211,6 +240,7 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
             os.chdir(ROOT)
         used, usage = provider.used, provider.usage
     seconds = time.monotonic() - started
+    jev = jev_summary(provider.policy, provider.trace) if arm == JEV_API_ARM else None
     passing = [c for c in thread.candidates() if c.evaluation == "passed"]
     solved = bool(passing) and thread.check(passing[0].id, run=False).acceptable
     events = thread.history()
@@ -220,12 +250,16 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
         journal = f"{journals.name}/{fixture}-{arm}-{seed}.json"
         (journals / f"{fixture}-{arm}-{seed}.json").write_text(json.dumps(kit.export(thread.id), indent=1) + "\n",
                                                                encoding="utf-8")
+        if jev is not None:  # the provider's trace is not journaled; Jev's decision entries are kept beside it
+            jev["decisions"] = f"{journals.name}/{fixture}-{arm}-{seed}.decisions.json"
+            (journals / f"{fixture}-{arm}-{seed}.decisions.json").write_text(
+                json.dumps([e for e in provider.trace if "decision" in e], indent=1) + "\n", encoding="utf-8")
     kit.close()
     simulated = any(u.get("simulated") for u in usage)
     served = sorted({u.get("model") for u in usage if u.get("model")})
     finished = next((e["body"] for e in reversed(events) if e["kind"] == "search_finished"), None)
     spend = (finished or {}).get("spend") or {}
-    return {"fixture": fixture, "arm": arm, "seed": seed, "solved": solved, "calls": used,
+    row = {"fixture": fixture, "arm": arm, "seed": seed, "solved": solved, "calls": used,
             "model": "simulated" if simulated else ("+".join(served) if served else None),
             "input_tokens": sum(u.get("input_tokens", 0) for u in usage),
             "output_tokens": sum(u.get("output_tokens", 0) for u in usage),
@@ -236,6 +270,9 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
             "candidates": sum(1 for e in events if e["kind"] == "candidate_registered"),
             "evaluations": sum(1 for e in events if e["kind"] == "candidate_evaluated"), "seconds": round(seconds, 2),
             "journal": journal}
+    if jev is not None:
+        row["jev_api"] = jev
+    return row
 
 
 def summarize(rows: list[dict], calls: int) -> str:
@@ -247,7 +284,7 @@ def summarize(rows: list[dict], calls: int) -> str:
              "fixture     arm               solved  calls(med)  tokens in/out (mean)   evaluations(med)  $ (mean)  "
              "host$ (mean)  model                 policy        provider_error"]
     for fixture in dict.fromkeys(r["fixture"] for r in rows):
-        for arm in ARMS:
+        for arm in ALL_ARMS:
             group = [r for r in rows if r["fixture"] == fixture and r["arm"] == arm]
             if not group:
                 continue
@@ -265,6 +302,18 @@ def summarize(rows: list[dict], calls: int) -> str:
                          f"{'+'.join(models):21} "
                          f"{('+'.join(policies) if policies else '-'):13} "
                          f"{(str(len(errors)) + '/' + str(len(group)) + ' ' + ','.join(sorted(set(errors)))) if errors else 'none':}")
+    jev_rows = [r for r in rows if r.get("jev_api")]
+    if jev_rows:
+        lines.append("fixture     jev model    calls  asked  agreed  fallbacks  switched  input_tokens  jev$ (sum)  latency_ms(med)")
+        for fixture in dict.fromkeys(r["fixture"] for r in jev_rows):
+            group = [r["jev_api"] for r in jev_rows if r["fixture"] == fixture]
+            medians = [g["latency_ms_median"] for g in group if g["latency_ms_median"] is not None]
+            lines.append(f"{fixture:11} {group[0]['model']:12} {sum(g['calls'] for g in group):>5} "
+                         f"{sum(g['asked'] for g in group):>6} {sum(g['agreed'] for g in group):>7} "
+                         f"{sum(sum(g['fallbacks'].values()) for g in group):>10} "
+                         f"{sum(g['switched_to_local'] for g in group):>9} {sum(g['input_tokens'] for g in group):>13} "
+                         f"{sum(g['dollars'] for g in group):>11.6f}  "
+                         f"{statistics.median(medians) if medians else 'n/a'}")
     return "\n".join(lines)
 
 
@@ -274,7 +323,8 @@ def main() -> None:
     parser.add_argument("--calls", type=int, default=6)
     parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument("--fixtures", nargs="+", default=list(FIXTURES))
-    parser.add_argument("--arms", nargs="+", default=list(ARMS))
+    parser.add_argument("--arms", nargs="+", default=list(ARMS), choices=list(ALL_ARMS),
+                        help=f"default: every arm but {JEV_API_ARM}, which calls TypeSafe's Jev API")
     parser.add_argument("--write", help="write the JSON rows and the summary to this path prefix")
     parser.add_argument("--profile", choices=sorted(PROFILES),
                         help="a per-operator success profile of the simulated adapter (SIM_PROFILE); nothing for a real one")
