@@ -1,0 +1,105 @@
+{
+ "recorded": "2026-10-28",
+ "source": "POST https://api.typesafe.ai/v1/systemone, packet jev-api phase 1",
+ "scrubbed": "request headers (Authorization), response headers (request id, cookie, CF-RAY, date)",
+ "status": 200,
+ "latency_ms": 198.2,
+ "request": {
+  "model": "jev-1.13.0",
+  "state": {
+   "decision": 4,
+   "generation": 2,
+   "capacity": 3,
+   "population": [
+    {
+     "id": "c1",
+     "score": [
+      1,
+      1
+     ],
+     "passed": false
+    },
+    {
+     "id": "c2",
+     "score": [
+      2,
+      2
+     ],
+     "passed": false
+    }
+   ],
+   "remaining": {
+    "dollars": 4.9,
+    "evaluations": 19,
+    "candidates": 9
+   },
+   "history": {
+    "mutate": {
+     "attempted": 3,
+     "produced": 2,
+     "evaluated": 2,
+     "improved": 1,
+     "passed": 0,
+     "dollars": 0.054
+    },
+    "crossover": {
+     "attempted": 1,
+     "produced": 1,
+     "evaluated": 1,
+     "improved": 0,
+     "passed": 0,
+     "dollars": 0.0
+    },
+    "evaluate": {
+     "attempted": 0,
+     "produced": 0,
+     "evaluated": 0,
+     "improved": 0,
+     "passed": 0,
+     "dollars": 0.0
+    },
+    "migrate": {
+     "attempted": 0,
+     "produced": 0,
+     "evaluated": 0,
+     "improved": 0,
+     "passed": 0,
+     "dollars": 0.0
+    }
+   },
+   "mutator_exhausted": false
+  },
+  "questions": {
+   "next_action": {
+    "type": "choice",
+    "instructions": "Choose the next action of a bounded evolutionary code search from the numbers in the state. Pick the action most likely to produce a passing candidate per dollar of remaining budget.",
+    "criteria": {
+     "evaluate": "Evaluate the next seed candidate with the host's checks; no model call.",
+     "crossover": "Merge the two named population members; no model call, one evaluation.",
+     "mutate": "Ask the model mutator for a child of the named parent; one model call, one evaluation.",
+     "migrate": "Exchange individuals with another host; no model call."
+    }
+   }
+  }
+ },
+ "response": {
+  "model": "jev-1.13.0",
+  "answers": {
+   "next_action": {
+    "type": "choice",
+    "choice": "mutate",
+    "confidence": 0.28,
+    "probabilities": {
+     "evaluate": 0.45,
+     "crossover": 0.07,
+     "mutate": 0.46,
+     "migrate": 0.02
+    }
+   }
+  },
+  "usage": {
+   "input_tokens": 753,
+   "output_tokens": 52
+  }
+ }
+}
