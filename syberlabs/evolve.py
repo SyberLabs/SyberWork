@@ -47,7 +47,9 @@ next unit of budget where the expected admission per unit is highest. A policy
 with an ``audit()`` method has its account of each decision merged into that
 decision's trace entry, so a reader can tell from the entry alone why it was
 taken. Neither learning policy draws from the provider's seeded stream beyond
-the one crossover-pairing draw the fixed schedule makes.
+the one crossover-pairing draw the fixed schedule makes. ``syberlabs.jev_api``
+holds a third, ``TypeSafeJevPolicy``: ``JevPolicy``'s offered actions, chosen by
+TypeSafe's Jev API from ids and numbers, with ``JevPolicy`` as its fallback.
 """
 
 from __future__ import annotations
@@ -460,36 +462,49 @@ class JevPolicy:
             found.append((Migrate(g + 1), self._estimate("migrate", s, priced, shadow)))
         return found, budget
 
-    def _stop(self, reason: str, generation: int, best: dict | None = None, **extra) -> Stop:
-        self._last_audit = {"expected_value": best["expected_value"] if best else None,
-                            "expected_dollars": best["expected_dollars"] if best else None,
-                            "chosen_by": f"rule:{reason}", **extra}
-        return Stop(reason, generation)
+    @staticmethod
+    def _rule(reason: str, best: dict | None = None, **extra) -> dict:
+        return {"expected_value": best["expected_value"] if best else None,
+                "expected_dollars": best["expected_dollars"] if best else None,
+                "chosen_by": f"rule:{reason}", **extra}
 
-    def decide(self, s: Situation) -> Action:
+    def _plan(self, s: Situation) -> tuple[Action, dict, list[tuple[Action, dict]], dict | None]:
+        """The decision ``decide`` takes, its audit, the options offered and the budget, without taking it.
+
+        Pure: it reads the policy's state and changes none of it, so a policy built on this one
+        (``syberlabs.jev_api``) can ask what Jev would do, and take a different offered action.
+        """
         g = self._generation
         if self.stop_when_passing and any(p.passed for p in s.population):
-            return self._stop("passing", g)
+            return Stop("passing", g), self._rule("passing"), [], None
         if not s.room:
-            return self._stop("budget", g)
+            return Stop("budget", g), self._rule("budget"), [], None
         options, budget = self._options(s)
         if not options:
-            return self._stop("empty", g)
+            return Stop("empty", g), self._rule("empty"), [], budget
         best = max(options, key=lambda o: o[1]["score"])  # the first of equal scores wins: KINDS order
         action, estimate = best
         expected_passes = round(estimate["expected_value"] * budget["remaining"] / estimate["price"], 6)
         alternatives = [dict(o[1]) for o in options]
         if expected_passes < self.floor:
-            return self._stop("budget", g, estimate, expected_passes=expected_passes, floor=self.floor,
-                              budget=budget, alternatives=alternatives)
+            return Stop("budget", g), self._rule("budget", estimate, expected_passes=expected_passes, floor=self.floor,
+                                                 budget=budget, alternatives=alternatives), options, budget
         if action.generation > g and g >= self.generations:
-            return self._stop("generations", g + 1, estimate, budget=budget, alternatives=alternatives)
+            return (Stop("generations", g + 1), self._rule("generations", estimate, budget=budget, alternatives=alternatives),
+                    options, budget)
         if len(options) == 1:
             chosen_by = "only_option"
         elif max(options, key=lambda o: o[1]["exploit"]) is best:
             chosen_by = "value_per_dollar"
         else:
             chosen_by = "exploration"
+        audit = {"expected_value": estimate["expected_value"], "expected_dollars": estimate["expected_dollars"],
+                 "chosen_by": chosen_by, "price": {k: estimate[k] for k in ("price", "expected_evaluations")},
+                 "expected_passes": expected_passes, "budget": budget, "alternatives": alternatives}
+        return action, audit, options, budget
+
+    def _take(self, action: Action) -> None:
+        """Record that ``action``, one of the offered actions, is the one taken."""
         if isinstance(action, Evaluate):
             self._seeds.pop(0)
         elif isinstance(action, Crossover):
@@ -497,9 +512,12 @@ class JevPolicy:
         elif isinstance(action, Mutate) and action.slot is not None:
             self._mutated[action.parent] = self._mutated.get(action.parent, 0) + 1
         self._generation = action.generation
-        self._last_audit = {"expected_value": estimate["expected_value"], "expected_dollars": estimate["expected_dollars"],
-                            "chosen_by": chosen_by, "price": {k: estimate[k] for k in ("price", "expected_evaluations")},
-                            "expected_passes": expected_passes, "budget": budget, "alternatives": alternatives}
+
+    def decide(self, s: Situation) -> Action:
+        action, audit, _options, _budget = self._plan(s)
+        if not isinstance(action, Stop):
+            self._take(action)
+        self._last_audit = audit
         return action
 
     def audit(self) -> dict | None:
