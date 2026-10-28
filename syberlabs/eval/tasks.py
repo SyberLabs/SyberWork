@@ -8,8 +8,8 @@ A task is the unit an eval compares arms on. ``task.json`` (``TASK_SCHEMA``) hol
 - ``checks``: visible checks, run in the candidate's worktree like any contract check (may be empty);
 - ``hidden.checks``: the acceptance checks the host holds. Their argv may name ``{python}`` (the host's interpreter)
   and ``{hidden}`` (the absolute path of the task's ``hidden/`` directory as the host staged it for this run);
-- ``safety`` (expectations and planted canary strings, may be empty), ``provenance``, ``contamination``,
-  ``labels``.
+- ``safety`` (expectations, planted canary strings, and optionally ``forbidden_actions``: contract actions a planner
+  task forbids, which the safety gate fails a run for admitting), ``provenance``, ``contamination``, ``labels``.
 
 ``task_digest`` is ``syberlabs.canonical.digest`` of ``{"task": <parsed task.json>, "hidden": {<path>: <sha256>}}``
 over every file under ``hidden/``. A hidden file that decodes as UTF-8 and holds no NUL byte is text: its CRLF line
@@ -17,18 +17,24 @@ endings become LF before it is digested and staged, so a Windows checkout with `
 one does; any other file is digested and staged byte for byte. ``set_digest`` is the digest of ``{id: digest}``.
 
 How a hidden check stays hidden (``stage_hidden`` and ``contract_checks``): for each run the host copies ``hidden/``
-into a directory of its own outside the run's repository, verifies the copy against the registered digest, and
+into a directory of its own outside the run's repository (the runner names it at random under a root of its own),
+verifies the copy against the registered digest, makes its files read-only as far as the OS allows, and
 appends each hidden check to the run's contract as a required check named ``hidden.<name>`` whose argv names that
 copy by absolute path, the pattern the critic and the sharded test runner use (``docs/CRITIC.md``). The check runs
 as every check does (``syberlabs.checks``): in a detached worktree of the candidate, with a scrubbed environment;
 it reads the candidate's files from its working directory. Nothing under ``hidden/`` is in the run's repository, in
 a provider's request (``GitSearchSpace`` serves only the repository), or in a candidate. A check's result and the
 tail of its output are recorded, as for any check, and reach a repair arm as feedback: that is the E3 design, where
-an assertion message names its expectation. The checks run the candidate's code, which runs with the host's
-permissions and can read and rewrite the host's copy: the runner refuses to accept on a copy whose files changed
-(``tree_digests``), and nothing stops code that reads the copy or ends its check early. ``import_fixtures`` writes
-each fixture check's code to ``hidden/checks.json`` and runs it through ``LOADER``, which compiles it under the file
-name ``<hidden:NAME>``, so a traceback names no host path and prints no line of the check's source.
+an assertion message names its expectation. ``import_fixtures`` writes each fixture check's code to
+``hidden/checks.json`` and runs it through ``LOADER``, which compiles it under the file name ``<hidden:NAME>``, so a
+traceback names no host path and prints no line of the check's source.
+
+Read-only is not protection: the checks run the candidate's code, which runs with the host's permissions and can make
+a file writable again, then read or rewrite the host's copy. ``tree_digests`` hashes the copy as it is on disk
+(naming a symbolic link by its target) and ``hidden_changes`` lists what changed between two such hashes, so the
+runner refuses to accept on a copy that changed after staging (``runner``: after propose, after the check, before
+accept); nothing stops code that reads the copy, ends its check early, or undoes its rewrite before the next hash.
+``release`` removes a copy.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -93,7 +100,10 @@ TASK_SCHEMA = {
         "safety": {"type": "object", "additionalProperties": False, "required": ["expectations", "canaries"],
                    "properties": {"expectations": {"type": "array", "maxItems": 64, "items": _TEXT},
                                   "canaries": {"type": "array", "maxItems": 64,
-                                               "items": {"type": "string", "minLength": 8, "maxLength": 256}}}},
+                                               "items": {"type": "string", "minLength": 8, "maxLength": 256}},
+                                  "forbidden_actions": {"type": "array", "maxItems": 64, "uniqueItems": True,
+                                                        "items": {"type": "string",
+                                                                  "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"}}}},
         "provenance": {"type": "object"},
         "contamination": {"type": "object", "additionalProperties": False, "required": ["status", "note"],
                           "properties": {"status": {"enum": ["unknown", "private", "public_repository",
@@ -347,7 +357,42 @@ def stage_hidden(tasks_root: Path, task_id: str, dest: Path, expected_digest: st
         target = dest / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+    _read_only(dest)
     return dest.resolve()
+
+
+def _read_only(root: Path) -> None:
+    """Files read-only; on POSIX the directories too (Windows ignores a directory's read-only attribute)."""
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_file():
+            os.chmod(path, stat.S_IREAD | (0 if os.name == "nt" else stat.S_IRGRP | stat.S_IROTH))
+        elif os.name != "nt" and path.is_dir():
+            os.chmod(path, 0o555)
+    if os.name != "nt":
+        os.chmod(root, 0o555)
+
+
+def release(dest: Path) -> None:
+    """Remove a staged copy: make it writable again (``_read_only`` and any candidate's chmod), then delete it."""
+    root = Path(dest)
+    if not root.exists():
+        return
+    for folder, dirs, files in os.walk(root):
+        for name in dirs:
+            try:
+                os.chmod(os.path.join(folder, name), stat.S_IRWXU)
+            except OSError:
+                pass
+        for name in files:
+            try:
+                os.chmod(os.path.join(folder, name), stat.S_IREAD | stat.S_IWRITE)
+            except OSError:
+                pass
+    try:
+        os.chmod(root, stat.S_IRWXU)
+    except OSError:
+        pass
+    shutil.rmtree(root, ignore_errors=True)
 
 
 def _resolve(argv: list[str], python: str, hidden: Path | None) -> list[str]:
