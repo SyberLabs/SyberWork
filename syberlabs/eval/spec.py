@@ -3,8 +3,11 @@
 ``evals/<id>/spec.json`` states, before anything runs, what is asked and how it is answered: the question and the
 hypothesis, the arms (``arms.py``), the task set by id and by digest (``tasks.py``), the primary and secondary
 metrics, the per-run budget (calls, dollars, seconds) with the price table the governor applies and the dollar cap
-of the whole eval, the seeds, the seed of the run order, the exclusions, a structured decision rule, and what is
-reported whatever the outcome.
+of the whole eval, the seeds, the seed of the run order, the exclusions, a structured decision rule, what is
+reported whatever the outcome, and ``hidden_feedback``: how much of a hidden check's result reaches the proposer
+(``tails``: name, state, exit code, duration and output tail, as every check's result; ``status``: the name and
+passed or failed only; ``none``: nothing of a hidden check, only the visible checks' results). The mode is part of
+the spec and so of its digest.
 
 ``register(spec_path)`` validates the spec, recomputes every task's digest and the set digest the spec declares
 (``task_set_mismatch`` when they differ), and writes ``evals/<id>/registration.json``: ``{spec_digest,
@@ -21,9 +24,11 @@ subset it uses (``type``, ``const``, ``enum``, ``properties``, ``required``, ``a
 ``maximum``, ``exclusiveMinimum``; a number must also be finite, because ``NaN`` passes every comparison), standard
 library only, then the cross-field rules a schema cannot state (``check``): arm names are distinct, the decision
 rule names two of the spec's arms and its metric is the primary metric, each arm is valid for its kind, no two
-cells share a run id (``<task>.<arm>.s<seed>``, where task ids and arm names may hold dots), and the price table is
-one ``syberlabs.economic.check_prices`` accepts. ``read_json`` is strict: a key repeated in one object, ``NaN`` and
-``Infinity`` are refused, so what a reader sees in the file is what the digest freezes.
+cells share a run id (``<task>.<arm>.s<seed>``, where task ids and arm names may hold dots), no two ``githits``
+arms share a GitHits agent label (``arms.githits_arm``, which shortens and rewrites names), the price table is one
+``syberlabs.economic.check_prices`` accepts, and an evolve arm runs only under ``tails`` (its mutate requests are
+built in ``syberlabs.evolve``, where no filter is set). ``read_json`` and ``loads`` are strict: a key repeated in
+one object, ``NaN`` and ``Infinity`` are refused, so what a reader sees in the file is what the digest freezes.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ HARNESS = Path(__file__).resolve().parents[2]  # the SyberWork checkout this pac
 NAME = r"^[a-z0-9][a-z0-9_.-]{0,63}$"
 HEX64 = r"^[0-9a-f]{64}$"
 ARM_KINDS = ("single", "repair", "evolve", "evolve_jev", "claude-code")
+HIDDEN_FEEDBACK = ("tails", "status", "none")  # what of a hidden check's result reaches the proposer (module docstring)
 LANES = ("api", "subscription_local", "seat_team_enterprise", "provider_3p")
 MAX_TOTAL_DOLLARS = 1000.0
 
@@ -87,7 +93,7 @@ SCHEMA = {
     "$id": SPEC_SCHEMA_ID,
     "type": "object", "additionalProperties": False,
     "required": ["schema", "id", "question", "hypothesis", "arms", "tasks", "primary_metric", "secondary_metrics",
-                 "budget", "seeds", "order_seed", "exclusions", "decision_rule", "reporting"],
+                 "budget", "seeds", "order_seed", "exclusions", "decision_rule", "reporting", "hidden_feedback"],
     "properties": {
         "schema": {"const": SPEC_SCHEMA_ID},
         "id": {"type": "string", "pattern": NAME},
@@ -128,6 +134,7 @@ SCHEMA = {
                                          "aggregation": {"enum": ["mean_over_seeds"]},
                                          "test": {"enum": ["sign", "bootstrap", "none"]}}},
         "reporting": {"type": "array", "minItems": 1, "maxItems": 64, "items": _TEXT},
+        "hidden_feedback": {"enum": list(HIDDEN_FEEDBACK)},
         "notes": _TEXT,
     },
 }
@@ -222,11 +229,18 @@ def check(doc: Any) -> list[str]:
     if shared:
         errors.append(f"$: two cells share the run id {shared[0]} (task ids and arm names may hold dots); "
                       "rename an arm or a task")
+    labels = Counter(arms.githits_arm(arm["name"]) for arm in doc["arms"] if arm.get("githits") is True)
+    errors += [f"$.arms: two githits arms share the GitHits agent label {label!r} (names are cut to 16 characters "
+               "and every character outside A-Z, a-z, 0-9, _ and - becomes -); rename one"
+               for label, count in sorted(labels.items()) if count > 1]
     reason = check_prices(doc["budget"]["prices"])
     if reason:
         errors.append("$.budget." + reason)
     if doc["budget"]["dollars"] > doc["budget"]["total_dollars"]:
         errors.append("$.budget.dollars: one run's dollars cannot exceed the eval's total_dollars")
+    if doc["hidden_feedback"] != "tails":
+        errors += [f"$.arms[{arm['name']}]: an evolve arm runs only under hidden_feedback tails (its mutate requests "
+                   "carry feedback no eval filter reaches)" for arm in doc["arms"] if arm["kind"] in ("evolve", "evolve_jev")]
     return errors
 
 
@@ -246,11 +260,15 @@ def _constant(name: str):
     raise ValueError(f"{name} is not a JSON number")
 
 
+def loads(text: str) -> Any:
+    """Strict JSON text: a key repeated in one object, ``NaN`` and ``Infinity`` raise ``ValueError``."""
+    return json.loads(text, object_pairs_hook=_object, parse_constant=_constant)
+
+
 def read_json(path: Path, code: str) -> Any:
-    """Strict JSON: a key repeated in one object, ``NaN`` and ``Infinity`` are refused with ``code``."""
+    """Strict JSON (``loads``): a key repeated in one object, ``NaN`` and ``Infinity`` are refused with ``code``."""
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=_object,
-                          parse_constant=_constant)
+        return loads(Path(path).read_text(encoding="utf-8"))
     except OSError as exc:
         raise Rejected(code, f"{path}: {exc.strerror or type(exc).__name__}") from None
     except ValueError as exc:

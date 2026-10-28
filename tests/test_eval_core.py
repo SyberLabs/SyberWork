@@ -12,9 +12,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+from syberlabs.canonical import digest
 from syberlabs.errors import Rejected
 from syberlabs.eval import arms, runner, spec, tasks
 
@@ -38,7 +39,7 @@ def tiny_spec(ids, digests, **changes):
            "decision_rule": {"metric": "hidden_pass_rate", "comparison": "paired_difference", "treatment": "repair",
                              "baseline": "single", "operator": ">=", "threshold": 0.0, "unit": "task",
                              "aggregation": "mean_over_seeds"},
-           "reporting": ["every run"]}
+           "reporting": ["every run"], "hidden_feedback": "tails"}
     doc.update(changes)
     return doc
 
@@ -139,11 +140,21 @@ class SpecRegistration(Workspace):
             "run over total": (dict(good, budget=dict(good["budget"], dollars=9.0)), "total_dollars"),
             "bad prices": (dict(good, budget=dict(good["budget"], prices={"m": {"input_per_million": -1}})), "prices"),
             "unit": (dict(good, decision_rule=dict(good["decision_rule"], unit="run")), "unit"),
+            "hidden_feedback required": ({k: v for k, v in good.items() if k != "hidden_feedback"},
+                                         "$.hidden_feedback: required"),
+            "hidden_feedback mode": (dict(good, hidden_feedback="tail"), "$.hidden_feedback: must be one of"),
+            "evolve under status": (dict(good, hidden_feedback="status",
+                                         arms=[good["arms"][0], dict(good["arms"][1], kind="evolve")]),
+                                    "an evolve arm runs only under hidden_feedback tails"),
         }
         for label, (doc, expected) in cases.items():
             with self.subTest(label):
                 errors = spec.check(doc)
                 self.assertTrue(any(expected in e for e in errors), errors)
+        for mode in ("tails", "status", "none"):
+            self.assertEqual(spec.check(dict(good, hidden_feedback=mode)), [])
+        self.assertNotEqual(spec.spec_digest(good), spec.spec_digest(dict(good, hidden_feedback="none")),
+                            "the mode is part of the spec's digest")
         with self.assertRaises(Rejected) as caught:
             spec.register(self.write_spec(dict(good, seeds=[])))
         self.assertEqual(caught.exception.code, "invalid_spec")
@@ -221,6 +232,13 @@ class Tasks(Workspace):
         self.assertEqual(caught.exception.code, "task_modified")
         staged = tasks.stage_hidden(self.root / "tasks", "v1-pricing", self.folder / "host" / "hidden",
                                     self.digests["v1-pricing"])
+        self.addCleanup(tasks.release, staged)
+        files = tasks.tree_digests(staged)
+        self.assertEqual(digest({"task": task, "hidden": files}), self.digests["v1-pricing"],
+                         "the copy re-hashes to the task")
+        for path in staged.rglob("*"):
+            if path.is_file():
+                self.assertFalse(os.access(path, os.W_OK), f"{path.name} is read-only")
         checks, required = tasks.contract_checks(task, staged)
         self.assertEqual(sorted(checks), ["hidden.discount", "hidden.shipping", "hidden.tax"])
         self.assertEqual(required, sorted(checks))
@@ -267,8 +285,17 @@ class CommittedEvals(unittest.TestCase):
             self.assertEqual({w["id"]: w["digest"] for w in fresh},
                              {task_id: tasks.task_digest(EVALS / "tasks", task_id) for task_id in committed})
 
-    def test_e5_is_registered_and_unchanged(self):
-        doc, registration = spec.registered(EVALS / "e5-single-vs-repair" / "spec.json")
+    def test_e5_is_a_valid_spec_awaiting_registration_on_clean_main(self):
+        # eval-score adds the required hidden_feedback field, so E5's digest moved; its stale registration is deleted
+        # (register returns an existing registration with the same digest unchanged) and the lead registers it again
+        # on a clean checkout of main. Until then run refuses it.
+        path = EVALS / "e5-single-vs-repair" / "spec.json"
+        doc = spec.load(path)
+        self.assertEqual(doc["hidden_feedback"], "tails", "E5 matches E3: hidden checks' tails reach repair")
+        self.assertFalse((EVALS / "e5-single-vs-repair" / "registration.json").exists())
+        with self.assertRaises(Rejected) as caught:
+            spec.registered(path)
+        self.assertEqual(caught.exception.code, "spec_unregistered")
         self.assertEqual([a["name"] for a in doc["arms"]], ["single", "repair"])
         self.assertEqual({a["model"] for a in doc["arms"]}, {"claude-sonnet-5-5"})
         self.assertEqual({a["effort"] for a in doc["arms"]}, {"medium"})
@@ -278,7 +305,7 @@ class CommittedEvals(unittest.TestCase):
         self.assertEqual((doc["decision_rule"]["treatment"], doc["decision_rule"]["baseline"],
                           doc["decision_rule"]["operator"]), ("repair", "single", ">="))
         self.assertEqual(len(runner.plan(doc)), 48)
-        self.assertFalse((EVALS / "e5-single-vs-repair" / "runs").exists(), "E5 is registered, not run")
+        self.assertFalse((EVALS / "e5-single-vs-repair" / "runs").exists(), "E5 is not run")
 
 
 class Arms(unittest.TestCase):
@@ -422,14 +449,14 @@ class Terminal(unittest.TestCase):
         from syberlabs.cli import main
 
         out = io.StringIO()
-        with redirect_stdout(out):
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
             code = main(list(args))
         return code, out.getvalue()
 
-    def test_score_and_report_wait_for_the_next_packet(self):
+    def test_score_and_report_refuse_an_unregistered_eval(self):
         for name in ("score", "report"):
             code, out = self.cli("eval", name, "e5-single-vs-repair")
-            self.assertEqual((code, out.strip()), (2, "not yet: eval-score packet"))
+            self.assertEqual(code, 2, out)
 
     def test_tasks_list_and_a_dry_run_of_e5(self):
         code, out = self.cli("eval", "tasks", "list", "--json")
@@ -437,13 +464,18 @@ class Terminal(unittest.TestCase):
         found = json.loads(out)
         doc = json.loads((EVALS / "e5-single-vs-repair" / "spec.json").read_text(encoding="utf-8"))
         self.assertEqual(found["set_digest"], doc["tasks"]["set_digest"])
-        code, out = self.cli("eval", "run", "e5-single-vs-repair", "--dry", "--json")
-        found = json.loads(out)
-        self.assertEqual((code, found["planned"], found["dry"]), (0, 48, True))
-        self.assertEqual([row["order_index"] for row in found["runs"]], list(range(48)))
-        self.assertEqual([row["run_id"] for row in found["runs"]], [p.run_id for p in runner.plan(doc)])
-        code, _ = self.cli("eval", "run", "e5-single-vs-repair", "--dry", "--only", "v3-journal_chain,repair,")
-        self.assertEqual(code, 0)
+        with tempfile.TemporaryDirectory() as folder:  # registered in a copy: the committed E5 waits for clean main
+            evals = Path(folder) / "evals"
+            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns("runs", "registration.json"))
+            spec.register(evals / "e5-single-vs-repair" / "spec.json")
+            code, out = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry", "--json")
+            found = json.loads(out)
+            self.assertEqual((code, found["planned"], found["dry"]), (0, 48, True))
+            self.assertEqual([row["order_index"] for row in found["runs"]], list(range(48)))
+            self.assertEqual([row["run_id"] for row in found["runs"]], [p.run_id for p in runner.plan(doc)])
+            code, _ = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry", "--only",
+                               "v3-journal_chain,repair,")
+            self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":
