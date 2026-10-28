@@ -20,6 +20,8 @@ import os
 import random
 import re
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -340,6 +342,43 @@ class Fallbacks(unittest.TestCase):
                 self.assertIsNone(entry["answers_digest"])
                 self.assertIsNotNone(entry["latency_ms"])
                 self.assertEqual(provider.trace[-1]["action"], "stop")
+
+    def test_a_slow_answer_falls_back_at_the_wall_clock_deadline(self):
+        # An answer that would arrive long after the deadline, as from a server that drips its bytes: the
+        # per-socket timeout would not end it, the decision's deadline does.
+        release = threading.Event()
+
+        def slow(body, timeout):
+            release.wait(10)
+            return 200, raw(response("choice_two_options"))
+
+        policy = TypeSafeJevPolicy(generations=60, transport=slow, timeout=0.2)
+        policy.reset()
+        started = time.perf_counter()
+        try:
+            action = policy.decide(situation())
+        finally:
+            release.set()
+        elapsed = time.perf_counter() - started
+        audit = policy.audit()
+        self.assertEqual((audit["fallback"]["reason"], audit["fallback"]["detail"]), ("jev_timeout", "deadline"))
+        self.assertEqual((audit["source"], action.kind), ("local", audit["local_action"]))
+        self.assertLess(elapsed, 3.0, "the decision did not wait for the answer")
+        self.assertGreaterEqual(audit["latency_ms"], 150)
+        self.assertIn("deadline", DETAILS)
+        # An answer inside the deadline is used as before.
+        quick = TypeSafeJevPolicy(generations=60, transport=lambda body, timeout: (200, raw(response("choice_two_options"))),
+                                  timeout=0.2)
+        quick.reset()
+        quick.decide(situation())
+        self.assertEqual(quick.audit()["source"], "jev_api")
+
+    def test_a_failure_takes_only_closed_words_without_relying_on_assert(self):
+        with self.assertRaises(ValueError):
+            JevFailure("jev_unavailable", "some response text")
+        with self.assertRaises(ValueError):
+            JevFailure("anything", "transport")
+        self.assertEqual(JevFailure("jev_timeout", "deadline").detail, "deadline")
 
     def test_no_key_falls_back_without_opening_a_socket(self):
         opener = Opener("ok", raw(response("choice_two_options")))
