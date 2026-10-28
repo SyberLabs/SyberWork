@@ -30,7 +30,13 @@ policy's action is taken. Three failures in a row switch the policy to local for
 the search (``local_only``); a failure is never retried. Every decision's trace entry carries
 ``source`` (``jev_api``, ``local`` or ``rule``), ``model``, ``answers_digest``,
 ``request_digest``, ``latency_ms``, ``fallback`` and ``local_action``, the action the local
-policy would have taken, so the two can be compared decision by decision.
+policy would have taken, so the two can be compared decision by decision. A ``fallback`` for a
+body that came back and failed also carries ``response_digest``, the SHA-256 of the raw body.
+
+The timeout is a wall-clock deadline per decision: the call runs on a daemon thread and the
+decision falls back (``jev_timeout``, detail ``deadline``) when it is not back in ``timeout``
+seconds. The thread is abandoned, not cancelled; a late answer is discarded. The same value is
+urllib's per-socket-operation timeout inside the call (detail ``timeout``).
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ import json
 import math
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -55,7 +62,7 @@ ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 KEY_ENV = "TYPESAFE_API_KEY"
 MODEL = "jev-1.13.0"  # the pin docs/AUTOSKILL.md names; jev-1.14.0 (2026-10-14) is jev-latest since then
 PIN = re.compile(r"^jev-\d+\.\d+\.\d+$")  # an exact version; the aliases jev-latest and jev-preview are refused
-TIMEOUT = 30.0  # seconds; the 2026-10-28 calls took 0.14 to 0.34 s for about 750 input tokens
+TIMEOUT = 30.0  # seconds of wall clock per decision; the 2026-10-28 calls took 0.14 to 0.34 s for about 750 input tokens
 MAX_TIMEOUT = 120.0  # docs/AUTOSKILL.md's adapter timeout, the most this policy accepts
 TOLERANCE = 0.02  # |sum of probabilities - 1|; two-decimal probabilities on up to four options
 MAX_FAILURES = 3  # failures in a row before the policy is local for the rest of the search
@@ -76,7 +83,7 @@ CRITERIA = {
 SOURCES = ("jev_api", "local", "rule")
 REASONS = ("jev_timeout", "jev_unavailable", "jev_invalid", "choice_outside_options", "local_only")
 # Why a call failed, as a closed word: never response text, a header or an exception message.
-DETAILS = ("no_key", "timeout", "transport", "http_401", "http_403", "http_429", "http_529", "http_4xx", "http_5xx",
+DETAILS = ("no_key", "timeout", "deadline", "transport", "http_401", "http_403", "http_429", "http_529", "http_4xx", "http_5xx",
            "http_other", "too_large", "not_json", "not_object", "model", "answers", "type", "choice", "probabilities",
            "argmax", "confidence", "usage", "request_too_large", "switched")
 
@@ -85,7 +92,8 @@ class JevFailure(Exception):
     """A call that did not yield a usable answer. ``reason`` and ``detail`` are closed words; nothing else is kept."""
 
     def __init__(self, reason: str, detail: str, *, latency_ms: float | None = None, response_digest: str | None = None):
-        assert reason in REASONS and detail in DETAILS, (reason, detail)
+        if reason not in REASONS or detail not in DETAILS:  # a real check: it holds under python -O
+            raise ValueError("a JevFailure takes a reason from REASONS and a detail from DETAILS")
         super().__init__(f"{reason}: {detail}")
         self.reason, self.detail, self.latency_ms, self.response_digest = reason, detail, latency_ms, response_digest
 
@@ -272,10 +280,33 @@ class TypeSafeJevPolicy(JevPolicy):
                 "questions": {QUESTION: {"type": "choice", "instructions": INSTRUCTIONS,
                                          "criteria": {kind: CRITERIA[kind] for kind in kinds}}}}
 
+    def _within_deadline(self, body: bytes):
+        """The transport's answer if it is back within ``timeout`` seconds of wall clock, else ``jev_timeout``.
+
+        The call runs on a daemon thread; past the deadline it is abandoned (Python cannot cancel it)
+        and whatever it returns later is discarded. An exception it raises is raised here unchanged.
+        """
+        box: dict = {}
+
+        def call():
+            try:
+                box["answer"] = self.transport(body, self.timeout)
+            except BaseException as exc:  # noqa: BLE001 - handed to the deciding thread unchanged
+                box["error"] = exc
+
+        worker = threading.Thread(target=call, name="jev-api-call", daemon=True)
+        worker.start()
+        worker.join(self.timeout)
+        if worker.is_alive():
+            raise JevFailure("jev_timeout", "deadline")
+        if "error" in box:
+            raise box["error"]
+        return box["answer"]
+
     def _ask(self, body: bytes, kinds: Sequence[str]) -> tuple[dict, float]:
         started = time.perf_counter()
         try:
-            status, raw = self.transport(body, self.timeout)
+            status, raw = self._within_deadline(body)
         except JevFailure as failure:
             failure.latency_ms = round((time.perf_counter() - started) * 1000, 1)
             raise
