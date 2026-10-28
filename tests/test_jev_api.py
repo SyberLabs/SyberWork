@@ -589,12 +589,17 @@ class Unchanged(unittest.TestCase):
         self.assertEqual((JevPolicy.name, JevPolicy.revision), ("jev", "1"))
 
     def test_jevs_plan_takes_nothing(self):
-        policy = JevPolicy(generations=10, seeds=["c9"])
+        policy = JevPolicy(generations=10)
         policy.reset()
+        policy._crossed.add(frozenset(("c7", "c8")))
         before = canonical({"g": policy._generation, "seeds": policy._seeds, "crossed": sorted(map(sorted, policy._crossed)),
                             "mutated": policy._mutated})
-        for _ in range(3):
-            policy._plan(situation())
+        empty = dataclasses.replace(situation(()), mutator_exhausted=True)  # nothing offered: the "empty" stop
+        passing = dataclasses.replace(situation(), population=(Individual("c1", (3, 3), True),))
+        broke = dataclasses.replace(situation(), room=False)
+        for s in (situation(), empty, passing, broke, situation(), empty):
+            policy._plan(s)
+        self.assertEqual([policy._plan(s)[0].reason for s in (empty, passing, broke)], ["empty", "passing", "budget"])
         after = canonical({"g": policy._generation, "seeds": policy._seeds, "crossed": sorted(map(sorted, policy._crossed)),
                            "mutated": policy._mutated})
         self.assertEqual(before, after)
