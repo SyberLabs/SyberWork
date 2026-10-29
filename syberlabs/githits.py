@@ -45,11 +45,13 @@ result that carries a license is dropped and counted (``results_dropped_license`
 expression (``spdx_allows``: ``AND``, ``OR``, ``WITH`` and parentheses, ``AND`` binding tighter than ``OR``), is on
 the allow list: copyleft (GPL, LGPL, AGPL, MPL, EPL, EUPL, CDDL, SSPL), ``NOASSERTION``, unlisted and missing
 licenses are dropped. In the 0.1.0 contract only an example carries licenses, as ``(SPDX)`` after each source link
-of its Markdown (a link to a code host in any Markdown or HTML form: inline, titled, angle-bracketed, a reference
-definition, an autolink, an anchor, or a bare URL directly followed by its license), plus any
-``SPDX-License-Identifier:`` tag in its code; an example with a source link that has no license, or with no source
-link, is dropped whole. Search, grep, list and read results carry no license field, so they pass this check
-unjudged until GitHits adds one. ``SYBERLABS_GITHITS_LICENSES`` replaces
+of its Markdown (a link to a code host, or any link under a ``References`` or ``Sources`` heading as GitHits' documented
+responses write them, in any Markdown or HTML form: inline, titled, angle-bracketed, a reference definition, an
+autolink, an anchor, or a bare URL directly followed by its license; GitHits' own app link is never a source), plus
+any ``SPDX-License-Identifier:`` tag in its code; an example with a source link that has no license, or with code
+and no source link, is dropped whole. An example with no code and no source (GitHits' documented ``degraded`` and
+``no_example`` answers) carries nothing to license and passes. Search, grep, list and read results carry no license
+field, so they pass this check unjudged until GitHits adds one. ``SYBERLABS_GITHITS_LICENSES`` replaces
 the allow list (a comma list of SPDX ids) or turns the client-side check off (``any``); every record carries the
 digest of the policy in force (``license_policy``).
 
@@ -70,7 +72,10 @@ request. ``sent`` says whether the request was written to the server: false when
 target, no token, a connection, TLS or proxy failure), true once it was (an answer, an HTTP error, a read timeout,
 a connection closed before the answer), null when the call was interrupted in flight. So a timeout after GitHits
 received the request and a refused connection no longer leave the same record. ``read_records`` returns the
-records whose MAC verifies and counts the rest.
+records whose MAC verifies and counts the rest. A record may also carry ``paced_ms`` (``RECORD_OPTIONAL``): the
+milliseconds the host's launcher held the call before sending it, to keep GitHits' per-organization example rate
+(``githits_pace``, ``run(pace=...)``). This client never waits or retries on its own; the field is present only when
+the caller paced the call, and the MAC then covers it.
 """
 
 from __future__ import annotations
@@ -117,6 +122,7 @@ RECORD_FILE = "githits-records.jsonl"
 RECORD_FIELDS = ("op", "query_digest", "targets_count", "status", "http_status", "request_id", "results_returned",
                  "results_dropped", "results_dropped_license", "license_policy", "contamination_blocked", "latency_ms",
                  "rate_limit_remaining", "at", "sent")
+RECORD_OPTIONAL = ("paced_ms",)  # present only when the host's launcher paced the call (``run(pace=...)``)
 
 OK, EXCLUDED, BLOCKED, ERROR = "ok", "excluded_target", "contamination_blocked", "error"
 STATUSES = (OK, EXCLUDED, BLOCKED, ERROR)
@@ -493,22 +499,45 @@ _SOURCE_LINK = re.compile(
     re.IGNORECASE | re.MULTILINE)
 _CODE_HOST = re.compile(r"^https?://(?:[a-z0-9-]+\.)*(?:github\.com|gitlab\.com|codeberg\.org|bitbucket\.org"
                         r"|githubusercontent\.com)(?::\d+)?/", re.IGNORECASE)
+# GitHits' own pages (the "Open in GitHits Web App" link every documented example ends with) are never a source.
+_GITHITS_HOST = re.compile(r"^https?://(?:[a-z0-9-]+\.)*githits\.(?:com|dev)(?::\d+)?(?:[/?#]|$)", re.IGNORECASE)
+# A "References" or "Sources" heading (ATX, bold or a bare line, as the documented examples write "### References"):
+# every link under it, up to the next heading or thematic break, is a source, whatever its host.
+_SOURCES_HEADING = re.compile(r"^[ \t]{0,3}(?:#{1,6}[ \t]+)?\**(?:references|sources)\**[ \t]*:?[ \t]*#*[ \t]*$",
+                              re.IGNORECASE | re.MULTILINE)
+_SECTION_END = re.compile(r"^[ \t]{0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*_][ \t]*){3,}$)", re.MULTILINE)
+# Code an agent could take: a fenced block, an indented block, or HTML code. An example without any, and without a
+# source, carries nothing to license (GitHits' documented "degraded" and "no_example" answers).
+_CODE = re.compile(r"^[ \t]{0,3}(?:`{3,}|~{3,})|^(?: {4}|\t)[ \t]*\S|<(?:pre|code)\b", re.IGNORECASE | re.MULTILINE)
 _LICENSE_LINE = re.compile(r"^[ \t]*(?:[-*][ \t]*)?\**licen[cs]es?\**[ \t]*:[ \t]*(.+?)[ \t]*$",
                            re.IGNORECASE | re.MULTILINE)
 _SPDX_TAG = re.compile(r"SPDX-License-Identifier:[ \t]*(.*?)[ \t]*(?:\*/|-->)?[ \t]*$", re.IGNORECASE | re.MULTILINE)
 
 
+def _source_sections(text: str) -> list:
+    """The ``(start, end)`` offsets of each ``References`` or ``Sources`` section of an example's Markdown."""
+    spans = []
+    for heading in _SOURCES_HEADING.finditer(text):
+        end = _SECTION_END.search(text, heading.end())
+        spans.append((heading.end(), end.start() if end else len(text)))
+    return spans
+
+
 def example_licenses(data: dict) -> list:
-    """The licenses an example names for its sources: the ``(SPDX)`` after each code-host link of its Markdown,
-    whatever form the link takes (``_SOURCE_LINK``), ``License:`` lines, ``SPDX-License-Identifier:`` tags (in its
-    code too), and structured ``references`` when present. ``None`` stands for a source with no license, and an
-    example with no source at all is ``[None]``."""
+    """The licenses an example names for its sources: the ``(SPDX)`` after each source link of its Markdown (a
+    code-host link, or any link in a ``References`` or ``Sources`` section, never GitHits' own pages), whatever form
+    the link takes (``_SOURCE_LINK``), ``License:`` lines, ``SPDX-License-Identifier:`` tags (in its code too), and
+    structured ``references`` when present. ``None`` stands for a source with no license. An example with code and no
+    source at all is ``[None]``; one with neither code nor source (``_CODE``) is ``[]``: nothing to license."""
     found = []
     text = data.get("result") if isinstance(data.get("result"), str) else ""
+    sections = _source_sections(text)
     for match in _SOURCE_LINK.finditer(text):
         groups = match.groups()
         url, license_text = next((groups[i], groups[i + 1]) for i in range(0, len(groups), 2) if groups[i])
-        if _CODE_HOST.match(url):
+        if _GITHITS_HOST.match(url):
+            continue
+        if _CODE_HOST.match(url) or any(start <= match.start() < end for start, end in sections):
             found.append((license_text or "").strip() or None)
     found += [line.strip("* ") or None for line in _LICENSE_LINE.findall(text)]
     found += [tag.strip() or None for tag in _SPDX_TAG.findall(text)]
@@ -517,7 +546,7 @@ def example_licenses(data: dict) -> list:
         if isinstance(reference, dict):
             value = next((reference[key] for key in LICENSE_KEYS if key in reference), None)
             found.append(value if isinstance(value, str) and value.strip() else None)
-    return found or [None]
+    return found or ([None] if _CODE.search(text) else [])
 
 
 # ------------------------------------------------------------------------------------------------------------ requests
@@ -703,13 +732,18 @@ def _hit_excluded(hit, exclude: Exclusions) -> bool:
 
 # ------------------------------------------------------------------------------------------------------------ records
 
+def _record_fields(record: dict) -> tuple:
+    """``RECORD_FIELDS``, plus each ``RECORD_OPTIONAL`` field the record holds a value for."""
+    return RECORD_FIELDS + tuple(field for field in RECORD_OPTIONAL if record.get(field) is not None)
+
+
 def record_mac(record: dict, key: str) -> str:
-    return sign({field: record.get(field) for field in RECORD_FIELDS}, key)
+    return sign({field: record.get(field) for field in _record_fields(record)}, key)
 
 
 def write_record(directory, key: str, record: dict) -> None:
     """Append one record with its MAC as a single line. Raises OSError when the line cannot be written."""
-    entry = {field: record.get(field) for field in RECORD_FIELDS}
+    entry = {field: record.get(field) for field in _record_fields(record)}
     entry["mac"] = record_mac(entry, key)
     folder = Path(directory)
     folder.mkdir(parents=True, exist_ok=True)
@@ -747,11 +781,13 @@ def read_records(directory, key: str) -> RecordRead:
         except ValueError:
             ignored += 1
             continue
-        if (not isinstance(entry, dict) or set(entry) != set(RECORD_FIELDS) | {"mac"}
-                or not verify({field: entry[field] for field in RECORD_FIELDS}, entry.get("mac"), key)):
+        fields = _record_fields(entry) if isinstance(entry, dict) else ()
+        if (not isinstance(entry, dict) or set(entry) != set(fields) | {"mac"}
+                or ("paced_ms" in entry and not (type(entry["paced_ms"]) is int and entry["paced_ms"] >= 0))
+                or not verify({field: entry[field] for field in fields}, entry.get("mac"), key)):
             ignored += 1
             continue
-        found.append({field: entry[field] for field in RECORD_FIELDS})
+        found.append({field: entry[field] for field in fields})
     return RecordRead(found, ignored)
 
 
@@ -868,18 +904,23 @@ class Client:
     def grep(self, pattern: str, targets, **options) -> Result:
         return self.call(grep_request(pattern, targets, **options))
 
-    def call(self, request: Request, deliver=None) -> Result:
+    def call(self, request: Request, deliver=None, paced_ms: int | None = None) -> Result:
         """Send ``request`` (unless a target is excluded), filter the answer and record the call. ``deliver``, when
         given, is called with the result before the record is written (the CLI prints there): if it raises
         any exception (including an interruption), the call is recorded
         ``error`` and ``GitHitsError("output_failed")`` is raised, so a record never says ``ok`` for a result its
-        caller did not receive."""
+        caller did not receive. ``paced_ms``, when given, is how long the caller held the call before this (the
+        host launcher's pacing); it is recorded, never waited here, and ``latency_ms`` never includes it."""
         started = time.monotonic()
         record = {"op": request.op, "query_digest": query_digest(request), "targets_count": len(request.targets),
                   "status": ERROR, "http_status": None, "request_id": None, "results_returned": 0,
                   "results_dropped": 0, "results_dropped_license": 0, "license_policy": self.licenses.digest,
                   "contamination_blocked": False, "latency_ms": 0,
                   "rate_limit_remaining": None, "sent": False}
+        if paced_ms is not None:
+            if type(paced_ms) is not int or paced_ms < 0:
+                raise GitHitsError("bad_pacing", "paced_ms is a non-negative integer")
+            record["paced_ms"] = paced_ms
         if (any(self.exclude.names(target) for target in request.targets)
                 or any(self.exclude.mentioned(path) for path in request_paths(request))):
             result = Result(request.op, EXCLUDED, None, None, None, 0, 0, False, None,
@@ -1305,10 +1346,12 @@ def write_text(stream, text: str) -> None:
     stream.flush()
 
 
-def run(args, environ=None, stdout=None, stderr=None) -> int:
+def run(args, environ=None, stdout=None, stderr=None, pace=None) -> int:
     """``syberlabs githits ...``: 0 a result, 2 refused (an excluded target or a blocked result), 1 an error;
     ``doctor``: 0 ready, 1 not (the status says why). A lookup's output is written (``write_text``) before its record,
-    so an output that fails is recorded ``error`` and exits 1 (``Client.call``, ``deliver``)."""
+    so an output that fails is recorded ``error`` and exits 1 (``Client.call``, ``deliver``). ``pace``, given by the
+    host's launcher entry, is called with each lookup's request once the client and request are built and before it
+    is sent; it returns the milliseconds it held the call (recorded as ``paced_ms``) or None (not paced)."""
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     op = args.githits_command
     options = {name: getattr(args, name) for name in _OPTIONS[op]}
@@ -1338,7 +1381,8 @@ def run(args, environ=None, stdout=None, stderr=None) -> int:
             request = list_request(args.target, **options)
         else:
             request = grep_request(args.pattern, args.targets, **options)
-        result = client.call(request, deliver=deliver)
+        paced_ms = pace(request) if pace is not None else None
+        result = client.call(request, deliver=deliver, paced_ms=paced_ms)
     except GitHitsError as exc:
         try:
             write_text(stderr, f"error: {exc}\n")

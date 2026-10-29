@@ -563,7 +563,10 @@ class LicensePolicy(unittest.TestCase):
                                          "[Source 2](https://gitlab.com/a/b/-/blob/1/c.py) (GPL-3.0-only)"}),
                          ["MIT", "GPL-3.0-only"])
         self.assertEqual(read({"result": "[Source 1](https://github.com/a/b/blob/1/c.py)"}), [None])
-        self.assertEqual(read({"result": "see [the docs](https://docs.python.org/3/) only"}), [None])
+        # No code and no source: nothing to license (pilot-readiness; GitHits' documented "no_example" shape). The
+        # same docs link beside code is a source-less code example: unknown, dropped.
+        self.assertEqual(read({"result": "see [the docs](https://docs.python.org/3/) only"}), [])
+        self.assertEqual(read({"result": "```python\nx = 1\n```\nsee [the docs](https://docs.python.org/3/)"}), [None])
         self.assertEqual(read({"result": "code\n\n**License:** BSD-3-Clause"}), ["BSD-3-Clause"])
         self.assertEqual(read({"result": "", "references": [{"license_spdx_id": "MPL-2.0"}, {"url": "u"}]}),
                          ["MPL-2.0", None])
@@ -854,6 +857,81 @@ class Licenses(FakeCase):
         self.fake.serve("/v1/searches", search_response([
             {**search_hit("apache", "https://github.com/a/apache"), "license_spdx_id": "Apache-2.0"}]))
         self.assertEqual(self.client().search("q", ["pypi:requests"]).results_dropped_license, 1)
+
+
+def documented_examples() -> dict:
+    """GitHits' three documented example responses (``complete``, ``degraded``, ``no_example``), as the pinned
+    OpenAPI fixture holds them for ``POST /v1/examples/search`` 200."""
+    spec = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    found = spec["paths"]["/v1/examples/search"]["post"]["responses"]["200"]["content"]["application/json"]["examples"]
+    return {name: entry["value"] for name, entry in found.items()}
+
+
+class DocumentedExamples(FakeCase):
+    """pilot-readiness, item 1. A lead review on 2026-10-26 found the license filter withheld all three of GitHits'
+    documented example responses (``results_dropped_license=1`` each): the ``complete`` example cites its source as
+    ``[Source 1](https://example.org/source) (MIT)`` under ``### References``, a host the filter did not read as a
+    source, and ``degraded`` and ``no_example`` carry no code and no source at all. GitHits confirmed it returns no
+    structured license fields, so the Markdown is all there is. Permissive now passes; copyleft and unknown are still
+    dropped."""
+
+    def test_the_three_documented_responses_pass_through_the_client(self):
+        examples = documented_examples()
+        self.assertEqual(sorted(examples), ["complete", "degraded", "no_example"])
+        spec = load_spec()
+        for name, body in examples.items():
+            with self.subTest(example=name):
+                self.assertEqual(problems(spec, response_schema(spec, "example"), body), [])
+                self.fake.serve("/v1/examples/search", body)
+                result = self.client().example("read a JSON file in Rust")
+                self.assertEqual((result.status, result.results_dropped_license, result.results_dropped),
+                                 (githits.OK, 0, 0))
+                self.assertEqual(result.data, body, "passed whole, nothing rewritten")
+        self.assertEqual(githits.example_licenses(examples["complete"]), ["MIT"],
+                         "the References link is the source; the GitHits app link is not")
+        self.assertEqual(githits.example_licenses(examples["degraded"]), [])
+        self.assertEqual(githits.example_licenses(examples["no_example"]), [])
+        self.assertEqual([r["results_dropped_license"] for r in self.records().records], [0, 0, 0])
+
+    def test_the_documented_shape_with_copyleft_or_unknown_licenses_is_still_dropped(self):
+        complete = documented_examples()["complete"]
+        for license_text in ("GPL-3.0-only", "AGPL-3.0-or-later", "MPL-2.0", "NOASSERTION", "MIT AND GPL-2.0-only",
+                             "see repository"):
+            body = {**complete, "result": complete["result"].replace("(MIT)", f"({license_text})")}
+            with self.subTest(license=license_text):
+                self.fake.serve("/v1/examples/search", body)
+                result = self.client().example("q")
+                self.assertEqual((result.status, result.data, result.results_dropped_license), (githits.OK, None, 1))
+        unknown = {**complete, "result": complete["result"].replace(" (MIT)", "")}
+        self.fake.serve("/v1/examples/search", unknown)
+        self.assertEqual(self.client().example("q").results_dropped_license, 1, "a cited source with no license")
+        no_source = {**complete, "result": complete["result"].split("### References")[0]}
+        self.assertIn("```rust", no_source["result"])
+        self.fake.serve("/v1/examples/search", no_source)
+        self.assertEqual(self.client().example("q").results_dropped_license, 1, "code with no source at all")
+        second = {**complete, "result": complete["result"].replace(
+            "(MIT)\n", "(MIT)\n- [Source 2](https://example.org/other) (GPL-3.0-only)\n")}
+        self.assertIn("Source 2", second["result"])
+        self.fake.serve("/v1/examples/search", second)
+        self.assertEqual(self.client().example("q").results_dropped_license, 1, "one copyleft source drops it whole")
+        permissive = {**complete, "result": complete["result"].replace("(MIT)", "(Apache-2.0 OR MIT)")}
+        self.fake.serve("/v1/examples/search", permissive)
+        self.assertEqual(self.client().example("q").results_dropped_license, 0)
+
+    def test_only_links_under_a_sources_heading_or_on_a_code_host_are_sources_and_never_githits_own(self):
+        read = githits.example_licenses
+        app = "[Open in GitHits Web App](https://app.githits.com/solutions/12345678-1234-4234-8234-123456789abc)"
+        self.assertEqual(read({"result": "```py\nx\n```\n### References\n" + app}), [None],
+                         "the app link is not a source, so the code has none")
+        self.assertEqual(read({"result": "```py\nx\n```\n## Sources\n- [a](https://docs.example.org/a) (ISC)\n"
+                                         "\n## Notes\n[b](https://docs.example.org/b)"}), ["ISC"],
+                         "the section ends at the next heading")
+        self.assertEqual(read({"result": "```py\nx\n```\n**References**\n- <https://example.org/s> (BSD-3-Clause)\n"
+                                         "\n---\n\n[c](https://example.org/c)"}), ["BSD-3-Clause"],
+                         "a bold heading, an autolink, and a thematic break ends the section")
+        self.assertEqual(read({"result": "```py\nx\n```\n[docs](https://docs.example.org/) (GPL-3.0-only)\n"
+                                         "[Source 1](https://github.com/a/b/blob/1/c.py) (MIT)"}), ["MIT"],
+                         "outside a sources section a non-code-host link is not a source, as before")
 
 
 class Transport(FakeCase):
@@ -1252,7 +1330,7 @@ class LauncherOutput(FakeCase):
             with self.subTest(argv=argv):
                 order = []
                 with mock.patch.object(cli, "survive_unicode", side_effect=lambda: order.append("survive")), \
-                        mock.patch.object(githits, "run", side_effect=lambda args: order.append("run") or 0), \
+                        mock.patch.object(githits, "run", side_effect=lambda args, **_: order.append("run") or 0), \
                         mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(sys, "stderr", io.StringIO()):
                     self.assertEqual(githits_cli_entry.main(argv), expected)
                     printed = sys.stdout.getvalue() + sys.stderr.getvalue()

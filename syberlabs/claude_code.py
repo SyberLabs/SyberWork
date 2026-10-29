@@ -324,7 +324,9 @@ def is_launcher_call(use: dict, launcher: str | None) -> bool:
 
 def record_lookup(record: dict, guard: str) -> dict:
     """A ``lookup`` fact from one authentic client record: ``githits.<op>`` and the record's counts, never text.
-    ``sent`` is the record's: whether the request was written to GitHits (null: not known)."""
+    ``sent`` is the record's: whether the request was written to GitHits (null: not known). ``paced_ms``, only when
+    the record carries it, is how long the host's launcher held the call to keep GitHits' example rate
+    (``githits_pace``); the experiment report leaves it out of the arm's agent time."""
     op = record.get("op") if isinstance(record.get("op"), str) and re.fullmatch(r"[a-z]{1,16}", record["op"]) else "unknown"
     found = {"tool": CLIENT_TOOL + op}
     for field in ("query_digest", "request_id", "status", "at"):
@@ -333,6 +335,8 @@ def record_lookup(record: dict, guard: str) -> dict:
         found[field] = _count(record.get(field))
     found["contamination_blocked"] = record.get("contamination_blocked") is True
     found["sent"] = record.get("sent") if isinstance(record.get("sent"), bool) else None
+    if "paced_ms" in record:
+        found["paced_ms"] = _count(record.get("paced_ms"))
     found["ok"] = found["status"] == githits_client.OK and guard == query_guard.PASS
     found["guard"] = guard
     return found
