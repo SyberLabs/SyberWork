@@ -67,6 +67,7 @@
       "rule": "If the eval stops (eval_budget_exhausted, eval_spend_unknown) a task without a bundle for every arm and seed is left out of the paired comparison and named in the report."
     }
   ],
+  "hidden_feedback": "tails",
   "hypothesis": "Framework validation, not a new claim. On the eight v3 and v4 fixture tasks, with Claude Sonnet 5.5 at medium effort and K = 6 calls, the repair arm's per-task pass rate on the hidden checks is at least the single arm's (E3 v3 and v4, 2026-10-22: repair closed every fixture in one or two calls). A result against E3 is a finding about the instrument before it is one about the arms.",
   "id": "e5-single-vs-repair",
   "notes": "Pre-registered by the eval-core packet (2026-10-26); not run there. Running it spends money (about $10 at most): syberlabs eval preflight e5-single-vs-repair, then syberlabs eval run e5-single-vs-repair with ANTHROPIC_API_KEY and SYBERLABS_CERTIFICATE_SEED set.",

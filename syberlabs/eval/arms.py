@@ -22,11 +22,20 @@ arm object as written in the spec. ``environment`` is the process environment wh
 reads ``SYBERLABS_MODEL`` and ``SYBERLABS_EFFORT`` from it (``adapters/anthropic_adapter.py``), the simulated model
 reads ``SYBERLABS_FIXTURE``, and the certificate seed and GitHub tokens are removed so no provider process inherits
 them.
+
+``hidden_view`` is the spec's ``hidden_feedback`` mode applied to one ``feedback`` object (``providers.repair_feedback``):
+``tails`` returns it unchanged; ``status`` keeps each hidden check's name and ``passed`` or ``failed`` and drops its
+exit code, duration and output tail; ``none`` drops every hidden check, and the whole ``feedback`` when no visible
+check is left that did not pass (a request that said "the last attempt failed" would be hidden information).
+Visible checks and the candidate's own ``files`` pass unchanged in every mode. ``build`` sets it as the
+``feedback_filter`` of a ``repair`` or ``claude-code`` provider, recording what each request carried; a ``single``
+arm sends no feedback, and an evolve arm is refused any mode but ``tails`` by ``spec.check``.
 """
 
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import re
 import statistics
@@ -45,6 +54,7 @@ CLAUDE_ONLY = ("lane", "bare", "trusted_tree", "tools", "max_turns", "githits", 
 # Removed from the environment while an arm proposes; restored after (the certificate seed variable is added).
 WITHHELD_ENV = ("GITHUB_TOKEN", "GH_TOKEN")
 NOMINAL_CALL = (2000, 500)  # tokens in, out: Jev's prior price of one mutation (benchmarks/model_vs_patch.py)
+HIDDEN_PREFIX = "hidden."  # tasks.HIDDEN_PREFIX: the contract names every hidden check hidden.<name>
 
 
 def check(arm: dict, budget: dict) -> list[str]:
@@ -95,10 +105,43 @@ def githits_arm(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "-", name)[:16]
 
 
+def _hidden(check) -> bool:
+    return isinstance(check, dict) and isinstance(check.get("name"), str) and check["name"].startswith(HIDDEN_PREFIX)
+
+
+def hidden_view(feedback: dict, mode: str) -> dict | None:
+    """``feedback`` as the ``hidden_feedback`` ``mode`` lets the proposer see it, or None for no feedback at all."""
+    if mode == "tails":
+        return feedback
+    checks = feedback.get("checks") or []
+    if mode == "status":
+        return {**feedback, "checks": [{"name": c["name"], "state": "passed" if c.get("state") == "passed" else "failed"}
+                                       if _hidden(c) else c for c in checks]}
+    if mode == "none":
+        visible = [c for c in checks if not _hidden(c)]
+        if all(isinstance(c, dict) and c.get("state") == "passed" for c in visible):
+            return None
+        return {**feedback, "checks": visible}
+    raise Rejected("invalid_spec", f"hidden_feedback must be one of tails, status, none, not {mode!r}")
+
+
+def feedback_filter(mode: str, sent: list | None = None):
+    """A provider's ``feedback_filter`` for ``mode``; each result, as sent, is appended to ``sent``."""
+    def apply(feedback: dict) -> dict | None:
+        shown = hidden_view(feedback, mode)
+        if sent is not None:
+            sent.append({"candidate": feedback.get("candidate"), "sent": shown is not None,
+                         "feedback": None if shown is None else json.loads(json.dumps(shown))})
+        return shown
+    return apply
+
+
 def build(arm: dict, *, repo: Path, budget: dict, prices: dict | None, harness: Path = HARNESS,
-          thread_label: str | None = None):
+          thread_label: str | None = None, hidden_feedback: str = "tails", sent: list | None = None):
     """The provider for one run of ``arm`` against the repository at ``repo``. ``thread_label`` (the run's thread
-    id) and the arm's name label a ``githits`` arm's lookups, so each run is its own GitHits session."""
+    id) and the arm's name label a ``githits`` arm's lookups, so each run is its own GitHits session. A ``repair`` or
+    ``claude-code`` provider filters its feedback through ``hidden_feedback`` and records each one it sends in
+    ``sent``."""
     kind, k = arm["kind"], calls(arm, budget)
     timeout = arm.get("timeout_seconds", 600)
     name = arm["name"] if arm["name"][0].isalpha() else "arm-" + arm["name"]
@@ -108,7 +151,7 @@ def build(arm: dict, *, repo: Path, budget: dict, prices: dict | None, harness: 
     if kind == "repair":
         from syberlabs.providers import RepairProvider
         return RepairProvider(resolve(arm["adapter"], harness), name=name, revision="1", timeout=timeout, cwd=repo,
-                              max_calls=k)
+                              max_calls=k, feedback_filter=feedback_filter(hidden_feedback, sent))
     if kind in ("evolve", "evolve_jev"):
         from syberlabs.evolve import CommandMutator, EvolutionaryProvider, JevPolicy
         mutator = CommandMutator(resolve(arm["adapter"], harness), name="model", timeout=timeout, cwd=repo, max_calls=k)
@@ -131,7 +174,9 @@ def build(arm: dict, *, repo: Path, budget: dict, prices: dict | None, harness: 
         options["githits"] = arm["githits"]
         if arm["githits"]:
             options.update(arm=githits_arm(arm["name"]), thread_label=thread_label)
-    return ClaudeCodeProvider(repo, **options)
+    provider = ClaudeCodeProvider(repo, **options)
+    provider.feedback_filter = feedback_filter(hidden_feedback, sent)  # the RepairProvider hook it inherits
+    return provider
 
 
 @contextmanager

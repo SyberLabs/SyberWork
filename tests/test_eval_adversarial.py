@@ -264,6 +264,7 @@ class Budget(Case):
         self.assertEqual(found["stopped"], "eval_budget_exhausted")
         self.assertAlmostEqual(found["spent_dollars"], 2 * CALL)
 
+    @unittest.skipUnless(hasattr(signal, "SIGKILL"), "SIGKILL is POSIX only; on Windows the test would fail early")
     @unittest.expectedFailure
     def test_a_run_killed_midway_is_charged_against_the_cap(self):
         """Design gap: a runner killed during a run (SIGKILL, an OOM kill, a power cut) runs no handler; its
@@ -384,9 +385,10 @@ class HiddenChecks(Case):
         """The host's copy is an ordinary directory, and its path is in the check's own process (the loader's
         ``__main__``, ``/proc/self/cmdline``). c1's code rewrites every hidden check to ``pass``; c2 changes
         nothing that matters and passes. ``Not editable`` held only for the candidate's own tree."""
-        tamper = ("import __main__, json\n"
+        tamper = ("import __main__, json, os, stat\n"
                   "if getattr(__main__, 'path', None):\n"
                   "    passing = json.dumps({'discount': 'pass', 'tax': 'pass'})\n"
+                  "    os.chmod(__main__.path, stat.S_IREAD | stat.S_IWRITE)  # the staged copy is read-only\n"
                   "    open(__main__.path, 'w', encoding='utf-8').write(passing)\n" + WRONG)
         self.register(self.canary_spec("tamper", self.adapter({"changes": {"src/pricing.py": tamper}},
                                                               {"changes": {"src/pricing.py": WRONG + "# two\n"}})))
@@ -424,20 +426,42 @@ class HiddenChecks(Case):
         outcome = self.bundle("exit", "canary-pricing.single.s1")["outcome"]
         self.assertNotEqual(outcome["status"], "accepted", outcome)
 
-    @unittest.expectedFailure
-    def test_a_candidate_cannot_carry_a_hidden_check_into_its_next_request(self):
-        """Design gap (a sandbox, or feedback the candidate cannot write): candidate code run by a hidden check reads
-        the check's source from the loader's ``__main__.body`` and its data from ``sys.argv``, and prints both;
-        the output tail is the repair arm's feedback, so the next request holds the hidden check. EVAL.md's
-        ``Not in a request`` holds only for a candidate that does not look."""
+    def leak(self, eval_id: str, mode: str) -> str:
+        """A repair run under ``hidden_feedback`` ``mode`` whose c1 prints its hidden check's source and data from
+        inside the check; returns the second request (the repair), after showing the leak reached the check's tail."""
+        shutil.rmtree(self.log)
+        self.log.mkdir()
         leak = ("import __main__, sys\nprint(getattr(__main__, 'body', ''))\n"
                 "print(''.join(open(arg, encoding='utf-8').read() for arg in sys.argv[1:]))\n" + WRONG)
-        self.register(self.canary_spec("leak", self.adapter({"changes": {"src/pricing.py": leak}},
-                                                            {"changes": {"src/pricing.py": GOOD}})))
-        self.run_eval("leak", only=",repair,")
-        second = self.requests()[1]
+        self.register(self.canary_spec(eval_id, self.adapter({"changes": {"src/pricing.py": leak}},
+                                                             {"changes": {"src/pricing.py": GOOD}}),
+                                       hidden_feedback=mode))
+        self.run_eval(eval_id, only=",repair,")
+        journal = (self.root / eval_id / "runs" / "canary-pricing.repair.s1" / "journal.json").read_text(encoding="utf-8")
+        self.assertIn(CANARY_CODE, journal, "the candidate printed the hidden check's source into its tail")
+        self.assertIn(CANARY_DATA, journal, "the candidate printed the hidden check's data into its tail")
+        self.assertGreaterEqual(len(self.requests()), 2, "the repair arm asked again after c1 failed")
+        return self.requests()[1]
+
+    @unittest.expectedFailure
+    def test_a_candidate_cannot_carry_a_hidden_check_into_its_next_request(self):
+        """Design gap under ``hidden_feedback: tails`` (a sandbox, or feedback the candidate cannot write): candidate
+        code run by a hidden check reads the check's source from the loader's ``__main__.body`` and its data from
+        ``sys.argv``, and prints both; under ``tails`` the output tail is the repair arm's feedback, so the next
+        request holds the hidden check. EVAL.md's ``Not in a request`` holds only for a candidate that does not look,
+        or under ``status`` and ``none`` (the next test)."""
+        second = self.leak("leak", "tails")
         self.assertNotIn(CANARY_CODE, second)
         self.assertNotIn(CANARY_DATA, second)
+
+    def test_under_status_or_none_a_candidate_cannot_carry_a_hidden_check_into_its_next_request(self):
+        """``hidden_feedback`` ``status`` sends a hidden check's name and state only and ``none`` sends nothing of
+        it, so what the candidate printed inside the check stays in the journal and out of the next request."""
+        for mode in ("status", "none"):
+            with self.subTest(mode=mode):
+                second = self.leak(f"leak-{mode}", mode)
+                self.assertNotIn(CANARY_CODE, second)
+                self.assertNotIn(CANARY_DATA, second)
 
 
 class ClaudeCodeArms(Case):
@@ -485,6 +509,22 @@ class ClaudeCodeArms(Case):
         for bundle, session in zip(bundles, sessions):
             self.assertIn(bundle["thread"], session)
         self.assertEqual({call["agent"] for call in self.calls()}, {"syberfactory/on"})
+
+    def test_two_githits_arms_whose_agent_labels_collide_are_refused(self):
+        """``githits_arm`` rewrites every character outside ``[A-Za-z0-9_-]`` and cuts the name to 16 characters, so
+        ``a.b`` and ``a-b``, or two names that differ only after 16 characters, send one ``X-GitHits-Agent``."""
+        doc = self.pilot("labels", declared="claude-opus-5", served="claude-opus-5")
+        self.assertEqual(spec.check(doc), [])
+        for first, second in (("a.b", "a-b"), ("githits-arm-long-1", "githits-arm-long-2")):
+            with self.subTest(names=(first, second)):
+                changed = json.loads(json.dumps(doc))
+                changed["arms"][0].update(name=first, githits=True)
+                changed["arms"][1].update(name=second, githits=True)
+                changed["decision_rule"] = dict(changed["decision_rule"], treatment=second, baseline=first)
+                errors = spec.check(changed)
+                self.assertTrue(any("GitHits agent label" in e for e in errors), errors)
+                changed["arms"][0]["githits"] = False  # only a githits arm sends the label
+                self.assertEqual(spec.check(changed), [])
 
     @unittest.expectedFailure
     def test_a_run_served_by_another_model_than_its_arm_declares_is_not_reported_as_that_arm(self):
