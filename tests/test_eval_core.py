@@ -285,17 +285,17 @@ class CommittedEvals(unittest.TestCase):
             self.assertEqual({w["id"]: w["digest"] for w in fresh},
                              {task_id: tasks.task_digest(EVALS / "tasks", task_id) for task_id in committed})
 
-    def test_e5_is_a_valid_spec_awaiting_registration_on_clean_main(self):
-        # eval-score adds the required hidden_feedback field, so E5's digest moved; its stale registration is deleted
-        # (register returns an existing registration with the same digest unchanged) and the lead registers it again
-        # on a clean checkout of main. Until then run refuses it.
+    def test_e5_is_registered_from_clean_main_and_not_run(self):
+        # eval-score added the required hidden_feedback field, so E5's digest moved and its stale registration was
+        # deleted (register returns an existing registration with the same digest unchanged). E5 was registered again
+        # on a clean checkout of main (e5-register). registered() refuses a spec, task or arm that moved since.
         path = EVALS / "e5-single-vs-repair" / "spec.json"
-        doc = spec.load(path)
+        doc, registration = spec.registered(path)
         self.assertEqual(doc["hidden_feedback"], "tails", "E5 matches E3: hidden checks' tails reach repair")
-        self.assertFalse((EVALS / "e5-single-vs-repair" / "registration.json").exists())
-        with self.assertRaises(Rejected) as caught:
-            spec.registered(path)
-        self.assertEqual(caught.exception.code, "spec_unregistered")
+        self.assertEqual(registration["spec_digest"], spec.spec_digest(doc))
+        self.assertEqual(registration["task_set_digest"], doc["tasks"]["set_digest"])
+        self.assertIs(registration["git_dirty"], False, "registered from a clean tree")
+        self.assertRegex(registration["git_commit"], r"^[0-9a-f]{40}$")
         self.assertEqual([a["name"] for a in doc["arms"]], ["single", "repair"])
         self.assertEqual({a["model"] for a in doc["arms"]}, {"claude-sonnet-5-5"})
         self.assertEqual({a["effort"] for a in doc["arms"]}, {"medium"})
@@ -306,6 +306,7 @@ class CommittedEvals(unittest.TestCase):
                           doc["decision_rule"]["operator"]), ("repair", "single", ">="))
         self.assertEqual(len(runner.plan(doc)), 48)
         self.assertFalse((EVALS / "e5-single-vs-repair" / "runs").exists(), "E5 is not run")
+        self.assertFalse((EVALS / "e5-single-vs-repair" / "spend.jsonl").exists(), "no E5 run was attempted")
 
 
 class Arms(unittest.TestCase):
@@ -453,10 +454,38 @@ class Terminal(unittest.TestCase):
             code = main(list(args))
         return code, out.getvalue()
 
-    def test_score_and_report_refuse_an_unregistered_eval(self):
-        for name in ("score", "report"):
-            code, out = self.cli("eval", name, "e5-single-vs-repair")
+    def cli_err(self, *args):
+        from syberlabs.cli import main
+
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_score_and_report_of_e5_unregistered_and_registered_with_no_runs(self):
+        # Every score and report runs on a copy of evals/: score writes index.json beside the spec, and no test may
+        # write into the checkout (preflight records whether it differs from its commit).
+        folder_e5 = EVALS / "e5-single-vs-repair"
+        before = sorted(p.name for p in folder_e5.iterdir())
+        artifacts = ("runs", "spend.jsonl", "index.json", "preflight.json", "report*")
+        with tempfile.TemporaryDirectory() as folder:
+            evals = Path(folder) / "evals"
+            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns(*artifacts, "registration.json"))
+            for name in ("score", "report"):
+                code, out, err = self.cli_err("eval", "--evals", str(evals), name, "e5-single-vs-repair")
+                self.assertEqual(code, 2, out)
+                self.assertIn("spec_unregistered", err)
+        with tempfile.TemporaryDirectory() as folder:
+            evals = Path(folder) / "evals"
+            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns(*artifacts))
+            code, out, err = self.cli_err("eval", "--evals", str(evals), "score", "e5-single-vs-repair", "--json")
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["runs"], {}, "a registered eval with no runs scores none")
+            code, out, err = self.cli_err("eval", "--evals", str(evals), "report", "e5-single-vs-repair")
             self.assertEqual(code, 2, out)
+            self.assertIn("runs_missing", err)
+            self.assertIn("48 of 48", err)
+        self.assertEqual(sorted(p.name for p in folder_e5.iterdir()), before, "nothing written into the checkout")
 
     def test_tasks_list_and_a_dry_run_of_e5(self):
         code, out = self.cli("eval", "tasks", "list", "--json")
@@ -464,10 +493,9 @@ class Terminal(unittest.TestCase):
         found = json.loads(out)
         doc = json.loads((EVALS / "e5-single-vs-repair" / "spec.json").read_text(encoding="utf-8"))
         self.assertEqual(found["set_digest"], doc["tasks"]["set_digest"])
-        with tempfile.TemporaryDirectory() as folder:  # registered in a copy: the committed E5 waits for clean main
+        with tempfile.TemporaryDirectory() as folder:  # the committed registration, on a copy: nothing written here
             evals = Path(folder) / "evals"
-            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns("runs", "registration.json"))
-            spec.register(evals / "e5-single-vs-repair" / "spec.json")
+            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns("runs", "spend.jsonl", "index.json"))
             code, out = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry", "--json")
             found = json.loads(out)
             self.assertEqual((code, found["planned"], found["dry"]), (0, 48, True))

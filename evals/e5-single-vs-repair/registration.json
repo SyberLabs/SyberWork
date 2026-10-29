@@ -1,0 +1,23 @@
+{
+  "arm_digests": {
+    "repair": "1912623052881dac83a369fbf6a855a49595a7a99cca7ff8e235179af0f716b5",
+    "single": "cc8dc7ec0d1038c73c93d793e8852aa24b9a7902c5d7655ecaa4cdc20e869821"
+  },
+  "eval": "e5-single-vs-repair",
+  "git_commit": "90930320c6c1c3073066d502997d5ada791b7673",
+  "git_dirty": false,
+  "registered_at": "2026-10-29T06:54:36Z",
+  "schema": "syberlabs.eval/registration.v1",
+  "spec_digest": "7625340097b9df1a1be4a53482bc36a14865361bf0fb7c48cdfc787318d5caa6",
+  "task_digests": {
+    "v3-gaps_renumber": "0eeff9daaf1b0f8eea3fae5ee9defcf751b9519a503f5885ea4334d03ff000cc",
+    "v3-journal_chain": "910f140b9334be262d399ceaecbd6b2ee5956d51748a39344d5b4fdeb1a61f12",
+    "v3-verify_layers": "0ab4bd05a178b95fdbeaf2766c85cc38fda22a08a5863fef3b0811f8df8c9c6e",
+    "v3-worktree_order": "1cd93278532b00dd83bf9b57abf586f6185481519e8cb01ed6362f4a0b6a271e",
+    "v4-cell_metrics": "29b61a320b15d67da274738f05e885eaf546d40bba96b325cd90f2a874e3e325",
+    "v4-certificate_layers": "52d653e131593a75a24d5a939c2c0f34ff6b1bd31d5cfa7e69261ad0a14686c8",
+    "v4-stack_landing": "3a13bf606221209e37ef7490ab3d64874660e1fb47b06ca206714727ee297e86",
+    "v4-thread_stations": "6be55591c0e962fa77988731c7702ce0db0fa3ecc6fa79d927553b73080de784"
+  },
+  "task_set_digest": "13589c4ff8e07e9666c72f3922d743bf076b9e225024f1296864ecc31642cb17"
+}
