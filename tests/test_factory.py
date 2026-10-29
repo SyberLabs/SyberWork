@@ -1,6 +1,5 @@
 """The factory's v0 slice on the fixture app: Space, harness, ledger, spec, attestation, and the CLI end to end."""
 
-import importlib
 import io
 import json
 import os
@@ -33,38 +32,29 @@ def file_components(graph):
     return {path: record["component"] for path, record in graph["files"].items()}
 
 
-def fxapp():
-    """The fixture's entrypoint module, imported from the fixture root."""
-    if str(FIXTURE) not in sys.path:
-        sys.path.insert(0, str(FIXTURE))
-    for name in list(sys.modules):
-        if name == "fxapp" or name.startswith("fxapp."):
-            del sys.modules[name]
-    return importlib.import_module("fxapp.main")
-
-
 class Scratch(unittest.TestCase):
     def setUp(self):
         self.scratch = Path(tempfile.mkdtemp(prefix="factory-"))
         self.addCleanup(shutil.rmtree, self.scratch, True)
 
-    def record(self, home, revision="fixture", quantity=2, replay_of=None, graph=None, root=FIXTURE, entry=None):
+    def record(self, home, revision="fixture", quantity=2, replay_of=None, graph=None, root=FIXTURE,
+               entry="fxapp.main:run"):
+        """One recording in a child interpreter, logged in ``home``. Returns (run id, outcome, report)."""
         graph = graph or indexed(root, revision)
         run_id = harness.new_run_id()
-        main = entry or fxapp()
-        with harness.Recorder(root, home.run_path(run_id), file_components(graph), run_id=run_id, revision=revision,
-                              entrypoint="fxapp.main:run", replay_of=home.run_path(replay_of) if replay_of else None,
-                              blobs=home.home / "blobs") as recorder:
-            outcome = main.run(recorder.context, {"part": "p-104", "quantity": quantity})
+        report = harness.record(root, home.run_path(run_id), entry, file_components=file_components(graph),
+                                fixture={"part": "p-104", "quantity": quantity}, run_id=run_id, revision=revision,
+                                replay_of=home.run_path(replay_of) if replay_of else None, blobs=home.home / "blobs")
+        self.assertNotEqual(report["status"], "killed", report)
         home.record_run(run_id)
-        return run_id, outcome, recorder
+        return run_id, report["outcome"], report
 
 
 class SpaceTests(unittest.TestCase):
     def test_index_finds_files_symbols_and_edges(self):
         graph = indexed()
         self.assertEqual(sorted(graph["files"]), ["fxapp/__init__.py", "fxapp/effects.py", "fxapp/ingest.py",
-                                                  "fxapp/main.py", "fxapp/rules.py"])
+                                                  "fxapp/main.py", "fxapp/rules.py", "fxapp/variants.py"])
         self.assertIn("s:fxapp/rules.py::decide", graph["symbols"])
         self.assertEqual(graph["symbols"]["s:fxapp/rules.py::decide"]["kind"], "function")
         kinds = {(e["from"], e["to"], e["kind"]) for e in graph["edges"]}
@@ -105,7 +95,7 @@ class SpaceTests(unittest.TestCase):
         self.assertEqual(graph["files"]["fxapp/main.py"]["component"], "all")
         graph = space.index(FIXTURE, revision="fixture")
         space.map_components(graph, {"nodes": [{"id": "rules", "label": "Rules", "paths": ["fxapp/rules.py"]}], "edges": []})
-        self.assertEqual(len(graph["unmapped"]), 4)
+        self.assertEqual(len(graph["unmapped"]), 5)
 
     def test_repository_layering_has_no_drift(self):
         """The repository's own declaration (docs/architecture.declared.json) says syberwork depends on syberlabs
@@ -140,9 +130,10 @@ class SpaceTests(unittest.TestCase):
 class HarnessTests(Scratch):
     def test_record_spans_worldline_and_active_at(self):
         home = ledger.Ledger(self.scratch / "ledger")
-        run_id, outcome, recorder = self.record(home)
+        run_id, outcome, report = self.record(home)
         self.assertEqual(outcome["decision"], "order")
-        self.assertEqual(recorder.counts, {"call": 7, "effect": 1, "marker": 1})
+        self.assertEqual(report["status"], "ok", report)
+        self.assertEqual(report["counts"], {"call": 7, "effect": 1, "marker": 1})
         records = home.load_run(run_id)
         self.assertEqual(records[0]["t"], "run")
         self.assertEqual(records[-1]["t"], "end")
@@ -161,8 +152,8 @@ class HarnessTests(Scratch):
         run_a, outcome_a, _ = self.record(home)
         run_b, outcome_b, replayer = self.record(home, replay_of=run_a)
         self.assertEqual(outcome_a, outcome_b, "the replay returns the journaled effect and marker")
-        self.assertEqual(replayer.status, "ok")
-        self.assertEqual(replayer.counts["call"], 5, "post_order and label did not run on replay")
+        self.assertEqual(replayer["status"], "ok", replayer)
+        self.assertEqual(replayer["counts"]["call"], 5, "post_order and label did not run on replay")
         report = harness.compare(home.load_run(run_a), home.load_run(run_b))
         self.assertTrue(report["equal"], report)
         self.assertEqual(home.load_run(run_b)[0]["replay_of"], run_a)
@@ -171,48 +162,32 @@ class HarnessTests(Scratch):
         home = ledger.Ledger(self.scratch / "ledger")
         run_a, _, _ = self.record(home)
         run_c, _, replayer = self.record(home, replay_of=run_a, quantity=0)
-        self.assertEqual(replayer.status, "diverged", "the effect the journal holds was never asked for")
+        self.assertEqual(replayer["status"], "diverged", "the effect the journal holds was never asked for")
         self.assertEqual(home.load_run(run_c)[-1]["unconsumed_effects"], 1)
         report = harness.compare(home.load_run(run_a), home.load_run(run_c))
         self.assertFalse(report["equal"])
         self.assertEqual(report["first_divergence"]["before"], ("effects", "submit"))
 
-        class Other:
-            @staticmethod
-            def run(ctx, payload):
-                return ctx.run("http.other", lambda: 1)
-
-        with self.assertRaises(harness.Diverged) as caught:
-            self.record(home, replay_of=run_a, entry=Other)
-        self.assertEqual(caught.exception.asked, "effect:http.other")
-        self.assertEqual(caught.exception.journaled, "marker:time")
+        run_d, _, other = self.record(home, replay_of=run_a, entry="fxapp.variants:other")
+        self.assertEqual(other["status"], "diverged")
+        self.assertIn("asked for effect 'effect:http.other'; the journal has 'marker:time'", other["error"])
+        self.assertEqual(home.load_run(run_d)[-1]["status"], "diverged")
 
     def test_large_payload_goes_to_a_blob_and_replays(self):
         home = ledger.Ledger(self.scratch / "ledger")
         big = {"rows": ["x" * 100] * 1000}
-
-        class Big:
-            @staticmethod
-            def run(ctx, payload):
-                return ctx.run("big", lambda: big)
-
-        run_a, outcome, _ = self.record(home, entry=Big)
+        run_a, outcome, _ = self.record(home, entry="fxapp.variants:big")
+        self.assertEqual(outcome, big)
         effect = [r for r in home.load_run(run_a) if r["t"] == "effect"][0]
         self.assertIn("blob", effect)
         self.assertTrue((home.home / "blobs" / effect["blob"]).exists())
-        _, replayed, _ = self.record(home, replay_of=run_a, entry=Big)
+        _, replayed, _ = self.record(home, replay_of=run_a, entry="fxapp.variants:big")
         self.assertEqual(replayed, big)
 
     def test_non_json_result_is_kept_as_repr(self):
         home = ledger.Ledger(self.scratch / "ledger")
-
-        class Odd:
-            @staticmethod
-            def run(ctx, payload):
-                return ctx.run("odd", lambda: {1, 2})
-
-        run_a, outcome, _ = self.record(home, entry=Odd)
-        self.assertEqual(outcome, {1, 2})
+        run_a, outcome, _ = self.record(home, entry="fxapp.variants:odd")
+        self.assertEqual(outcome, "{1, 2}", "a non-JSON outcome comes back from the child as its repr")
         effect = [r for r in home.load_run(run_a) if r["t"] == "effect"][0]
         self.assertFalse(effect["json"])
         self.assertEqual(effect["payload"], "{1, 2}")
@@ -227,16 +202,23 @@ class HarnessTests(Scratch):
         with self.assertRaises(Rejected):
             harness.current()
         script = self.scratch / "script.py"
-        script.write_text("from syberlabs.factory.harness import current\nctx = current()\n"
-                          "print(ctx.marker('answer', 42))\n", encoding="utf-8")
-        with redirect_stdout(io.StringIO()) as out:
-            with harness.Recorder(self.scratch, self.scratch / "s.jsonl") as recorder:
-                import runpy
-                runpy.run_path(str(script), run_name="__main__")
-        self.assertEqual(out.getvalue().strip(), "42")
-        self.assertEqual(recorder.counts["marker"], 1)
+        script.write_text("import sys\nfrom syberlabs.factory.harness import current\nctx = current()\n"
+                          "print(ctx.marker('answer', 42))\nsys.exit(0)\n", encoding="utf-8")
+        report = harness.record(self.scratch, self.scratch / "s.jsonl", str(script))
+        self.assertEqual(report["status"], "ok", report)
+        self.assertEqual(report["stdout"].strip(), "42")
+        self.assertEqual(report["counts"]["marker"], 1)
+        records = harness.read_journal(self.scratch / "s.jsonl")
+        self.assertEqual([r["t"] for r in records], ["run", "call", "marker", "return", "end"])
+        self.assertEqual(records[1]["fn"], "<module>", "a script's own body is its one span")
         with self.assertRaises(Rejected):
-            harness.current()
+            harness.record(self.scratch, self.scratch / "t.jsonl", "nope.py")
+        failing = self.scratch / "failing.py"
+        failing.write_text("raise ValueError('boom')\n", encoding="utf-8")
+        report = harness.record(self.scratch, self.scratch / "f.jsonl", str(failing))
+        self.assertEqual(report["status"], "error")
+        self.assertIn("ValueError: boom", report["error"])
+        self.assertEqual(harness.read_journal(self.scratch / "f.jsonl")[-1]["status"], "error")
 
 
 class LedgerTests(Scratch):
@@ -414,9 +396,6 @@ class CliTests(Scratch):
             {"req_id": "R1", "text": "When quantity is positive, the system shall post one order.",
              "scenarios": [{"given": "quantity 2", "when": "run", "then": "one http.post_order effect"}]}],
             ["ingest", "rules", "effects"], author=ACTOR)), encoding="utf-8")
-        for name in list(sys.modules):
-            if name == "fxapp" or name.startswith("fxapp."):
-                del sys.modules[name]
         code, out, err = self.run_cli("index", "--declared", "architecture.json", "--revision", "base", cwd=tree)
         self.assertEqual(code, 0, err)
         self.assertIn("divergent  effects -> rules", out)

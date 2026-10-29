@@ -6,7 +6,7 @@
   "provider": "author",
   "groups": [],
   "nodes": [
-    {"id": "main", "label": "Main", "paths": ["fxapp/main.py", "fxapp/__init__.py"]},
+    {"id": "main", "label": "Main", "paths": ["fxapp/main.py", "fxapp/__init__.py", "fxapp/variants.py"]},
     {"id": "ingest", "label": "Ingest", "paths": ["fxapp/ingest.py"]},
     {"id": "rules", "label": "Rules", "paths": ["fxapp/rules.py"]},
     {"id": "effects", "label": "Effects", "paths": ["fxapp/effects.py"]}

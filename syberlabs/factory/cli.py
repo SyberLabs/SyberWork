@@ -21,9 +21,7 @@ JSON file naming components and the edges the author intends between them.
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
-import runpy
 import sys
 from pathlib import Path
 
@@ -276,26 +274,6 @@ def _read_json(path: str, what: str) -> dict:
         raise Rejected(f"{what}_unreadable", f"{path}: {type(exc).__name__}") from None
 
 
-def _load_entry(entry: str, root: Path):
-    """``module:function`` from the root, or a script path. Returns (callable or None, script path or None)."""
-    if ":" in entry and not Path(entry).exists():
-        module_name, function_name = entry.rsplit(":", 1)
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as exc:
-            raise Rejected("entry_import", f"cannot import {module_name}: {exc}") from None
-        function = getattr(module, function_name, None)
-        if function is None:
-            raise Rejected("entry_missing", f"{module_name} has no {function_name}")
-        return function, None
-    script = Path(entry)
-    if not script.exists():
-        raise Rejected("entry_missing", f"{entry} is neither module:function nor a file")
-    return None, script
-
-
 def _record(args, home: ledger.Ledger, replay: bool) -> int:
     root = Path(args.root).resolve()
     declared = _declared(getattr(args, "declared", None))
@@ -303,45 +281,36 @@ def _record(args, home: ledger.Ledger, replay: bool) -> int:
     file_components = {p: r.get("component") for p, r in graph["files"].items()} if graph else {}
     space_digest = space.graph_digest(graph) if graph else None
     fixture = _read_json(args.fixture, "fixture") if args.fixture else {}
-    function, script = _load_entry(args.entry, root)
     run_id = harness.new_run_id()
-    replay_of = home.run_path(args.run if replay and hasattr(args, "run") else args.replay) if replay else None
+    recorded = args.run if replay and hasattr(args, "run") else getattr(args, "replay", None)
+    replay_of = home.run_path(recorded) if replay else None
     revision = args.revision or (graph.get("revision") if graph else None) or space.git_revision(root)
-    recorder = harness.Recorder(root, home.run_path(run_id), file_components, run_id=run_id, revision=revision,
-                                entrypoint=args.entry, fixture_digest=digest(fixture), space_digest=space_digest,
-                                replay_of=replay_of, blobs=home.home / "blobs")
-    outcome = None
-    try:
-        with recorder as rec:
-            if function is not None:
-                outcome = function(rec.context, fixture)
-            else:
-                runpy.run_path(str(script), run_name="__main__")
-    except harness.Diverged as exc:
-        print(f"diverged: {exc.detail}", file=sys.stderr)
-    except SystemExit as exc:  # a script's own exit: clean when the code is 0, recorded as an error otherwise
-        if exc.code not in (None, 0):
-            print(f"the program exited with {exc.code}", file=sys.stderr)
-    except Exception as exc:  # the program's own failure is recorded, then reported
-        print(f"the program raised {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
+    report = harness.record(root, home.run_path(run_id), args.entry, file_components=file_components, fixture=fixture,
+                            run_id=run_id, revision=revision, space_digest=space_digest, replay_of=replay_of,
+                            blobs=home.home / "blobs")
+    if report.get("stdout"):
+        print(report["stdout"])
+    if report.get("error"):
+        print(f"the program: {report['error']}", file=sys.stderr)
+    if report["status"] == "killed" or not home.run_path(run_id).exists():
+        print(f"no journal for run {run_id}: {report.get('error')}", file=sys.stderr)
+        if report.get("stderr"):
+            print(report["stderr"], file=sys.stderr)
+        return 1
     event = home.record_run(run_id)
     body = event["body"]
     print(f"{'replayed' if replay else 'recorded'} run {run_id}  status {body['status']}  steps {body['counts']}  "
           f"revision {str(revision)[:10]}  (ledger seq {event['seq']})")
     if replay:
-        before = home.load_run(args.run if hasattr(args, "run") else args.replay)
-        report = harness.compare(before, home.load_run(run_id))
-        if report["equal"]:
-            print(f"worldline matches the recording over {report['steps_before']} projected steps")
+        comparison = harness.compare(home.load_run(recorded), home.load_run(run_id))
+        if comparison["equal"]:
+            print(f"worldline matches the recording over {comparison['steps_before']} projected steps")
         else:
-            first = report["first_divergence"]
+            first = comparison["first_divergence"]
             print(f"worldline parts at projected step {first['index']}: recorded {first['before']}, replayed {first['after']}")
-        return 0 if body["status"] == "ok" and report["equal"] else 1
-    if outcome is not None:
-        try:
-            print("outcome", json.dumps(outcome, sort_keys=True, default=str)[:400])
-        except (TypeError, ValueError):
-            pass
+        return 0 if body["status"] == "ok" and comparison["equal"] else 1
+    if report.get("outcome") is not None:
+        print("outcome", json.dumps(report["outcome"], sort_keys=True, default=str)[:400])
     return 0 if body["status"] == "ok" else 1
 
 
