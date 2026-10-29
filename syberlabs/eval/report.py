@@ -233,10 +233,11 @@ def build(evals_root: str | Path, eval_id: str, *, partial: bool = False) -> dic
             blocked_total[key] = blocked_total.get(key, 0) + (sum(value.values()) if isinstance(value, dict) else value)
     ledger = runner.EvalRun(root, eval_id).ledger()
     unknown = [line.get("run_id") or f"line {line.get('unreadable')}" for line in ledger
-               if "unreadable" in line or runner.ledger_dollars(line) is None]
+               if "unreadable" in line or runner.ledger_dollars(line) is None or line.get("unknown_models")]
     if unknown:  # a report states the eval's spend; one it cannot count is refused, never summed around
         raise Rejected("eval_spend_unknown", "the spend ledger has lines whose dollars are not a finite number of "
-                       "at least 0: " + ", ".join(map(str, unknown[:5])))
+                       "at least 0, or that name a model the table does not price (as EvalRun.spent stops on): "
+                       + ", ".join(map(str, unknown[:5])))
     raised = [line for line in ledger if line.get("state") == "aborted"]
     ledger_dollars = round(sum(runner.ledger_dollars(x) for x in ledger), 6)
     index = scores.load_index(root, eval_id)
