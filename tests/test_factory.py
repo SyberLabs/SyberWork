@@ -4,7 +4,6 @@ import io
 import json
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
