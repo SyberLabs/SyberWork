@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory replay</title>
+<style>
+  :root { --ink: #1c1c1a; --quiet: #6b6a66; --line: #c9c7bf; --bg: #fbfaf7; --card: #ffffff; --lit: #1d9e75; --lit-bg: #e1f5ee; --bad: #d85a30; --touched: #f1efe8; }
+  @media (prefers-color-scheme: dark) { :root { --ink: #e8e6df; --quiet: #a09e97; --line: #4a4945; --bg: #161614; --card: #1f1f1c; --lit: #5dcaa5; --lit-bg: #0f3d31; --bad: #f0997b; --touched: #2a2a27; } }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 24px; flex-wrap: wrap; align-items: baseline; }
+  header b { font-weight: 600; }
+  header span { color: var(--quiet); }
+  main { display: grid; grid-template-columns: 1fr 340px; gap: 0; min-height: calc(100vh - 140px); }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+  #space { padding: 8px; }
+  svg { width: 100%; height: auto; display: block; }
+  aside { border-left: 1px solid var(--line); padding: 12px 16px; overflow: auto; }
+  @media (max-width: 760px) { aside { border-left: 0; border-top: 1px solid var(--line); } }
+  h2 { font-size: 13px; font-weight: 600; margin: 12px 0 6px; color: var(--quiet); text-transform: none; }
+  ol, ul { margin: 0; padding-left: 18px; }
+  li { margin: 2px 0; }
+  li.active { color: var(--lit); font-weight: 600; }
+  code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  footer { position: sticky; bottom: 0; background: var(--card); border-top: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  input[type=range] { flex: 1; min-width: 160px; }
+  button, select { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }
+  .node rect { fill: var(--card); stroke: var(--line); stroke-width: 1.25; }
+  .node.touched rect { fill: var(--touched); }
+  .node.lit rect { fill: var(--lit-bg); stroke: var(--lit); stroke-width: 2; }
+  .node text { fill: var(--ink); font-size: 13px; font-weight: 600; }
+  .node .files { fill: var(--quiet); font-size: 11px; font-weight: 400; }
+  .edge { stroke: var(--line); stroke-width: 1.25; fill: none; }
+  .edge.declared { stroke: var(--quiet); }
+  .edge.divergent { stroke: var(--bad); stroke-dasharray: 5 4; }
+  .edge.absent { stroke: var(--line); stroke-dasharray: 2 4; }
+  .edge.lit { stroke: var(--lit); stroke-width: 2; }
+  .legend { display: flex; gap: 14px; color: var(--quiet); font-size: 12px; padding: 0 8px 8px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 22px; border-top: 2px solid var(--quiet); vertical-align: middle; margin-right: 6px; }
+  .legend i.bad { border-top-style: dashed; border-color: var(--bad); }
+  .legend i.absent { border-top-style: dotted; }
+  .legend i.lit { border-color: var(--lit); }
+</style>
+</head>
+<body>
+<header>
+  <b id="title">Factory replay</b>
+  <span id="meta"></span>
+</header>
+<main>
+  <section id="space">
+    <svg id="graph" viewBox="0 0 760 520" role="img" aria-label="Components lit as the run is scrubbed"></svg>
+    <div class="legend"><span><i></i>declared and observed</span><span><i class="bad"></i>observed, not declared</span><span><i class="absent"></i>declared, not observed</span><span><i class="lit"></i>active at this step</span></div>
+  </section>
+  <aside>
+    <h2>At this step</h2>
+    <div id="stepinfo"></div>
+    <h2>Active spans, outermost first</h2>
+    <ol id="stack"></ol>
+    <h2>Effects and markers so far</h2>
+    <ul id="effects"></ul>
+  </aside>
+</main>
+<footer>
+  <button id="play" type="button">Play</button>
+  <select id="speed"><option value="0.2">0.2x</option><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="5">5x</option></select>
+  <input id="seq" type="range" min="0" max="1" value="0" step="1" aria-label="logical step">
+  <code id="seqlabel">seq 0</code>
+</footer>
+<script>
+const DATA = /*__FACTORY_DATA__*/null;
+(function () {
+  if (!DATA) { document.getElementById('meta').textContent = 'no run data embedded'; return; }
+  const spans = DATA.spans || [], effects = DATA.effects || [], comps = DATA.components || [], edges = DATA.edges || [];
+  const maxSeq = DATA.end ? DATA.end.seq : spans.reduce((m, s) => Math.max(m, s.end || s.start), 0);
+  const run = DATA.run || {};
+  document.getElementById('meta').textContent = `run ${run.run_id || '?'} · revision ${(run.revision || '?').slice(0, 10)} · ${run.entrypoint || ''} · ${DATA.end ? DATA.end.status : 'open'} · ${spans.length} spans, ${effects.length} effects`;
+  const slider = document.getElementById('seq'); slider.max = String(maxSeq);
+  const byId = new Map(spans.map(s => [s.span, s]));
+
+  // Layout: components on a ring, unmapped calls in a corner. Edges: straight lines between centres.
+  const W = 760, H = 520, cx = W / 2, cy = H / 2 - 10, r = Math.min(W, H) / 2 - 90;
+  const ids = comps.map(c => c.id); if (spans.some(s => s.component === null)) { ids.push(null); }
+  const pos = {};
+  ids.forEach((id, i) => { const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(ids.length, 1); pos[id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }; });
+  const svg = document.getElementById('graph'); const NS = 'http://www.w3.org/2000/svg';
+  const el = (name, attrs, parent) => { const e = document.createElementNS(NS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; };
+  const defs = el('defs', {});
+  for (const [id, color] of [['a-line', 'var(--quiet)'], ['a-bad', 'var(--bad)'], ['a-lit', 'var(--lit)']]) {
+    const m = el('marker', { id, viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse' }, defs);
+    el('path', { d: 'M0 0L10 5L0 10z', fill: color }, m);
+  }
+  const BW = 150, BH = 46;
+  const edgeEls = [];
+  const allEdges = edges.map(e => ({ ...e, kind: e.declared ? 'declared' : 'divergent' })).concat((DATA.absent || []).map(e => ({ ...e, kind: 'absent', count: 0 })));
+  for (const e of allEdges) {
+    const a = pos[e.from], b = pos[e.to]; if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+    const sx = a.x + ux * (Math.abs(ux) * BW / 2 + Math.abs(uy) * BH / 2 + 2), sy = a.y + uy * (Math.abs(ux) * BW / 2 + Math.abs(uy) * BH / 2 + 2);
+    const tx = b.x - ux * (Math.abs(ux) * BW / 2 + Math.abs(uy) * BH / 2 + 4), ty = b.y - uy * (Math.abs(ux) * BW / 2 + Math.abs(uy) * BH / 2 + 4);
+    const line = el('line', { x1: sx, y1: sy, x2: tx, y2: ty, class: 'edge ' + e.kind, 'marker-end': e.kind === 'divergent' ? 'url(#a-bad)' : 'url(#a-line)' });
+    edgeEls.push({ e, line });
+  }
+  const nodeEls = {};
+  for (const id of ids) {
+    const p = pos[id], label = id === null ? '(unmapped)' : (comps.find(c => c.id === id) || {}).label || id;
+    const g = el('g', { class: 'node', transform: `translate(${p.x - BW / 2}, ${p.y - BH / 2})` });
+    el('rect', { width: BW, height: BH, rx: 8 }, g);
+    const t = el('text', { x: BW / 2, y: 20, 'text-anchor': 'middle' }, g); t.textContent = label;
+    const f = el('text', { x: BW / 2, y: 36, 'text-anchor': 'middle', class: 'files' }, g);
+    const c = comps.find(c => c.id === id); f.textContent = c ? `${c.files} file${c.files === 1 ? '' : 's'}` : 'no component';
+    nodeEls[id] = g;
+  }
+
+  function render(seq) {
+    const active = spans.filter(s => s.start <= seq && (s.end === null || s.end > seq));
+    const touched = new Set(spans.filter(s => s.start <= seq).map(s => s.component));
+    const lit = new Set(active.map(s => s.component));
+    for (const id of ids) { const g = nodeEls[id]; g.classList.toggle('lit', lit.has(id)); g.classList.toggle('touched', !lit.has(id) && touched.has(id)); }
+    const litEdges = new Set();
+    for (const s of active) { const parent = byId.get(s.parent); if (parent && parent.component !== s.component) litEdges.add(parent.component + '->' + s.component); }
+    for (const { e, line } of edgeEls) { const on = litEdges.has(e.from + '->' + e.to); line.classList.toggle('lit', on); if (on) line.setAttribute('marker-end', 'url(#a-lit)'); else line.setAttribute('marker-end', e.kind === 'divergent' ? 'url(#a-bad)' : 'url(#a-line)'); }
+    document.getElementById('seqlabel').textContent = `seq ${seq} / ${maxSeq}`;
+    const top = active[active.length - 1];
+    document.getElementById('stepinfo').innerHTML = top ? `<code>${top.file}:${top.line}</code> in <b>${top.component || '(unmapped)'}</b>` : (seq === 0 ? 'run start' : (seq >= maxSeq ? 'run end' : 'between spans'));
+    const stack = document.getElementById('stack'); stack.innerHTML = '';
+    for (const s of active) { const li = document.createElement('li'); li.className = 'active'; li.innerHTML = `${s.component || '(unmapped)'} <code>${s.fn}</code> <span style="color:var(--quiet)">${s.start}..${s.end === null ? '' : s.end}</span>`; stack.appendChild(li); }
+    const list = document.getElementById('effects'); list.innerHTML = '';
+    for (const e of effects.filter(e => e.seq <= seq)) { const li = document.createElement('li'); li.innerHTML = `<code>${e.seq}</code> ${e.t} <b>${e.name}</b> <code>${(e.digest || '').slice(0, 10)}</code>${e.replayed ? ' (replayed)' : ''}`; list.appendChild(li); }
+  }
+  slider.addEventListener('input', () => render(Number(slider.value)));
+  let timer = null;
+  const play = document.getElementById('play');
+  play.addEventListener('click', () => {
+    if (timer) { clearInterval(timer); timer = null; play.textContent = 'Play'; return; }
+    play.textContent = 'Pause';
+    timer = setInterval(() => {
+      const speed = Number(document.getElementById('speed').value);
+      let next = Number(slider.value) + Math.max(1, Math.round(speed * 2));
+      if (next >= maxSeq) { next = maxSeq; clearInterval(timer); timer = null; play.textContent = 'Play'; }
+      slider.value = String(next); render(next);
+    }, 250);
+  });
+  render(0);
+})();
+</script>
+</body>
+</html>
