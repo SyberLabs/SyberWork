@@ -249,11 +249,19 @@ def hidden_record(task_digest: str, hashes: list[dict]) -> dict:
 
 
 def ledger_dollars(line: dict) -> float | None:
-    """A ledger line's dollars when they are a finite number of at least zero (not a bool), else None: unknown."""
+    """A ledger line's dollars when they are a finite number of at least zero (not a bool), else None: unknown.
+
+    An integer too large for a float (``spec.loads`` reads one of up to 4,300 digits) is unknown too: ``math.isfinite``
+    and ``float`` raise ``OverflowError`` on it, which would reach ``EvalRun.spent`` and ``report.build`` uncoded."""
     value = line.get("dollars")
-    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+    if type(value) not in (int, float):
         return None
-    return float(value)
+    try:
+        if not math.isfinite(value) or value < 0:
+            return None
+        return float(value)
+    except OverflowError:
+        return None
 
 
 def recorded_spend(events: list[dict]) -> dict:
