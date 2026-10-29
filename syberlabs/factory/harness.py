@@ -1,7 +1,8 @@
 """Time: record a run once at full speed, replay it from its journal at any speed.
 
-A ``Recorder`` installs a profile hook for the current thread and writes one
-JSON line per event to a journal: a ``run`` header, a ``call`` and a ``return``
+A ``Recorder`` owns a journal and a profile hook (``Recorder.hook``); ``record``
+runs a program in a child process that installs that hook and writes one
+JSON line per event to the journal: a ``run`` header, a ``call`` and a ``return``
 for every Python function under the recorded root, an ``effect`` for every
 value that crossed ``Context.run``, a ``marker`` for every value that must not
 be recomputed (time, random, environment), and an ``end``. Every record carries
@@ -18,6 +19,15 @@ The hook sees one thread. Threads the program starts are not recorded, and
 nothing here is a sandbox. Files under the recorded root are mapped to
 components with the Space graph's file mapping, so every call carries the
 component it ran in; a file no component owns records ``component: null``.
+
+Nothing in this file installs the hook. The repository's integrity rule
+(``examples/critic_rules.py``, ``runner_reach``) refuses a trace or profile
+hook in any file a test can import, because such a hook reaches the process
+that runs the tests. So ``record`` starts a child interpreter with a bootstrap
+string that builds the ``Recorder``, installs ``recorder.hook`` with
+``sys.setprofile``, runs the entrypoint, and reports; the parent only reads the
+journal the child wrote. A program that wants to record itself in process can
+install ``recorder.hook`` the same way, outside this repository.
 """
 
 from __future__ import annotations
@@ -25,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -117,7 +128,6 @@ class Recorder:
         self._stack: list[tuple[int, object]] = []
         self._handle = None
         self._t0 = 0
-        self._previous_profile = None
         self._busy = False
         self._open_spans: dict[int, dict] = {}
         self.context = Context(self)
@@ -137,13 +147,10 @@ class Recorder:
                   "replay_of": self._replayed_run, "started_at": int(time.time() * 1_000_000),
                   "root": self.root.name, "python": sys.version.split()[0]}
         self._write(header)
-        self._previous_profile = sys.getprofile()
         _CURRENT.append(self)
-        sys.setprofile(self._profile)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
-        sys.setprofile(self._previous_profile)
         if _CURRENT and _CURRENT[-1] is self:
             _CURRENT.pop()
         self._busy = True
@@ -173,7 +180,8 @@ class Recorder:
 
     # -- the profile hook ------------------------------------------------------------------------------------
 
-    def _profile(self, frame, event, arg) -> None:
+    def hook(self, frame, event, arg) -> None:
+        """A profile function. ``record`` installs it in the child it starts; nothing in this package does."""
         if self._busy or event not in ("call", "return"):
             return
         code = frame.f_code
@@ -282,6 +290,107 @@ class Recorder:
             return payload
         finally:
             self._busy = False
+
+
+# -- recording in a child process ----------------------------------------------------------------------------
+
+# The child's whole program. It is a string so that no importable file in this repository installs a profile
+# hook (see the module docstring). The parent hands it one JSON object on stdin; it prints one JSON line.
+BOOTSTRAP = r"""
+import importlib, json, runpy, sys
+config = json.loads(sys.stdin.read())
+sys.path.insert(0, config["syberlabs_parent"])
+if config["root"] not in sys.path:
+    sys.path.insert(0, config["root"])
+from syberlabs.factory import harness
+recorder = harness.Recorder(config["root"], config["journal"], config["file_components"], run_id=config["run_id"],
+                            revision=config["revision"], entrypoint=config["entry"], fixture_digest=config["fixture_digest"],
+                            space_digest=config["space_digest"], replay_of=config["replay_of"], blobs=config["blobs"])
+report = {"run_id": config["run_id"], "status": None, "error": None, "outcome": None, "counts": None}
+try:
+    with recorder:
+        if config["function"]:
+            # The import is not the run: resolve the function first, then record only the call.
+            module = importlib.import_module(config["module"])
+            function = getattr(module, config["function"])
+        sys.setprofile(recorder.hook)
+        try:
+            if config["function"]:
+                outcome = function(recorder.context, config["fixture"])
+                try:
+                    json.dumps(outcome)
+                    report["outcome"] = outcome
+                except (TypeError, ValueError):
+                    report["outcome"] = repr(outcome)[:2000]
+            else:
+                runpy.run_path(config["script"], run_name="__main__")
+        finally:
+            sys.setprofile(None)
+except harness.Diverged as exc:
+    report["error"] = exc.detail
+except SystemExit as exc:
+    if exc.code not in (None, 0):
+        report["error"] = "exited with " + str(exc.code)
+except BaseException as exc:
+    report["error"] = type(exc).__name__ + ": " + str(exc)[:300]
+report["status"] = recorder.status
+report["counts"] = recorder.counts
+sys.stdout.write("\n" + json.dumps(report) + "\n")
+"""
+
+
+def record(root: str | Path, journal: str | Path, entry: str, *, file_components: dict | None = None,
+           fixture: dict | None = None, run_id: str | None = None, revision: str | None = None,
+           space_digest: str | None = None, replay_of: str | Path | None = None, blobs: str | Path | None = None,
+           python: str | None = None, timeout: float = 3600.0) -> dict:
+    """Run ``entry`` under the recorder in a child interpreter and return its report.
+
+    ``entry`` is ``module:function`` (imported from ``root``, called as ``function(ctx, fixture)``) or a script
+    path (run as ``__main__``; it takes its context from :func:`current`). The report has ``run_id``, ``status``
+    (``ok``, ``diverged``, ``error``, or ``killed`` on timeout), ``counts``, ``outcome`` and ``error``. The
+    journal is at ``journal`` whatever happened. The child inherits this process's environment: a program's
+    own secrets stay its own, and nothing here is a sandbox."""
+    root = Path(root).resolve()
+    run_id = run_id or new_run_id()
+    module = function = script = None
+    if ":" in entry and not Path(entry).exists():
+        module, function = entry.rsplit(":", 1)
+    else:
+        script = str(Path(entry).resolve())
+        if not Path(script).exists():
+            raise Rejected("entry_missing", f"{entry} is neither module:function nor a file")
+    config = {
+        "root": str(root), "journal": str(Path(journal).resolve()), "file_components": dict(file_components or {}),
+        "run_id": run_id, "revision": revision, "entry": entry, "fixture": fixture if fixture is not None else {},
+        "fixture_digest": digest(fixture if fixture is not None else {}), "space_digest": space_digest,
+        "replay_of": str(Path(replay_of).resolve()) if replay_of else None, "blobs": str(Path(blobs).resolve()) if blobs else None,
+        "module": module, "function": function, "script": script,
+        "syberlabs_parent": str(Path(__file__).resolve().parents[2]),
+    }
+    Path(journal).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        done = subprocess.run([python or sys.executable, "-c", BOOTSTRAP], input=json.dumps(config), capture_output=True,
+                              text=True, cwd=str(root), timeout=timeout, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return {"run_id": run_id, "status": "killed", "error": f"no end after {timeout} seconds", "counts": None,
+                "outcome": None, "stdout": "", "stderr": ""}
+    lines = done.stdout.splitlines()
+    report = None
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith("{") and '"run_id"' in lines[index]:
+            try:
+                report = json.loads(lines[index])
+            except ValueError:
+                continue
+            lines = lines[:index]
+            break
+    if report is None:
+        report = {"run_id": run_id, "status": "error", "error": f"the child exited {done.returncode} without a report",
+                  "counts": None, "outcome": None}
+    report["stdout"] = "\n".join(lines)
+    report["stderr"] = done.stderr[-4000:]
+    report["returncode"] = done.returncode
+    return report
 
 
 # -- reading a journal ---------------------------------------------------------------------------------------
