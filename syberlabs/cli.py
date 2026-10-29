@@ -21,6 +21,7 @@
     syberlabs experiment report --name githits-pilot [--json|--csv|--markdown]   # the arms compared, from the journal
     syberlabs githits search "retry with backoff" --target pypi:urllib3@2.2.1   # GitHits API, SyberLabs excluded
     syberlabs eval run e5-single-vs-repair --dry  # a registered evaluation's order and progress (docs/EVAL.md)
+    syberlabs factory index --declared arch.json  # Space-Time Parsing: index, record, replay, attest (docs/FACTORY.md)
 
 The current thread is remembered in ``.syberlabs/current``. Every command
 reads the journal fresh, so a thread can be resumed from any terminal.
@@ -40,6 +41,7 @@ from syberlabs import metrics
 from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
+from syberlabs.factory import cli as factory_cli
 from syberlabs.gitspace import Repo
 from syberlabs.providers import CommandProvider, PatchProvider, RepairProvider, split_command
 
@@ -325,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
     compare.add_argument("a")
     compare.add_argument("b")
     githits.add_parser(commands)
+    factory_cli.add_parser(commands)
     if eval_cli is not None:
         eval_cli.add_parser(commands)
     args = parser.parse_args(argv)
@@ -332,6 +335,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "githits":
             return githits.run(args)  # no Kit: a lookup needs no repository or journal
+        if args.command == "factory":
+            return factory_cli.run(args)  # no Kit: the factory keeps its own ledger under --home
         if args.command == "eval":
             return eval_cli.run(args)  # no Kit here: each run builds its own, in its own repository
         if args.command == "verify":
