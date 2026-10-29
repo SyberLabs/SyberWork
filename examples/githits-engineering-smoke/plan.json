@@ -1,7 +1,7 @@
 {
   "_purpose": "ENGINEERING SMOKE only: synthetic, visible checks, no formal items or held-out data; not an unbiased cost experiment",
   "_formal_pack": "SyberLabs/MasterMind claude/githits-pilot-pack at 09864ac6633832cc5d7c082ec731aff7a5689cad; proposal and formal baseline unchanged",
-  "_configuration": {"provider": "Anthropic direct API through Claude Code", "model": "claude-sonnet-5-5", "cli": "2.1.311", "effort": "medium", "cache_ttl": "5m", "pricing_checked": "2026-10-26", "pricing_source": "https://platform.claude.com/docs/en/about-claude/pricing"},
+  "_configuration": {"provider": "Anthropic direct API through Claude Code", "model": "claude-sonnet-5-5", "cli": "2.1.312", "effort": "medium", "cache_ttl": "5m", "pricing_checked": "2026-10-26", "pricing_source": "https://platform.claude.com/docs/en/about-claude/pricing"},
   "experiment": "githits-engineering-smoke-v1",
   "items": [
     {"id": "ENGSMOKE-CSV", "tags": ["synthetic", "routine"], "objective": "Implement render(rows) in src/smoke_csv.py. Return CSV text for a list of name/qty dictionaries, with header name,qty, CRLF record endings and standard CSV quoting. Preserve names containing commas, quotes, Unicode and newlines, serialize integer quantities including negatives, and emit the header for empty input. Use only Python's standard library. Change only this new module; the visible host checks must pass.", "paths": ["src/smoke_csv.py"]},

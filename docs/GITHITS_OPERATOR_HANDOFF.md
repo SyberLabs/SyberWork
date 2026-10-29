@@ -32,10 +32,13 @@ Required before spending:
 
 - Approval naming provider, exact model/route, run plan, spending authority,
   scheduling budget and treatment of search fees and overshoot.
-- Python 3.11+; Git; Claude Code **2.1.311** for this frozen smoke recipe;
+- Python 3.11+; Git; Claude Code **2.1.312** exactly for this frozen smoke recipe (the version the host
+  and the pilot VM run; `CLI_VERSION`, recorded in `plan.json` and `manifest.json`);
   Git Bash on Windows. The Windows native CLI was downloaded from its official
   npm package, checked against npm's SHA-512 and exercised with version/help
-  only. Those flags are compatible; the live hook canary remains unrun.
+  only. Those flags are compatible; the live hook canary remains unrun. (That
+  download check was of 2.1.311; the pin moved to 2.1.312 on 2026-10-29
+  because the host and the pilot VM run it, and 2.1.312 was not re-checked here.)
 - A plain temporary path without spaces or shell punctuation for launchers.
 - The exact approved candidate checked out cleanly. Do not reuse another
   worker's checkout or branch, and do not commit the plan or run directory.
