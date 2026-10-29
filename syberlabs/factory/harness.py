@@ -129,7 +129,6 @@ class Recorder:
         self._handle = None
         self._t0 = 0
         self._busy = False
-        self._open_spans: dict[int, dict] = {}
         self.context = Context(self)
         self.status: str | None = None
 
