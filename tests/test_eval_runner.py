@@ -676,7 +676,9 @@ class SpendLedger(CanaryPricing):
                  "missing": b'{"run_id": "x"}', "repeated key": b'{"run_id": "x", "dollars": 9.0, "dollars": 0.0}',
                  "not an object": b'[0.003]', "not UTF-8": b'{"run_id": "\xff", "dollars": 0.0}',
                  "unpriced": b'{"run_id": "x", "dollars": 0.0, "unknown_models": "m"}',
-                 "list thread": b'{"run_id": "x", "dollars": 0.0, "thread": ["t"], "unknown_models": ["m"]}'}
+                 "list thread": b'{"run_id": "x", "dollars": 0.0, "thread": ["t"], "unknown_models": ["m"]}',
+                 # an int, not inf, under Python's 4,300-digit limit: math.isfinite raised a bare OverflowError on it
+                 "401-digit integer": b'{"run_id": "x", "dollars": ' + b"9" * 401 + b"}"}
         for name, line in lines.items():
             with self.subTest(line=name):
                 path.write_bytes(good + line + b"\n")
@@ -687,8 +689,9 @@ class SpendLedger(CanaryPricing):
                 self.assertEqual((found["stopped"], found["runs"]), ("eval_spend_unknown", []))
         path.write_bytes(good)
         self.assertEqual(runner.EvalRun(self.root, "ledger").spent({}), (0.001, []))
-        self.assertEqual([runner.ledger_dollars({"dollars": v}) for v in (0, 0.0, 2, float("nan"), float("inf"), -1)],
-                         [0.0, 0.0, 2.0, None, None, None])
+        self.assertEqual([runner.ledger_dollars({"dollars": v}) for v in (0, 0.0, 2, float("nan"), float("inf"), -1,
+                                                                          10 ** 400, -(10 ** 400))],
+                         [0.0, 0.0, 2.0, None, None, None, None, None])
 
     def test_the_ceiling_bounds_a_run_at_one_call_over_it(self):
         doc = self.capped(0.05)
