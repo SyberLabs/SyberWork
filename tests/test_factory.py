@@ -597,3 +597,54 @@ class BuildThreadCheck(Scratch):
         self.assertEqual(home.baseline(), None)
         with self.assertRaises(Rejected):
             home.set_baseline("deadbeef")
+
+    def test_bootstrap_publishes_the_contract_and_a_thread_runs_the_check(self):
+        """`factory bootstrap` on the base commit: golden, baseline, and a new contract version naming the check;
+        a thread started afterwards runs it with no further setup."""
+        import sys as _sys
+        contract = self.default_contract(self.project)
+        contract["evolution"]["scope"] = {"paths": ["fxapp/"], "exclude": [], "max_files": 20, "max_diff_bytes": 200_000}
+        contract["evolution"]["evaluation"] = {"checks": {"noop": {"argv": [_sys.executable, "-c", "pass"]}},
+                                               "required": ["noop"], "max_age_seconds": 3600}
+        contracts = self.project / ".syberlabs" / "contracts"
+        contracts.mkdir(parents=True)
+        (contracts / "repo-change.v1.json").write_text(json.dumps(contract), encoding="utf-8")
+        # The published argv says `-m syberlabs.factory`; this checkout is not installed, so the test names a
+        # launcher that puts it on sys.path first and otherwise behaves as the interpreter.
+        launcher = self.scratch / "python-with-checkout.py"
+        launcher.write_text(f"import runpy, sys\nsys.path.insert(0, {str(ROOT)!r})\n"
+                            "assert sys.argv[1] == '-m'\nsys.argv = sys.argv[2:]\nrunpy.run_module(sys.argv[0], run_name='__main__', alter_sys=True)\n",
+                            encoding="utf-8")
+        out, err = io.StringIO(), io.StringIO()
+        here = os.getcwd()
+        os.chdir(self.project)
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                code = factory_cli.main(["--home", str(self.ledger_home), "bootstrap", "--declared", "architecture.json",
+                                         "--entry", "fxapp.main:run", "--fixture", "fixture.json", "--max-drift", "1.0",
+                                         "--python", _sys.executable])
+        finally:
+            os.chdir(here)
+        self.assertEqual(code, 0, err.getvalue() + out.getvalue())
+        published = contracts / "repo-change.v2.json"
+        self.assertTrue(published.exists(), out.getvalue())
+        document = json.loads(published.read_text(encoding="utf-8"))
+        self.assertEqual(document["evolution"]["evaluation"]["required"], ["factory", "noop"])
+        argv = document["evolution"]["evaluation"]["checks"]["factory"]["argv"]
+        self.assertEqual(argv[1:3], ["-m", "syberlabs.factory"])
+        self.assertIn(str(self.ledger_home), argv)
+        home = ledger.Ledger(self.ledger_home)
+        self.assertIsNotNone(home.baseline())
+        # Swap the interpreter for the launcher so the check finds this checkout, then run a thread on v2.
+        argv[0:1] = [_sys.executable, str(launcher)]
+        published.write_text(json.dumps(document), encoding="utf-8")
+        kit = self.Kit.local(self.project / ".syberlabs", self.project, actor="dev@example.test")
+        self.addCleanup(kit.close)
+        thread = kit.start("Tidy rules", paths=["fxapp/"])
+        self.assertEqual(thread.status()["contract"], "repo-change.v2")
+        rules = (self.project / "fxapp" / "rules.py").read_text(encoding="utf-8")
+        [candidate] = thread.propose(changes={"fxapp/rules.py": rules + "\n"})
+        verdict = thread.check(candidate.id)
+        self.assertTrue(verdict.acceptable, verdict.summary())
+        self.assertEqual([(c.name, c.state) for c in verdict.checks], [("factory", "passed"), ("noop", "passed")])
+        self.assertEqual(thread.accept(candidate.id).status, "succeeded")

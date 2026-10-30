@@ -88,8 +88,16 @@ them is one host-run check. A contract names it like any other check:
 "required": ["factory"]
 ```
 
-Before the thread starts, the operator records the golden run on the base commit and names it:
-`factory record ...` then `factory baseline RUN`. For each candidate, `syberlabs check` runs the argv in the
+Before the thread starts, the operator records the golden run on the base commit and names it. One
+command does all of it and publishes the contract:
+
+```sh
+python -m syberlabs.factory bootstrap --declared architecture.json --entry app.main:run --fixture fixture.json --max-drift 0
+```
+
+It indexes, records the golden, sets the `golden` baseline, and writes `repo-change.v<N+1>.json` with
+`factory` added to `evaluation.checks` and `required`; threads started afterwards use the newest version.
+By hand it is `factory record ...` then `factory baseline RUN`. For each candidate, `syberlabs check` runs the argv in the
 candidate's detached worktree under the scrubbed environment, and the check: indexes the worktree and logs
 the Space graph; records the fixture run at the candidate's commit; diffs it against the baseline over the
 ticket's footprint (or the whole run); computes the reflexion report; writes an attestation whose predicate
