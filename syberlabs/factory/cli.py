@@ -11,6 +11,8 @@
     syberlabs factory ticket spec.json --req R1 --out ticket.json
     syberlabs factory attest --baseline A --candidate B --ticket ticket.json --commit SHA
     syberlabs factory verify attestation.json --public KEY
+    syberlabs factory bootstrap --declared arch.json --entry app.main:run --fixture in.json --max-drift 0
+                                                                     # golden, baseline, contract version with the check
     syberlabs factory baseline RUN                                   # name the golden run
     syberlabs factory check --declared arch.json --entry app.main:run --fixture in.json --max-drift 0
                                                                      # the Build Thread check, run in a worktree
@@ -137,6 +139,18 @@ def populate(factory) -> None:
                      help="sign with the seed in this environment variable (see `syberlabs certify`); unsigned otherwise")
     att.add_argument("--out", help="write the statement or envelope here (default: the ledger's attestations dir)")
 
+    boot = steps.add_parser("bootstrap", help="one command to the seam: index, record the golden run, set the baseline, and "
+                                              "publish a Build Thread contract version that names `factory check`")
+    boot.add_argument("--declared", required=True)
+    boot.add_argument("--entry", required=True)
+    boot.add_argument("--fixture")
+    boot.add_argument("--paths", nargs="*")
+    boot.add_argument("--max-drift", type=float, default=None)
+    boot.add_argument("--thread-home", default=".syberlabs", help="the Build Thread home holding contracts/ (default .syberlabs)")
+    boot.add_argument("--contract", default="repo-change", help="the contract id to extend (default repo-change)")
+    boot.add_argument("--python", default=None, help="the interpreter the check argv names (default: this one)")
+    boot.add_argument("--no-contract", action="store_true", help="golden and baseline only; print the argv instead")
+
     ver = steps.add_parser("verify", help="check a signed attestation with its public key")
     ver.add_argument("attestation")
     ver.add_argument("--public", required=True, metavar="KEY", help="the .pub file (64 hex characters)")
@@ -236,6 +250,9 @@ def _run(args) -> int:
 
     if command == "check":
         return _check(args, home)
+
+    if command == "bootstrap":
+        return _bootstrap(args, home)
 
     if command in ("record", "replay"):
         return _record(args, home, replay=command == "replay" or bool(getattr(args, "replay", None)))
@@ -431,6 +448,65 @@ def _check(args, home: ledger.Ledger) -> int:
         print(f"  the program did not end cleanly ({recorded['status']}): refuse")
     print(f"attestation {event['body']['attestation_digest']} (ledger seq {event['seq']}; run seq {run_event['seq']})")
     return 0 if promote else 1
+
+
+def _bootstrap(args, home: ledger.Ledger) -> int:
+    """Golden, baseline, contract: the operator's setup for the seam, from the base commit."""
+    root = Path(args.root).resolve()
+    declared = _declared(args.declared)
+    graph = _indexed(args, declared)
+    space_event = home.record_space(graph, digest(declared))
+    report = space.reflexion(graph)
+    fixture = _read_json(args.fixture, "fixture") if args.fixture else {}
+    run_id = harness.new_run_id()
+    recorded = harness.record(root, home.run_path(run_id), args.entry,
+                              file_components={p: r.get("component") for p, r in graph["files"].items()}, fixture=fixture,
+                              run_id=run_id, revision=graph.get("revision"), space_digest=space_event["body"]["space_digest"],
+                              blobs=home.home / "blobs")
+    if recorded["status"] != "ok":
+        print(f"the golden run did not end cleanly ({recorded['status']}): {recorded.get('error')}", file=sys.stderr)
+        if recorded.get("stderr"):
+            print(recorded["stderr"], file=sys.stderr)
+        return 1
+    home.record_run(run_id)
+    home.set_baseline(run_id)
+    print(f"golden run {run_id} at {str(graph.get('revision'))[:10]}: {recorded['counts']}; drift {report['max_drift']:.3f}")
+    if args.max_drift is not None and report["max_drift"] > args.max_drift:
+        print(f"note: the base tree already drifts {report['max_drift']:.3f} over --max-drift {args.max_drift}; "
+              "every candidate will be refused until the declaration or the code changes", file=sys.stderr)
+    ledger_home = home.home.resolve()
+    declared_arg = args.declared if not Path(args.declared).is_absolute() else str(Path(args.declared).resolve())
+    argv = [args.python or sys.executable, "-m", "syberlabs.factory", "--home", str(ledger_home), "check",
+            "--declared", declared_arg, "--entry", args.entry]
+    if args.fixture:
+        argv += ["--fixture", args.fixture if not Path(args.fixture).is_absolute() else str(Path(args.fixture).resolve())]
+    if args.paths:
+        argv += ["--paths", *args.paths]
+    if args.max_drift is not None:
+        argv += ["--max-drift", str(args.max_drift)]
+    if args.no_contract:
+        print("check argv: " + json.dumps(argv))
+        return 0
+    contracts = Path(args.thread_home) / "contracts"
+    if not contracts.is_absolute():
+        contracts = root / contracts
+    versions = sorted(contracts.glob(f"{args.contract}.v*.json"), key=lambda p: int(p.stem.rsplit(".v", 1)[1]))
+    if not versions:
+        raise Rejected("contract_missing", f"no {args.contract} contract under {contracts}; run `syberlabs init` first, or pass --no-contract")
+    document = json.loads(versions[-1].read_text(encoding="utf-8"))
+    evaluation = document.setdefault("evolution", {}).setdefault("evaluation", {})
+    evaluation.setdefault("checks", {})["factory"] = {"argv": argv, "timeout_seconds": 600}
+    required = list(evaluation.get("required", []))
+    if "factory" not in required:
+        required.append("factory")
+    evaluation["required"] = sorted(required)
+    document["version"] = int(document["version"]) + 1
+    target = contracts / f"{args.contract}.v{document['version']}.json"
+    target.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    home.append("note", {"text": f"bootstrap published {target.name} naming factory check", "baseline": run_id})
+    print(f"published {target}: the factory check is required; threads started with "
+          f"`syberlabs start ... --contract {args.contract}` (or the newest version by default) now run it")
+    return 0
 
 
 def _spec(args, home: ledger.Ledger) -> int:
