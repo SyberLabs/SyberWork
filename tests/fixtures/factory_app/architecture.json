@@ -1,0 +1,21 @@
+{
+  "protocol": "sdk.syberlabs.space/builder/v0alpha1",
+  "id": "factory-app-declared",
+  "repository": "factory_app",
+  "revision": "declared",
+  "provider": "author",
+  "groups": [],
+  "nodes": [
+    {"id": "main", "label": "Main", "paths": ["fxapp/main.py", "fxapp/__init__.py", "fxapp/variants.py"]},
+    {"id": "ingest", "label": "Ingest", "paths": ["fxapp/ingest.py"]},
+    {"id": "rules", "label": "Rules", "paths": ["fxapp/rules.py"]},
+    {"id": "effects", "label": "Effects", "paths": ["fxapp/effects.py"]}
+  ],
+  "edges": [
+    {"from": "main", "to": "ingest"},
+    {"from": "main", "to": "rules"},
+    {"from": "main", "to": "effects"},
+    {"from": "ingest", "to": "rules"},
+    {"from": "ingest", "to": "effects"}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "protocol": "sdk.syberlabs.space/builder/v0alpha1",
+  "id": "syberwork-declared", "repository": "syberwork", "revision": "declared", "provider": "author", "groups": [],
+  "nodes": [
+    {"id": "syberlabs", "label": "syberlabs core", "paths": ["syberlabs/**"]},
+    {"id": "syberlabs-eval", "label": "syberlabs.eval", "paths": ["syberlabs/eval/**"]},
+    {"id": "syberlabs-factory", "label": "syberlabs.factory", "paths": ["syberlabs/factory/**"]},
+    {"id": "syberwork", "label": "syberwork app", "paths": ["syberwork/**"]}
+  ],
+  "edges": [
+    {"from": "syberwork", "to": "syberlabs"},
+    {"from": "syberlabs-eval", "to": "syberlabs"},
+    {"from": "syberlabs-factory", "to": "syberlabs"},
+    {"from": "syberlabs", "to": "syberlabs-eval"},
+    {"from": "syberlabs", "to": "syberlabs-factory"}
+  ]
+}

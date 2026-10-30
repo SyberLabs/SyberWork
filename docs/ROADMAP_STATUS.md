@@ -103,3 +103,17 @@ The future Builder UI has a coordination, integrity, and projection backend. It 
 | Evaluation world identity and host binding | Implemented | [EVALUATION_WORLDS.md](EVALUATION_WORLDS.md) phase 1. Migration `0005`. Selection, admission, and `candidate_evaluated` are unchanged. Traces, providers, and runtimes are not built. |
 
 A coordination record is not a case event. A displayed comment, diversity score, agent claim, or architecture snapshot does not admit or promote anything. The command adapter does not attach to a process. Integrity digests are stored, not verified.
+
+## Factory: Space-Time Parsing (plan of 29 October 2026)
+
+| Item | Status | Where |
+| --- | --- | --- |
+| Space graph derived from Python sources, mapped to declared components, with a reflexion drift report | Implemented and tested | `syberlabs/factory/space.py`, `tests/test_factory.py::SpaceTests` |
+| Record a run at full speed with a logical clock; replay effects from the journal; detect divergence | Implemented and tested | `syberlabs/factory/harness.py`, `HarnessTests` |
+| Hash-chained ledger of graphs, runs and attestations with a SQLite projection of cells | Implemented and tested | `syberlabs/factory/ledger.py`, `LedgerTests` |
+| Spec lifecycle, footprint resolution, tickets from a promoted spec | Implemented and tested | `syberlabs/factory/spec.py`, `SpecTests` |
+| Trace diff over a footprint as an in-toto statement, DSSE-signed, with a promotion policy | Implemented and tested | `syberlabs/factory/attest.py`, `AttestTests` |
+| CLI and a self-contained replay viewer | Implemented and tested | `syberlabs factory ...`, `syberlabs/static/factory.html`, `CliTests` |
+| `factory check` as a host-run Build Thread check: a candidate's evaluation cites the trace diff and drift attestation | Implemented and tested | `syberlabs/factory/cli.py::_check`, `tests/test_factory.py::BuildThreadCheck` |
+| Drift opens tickets without a person | Implemented and tested | `factory drift --ticket`, `spec.tickets_from_drift` |
+| Promoted specs opening tickets; multi-model spec variants; feature maps; this repository's own contract naming the check | Proposed (v1) | [docs/FACTORY.md](FACTORY.md) |

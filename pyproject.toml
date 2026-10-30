@@ -19,7 +19,7 @@ syberwork = "syberwork.cli:main"
 syberlabs = "syberlabs.cli:main"
 
 [tool.setuptools]
-packages = ["syberwork", "syberlabs", "syberlabs.eval"]
+packages = ["syberwork", "syberlabs", "syberlabs.eval", "syberlabs.factory"]
 
 [tool.setuptools.package-data]
 syberwork = ["static/*", "examples/*.json"]

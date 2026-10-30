@@ -1,0 +1,585 @@
+"""``syberlabs factory``: the Space-Time Parsing slice from a terminal.
+
+    syberlabs factory index --declared architecture.json           # derive Space, map components, log it
+    syberlabs factory drift --declared architecture.json --max 0.2  # reflexion report; exit 1 over the threshold
+    syberlabs factory record --entry app.main:run --fixture in.json  # record one run into the ledger
+    syberlabs factory replay RUN --entry app.main:run --fixture in.json
+    syberlabs factory show RUN                                       # the worldline, one line per step
+    syberlabs factory at RUN --seq 12                                # what was active at a logical time
+    syberlabs factory export RUN --chrome trace.json | --view run.html
+    syberlabs factory spec validate|promote|canonize|retire spec.json
+    syberlabs factory ticket spec.json --req R1 --out ticket.json
+    syberlabs factory attest --baseline A --candidate B --ticket ticket.json --commit SHA
+    syberlabs factory verify attestation.json --public KEY
+    syberlabs factory bootstrap --declared arch.json --entry app.main:run --fixture in.json --max-drift 0
+                                                                     # golden, baseline, contract version with the check
+    syberlabs factory baseline RUN                                   # name the golden run
+    syberlabs factory check --declared arch.json --entry app.main:run --fixture in.json --max-drift 0
+                                                                     # the Build Thread check, run in a worktree
+    syberlabs factory drift --declared arch.json --max 0 --ticket tickets/   # open tickets for drift
+    syberlabs factory status
+
+The ledger lives under ``--home`` (default ``.syberlabs/factory``). Every command reads the ledger fresh.
+``--root`` (default ``.``) is the repository being parsed; ``--declared`` is an ``ArchitectureSnapshot``-shaped
+JSON file naming components and the edges the author intends between them.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+from syberlabs import certificate
+from syberlabs.canonical import digest
+from syberlabs.ed25519 import public_from_seed
+from syberlabs.errors import Rejected
+from syberlabs.factory import attest, harness, ledger, space
+from syberlabs.factory import spec as specmod
+
+
+def add_parser(commands) -> None:
+    """Attach ``factory`` to the ``syberlabs`` command set."""
+    populate(commands.add_parser("factory", help="Space-Time Parsing: index a repository, record and replay runs, "
+                                                 "attest tickets on one ledger (docs/FACTORY.md)"))
+
+
+def populate(factory) -> None:
+    factory.add_argument("--home", default=".syberlabs/factory", help="the ledger directory (default .syberlabs/factory)")
+    factory.add_argument("--root", default=".", help="the repository to parse and record (default .)")
+    steps = factory.add_subparsers(dest="factory_command", required=True)
+
+    index = steps.add_parser("index", help="derive the Space graph, map it to declared components, log it")
+    index.add_argument("--declared", help="ArchitectureSnapshot JSON: components with path globs and intended edges")
+    index.add_argument("--paths", nargs="*", help="only these relative directories or files")
+    index.add_argument("--revision", help="label the graph with this commit instead of git HEAD")
+    index.add_argument("--json", action="store_true", help="print the reflexion report as JSON")
+
+    drift = steps.add_parser("drift", help="the reflexion report for the current tree; exit 1 over --max")
+    drift.add_argument("--declared", required=True)
+    drift.add_argument("--paths", nargs="*")
+    drift.add_argument("--max", type=float, default=None, help="fail when any component's drift exceeds this")
+    drift.add_argument("--json", action="store_true")
+    drift.add_argument("--ticket", metavar="DIR", help="open one ticket per component over --max (and one for unmapped "
+                                                       "files) as JSON files in DIR; each is logged as ticket_opened")
+    drift.add_argument("--owner", help="the accountable human on tickets --ticket opens")
+
+    base = steps.add_parser("baseline", help="name a recorded run as the golden that `check` diffs against")
+    base.add_argument("run", nargs="?", help="the run id; omit to print the current baseline")
+    base.add_argument("--label", default="golden")
+
+    check = steps.add_parser("check", help="the Build Thread check: in a candidate's worktree, index, record the fixture, "
+                                           "diff against the baseline, attest; exit 0 when the policy promotes")
+    check.add_argument("--declared", required=True, help="ArchitectureSnapshot JSON (a path in the worktree or absolute)")
+    check.add_argument("--entry", required=True)
+    check.add_argument("--fixture", help="JSON fixture (a path in the worktree or absolute)")
+    check.add_argument("--paths", nargs="*", help="limit the Space index to these relative paths")
+    check.add_argument("--baseline", default="golden", metavar="RUN_OR_LABEL", help="a run id or a baseline label (default golden)")
+    check.add_argument("--ticket", help="ticket JSON; its footprint scopes the diff (default: the whole run)")
+    check.add_argument("--commit", help="the candidate commit (default: the worktree's HEAD)")
+    check.add_argument("--max-drift", type=float, default=None, help="refuse when architecture drift exceeds this")
+    check.add_argument("--behavior-change", action="store_true")
+    check.add_argument("--builder", default=None, help="agent[:model[:session]] (default: $SYBERLABS_CANDIDATE or operator)")
+    check.add_argument("--repository", default=None)
+    check.add_argument("--seed-env", default=None, metavar="NAME")
+
+    record = steps.add_parser("record", help="run an entrypoint under the recorder; the journal goes in the ledger")
+    record.add_argument("--entry", required=True, help="module:function called as function(ctx, fixture), or a script "
+                                                       "path run as __main__ (it takes the context from harness.current())")
+    record.add_argument("--fixture", help="JSON file passed to the entrypoint (default {})")
+    record.add_argument("--declared", help="map files to components with this declaration (default: the ledger's latest Space)")
+    record.add_argument("--revision")
+    record.add_argument("--replay", metavar="RUN", help="replay this run's journal instead of running effects")
+
+    replay = steps.add_parser("replay", help="re-execute an entrypoint against a recorded run's journal")
+    replay.add_argument("run")
+    replay.add_argument("--entry", required=True)
+    replay.add_argument("--fixture")
+    replay.add_argument("--revision")
+
+    show = steps.add_parser("show", help="a run's worldline")
+    show.add_argument("run")
+    show.add_argument("--json", action="store_true")
+
+    at = steps.add_parser("at", help="the spans active at a logical time")
+    at.add_argument("run")
+    at.add_argument("--seq", type=int, required=True)
+
+    export = steps.add_parser("export", help="a run as Chrome trace JSON or a self-contained viewer page")
+    export.add_argument("run")
+    export.add_argument("--chrome", metavar="FILE")
+    export.add_argument("--view", metavar="FILE", help="write an HTML page that scrubs the run over its Space graph")
+
+    sp = steps.add_parser("spec", help="move a spec file through its lifecycle; each step is logged")
+    sp.add_argument("operation", choices=sorted(specmod.TRANSITIONS))
+    sp.add_argument("spec", help="the spec JSON file; rewritten in place")
+    sp.add_argument("--actor", default="human:operator", help="kind:id (default human:operator)")
+    sp.add_argument("--verdict", action="append", default=[], help="a review verdict id promotion rests on")
+    sp.add_argument("--reason")
+    sp.add_argument("--superseded-by")
+
+    ticket = steps.add_parser("ticket", help="open a ticket for one requirement of a promoted spec")
+    ticket.add_argument("spec")
+    ticket.add_argument("--req", required=True)
+    ticket.add_argument("--baseline", metavar="RUN", help="the golden run the ticket's attestation diffs against")
+    ticket.add_argument("--owner", help="the accountable human")
+    ticket.add_argument("--out", help="write the ticket here (default: print)")
+
+    att = steps.add_parser("attest", help="diff two runs over a ticket's footprint and write the attestation")
+    att.add_argument("--baseline", required=True, metavar="RUN")
+    att.add_argument("--candidate", required=True, metavar="RUN")
+    att.add_argument("--ticket", required=True, help="ticket JSON from `factory ticket`")
+    att.add_argument("--commit", required=True, help="the candidate commit the attestation is about")
+    att.add_argument("--repository", default=None, help="repository name in the subject (default: the root's name)")
+    att.add_argument("--behavior-change", action="store_true", help="the ticket intends a behavior change")
+    att.add_argument("--builder", default="human:operator", help="who produced the candidate: agent[:model[:session]]")
+    att.add_argument("--seed-env", default=None, metavar="NAME",
+                     help="sign with the seed in this environment variable (see `syberlabs certify`); unsigned otherwise")
+    att.add_argument("--out", help="write the statement or envelope here (default: the ledger's attestations dir)")
+
+    boot = steps.add_parser("bootstrap", help="one command to the seam: index, record the golden run, set the baseline, and "
+                                              "publish a Build Thread contract version that names `factory check`")
+    boot.add_argument("--declared", required=True)
+    boot.add_argument("--entry", required=True)
+    boot.add_argument("--fixture")
+    boot.add_argument("--paths", nargs="*")
+    boot.add_argument("--max-drift", type=float, default=None)
+    boot.add_argument("--thread-home", default=".syberlabs", help="the Build Thread home holding contracts/ (default .syberlabs)")
+    boot.add_argument("--contract", default="repo-change", help="the contract id to extend (default repo-change)")
+    boot.add_argument("--python", default=None, help="the interpreter the check argv names (default: this one)")
+    boot.add_argument("--no-contract", action="store_true", help="golden and baseline only; print the argv instead")
+
+    ver = steps.add_parser("verify", help="check a signed attestation with its public key")
+    ver.add_argument("attestation")
+    ver.add_argument("--public", required=True, metavar="KEY", help="the .pub file (64 hex characters)")
+
+    steps.add_parser("status", help="the ledger: events, chain head, counts")
+
+
+def run(args) -> int:
+    try:
+        return _run(args)
+    except Rejected as exc:
+        print(f"error: {exc.code}: {exc.detail}", file=sys.stderr)
+        return 2
+
+
+def _declared(path: str | None) -> dict | None:
+    if not path:
+        return None
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Rejected("declared_unreadable", f"{path}: {type(exc).__name__}") from None
+
+
+def _indexed(args, declared: dict | None, revision: str | None = None) -> dict:
+    graph = space.index(args.root, getattr(args, "paths", None), revision)
+    if declared is not None:
+        space.map_components(graph, declared)
+    return graph
+
+
+def _print_reflexion(report: dict) -> None:
+    for edge in report["divergence"]:
+        via = ", ".join(f"{v['from']} -> {v['to']} ({v['kind']} line {v['line']})" for v in edge["via"][:3])
+        print(f"divergent  {edge['from']} -> {edge['to']}  x{edge['count']}  via {via}")
+    for edge in report["absence"]:
+        print(f"absent     {edge['from']} -> {edge['to']}  (declared, never observed)")
+    for relpath in report["unmapped"][:20]:
+        print(f"unmapped   {relpath}")
+    for component, score in report["drift"].items():
+        print(f"drift      {component:24} {score['score']:.3f}  ({score['divergent_weight']}/{score['out_weight']})")
+    print(f"max drift  {report['max_drift']:.3f}; convergent edges {len(report['convergence'])}")
+
+
+def _run(args) -> int:
+    home = ledger.Ledger(args.home)
+    command = args.factory_command
+
+    if command == "index":
+        declared = _declared(args.declared)
+        graph = _indexed(args, declared, args.revision)
+        event = home.record_space(graph, digest(declared) if declared else None)
+        print(f"indexed {len(graph['files'])} files, {len(graph['symbols'])} symbols, {len(graph['edges'])} edges "
+              f"at {str(graph.get('revision'))[:10]}; space {event['body']['space_digest'][:12]} (ledger seq {event['seq']})")
+        if declared is not None:
+            report = space.reflexion(graph)
+            print(json.dumps(report, indent=2, sort_keys=True) if args.json else "", end="")
+            if not args.json:
+                _print_reflexion(report)
+        return 0
+
+    if command == "drift":
+        graph = _indexed(args, _declared(args.declared))
+        report = space.reflexion(graph)
+        home.append("drift_reported", {"revision": graph.get("revision"), "max_drift": report["max_drift"],
+                                       "divergent": len(report["divergence"]), "absent": len(report["absence"]),
+                                       "unmapped": len(report["unmapped"]),
+                                       "drift": {k: v["score"] for k, v in report["drift"].items()}})
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            _print_reflexion(report)
+        if args.ticket:
+            if args.max is None:
+                raise Rejected("drift_threshold", "--ticket needs --max: tickets open for components over it")
+            opened = specmod.tickets_from_drift(report, graph.get("revision"), threshold=args.max, human_owner=args.owner)
+            folder = Path(args.ticket)
+            folder.mkdir(parents=True, exist_ok=True)
+            for ticket in opened:
+                (folder / f"{ticket['ticket_id']}.json").write_text(json.dumps(ticket, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                home.append("ticket_opened", {"ticket_id": ticket["ticket_id"], "spec_id": "architecture", "version": None,
+                                              "req_id": ticket["spec_ref"]["req_ids"][0], "source": "drift",
+                                              "footprint": ticket["footprint"]["components"], "revision": graph.get("revision")})
+                print(f"ticket     {ticket['ticket_id']}  {ticket['title']}")
+            if not opened:
+                print("no ticket: nothing over the threshold and nothing unmapped")
+        return 1 if args.max is not None and report["max_drift"] > args.max else 0
+
+    if command == "baseline":
+        if not args.run:
+            current = home.baseline(args.label)
+            print(f"{args.label}: {current or '(unset)'}")
+            return 0 if current else 1
+        event = home.set_baseline(args.run, args.label)
+        print(f"{args.label} -> {args.run} (ledger seq {event['seq']})")
+        return 0
+
+    if command == "check":
+        return _check(args, home)
+
+    if command == "bootstrap":
+        return _bootstrap(args, home)
+
+    if command in ("record", "replay"):
+        return _record(args, home, replay=command == "replay" or bool(getattr(args, "replay", None)))
+
+    if command == "show":
+        records = home.load_run(args.run)
+        if args.json:
+            print(json.dumps(harness.spans(records), indent=2))
+            return 0
+        header = records[0]
+        print(f"run {header['run_id']}  revision {str(header.get('revision'))[:10]}  entry {header.get('entrypoint')}")
+        for seq, head, tail in harness.worldline(records, skip_effect_bodies=False):
+            if str(head).startswith(("effect:", "marker:")):
+                print(f"{seq:6}  {head:36} {str(tail)[:16]}")
+            else:
+                print(f"{seq:6}  {str(head):24} {tail}")
+        tail = records[-1]
+        if tail.get("t") == "end":
+            print(f"end    {tail['status']}  {tail.get('counts')}")
+        return 0
+
+    if command == "at":
+        for span in harness.active_at(home.load_run(args.run), args.seq):
+            print(f"{span['component'] or '(unmapped)':24} {span['fn']:32} seq {span['start']}..{span['end']}  {span['file']}:{span['line']}")
+        return 0
+
+    if command == "export":
+        records = home.load_run(args.run)
+        if args.chrome:
+            Path(args.chrome).write_text(json.dumps(harness.chrome_trace(records)), encoding="utf-8")
+            print(f"wrote {args.chrome} (open it in Perfetto or chrome://tracing)")
+        if args.view:
+            graph = home.load_space(records[0]["space_digest"]) if records[0].get("space_digest") else home.latest_space()
+            Path(args.view).write_text(viewer_page(records, graph), encoding="utf-8")
+            print(f"wrote {args.view}")
+        if not args.chrome and not args.view:
+            print(json.dumps(harness.chrome_trace(records)))
+        return 0
+
+    if command == "spec":
+        return _spec(args, home)
+
+    if command == "ticket":
+        document = _read_json(args.spec, "spec")
+        graph = home.latest_space()
+        if graph is None:
+            raise Rejected("space_missing", "index the repository first: syberlabs factory index --declared ...")
+        specmod.resolve_footprint(document, graph)
+        ticket = specmod.ticket_from_spec(document, args.req, baseline_run=args.baseline, human_owner=args.owner)
+        home.append("ticket_opened", {"ticket_id": ticket["ticket_id"], "spec_id": document["spec_id"],
+                                      "version": document["version"], "req_id": args.req,
+                                      "footprint": ticket["footprint"]["components"], "baseline_run": args.baseline})
+        text = json.dumps(ticket, indent=2, sort_keys=True)
+        if args.out:
+            Path(args.out).write_text(text + "\n", encoding="utf-8")
+            print(f"wrote {args.out}: ticket {ticket['ticket_id']} over {ticket['footprint']['components']}")
+        else:
+            print(text)
+        return 0
+
+    if command == "attest":
+        return _attest(args, home)
+
+    if command == "verify":
+        envelope = _read_json(args.attestation, "attestation")
+        public = certificate.read_public(args.public)
+        document = attest.verify(envelope, public)
+        if document is None:
+            print("signature does not verify under that key, or the payload is not a statement")
+            return 1
+        predicate = document["predicate"]
+        print(f"verified: {document['subject'][0]['name']}  spec {predicate['spec']['spec_id']} v{predicate['spec']['version']}"
+              f"  ticket {predicate.get('ticket')}  promote {predicate['policy']['promote']}")
+        for reason in predicate["policy"]["reasons"]:
+            print(f"  {reason}")
+        return 0
+
+    if command == "status":
+        for key, value in home.describe().items():
+            print(f"{key:14} {value}")
+        return 0
+    raise Rejected("factory_command", f"unknown command {command!r}")
+
+
+def _read_json(path: str, what: str) -> dict:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Rejected(f"{what}_unreadable", f"{path}: {type(exc).__name__}") from None
+
+
+def _record(args, home: ledger.Ledger, replay: bool) -> int:
+    root = Path(args.root).resolve()
+    declared = _declared(getattr(args, "declared", None))
+    graph = home.latest_space() if declared is None else _indexed(args, declared, args.revision)
+    file_components = {p: r.get("component") for p, r in graph["files"].items()} if graph else {}
+    space_digest = space.graph_digest(graph) if graph else None
+    fixture = _read_json(args.fixture, "fixture") if args.fixture else {}
+    run_id = harness.new_run_id()
+    recorded = args.run if replay and hasattr(args, "run") else getattr(args, "replay", None)
+    replay_of = home.run_path(recorded) if replay else None
+    revision = args.revision or (graph.get("revision") if graph else None) or space.git_revision(root)
+    report = harness.record(root, home.run_path(run_id), args.entry, file_components=file_components, fixture=fixture,
+                            run_id=run_id, revision=revision, space_digest=space_digest, replay_of=replay_of,
+                            blobs=home.home / "blobs")
+    if report.get("stdout"):
+        print(report["stdout"])
+    if report.get("error"):
+        print(f"the program: {report['error']}", file=sys.stderr)
+    if report["status"] == "killed" or not home.run_path(run_id).exists():
+        print(f"no journal for run {run_id}: {report.get('error')}", file=sys.stderr)
+        if report.get("stderr"):
+            print(report["stderr"], file=sys.stderr)
+        return 1
+    event = home.record_run(run_id)
+    body = event["body"]
+    print(f"{'replayed' if replay else 'recorded'} run {run_id}  status {body['status']}  steps {body['counts']}  "
+          f"revision {str(revision)[:10]}  (ledger seq {event['seq']})")
+    if replay:
+        comparison = harness.compare(home.load_run(recorded), home.load_run(run_id))
+        if comparison["equal"]:
+            print(f"worldline matches the recording over {comparison['steps_before']} projected steps")
+        else:
+            first = comparison["first_divergence"]
+            print(f"worldline parts at projected step {first['index']}: recorded {first['before']}, replayed {first['after']}")
+        return 0 if body["status"] == "ok" and comparison["equal"] else 1
+    if report.get("outcome") is not None:
+        print("outcome", json.dumps(report["outcome"], sort_keys=True, default=str)[:400])
+    return 0 if body["status"] == "ok" else 1
+
+
+def _check(args, home: ledger.Ledger) -> int:
+    """One host-run check over a candidate's worktree. Everything it reads outside the worktree is named by an
+    absolute path on argv (the ledger home, or the declaration and fixture when they are not in the tree), and
+    everything it writes goes to the ledger. Its exit code is the policy's verdict, so a Build Thread contract
+    can name it like any other check and the evaluation record carries its output digest and tail."""
+    if not Path(args.home).is_absolute():
+        raise Rejected("check_home", f"`check` runs in a candidate's worktree; name the ledger by an absolute --home, not {args.home!r}")
+    root = Path(args.root).resolve()
+    declared = _declared(args.declared)
+    graph = _indexed(args, declared, args.commit)
+    commit = args.commit or graph.get("revision")
+    if not commit:
+        raise Rejected("check_commit", "no commit: the worktree has no git HEAD; pass --commit")
+    space_event = home.record_space(graph, digest(declared))
+    report = space.reflexion(graph)
+    is_run_id = args.baseline and all(c in "0123456789abcdef" for c in args.baseline) and home.run_path(args.baseline).exists()
+    baseline_id = args.baseline if is_run_id else home.baseline(args.baseline)
+    if baseline_id is None:
+        raise Rejected("baseline_missing", f"no baseline {args.baseline!r}: record the golden run, then `factory baseline RUN`")
+    fixture = _read_json(args.fixture, "fixture") if args.fixture else {}
+    run_id = harness.new_run_id()
+    recorded = harness.record(root, home.run_path(run_id), args.entry,
+                              file_components={p: r.get("component") for p, r in graph["files"].items()}, fixture=fixture,
+                              run_id=run_id, revision=commit, space_digest=space_event["body"]["space_digest"],
+                              blobs=home.home / "blobs")
+    if recorded.get("stdout"):
+        print(recorded["stdout"])
+    if recorded["status"] == "killed" or not home.run_path(run_id).exists():
+        print(f"no journal: {recorded.get('error')}", file=sys.stderr)
+        return 1
+    run_event = home.record_run(run_id)
+    ticket = _read_json(args.ticket, "ticket") if args.ticket else None
+    footprint = ticket.get("footprint") if ticket else None
+    evidence = {"trace_diff": attest.trace_diff(home.load_run(baseline_id), home.load_run(run_id), footprint),
+                "drift": attest.drift_evidence(report, commit)}
+    if recorded.get("error"):
+        evidence["run"] = {"kind": "run", "status": recorded["status"], "error": recorded["error"]}
+    builder_text = args.builder or os.environ.get("SYBERLABS_CANDIDATE") or "operator"
+    parts = builder_text.split(":")
+    builder = {"agent": parts[0], "model": parts[1] if len(parts) > 1 else None, "session": parts[2] if len(parts) > 2 else None,
+               "fixture_digest": digest(fixture), "space_digest": space_event["body"]["space_digest"],
+               "baseline_run": baseline_id, "candidate_run": run_id}
+    gate = {"max_drift": args.max_drift} if args.max_drift is not None else {}
+    spec_ref = ticket["spec_ref"] if ticket else {"spec_id": None, "version": None, "req_ids": []}
+    document = attest.statement(subject_commit=commit, repository=args.repository or space.git_repository_name(root), spec_ref=spec_ref,
+                                footprint=footprint, evidence=evidence, builder=builder,
+                                ticket=ticket["ticket_id"] if ticket else None, behavior_change_label=args.behavior_change,
+                                gate=gate)
+    written = document
+    if args.seed_env:
+        written = attest.sign(document, certificate.load_seed(args.seed_env))
+    event = home.record_attestation(written)
+    policy = document["predicate"]["policy"]
+    promote = policy["promote"] and recorded["status"] == "ok"
+    diff = evidence["trace_diff"]
+    print(f"factory check {commit[:10]}: run {run_id} {recorded['status']}; trace diff {'empty' if diff['diff_empty'] else 'NOT empty'}"
+          f" over {diff['footprint'] or 'the whole run'} against {baseline_id}; drift {report['max_drift']:.3f}; "
+          f"promote {promote}")
+    for reason in policy["reasons"]:
+        print(f"  {reason}")
+    if recorded["status"] != "ok":
+        print(f"  the program did not end cleanly ({recorded['status']}): refuse")
+    print(f"attestation {event['body']['attestation_digest']} (ledger seq {event['seq']}; run seq {run_event['seq']})")
+    return 0 if promote else 1
+
+
+def _bootstrap(args, home: ledger.Ledger) -> int:
+    """Golden, baseline, contract: the operator's setup for the seam, from the base commit."""
+    root = Path(args.root).resolve()
+    declared = _declared(args.declared)
+    graph = _indexed(args, declared)
+    space_event = home.record_space(graph, digest(declared))
+    report = space.reflexion(graph)
+    fixture = _read_json(args.fixture, "fixture") if args.fixture else {}
+    run_id = harness.new_run_id()
+    recorded = harness.record(root, home.run_path(run_id), args.entry,
+                              file_components={p: r.get("component") for p, r in graph["files"].items()}, fixture=fixture,
+                              run_id=run_id, revision=graph.get("revision"), space_digest=space_event["body"]["space_digest"],
+                              blobs=home.home / "blobs")
+    if recorded["status"] != "ok":
+        print(f"the golden run did not end cleanly ({recorded['status']}): {recorded.get('error')}", file=sys.stderr)
+        if recorded.get("stderr"):
+            print(recorded["stderr"], file=sys.stderr)
+        return 1
+    home.record_run(run_id)
+    home.set_baseline(run_id)
+    print(f"golden run {run_id} at {str(graph.get('revision'))[:10]}: {recorded['counts']}; drift {report['max_drift']:.3f}")
+    if args.max_drift is not None and report["max_drift"] > args.max_drift:
+        print(f"note: the base tree already drifts {report['max_drift']:.3f} over --max-drift {args.max_drift}; "
+              "every candidate will be refused until the declaration or the code changes", file=sys.stderr)
+    ledger_home = home.home.resolve()
+    declared_arg = args.declared if not Path(args.declared).is_absolute() else str(Path(args.declared).resolve())
+    argv = [args.python or sys.executable, "-m", "syberlabs.factory", "--home", str(ledger_home), "check",
+            "--declared", declared_arg, "--entry", args.entry]
+    if args.fixture:
+        argv += ["--fixture", args.fixture if not Path(args.fixture).is_absolute() else str(Path(args.fixture).resolve())]
+    if args.paths:
+        argv += ["--paths", *args.paths]
+    if args.max_drift is not None:
+        argv += ["--max-drift", str(args.max_drift)]
+    if args.no_contract:
+        print("check argv: " + json.dumps(argv))
+        return 0
+    contracts = Path(args.thread_home) / "contracts"
+    if not contracts.is_absolute():
+        contracts = root / contracts
+    versions = sorted(contracts.glob(f"{args.contract}.v*.json"), key=lambda p: int(p.stem.rsplit(".v", 1)[1]))
+    if not versions:
+        raise Rejected("contract_missing", f"no {args.contract} contract under {contracts}; run `syberlabs init` first, or pass --no-contract")
+    document = json.loads(versions[-1].read_text(encoding="utf-8"))
+    evaluation = document.setdefault("evolution", {}).setdefault("evaluation", {})
+    evaluation.setdefault("checks", {})["factory"] = {"argv": argv, "timeout_seconds": 600}
+    required = list(evaluation.get("required", []))
+    if "factory" not in required:
+        required.append("factory")
+    evaluation["required"] = sorted(required)
+    document["version"] = int(document["version"]) + 1
+    target = contracts / f"{args.contract}.v{document['version']}.json"
+    target.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    home.append("note", {"text": f"bootstrap published {target.name} naming factory check", "baseline": run_id})
+    print(f"published {target}: the factory check is required; threads started with "
+          f"`syberlabs start ... --contract {args.contract}` (or the newest version by default) now run it")
+    return 0
+
+
+def _spec(args, home: ledger.Ledger) -> int:
+    document = _read_json(args.spec, "spec")
+    kind, _, actor_id = args.actor.partition(":")
+    actor = {"kind": kind or "human", "id": actor_id or "operator"}
+    detail = {}
+    if args.operation == "validate":
+        detail["space"] = home.latest_space()
+    if args.operation == "promote":
+        detail["verdict_ids"] = args.verdict
+    if args.reason:
+        detail["reason"] = args.reason
+    if args.superseded_by:
+        detail["superseded_by"] = args.superseded_by
+    record = specmod.transition(document, args.operation, actor, **detail)
+    Path(args.spec).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], **record,
+                                 "spec_digest": specmod.spec_digest(document)})
+    print(f"{document['spec_id']} v{document['version']}: {record['from']} -> {record['to']} ({args.operation})")
+    return 0
+
+
+def _attest(args, home: ledger.Ledger) -> int:
+    ticket = _read_json(args.ticket, "ticket")
+    baseline = home.load_run(args.baseline)
+    candidate = home.load_run(args.candidate)
+    evidence = {"trace_diff": attest.trace_diff(baseline, candidate, ticket.get("footprint"))}
+    parts = args.builder.split(":")
+    builder = {"agent": parts[0], "model": parts[1] if len(parts) > 1 else None, "session": parts[2] if len(parts) > 2 else None,
+               "fixture_digest": candidate[0].get("fixture_digest")}
+    document = attest.statement(subject_commit=args.commit, repository=args.repository or Path(args.root).resolve().name,
+                                spec_ref=ticket["spec_ref"], footprint=ticket.get("footprint"), evidence=evidence,
+                                builder=builder, ticket=ticket["ticket_id"], behavior_change_label=args.behavior_change)
+    written = document
+    note = "unsigned"
+    if args.seed_env:
+        seed = certificate.load_seed(args.seed_env)
+        written = attest.sign(document, seed)
+        note = f"signed, key {public_from_seed(seed).hex()[:10]}, seed from ${args.seed_env}"
+    event = home.record_attestation(written)
+    out = Path(args.out) if args.out else home.home / "attestations" / f"{event['body']['attestation_digest']}.json"
+    if args.out:
+        out.write_text(json.dumps(written, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    policy = document["predicate"]["policy"]
+    diff = evidence["trace_diff"]
+    print(f"attested {args.commit[:10]} for ticket {ticket['ticket_id']} over {diff['footprint']}: "
+          f"diff {'empty' if diff['diff_empty'] else 'NOT empty'}; promote {policy['promote']} ({note})")
+    for reason in policy["reasons"]:
+        print(f"  {reason}")
+    print(f"wrote {out} (ledger seq {event['seq']})")
+    return 0 if policy["promote"] else 1
+
+
+def viewer_page(records: list[dict], graph: dict | None) -> str:
+    """A self-contained HTML page: the Space graph with components lit as a slider scrubs the run."""
+    template = Path(__file__).resolve().parents[1] / "static" / "factory.html"
+    data = {"run": records[0] if records else {}, "spans": harness.spans(records),
+            "effects": [r for r in records if r.get("t") in ("effect", "marker")],
+            "end": records[-1] if records and records[-1].get("t") == "end" else None,
+            "components": [{"id": c["id"], "label": c["label"], "files": len(c["files"])}
+                           for c in (graph or {}).get("components", {}).values()],
+            "edges": [{"from": e["from"], "to": e["to"], "count": e["count"],
+                       "declared": [e["from"], e["to"]] in [[d["from"], d["to"]] for d in (graph or {}).get("declared_edges", [])]}
+                      for e in (graph or {}).get("depends_on", [])],
+            "absent": [e for e in (graph or {}).get("declared_edges", [])
+                       if not any(d["from"] == e["from"] and d["to"] == e["to"] for d in (graph or {}).get("depends_on", []))]}
+    payload = json.dumps(data).replace("</", "<\\/")
+    return template.read_text(encoding="utf-8").replace("/*__FACTORY_DATA__*/null", payload)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m syberlabs.factory", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    populate(parser)
+    return run(parser.parse_args(argv))
