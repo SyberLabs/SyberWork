@@ -36,7 +36,7 @@ from syberlabs.factory import PROTOCOL, harness, space
 GENESIS = "0" * 64
 EVENT_FIELDS = ("seq", "kind", "body", "at", "previous")
 KINDS = frozenset({"space_indexed", "run_recorded", "run_replayed", "spec_changed", "ticket_opened",
-                   "attested", "drift_reported", "note"})
+                   "attested", "drift_reported", "baseline_set", "note"})
 
 
 def event_digest(event: dict) -> str:
@@ -151,6 +151,22 @@ class Ledger:
 
     def runs(self) -> list[dict]:
         return [e["body"] for e in self.events() if e["kind"] in ("run_recorded", "run_replayed")]
+
+    def set_baseline(self, run_id: str, label: str = "golden") -> dict:
+        """Name a recorded run as the golden a later ``check`` diffs against. Labels are free text; the
+        newest ``baseline_set`` for a label wins, so re-pointing is one more event, never an edit."""
+        if not self.run_path(run_id).exists():
+            raise Rejected("run_missing", f"no run {run_id} in {self.home}")
+        if not label or any(c in label for c in " /\\"):
+            raise Rejected("baseline_label", f"a label is one word, not {label!r}")
+        return self.append("baseline_set", {"label": label, "run_id": run_id})
+
+    def baseline(self, label: str = "golden") -> str | None:
+        """The run id the label points at, or None when it was never set."""
+        for event in reversed(self.events()):
+            if event["kind"] == "baseline_set" and event["body"]["label"] == label:
+                return event["body"]["run_id"]
+        return None
 
     def record_attestation(self, document: dict) -> dict:
         """Store an attestation (a statement or its DSSE envelope) by digest and log it."""

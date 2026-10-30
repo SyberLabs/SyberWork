@@ -11,6 +11,10 @@
     syberlabs factory ticket spec.json --req R1 --out ticket.json
     syberlabs factory attest --baseline A --candidate B --ticket ticket.json --commit SHA
     syberlabs factory verify attestation.json --public KEY
+    syberlabs factory baseline RUN                                   # name the golden run
+    syberlabs factory check --declared arch.json --entry app.main:run --fixture in.json --max-drift 0
+                                                                     # the Build Thread check, run in a worktree
+    syberlabs factory drift --declared arch.json --max 0 --ticket tickets/   # open tickets for drift
     syberlabs factory status
 
 The ledger lives under ``--home`` (default ``.syberlabs/factory``). Every command reads the ledger fresh.
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -55,6 +60,28 @@ def populate(factory) -> None:
     drift.add_argument("--paths", nargs="*")
     drift.add_argument("--max", type=float, default=None, help="fail when any component's drift exceeds this")
     drift.add_argument("--json", action="store_true")
+    drift.add_argument("--ticket", metavar="DIR", help="open one ticket per component over --max (and one for unmapped "
+                                                       "files) as JSON files in DIR; each is logged as ticket_opened")
+    drift.add_argument("--owner", help="the accountable human on tickets --ticket opens")
+
+    base = steps.add_parser("baseline", help="name a recorded run as the golden that `check` diffs against")
+    base.add_argument("run", nargs="?", help="the run id; omit to print the current baseline")
+    base.add_argument("--label", default="golden")
+
+    check = steps.add_parser("check", help="the Build Thread check: in a candidate's worktree, index, record the fixture, "
+                                           "diff against the baseline, attest; exit 0 when the policy promotes")
+    check.add_argument("--declared", required=True, help="ArchitectureSnapshot JSON (a path in the worktree or absolute)")
+    check.add_argument("--entry", required=True)
+    check.add_argument("--fixture", help="JSON fixture (a path in the worktree or absolute)")
+    check.add_argument("--paths", nargs="*", help="limit the Space index to these relative paths")
+    check.add_argument("--baseline", default="golden", metavar="RUN_OR_LABEL", help="a run id or a baseline label (default golden)")
+    check.add_argument("--ticket", help="ticket JSON; its footprint scopes the diff (default: the whole run)")
+    check.add_argument("--commit", help="the candidate commit (default: the worktree's HEAD)")
+    check.add_argument("--max-drift", type=float, default=None, help="refuse when architecture drift exceeds this")
+    check.add_argument("--behavior-change", action="store_true")
+    check.add_argument("--builder", default=None, help="agent[:model[:session]] (default: $SYBERLABS_CANDIDATE or operator)")
+    check.add_argument("--repository", default=None)
+    check.add_argument("--seed-env", default=None, metavar="NAME")
 
     record = steps.add_parser("record", help="run an entrypoint under the recorder; the journal goes in the ledger")
     record.add_argument("--entry", required=True, help="module:function called as function(ctx, fixture), or a script "
@@ -182,7 +209,33 @@ def _run(args) -> int:
             print(json.dumps(report, indent=2, sort_keys=True))
         else:
             _print_reflexion(report)
+        if args.ticket:
+            if args.max is None:
+                raise Rejected("drift_threshold", "--ticket needs --max: tickets open for components over it")
+            opened = specmod.tickets_from_drift(report, graph.get("revision"), threshold=args.max, human_owner=args.owner)
+            folder = Path(args.ticket)
+            folder.mkdir(parents=True, exist_ok=True)
+            for ticket in opened:
+                (folder / f"{ticket['ticket_id']}.json").write_text(json.dumps(ticket, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                home.append("ticket_opened", {"ticket_id": ticket["ticket_id"], "spec_id": "architecture", "version": None,
+                                              "req_id": ticket["spec_ref"]["req_ids"][0], "source": "drift",
+                                              "footprint": ticket["footprint"]["components"], "revision": graph.get("revision")})
+                print(f"ticket     {ticket['ticket_id']}  {ticket['title']}")
+            if not opened:
+                print("no ticket: nothing over the threshold and nothing unmapped")
         return 1 if args.max is not None and report["max_drift"] > args.max else 0
+
+    if command == "baseline":
+        if not args.run:
+            current = home.baseline(args.label)
+            print(f"{args.label}: {current or '(unset)'}")
+            return 0 if current else 1
+        event = home.set_baseline(args.run, args.label)
+        print(f"{args.label} -> {args.run} (ledger seq {event['seq']})")
+        return 0
+
+    if command == "check":
+        return _check(args, home)
 
     if command in ("record", "replay"):
         return _record(args, home, replay=command == "replay" or bool(getattr(args, "replay", None)))
@@ -312,6 +365,72 @@ def _record(args, home: ledger.Ledger, replay: bool) -> int:
     if report.get("outcome") is not None:
         print("outcome", json.dumps(report["outcome"], sort_keys=True, default=str)[:400])
     return 0 if body["status"] == "ok" else 1
+
+
+def _check(args, home: ledger.Ledger) -> int:
+    """One host-run check over a candidate's worktree. Everything it reads outside the worktree is named by an
+    absolute path on argv (the ledger home, or the declaration and fixture when they are not in the tree), and
+    everything it writes goes to the ledger. Its exit code is the policy's verdict, so a Build Thread contract
+    can name it like any other check and the evaluation record carries its output digest and tail."""
+    if not Path(args.home).is_absolute():
+        raise Rejected("check_home", f"`check` runs in a candidate's worktree; name the ledger by an absolute --home, not {args.home!r}")
+    root = Path(args.root).resolve()
+    declared = _declared(args.declared)
+    graph = _indexed(args, declared, args.commit)
+    commit = args.commit or graph.get("revision")
+    if not commit:
+        raise Rejected("check_commit", "no commit: the worktree has no git HEAD; pass --commit")
+    space_event = home.record_space(graph, digest(declared))
+    report = space.reflexion(graph)
+    is_run_id = args.baseline and all(c in "0123456789abcdef" for c in args.baseline) and home.run_path(args.baseline).exists()
+    baseline_id = args.baseline if is_run_id else home.baseline(args.baseline)
+    if baseline_id is None:
+        raise Rejected("baseline_missing", f"no baseline {args.baseline!r}: record the golden run, then `factory baseline RUN`")
+    fixture = _read_json(args.fixture, "fixture") if args.fixture else {}
+    run_id = harness.new_run_id()
+    recorded = harness.record(root, home.run_path(run_id), args.entry,
+                              file_components={p: r.get("component") for p, r in graph["files"].items()}, fixture=fixture,
+                              run_id=run_id, revision=commit, space_digest=space_event["body"]["space_digest"],
+                              blobs=home.home / "blobs")
+    if recorded.get("stdout"):
+        print(recorded["stdout"])
+    if recorded["status"] == "killed" or not home.run_path(run_id).exists():
+        print(f"no journal: {recorded.get('error')}", file=sys.stderr)
+        return 1
+    run_event = home.record_run(run_id)
+    ticket = _read_json(args.ticket, "ticket") if args.ticket else None
+    footprint = ticket.get("footprint") if ticket else None
+    evidence = {"trace_diff": attest.trace_diff(home.load_run(baseline_id), home.load_run(run_id), footprint),
+                "drift": attest.drift_evidence(report, commit)}
+    if recorded.get("error"):
+        evidence["run"] = {"kind": "run", "status": recorded["status"], "error": recorded["error"]}
+    builder_text = args.builder or os.environ.get("SYBERLABS_CANDIDATE") or "operator"
+    parts = builder_text.split(":")
+    builder = {"agent": parts[0], "model": parts[1] if len(parts) > 1 else None, "session": parts[2] if len(parts) > 2 else None,
+               "fixture_digest": digest(fixture), "space_digest": space_event["body"]["space_digest"],
+               "baseline_run": baseline_id, "candidate_run": run_id}
+    gate = {"max_drift": args.max_drift} if args.max_drift is not None else {}
+    spec_ref = ticket["spec_ref"] if ticket else {"spec_id": None, "version": None, "req_ids": []}
+    document = attest.statement(subject_commit=commit, repository=args.repository or space.git_repository_name(root), spec_ref=spec_ref,
+                                footprint=footprint, evidence=evidence, builder=builder,
+                                ticket=ticket["ticket_id"] if ticket else None, behavior_change_label=args.behavior_change,
+                                gate=gate)
+    written = document
+    if args.seed_env:
+        written = attest.sign(document, certificate.load_seed(args.seed_env))
+    event = home.record_attestation(written)
+    policy = document["predicate"]["policy"]
+    promote = policy["promote"] and recorded["status"] == "ok"
+    diff = evidence["trace_diff"]
+    print(f"factory check {commit[:10]}: run {run_id} {recorded['status']}; trace diff {'empty' if diff['diff_empty'] else 'NOT empty'}"
+          f" over {diff['footprint'] or 'the whole run'} against {baseline_id}; drift {report['max_drift']:.3f}; "
+          f"promote {promote}")
+    for reason in policy["reasons"]:
+        print(f"  {reason}")
+    if recorded["status"] != "ok":
+        print(f"  the program did not end cleanly ({recorded['status']}): refuse")
+    print(f"attestation {event['body']['attestation_digest']} (ledger seq {event['seq']}; run seq {run_event['seq']})")
+    return 0 if promote else 1
 
 
 def _spec(args, home: ledger.Ledger) -> int:

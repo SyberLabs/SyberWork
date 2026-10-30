@@ -464,3 +464,136 @@ class CliTests(Scratch):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuildThreadCheck(Scratch):
+    """The seam: a Build Thread contract names `factory check` as a host-run check. The candidate's evaluation then
+    carries the trace diff's verdict and the attestation digest, under the existing admission rules."""
+
+    def setUp(self):
+        super().setUp()
+        import subprocess
+        import sys as _sys
+        from syberlabs.build import Kit, default_contract
+        self.Kit, self.default_contract = Kit, default_contract
+        self.project = self.scratch / "project"
+        shutil.copytree(FIXTURE, self.project)
+        (self.project / "fixture.json").write_text('{"part": "p-104", "quantity": 2}', encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.test"}
+        self.git = lambda *a: subprocess.run(["git", "-C", str(self.project), *a], check=True, capture_output=True,
+                                             text=True, env=env).stdout.strip()
+        self.git("init", "-q", "-b", "main")
+        self.git("add", ".")
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "base")
+        self.ledger_home = (self.scratch / "ledger").resolve()
+        # The check is argv without a shell under a scrubbed environment, so it names the interpreter and this
+        # checkout explicitly; an installed wheel would use `-m syberlabs.factory` instead.
+        self.check_argv = [_sys.executable, "-c",
+                           f"import sys; sys.path.insert(0, {str(ROOT)!r}); from syberlabs.factory.cli import main; "
+                           f"sys.exit(main(['--home', {str(self.ledger_home)!r}, 'check', '--declared', 'architecture.json', "
+                           f"'--entry', 'fxapp.main:run', '--fixture', 'fixture.json', '--max-drift', '1.0'] + sys.argv[1:]))"]
+
+    def golden(self):
+        home = ledger.Ledger(self.ledger_home)
+        graph = space.index(self.project, revision=self.git("rev-parse", "HEAD"))
+        space.map_components(graph, DECLARED)
+        home.record_space(graph)
+        run_id = harness.new_run_id()
+        report = harness.record(self.project, home.run_path(run_id), "fxapp.main:run", file_components=file_components(graph),
+                                fixture={"part": "p-104", "quantity": 2}, run_id=run_id, revision=graph["revision"])
+        self.assertEqual(report["status"], "ok", report)
+        home.record_run(run_id)
+        home.set_baseline(run_id)
+        return home, run_id
+
+    def kit(self, extra_argv=()):
+        contract = self.default_contract(self.project)
+        contract["evolution"]["scope"] = {"paths": ["fxapp/"], "exclude": [], "max_files": 20, "max_diff_bytes": 200_000}
+        contract["evolution"]["evaluation"] = {"checks": {"factory": {"argv": self.check_argv + list(extra_argv), "timeout_seconds": 300}},
+                                               "required": ["factory"], "max_age_seconds": 3600, "max_output_bytes": 1_048_576}
+        home = self.project / ".syberlabs"
+        (home / "contracts").mkdir(parents=True, exist_ok=True)
+        (home / "contracts" / f"{contract['id']}.v{contract['version']}.json").write_text(json.dumps(contract), encoding="utf-8")
+        kit = self.Kit.local(home, self.project, actor="dev@example.test")
+        self.addCleanup(kit.close)
+        return kit
+
+    def test_a_behavior_preserving_candidate_passes_and_a_changed_one_is_refused(self):
+        home, golden = self.golden()
+        kit = self.kit()
+        thread = kit.start("Tidy the rules module", paths=["fxapp/"])
+        rules = (self.project / "fxapp" / "rules.py").read_text(encoding="utf-8")
+        [same] = thread.propose(changes={"fxapp/rules.py": rules.replace('"""Rules: pure decisions over a record."""',
+                                                                           '"""Rules: pure decisions over one record."""')})
+        verdict = thread.check(same.id)
+        self.assertTrue(verdict.acceptable, verdict.summary())
+        [check] = verdict.checks
+        self.assertEqual((check.name, check.state), ("factory", "passed"))
+        self.assertIn("trace diff empty", check.output_tail)
+        self.assertIn("promote True", check.output_tail)
+        attested = [e for e in home.events() if e["kind"] == "attested"]
+        self.assertEqual(len(attested), 1)
+        self.assertEqual(attested[0]["body"]["subject"], [f"git:project@{same.commit}"])
+        self.assertTrue(attested[0]["body"]["promote"])
+        self.assertIn(attested[0]["body"]["attestation_digest"][:16], check.output_tail)
+        self.assertEqual(home.load_run(home.runs()[-1]["run_id"])[0]["revision"], same.commit,
+                         "the check recorded the candidate's own commit")
+        receipt = thread.accept(same.id)
+        self.assertEqual(receipt.status, "succeeded", receipt.reason)
+
+        other = kit.start("Lower the review threshold", paths=["fxapp/"])
+        [changed] = other.propose(changes={"fxapp/rules.py": rules.replace('if record["quantity"] > 100:', 'if record["quantity"] > 1:')})
+        verdict = other.check(changed.id)
+        self.assertFalse(verdict.acceptable, verdict.summary())
+        self.assertEqual(verdict.reason, "candidate_check_failed:factory")
+        self.assertIn("NOT empty", verdict.checks[0].output_tail)
+        self.assertIn("no behavior change was declared: refuse", verdict.checks[0].output_tail)
+        receipt = other.accept(changed.id)
+        self.assertEqual((receipt.status, receipt.reason), ("denied", "candidate_check_failed:factory"))
+        last = [e for e in home.events() if e["kind"] == "attested"][-1]
+        self.assertFalse(last["body"]["promote"])
+        self.assertFalse(last["body"]["diff_empty"])
+        self.assertTrue(home.verify())
+
+    def test_drift_bound_refuses_an_undeclared_dependency(self):
+        self.golden()
+        kit = self.kit(extra_argv=["--max-drift", "0"])
+        thread = kit.start("Tighten the layering", paths=["fxapp/"])
+        rules = (self.project / "fxapp" / "rules.py").read_text(encoding="utf-8")
+        [candidate] = thread.propose(changes={"fxapp/rules.py": rules + "\n"})
+        verdict = thread.check(candidate.id)
+        self.assertFalse(verdict.acceptable)
+        self.assertIn("architecture drift 1.0 exceeds 0.0 (worst: effects): refuse", verdict.checks[0].output_tail)
+
+    def test_drift_opens_tickets(self):
+        home = ledger.Ledger(self.ledger_home)
+        graph = space.index(self.project, revision="r1")
+        space.map_components(graph, DECLARED)
+        report = space.reflexion(graph)
+        tickets = specmod.tickets_from_drift(report, "r1", threshold=0.0, human_owner="tester")
+        self.assertEqual(len(tickets), 1)
+        self.assertEqual(tickets[0]["footprint"]["components"], ["effects", "rules"])
+        self.assertEqual(tickets[0]["exit_criteria"], ["evidence:drift"])
+        self.assertEqual(tickets[0]["repro"]["divergent_edges"][0]["via"][0]["kind"], "IMPORTS")
+        self.assertEqual(specmod.tickets_from_drift(report, "r1", threshold=1.0), [])
+        report["unmapped"] = ["stray.py"]
+        self.assertEqual(len(specmod.tickets_from_drift(report, "r1", threshold=1.0)), 1)
+        out, err = io.StringIO(), io.StringIO()
+        here = os.getcwd()
+        os.chdir(self.project)
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                code = factory_cli.main(["--home", str(self.ledger_home), "drift", "--declared", "architecture.json",
+                                         "--max", "0", "--ticket", str(self.scratch / "tickets")])
+        finally:
+            os.chdir(here)
+        self.assertEqual(code, 1, err.getvalue())
+        self.assertIn("ticket     ", out.getvalue())
+        written = list((self.scratch / "tickets").glob("*.json"))
+        self.assertEqual(len(written), 1)
+        opened = [e for e in home.events() if e["kind"] == "ticket_opened"]
+        self.assertEqual(opened[0]["body"]["source"], "drift")
+        self.assertEqual(home.baseline(), None)
+        with self.assertRaises(Rejected):
+            home.set_baseline("deadbeef")

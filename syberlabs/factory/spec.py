@@ -21,7 +21,7 @@ from syberlabs.errors import Rejected
 from syberlabs.factory import PROTOCOL
 
 STATES = ("draft", "revised", "mutated", "candidate", "promoted", "canonical", "retired")
-EVIDENCE_KINDS = frozenset({"trace_diff", "tests", "mutation", "critic", "replay"})
+EVIDENCE_KINDS = frozenset({"trace_diff", "drift", "tests", "mutation", "critic", "replay"})
 TRANSITIONS = {
     "revise": ({"draft", "revised", "candidate"}, "revised"),
     "mutate": ({"candidate", "canonical"}, "mutated"),
@@ -179,3 +179,43 @@ def ticket_from_spec(spec: dict, requirement_id: str, *, baseline_run: str | Non
         "state": "open", "candidates": [], "verdicts": [], "evidence_links": [],
     }
     return ticket
+
+
+def tickets_from_drift(report: dict, revision: str | None, *, threshold: float, human_owner: str | None = None) -> list[dict]:
+    """One ticket per component whose drift exceeds ``threshold``: its footprint is the component and the
+    targets of its undeclared edges, its acceptance criterion is a clean reflexion report, and its exit
+    criterion is drift evidence. Unmapped files get one ticket of their own."""
+    tickets = []
+    divergent_by = {}
+    for edge in report.get("divergence", []):
+        divergent_by.setdefault(edge["from"], []).append(edge)
+    for component, score in sorted(report.get("drift", {}).items()):
+        if score["score"] <= threshold or component not in divergent_by:
+            continue
+        edges = divergent_by[component]
+        targets = sorted({e["to"] for e in edges})
+        tickets.append({
+            "protocol": PROTOCOL, "kind": "ticket",
+            "ticket_id": digest({"drift": component, "revision": revision, "edges": [(e["from"], e["to"]) for e in edges]})[:16],
+            "title": f"{component} depends on {', '.join(targets)} without a declared edge",
+            "spec_ref": {"spec_id": "architecture", "version": None, "req_ids": [f"declared-edges:{component}"]},
+            "acceptance_criteria": [{"given": f"the Space graph at a commit after {revision}", "when": "reflexion runs",
+                                     "then": f"{component} has no undeclared outgoing edge (or the declaration gains it)"}],
+            "footprint": {"components": sorted({component, *targets}), "files": [], "revision": revision, "space_digest": None},
+            "repro": {"baseline_run": None, "divergent_edges": [{"from": e["from"], "to": e["to"], "count": e["count"],
+                                                                 "via": e["via"][:5]} for e in edges]},
+            "exit_criteria": ["evidence:drift"], "delegate": None, "human_owner": human_owner,
+            "state": "open", "candidates": [], "verdicts": [], "evidence_links": [],
+        })
+    if report.get("unmapped"):
+        files = list(report["unmapped"])
+        tickets.append({
+            "protocol": PROTOCOL, "kind": "ticket", "ticket_id": digest({"unmapped": files, "revision": revision})[:16],
+            "title": f"{len(files)} file(s) belong to no declared component",
+            "spec_ref": {"spec_id": "architecture", "version": None, "req_ids": ["declared-paths"]},
+            "acceptance_criteria": [{"given": "the declaration", "when": "every file is mapped", "then": "unmapped is empty"}],
+            "footprint": {"components": [], "files": files, "revision": revision, "space_digest": None},
+            "repro": {"baseline_run": None}, "exit_criteria": ["evidence:drift"], "delegate": None,
+            "human_owner": human_owner, "state": "open", "candidates": [], "verdicts": [], "evidence_links": [],
+        })
+    return tickets

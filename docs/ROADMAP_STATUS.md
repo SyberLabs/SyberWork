@@ -114,4 +114,6 @@ A coordination record is not a case event. A displayed comment, diversity score,
 | Spec lifecycle, footprint resolution, tickets from a promoted spec | Implemented and tested | `syberlabs/factory/spec.py`, `SpecTests` |
 | Trace diff over a footprint as an in-toto statement, DSSE-signed, with a promotion policy | Implemented and tested | `syberlabs/factory/attest.py`, `AttestTests` |
 | CLI and a self-contained replay viewer | Implemented and tested | `syberlabs factory ...`, `syberlabs/static/factory.html`, `CliTests` |
-| Drift and promoted specs opening tickets without a person; multi-model spec variants; feature maps | Proposed (v1) | [docs/FACTORY.md](FACTORY.md) |
+| `factory check` as a host-run Build Thread check: a candidate's evaluation cites the trace diff and drift attestation | Implemented and tested | `syberlabs/factory/cli.py::_check`, `tests/test_factory.py::BuildThreadCheck` |
+| Drift opens tickets without a person | Implemented and tested | `factory drift --ticket`, `spec.tickets_from_drift` |
+| Promoted specs opening tickets; multi-model spec variants; feature maps; this repository's own contract naming the check | Proposed (v1) | [docs/FACTORY.md](FACTORY.md) |
