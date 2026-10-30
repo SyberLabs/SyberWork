@@ -20,7 +20,7 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / "examples" / "githits-engineering-smoke"
 MODEL = "claude-sonnet-5-5"
-CLI_VERSION = "2.1.311"
+CLI_VERSION = "2.1.312"  # exact: the host and the pilot VM run it; recorded in plan.json and manifest.json
 
 
 def prepare(work):
@@ -43,7 +43,7 @@ def prepare(work):
                 "factory": pilot.host_checkout(), "fixture_base": pilot.git(repo, "rev-parse", "HEAD"),
                 "plan_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 "check_sha256": hashlib.sha256((PACK / "check.py").read_bytes()).hexdigest(),
-                "skill_sha256": pilot.claude_code.githits_skill()[1]}
+                "skill_sha256": pilot.claude_code.githits_skill()[1], "cli_version": CLI_VERSION}
     (work / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return repo, path
 
@@ -53,7 +53,7 @@ def main(argv=None):
     parser.add_argument("--work", type=Path, required=True, help="new private directory; never reused")
     parser.add_argument("--factory-commit", required=True, help="exact approved factory SHA")
     parser.add_argument("--run-approved", action="store_true", help="Mateo only, after explicit live/spend approval")
-    parser.add_argument("--claude", help="Claude Code 2.1.311 executable (else the existing configured command)")
+    parser.add_argument("--claude", help=f"Claude Code {CLI_VERSION} executable (else the existing configured command)")
     args = parser.parse_args(argv)
     factory = pilot.host_checkout()
     if args.factory_commit != factory["commit"] or (args.run_approved and factory["dirty"]):
@@ -68,9 +68,12 @@ def main(argv=None):
         os.environ[pilot.claude_code.BIN_ENV] = str(Path(args.claude).resolve())
     command = pilot.claude_code.claude_executable()
     version = subprocess.run([*command, "--version"], capture_output=True, timeout=30)
-    if version.returncode or not version.stdout.decode("utf-8", "replace").startswith(CLI_VERSION + " "):
-        print("REFUSED: the frozen smoke plan requires Claude Code", CLI_VERSION)
+    found = pilot.claude_code.version_tuple(version.stdout.decode("utf-8", "replace")) if not version.returncode else None
+    if found != tuple(int(part) for part in CLI_VERSION.split(".")):
+        print("REFUSED: the frozen smoke plan requires Claude Code", CLI_VERSION, "exactly; found",
+              ".".join(map(str, found)) if found else "no readable version")
         return 2
+    print("Claude Code", CLI_VERSION, "(the exact pin)")
     if "--model" in command:
         print("REFUSED: remove the command's model override; the smoke recipe pins ANTHROPIC_MODEL")
         return 2

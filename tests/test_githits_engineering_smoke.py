@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -50,10 +51,42 @@ class Preparation(unittest.TestCase):
             run.assert_not_called()
             self.assertFalse((Path(folder) / "bad").exists())
 
+    def test_the_cli_pin_is_exactly_2_1_312_recorded_and_any_other_version_is_refused(self):
+        """pilot-readiness, item 3: the host and the pilot VM run Claude Code 2.1.312, so the frozen recipe pins it,
+        exactly, and records the pin in the plan and the manifest."""
+        self.assertEqual(smoke.CLI_VERSION, "2.1.312")
+        plan = json.loads((smoke.PACK / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(plan["_configuration"]["cli"], smoke.CLI_VERSION)
+        with tempfile.TemporaryDirectory() as folder:
+            smoke.prepare(Path(folder) / "ready")
+            manifest = json.loads((Path(folder) / "ready" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["cli_version"], smoke.CLI_VERSION)
+            pin = smoke.pilot.host_checkout()["commit"]
+            script = Path(folder) / "claude_stand_in.py"
+            for printed, refused in (("2.1.311 (Claude Code)", True), ("2.1.3120 (Claude Code)", True),
+                                     ("2.1.312 (Claude Code) beta", True), ("banner\n2.1.312 (Claude Code)", True),
+                                     ("2.1.312 (Claude Code)", False)):
+                with self.subTest(version=printed):
+                    script.write_text(f"print({printed!r})\n", encoding="utf-8")
+                    work = Path(folder) / f"run-{len(list(Path(folder).iterdir()))}"
+                    with mock.patch.dict(os.environ, {smoke.pilot.claude_code.BIN_ENV: f"{sys.executable} {script}"}), \
+                            mock.patch.object(smoke.pilot, "host_checkout", return_value={"commit": pin, "dirty": False}), \
+                            mock.patch.object(smoke.pilot, "main", return_value=0) as run, \
+                            contextlib.redirect_stdout(io.StringIO()) as out:
+                        code = smoke.main(["--work", str(work), "--factory-commit", pin, "--run-approved"])
+                    if refused:
+                        self.assertEqual(code, 2, out.getvalue())
+                        self.assertIn("requires Claude Code 2.1.312 exactly", out.getvalue())
+                        run.assert_not_called()
+                    else:
+                        self.assertEqual(code, 0, out.getvalue())
+                        self.assertIn("Claude Code 2.1.312 (the exact pin)", out.getvalue())
+                        run.assert_called_once()
+
 
 class OfflineRecipe(DryRunCase):
     def test_one_recipe_runs_the_real_three_item_fixture_with_stand_ins(self):
-        command = self.stand_in("engineering", version="2.1.311 (Claude Code)", lookups=LOOKUPS)
+        command = self.stand_in("engineering", version=smoke.CLI_VERSION + " (Claude Code)", lookups=LOOKUPS)
         path = Path(command[-1])
         text = path.read_text(encoding="utf-8")
         # Select visible synthetic task implementations; the canary changes no file.

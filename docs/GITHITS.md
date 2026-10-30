@@ -94,8 +94,18 @@ unbalanced parenthesis, a dangling operator, a stray character, more than 64 tok
   `results_dropped_license`, apart from the contamination count. Contamination is judged first. In contract
   0.1.0 only an example carries licenses: the `(SPDX)` after each source link of its Markdown
   (`[Source 1](https://github.com/o/r/blob/sha/path) (MIT)`), a `License:` line, or a structured `references`
-  list if one is ever returned. An example whose sources include a license that is not admitted, a source link
-  with no license, or no source link at all, is dropped whole. Exit 0, with a one-line notice.
+  list if one is ever returned. A source link is a link to a code host, or any link under a `References` or
+  `Sources` heading (up to the next heading or thematic break), which is how GitHits' documented responses cite
+  them (`### References` / `- [Source 1](https://example.org/source) (MIT)`); GitHits' own "Open in GitHits Web
+  App" link is never one. An example whose sources include a license that is not admitted, a source link
+  with no license, or code with no source link at all, is dropped whole. Exit 0, with a one-line notice. An
+  example with neither code (a fenced, indented or HTML block) nor a source carries nothing to license and
+  passes: GitHits' documented `degraded` ("Source search may be incomplete.") and `no_example` ("No suitable
+  example was found.") answers. All three documented example responses in the pinned OpenAPI document pass, and
+  the same shapes with a copyleft, `NOASSERTION`, unparsable or missing license are dropped
+  (`tests/test_githits.py`, `DocumentedExamples`). Before 2026-10-29 all three were withheld
+  (`results_dropped_license=1`): the `complete` example's source is not on a code host, and the other two have
+  no source.
 - **It depends on license data being present.** No search, grep, list or read result in 0.1.0 has a license
   field, so those results pass this check unjudged. The client would read `license_spdx_id`, `spdx_id`,
   `license_id` or `license` on a result (or a search hit's locator) if GitHits added one.
@@ -130,9 +140,34 @@ the two is an error, so a run never believes it is recording when it is not.
 - `read_records(directory, key)` returns the records whose MAC verifies, and counts every other line (bad MAC,
   extra or missing field, not JSON) as ignored.
 
+`paced_ms`, present only on a call the host's launcher paced (next section), is how long the launcher held the
+call before sending it; the MAC covers it, and a record without it has exactly the fields above.
+
 No query text, no result and no token is ever stored. As with the guard's key, the MAC shows that a process
 holding the key wrote the line. The key is in the environment of whatever runs the client, so it does not show
 which process that was.
+
+## Example pacing (host side)
+
+GitHits limits its example endpoint per organization to one or two requests a minute, and the pilot runs both arms
+and every Claude Code call under one organization's token. The launcher's entry (`githits_cli_entry.py`) therefore
+holds each `example` before it is sent until this host's last example is 40 s old (`githits_pace.EXAMPLE_INTERVAL`):
+a cross-process lock on `example.lock` and the time of the last slot in `example.last`, in the host's pacing
+directory, outside any worktree (`SYBERLABS_GITHITS_PACE_DIR`, an absolute path, else `syberlabs-githits-pace` in the
+system temporary directory). Callers queue on the lock, so two examples from any two processes, either arm, are at
+least 40 s apart. Search, read, list and grep are not paced, and `syberlabs githits example` (the operator's) is not
+paced either.
+
+This is pacing, not a retry: the client still sends each request once and never waits or retries on its own (a
+missing retry and back-off is itself a pilot work item, so it is kept out of `githits.py`'s request code). The time
+the call was held is recorded on its client record as `paced_ms` and on its `lookup` fact; `latency_ms` never
+includes it. `syberlabs experiment report` leaves it out of an arm's time: `time_to_pass` subtracts the pacing between
+the first search and the evaluation of the accepted candidate, the per-arm `agent_time` subtracts the thread's total,
+and each arm reports its `paced_seconds`.
+
+An example to a loopback base URL (a stand-in, such as the tests' fake GitHits) never reaches GitHits' limit and is
+not paced unless `SYBERLABS_GITHITS_PACE_SECONDS` sets an interval for it; that variable is ignored for any other
+base. A pacing directory that cannot be used fails the call before anything is sent. Limits: `spec/GAPS.md` 63.
 
 ## Token and transport
 
@@ -300,6 +335,8 @@ misreports. Claim ceiling: implemented and tested with stand-ins; no pilot has r
 | `SYBERLABS_GITHITS_EXCLUDE_REPLACE` | `1`: the list above replaces `SyberLabs` (tests only) |
 | `SYBERLABS_GITHITS_LICENSES` | allowed SPDX ids, comma list, or `any` (default: the permissive list) |
 | `SYBERLABS_GITHITS_RECORD_DIR`, `SYBERLABS_GITHITS_RECORD_KEY` | where records go and their MAC key (both or neither) |
+| `SYBERLABS_GITHITS_PACE_DIR` | the host's example pacing directory, absolute (default: `syberlabs-githits-pace` in the temporary directory) |
+| `SYBERLABS_GITHITS_PACE_SECONDS` | a pacing interval for a loopback base URL only (tests); ignored for GitHits itself, always 40 s |
 
 Claim ceiling: **implemented and tested** against a loopback fake that follows the pinned schemas. It has not
 been run against the real API, so the real server's behaviour is not observed: whether `strict` already excludes
