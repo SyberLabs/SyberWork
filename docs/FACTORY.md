@@ -76,6 +76,45 @@ second on the container the tests ran in, and `export --view` renders it. Indexi
 `syberwork` (84 files, about 1,500 symbols, 3,200 edges) takes under a second there. Both numbers are single
 observations, not measurements.
 
+## The seam: `factory check` as a Build Thread check
+
+The factory does not decide anything about a candidate; the Build Thread's admission does. The seam between
+them is one host-run check. A contract names it like any other check:
+
+```json
+"checks": {"factory": {"argv": ["/abs/python", "-m", "syberlabs.factory", "--home", "/abs/.syberlabs/factory",
+                                "check", "--declared", "architecture.json", "--entry", "app.main:run",
+                                "--fixture", "fixture.json", "--max-drift", "0"], "timeout_seconds": 300}},
+"required": ["factory"]
+```
+
+Before the thread starts, the operator records the golden run on the base commit and names it:
+`factory record ...` then `factory baseline RUN`. For each candidate, `syberlabs check` runs the argv in the
+candidate's detached worktree under the scrubbed environment, and the check: indexes the worktree and logs
+the Space graph; records the fixture run at the candidate's commit; diffs it against the baseline over the
+ticket's footprint (or the whole run); computes the reflexion report; writes an attestation whose predicate
+carries the trace diff, the drift evidence, the gate parameters and the policy's reasons; and exits 0 only
+when the policy promotes and the program ended cleanly. The evaluation record then carries the check's
+output digest and tail, which name the attestation digest, so `candidate_evaluated` cites the trace diff
+without any change to the frozen event vocabulary. `candidate.promotable` still requires a human-origin
+proposal from a promotion role; the factory's verdict is the host's own evaluation of the exact tree, which
+is what invariant 2 asks for, and nothing more.
+
+`tests/test_factory.py::BuildThreadCheck` runs this through the Kit: a comment-only change to `rules.py`
+passes (trace diff empty, drift within bound) and is accepted; a change to a threshold in `decide` is
+refused with `candidate_check_failed:factory` and the attestation says where the worldlines part; with
+`--max-drift 0` the fixture's planted undeclared import refuses every candidate until the declaration or the
+code changes. The ledger names everything by absolute path on argv, since the check's working directory is
+the worktree and its environment is scrubbed; it refuses a relative `--home`.
+
+## Drift opens tickets
+
+`factory drift --declared arch.json --max 0 --ticket tickets/` writes one ticket per component over the
+threshold (footprint: the component and the targets of its undeclared edges; acceptance: a clean reflexion
+report; exit criterion: drift evidence; `repro` lists the symbol-level edges) and one for unmapped files,
+and logs each as `ticket_opened` with `source: drift`. This is the first of the plan's three automatic
+ticket sources; spec promotion and feature-map drift are v1.
+
 ## Where this departs from the plan, and why
 
 - **`ast`, not tree-sitter and SCIP.** The plan chose tree-sitter for structure and SCIP for precise
@@ -127,8 +166,10 @@ component nothing called at a revision has no cells there, and that absence is i
 
 ## Next work package
 
-v1 closes the loop: drift and promoted specs open tickets on their own (`drift_reported` and
-`spec_changed` events are already logged), three providers propose variants from one parent spec and one
-reviews, and the attestation gate reads a tests evidence entry produced by the Build Thread's own checks.
-The first consumer is this repository: `examples/build_thread.py` recorded under the harness with
-`syberlabs` and `syberwork` as the declared components, so the factory inspects itself.
+v1 closes the rest of the loop: promoted specs open tickets on their own (`spec_changed` is already logged),
+three providers propose variants from one parent spec and one reviews, the attestation gate reads a
+`tests` evidence entry from the thread's other checks, and this repository's own contract names
+`factory check` with `docs/architecture.declared.json` and `examples/build_thread.py` as the recorded
+program, so the factory inspects itself on every candidate. The open decision upstream of all of it is
+whether a host-run trace diff over a declared footprint counts as independent review for MasterMind's auto
+class; if it does, the loop closes without changing who promotes.

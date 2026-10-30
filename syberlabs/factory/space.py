@@ -178,6 +178,20 @@ def git_revision(root: Path) -> str | None:
     return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
 
 
+def git_repository_name(root: Path) -> str:
+    """The repository's directory name, through a worktree: the parent of the common git dir, else ``root``'s name."""
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return Path(root).name
+    if out.returncode != 0 or not out.stdout.strip():
+        return Path(root).name
+    common = Path(out.stdout.strip())
+    if not common.is_absolute():
+        common = Path(root) / common
+    return common.resolve().parent.name
+
+
 def index(root: str | Path, paths: list[str] | None = None, revision: str | None = None) -> dict:
     """Derive the Space graph of the Python sources under ``root``.
 

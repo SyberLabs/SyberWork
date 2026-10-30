@@ -47,13 +47,24 @@ def trace_diff(baseline: list[dict], candidate: list[dict], footprint: dict | No
     }
 
 
+def drift_evidence(report: dict, revision: str | None) -> dict:
+    """The evidence entry for architecture conformance at the candidate: the reflexion report's numbers."""
+    return {"kind": "drift", "revision": revision, "max_drift": report["max_drift"],
+            "divergent": [(e["from"], e["to"], e["count"]) for e in report["divergence"]],
+            "absent": [(e["from"], e["to"]) for e in report["absence"]], "unmapped": len(report["unmapped"]),
+            "drift": {k: v["score"] for k, v in report["drift"].items()}}
+
+
 def statement(*, subject_commit: str, repository: str, spec_ref: dict, footprint: dict | None, evidence: dict,
               builder: dict, ticket: str | None = None, verdicts: list[dict] | None = None,
-              behavior_change_label: bool = False) -> dict:
+              behavior_change_label: bool = False, gate: dict | None = None) -> dict:
     """An in-toto Statement v1 with the spec-satisfied predicate. ``evidence`` maps kind to entry
-    (``trace_diff`` from :func:`trace_diff`; ``tests``, ``mutation``, ``critic`` from their producers)."""
+    (``trace_diff`` from :func:`trace_diff`; ``drift`` from :func:`drift_evidence`; ``tests``, ``mutation``,
+    ``critic`` from their producers). ``gate`` holds the policy's parameters (``require_tests``,
+    ``mutation_threshold``, ``max_drift``) so the statement says what it was judged against."""
     if not subject_commit:
         raise Rejected("attestation_subject", "an attestation's subject is the candidate commit")
+    gate = dict(gate or {})
     predicate = {
         "factory": FACTORY_VERSION,
         "spec": {"spec_id": spec_ref.get("spec_id"), "version": spec_ref.get("version"),
@@ -64,8 +75,9 @@ def statement(*, subject_commit: str, repository: str, spec_ref: dict, footprint
         "behavior_change_label": bool(behavior_change_label),
         "builder": builder,
         "verdicts": list(verdicts or []),
+        "gate": gate,
     }
-    predicate["policy"] = policy(predicate)
+    predicate["policy"] = policy(predicate, **gate)
     return {
         "_type": STATEMENT_TYPE,
         "subject": [{"name": f"git:{repository}@{subject_commit}", "digest": {"gitCommit": subject_commit}}],
@@ -74,10 +86,12 @@ def statement(*, subject_commit: str, repository: str, spec_ref: dict, footprint
     }
 
 
-def policy(predicate: dict, *, require_tests: bool = False, mutation_threshold: float | None = None) -> dict:
+def policy(predicate: dict, *, require_tests: bool = False, mutation_threshold: float | None = None,
+           max_drift: float | None = None) -> dict:
     """The gate. Promote when the trace diff over the footprint is empty, or is non-empty and the ticket
-    carries the behavior-change label; then when tests ran the full suite (if required) and the mutation
-    score meets the threshold (if set). Every reason is listed, pass or fail."""
+    carries the behavior-change label; then when tests ran the full suite (if required), the mutation
+    score meets the threshold (if set), and architecture drift at the candidate stays at or under
+    ``max_drift`` (if set). Every reason is listed, pass or fail."""
     reasons = []
     promote = True
     evidence = predicate.get("evidence", {})
@@ -113,6 +127,17 @@ def policy(predicate: dict, *, require_tests: bool = False, mutation_threshold: 
             promote = False
         else:
             reasons.append(f"mutation score {score} meets {mutation_threshold}")
+    drift = evidence.get("drift")
+    if max_drift is not None:
+        if drift is None:
+            reasons.append("drift bound set and no drift evidence: refuse")
+            promote = False
+        elif drift.get("max_drift", 1.0) > max_drift:
+            worst = max(drift.get("drift", {}).items(), key=lambda kv: kv[1], default=("?", None))
+            reasons.append(f"architecture drift {drift['max_drift']} exceeds {max_drift} (worst: {worst[0]}): refuse")
+            promote = False
+        else:
+            reasons.append(f"architecture drift {drift['max_drift']} within {max_drift}")
     return {"promote": promote, "reasons": reasons}
 
 
