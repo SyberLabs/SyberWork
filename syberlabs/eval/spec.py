@@ -53,7 +53,7 @@ NAME = r"^[a-z0-9][a-z0-9_.-]{0,63}$"
 HEX64 = r"^[0-9a-f]{64}$"
 ARM_KINDS = ("single", "repair", "evolve", "evolve_jev", "claude-code")
 HIDDEN_FEEDBACK = ("tails", "status", "none")  # what of a hidden check's result reaches the proposer (module docstring)
-LANES = ("api", "subscription_local", "seat_team_enterprise", "provider_3p")
+LANES = ("api", "api-hooked", "subscription_local", "seat_team_enterprise", "provider_3p")  # claude_code.LANES
 MAX_TOTAL_DOLLARS = 1000.0
 
 _TEXT = {"type": "string", "minLength": 1, "maxLength": 4000}

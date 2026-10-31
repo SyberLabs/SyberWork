@@ -69,9 +69,10 @@ appends one JSON line to ``githits-records.jsonl`` in that directory: ``RECORD_F
 HMAC-SHA256 over the record's canonical JSON under the key (``query_guard.sign``, the MAC the query guard's
 decisions use). No query text, no result and no token is stored; ``query_digest`` is the SHA-256 of the canonical
 request. ``sent`` says whether the request was written to the server: false when it never left (an excluded
-target, no token, a connection, TLS or proxy failure), true once it was (an answer, an HTTP error, a read timeout,
-a connection closed before the answer), null when the call was interrupted in flight. So a timeout after GitHits
-received the request and a refused connection no longer leave the same record. ``read_records`` returns the
+target, a launcher call refused ``unguarded`` before sending, no token, a connection, TLS or proxy failure), true
+once it was (an answer, an HTTP error, a read timeout, a connection closed before the answer), null when the call
+was interrupted in flight. So a timeout after GitHits received the request and a refused connection no longer leave
+the same record. ``read_records`` returns the
 records whose MAC verifies and counts the rest. A record may also carry ``paced_ms`` (``RECORD_OPTIONAL``): the
 milliseconds the host's launcher held the call before sending it, to keep GitHits' per-organization example rate
 (``githits_pace``, ``run(pace=...)``). This client never waits or retries on its own; the field is present only when
@@ -125,7 +126,8 @@ RECORD_FIELDS = ("op", "query_digest", "targets_count", "status", "http_status",
 RECORD_OPTIONAL = ("paced_ms",)  # present only when the host's launcher paced the call (``run(pace=...)``)
 
 OK, EXCLUDED, BLOCKED, ERROR = "ok", "excluded_target", "contamination_blocked", "error"
-STATUSES = (OK, EXCLUDED, BLOCKED, ERROR)
+UNGUARDED = "unguarded"  # the launcher's entry refused the call before sending: no query-guard decision for it
+STATUSES = (OK, EXCLUDED, BLOCKED, ERROR, UNGUARDED)
 
 # Lean defaults for an agent's context window; GitHits' own default in the comment.
 SEARCH_LIMIT = 5          # hits per search (10)
@@ -215,7 +217,7 @@ class Request(NamedTuple):
 
 class Result(NamedTuple):
     op: str
-    status: str                    # ok, excluded_target or contamination_blocked; errors raise GitHitsError
+    status: str                    # ok, excluded_target, contamination_blocked or unguarded; errors raise GitHitsError
     data: dict | None              # the response with excluded results removed; None when refused or blocked
     http_status: int | None
     request_id: str | None
@@ -228,7 +230,7 @@ class Result(NamedTuple):
 
     @property
     def refused(self) -> bool:
-        return self.status in (EXCLUDED, BLOCKED)
+        return self.status in (EXCLUDED, BLOCKED, UNGUARDED)
 
 
 class RecordRead(NamedTuple):
@@ -501,14 +503,23 @@ _CODE_HOST = re.compile(r"^https?://(?:[a-z0-9-]+\.)*(?:github\.com|gitlab\.com|
                         r"|githubusercontent\.com)(?::\d+)?/", re.IGNORECASE)
 # GitHits' own pages (the "Open in GitHits Web App" link every documented example ends with) are never a source.
 _GITHITS_HOST = re.compile(r"^https?://(?:[a-z0-9-]+\.)*githits\.(?:com|dev)(?::\d+)?(?:[/?#]|$)", re.IGNORECASE)
-# A "References" or "Sources" heading (ATX, bold or a bare line, as the documented examples write "### References"):
-# every link under it, up to the next heading or thematic break, is a source, whatever its host.
-_SOURCES_HEADING = re.compile(r"^[ \t]{0,3}(?:#{1,6}[ \t]+)?\**(?:references|sources)\**[ \t]*:?[ \t]*#*[ \t]*$",
+# A "References" or "Sources" heading, as the documented examples write "### References": an ATX or bold heading that
+# names a reference or source anywhere ("## Source", "### Sources and references", "**Reference links:**"), or a
+# bare line that is the word alone ("Sources:"), singular or plural, whatever the line ending (CRLF too). Every link
+# under it, up to the next heading or thematic break, is a source, whatever its host. Reading too many headings as
+# sources only asks more links for a license: an unlicensed one drops the example (fail closed).
+_SOURCE_WORD = r"\b(?:references?|sources?)\b"
+_SOURCES_HEADING = re.compile(r"^[ \t]{0,3}(?:#{1,6}[ \t]+[^\r\n]*?" + _SOURCE_WORD + r"[^\r\n]*?"
+                              r"|\*\*[^*\r\n]*?" + _SOURCE_WORD + r"[^*\r\n]*?\*\*[ \t]*:?"
+                              r"|\**(?:references?|sources?)\**[ \t]*:?)[ \t]*\r?$",
                               re.IGNORECASE | re.MULTILINE)
-_SECTION_END = re.compile(r"^[ \t]{0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*_][ \t]*){3,}$)", re.MULTILINE)
-# Code an agent could take: a fenced block, an indented block, or HTML code. An example without any, and without a
-# source, carries nothing to license (GitHits' documented "degraded" and "no_example" answers).
-_CODE = re.compile(r"^[ \t]{0,3}(?:`{3,}|~{3,})|^(?: {4}|\t)[ \t]*\S|<(?:pre|code)\b", re.IGNORECASE | re.MULTILINE)
+_SECTION_END = re.compile(r"^[ \t]{0,3}(?:#{1,6}(?:[ \t]|\r?$)|(?:[-*_][ \t]*){3,}\r?$)", re.MULTILINE)
+# Code an agent could take: a fenced block or an indented block, at the margin or inside a blockquote (``> ```py``),
+# or HTML code. An example without any, and without a source, carries nothing to license (GitHits' documented
+# "degraded" and "no_example" answers); a quoted fence is code like any other, so an uncited one is dropped.
+_QUOTE = r"(?:>[ \t]?)*"  # a blockquote's markers, nested or not, before the block
+_CODE = re.compile(r"^[ \t]{0,3}" + _QUOTE + r"[ \t]{0,3}(?:`{3,}|~{3,})|^(?:[ \t]{0,3}>[ \t]?(?:>[ \t]?)*)?"
+                   r"(?: {4}|\t)[ \t]*\S|<(?:pre|code)\b", re.IGNORECASE | re.MULTILINE)
 _LICENSE_LINE = re.compile(r"^[ \t]*(?:[-*][ \t]*)?\**licen[cs]es?\**[ \t]*:[ \t]*(.+?)[ \t]*$",
                            re.IGNORECASE | re.MULTILINE)
 _SPDX_TAG = re.compile(r"SPDX-License-Identifier:[ \t]*(.*?)[ \t]*(?:\*/|-->)?[ \t]*$", re.IGNORECASE | re.MULTILINE)
@@ -912,11 +923,7 @@ class Client:
         caller did not receive. ``paced_ms``, when given, is how long the caller held the call before this (the
         host launcher's pacing); it is recorded, never waited here, and ``latency_ms`` never includes it."""
         started = time.monotonic()
-        record = {"op": request.op, "query_digest": query_digest(request), "targets_count": len(request.targets),
-                  "status": ERROR, "http_status": None, "request_id": None, "results_returned": 0,
-                  "results_dropped": 0, "results_dropped_license": 0, "license_policy": self.licenses.digest,
-                  "contamination_blocked": False, "latency_ms": 0,
-                  "rate_limit_remaining": None, "sent": False}
+        record = self._fresh(request)
         if paced_ms is not None:
             if type(paced_ms) is not int or paced_ms < 0:
                 raise GitHitsError("bad_pacing", "paced_ms is a non-negative integer")
@@ -960,6 +967,22 @@ class Client:
             raise
         self._finish(record, result, started, headers, deliver)
         return result
+
+    def refuse(self, request: Request, reason: str, deliver=None) -> Result:
+        """Record ``request`` as refused before it was sent, ``status: unguarded`` and ``sent: false``, and return the
+        refused result; nothing is sent. The launcher's entry calls this when the query guard passed no launcher call
+        with these exact arguments (``query_guard.claim_launch``): Claude Code ran the launcher without the hook."""
+        started = time.monotonic()
+        result = Result(request.op, UNGUARDED, None, None, None, 0, 0, False, None, reason=reason)
+        self._finish(self._fresh(request), result, started, None, deliver)
+        return result
+
+    def _fresh(self, request: Request) -> dict:
+        """A call's record before anything is sent: ``error`` until the call says otherwise, ``sent: false``."""
+        return {"op": request.op, "query_digest": query_digest(request), "targets_count": len(request.targets),
+                "status": ERROR, "http_status": None, "request_id": None, "results_returned": 0,
+                "results_dropped": 0, "results_dropped_license": 0, "license_policy": self.licenses.digest,
+                "contamination_blocked": False, "latency_ms": 0, "rate_limit_remaining": None, "sent": False}
 
     def _finish(self, record: dict, result: Result, started: float, headers, deliver) -> None:
         failure = None
@@ -1346,12 +1369,14 @@ def write_text(stream, text: str) -> None:
     stream.flush()
 
 
-def run(args, environ=None, stdout=None, stderr=None, pace=None) -> int:
-    """``syberlabs githits ...``: 0 a result, 2 refused (an excluded target or a blocked result), 1 an error;
-    ``doctor``: 0 ready, 1 not (the status says why). A lookup's output is written (``write_text``) before its record,
-    so an output that fails is recorded ``error`` and exits 1 (``Client.call``, ``deliver``). ``pace``, given by the
-    host's launcher entry, is called with each lookup's request once the client and request are built and before it
-    is sent; it returns the milliseconds it held the call (recorded as ``paced_ms``) or None (not paced)."""
+def run(args, environ=None, stdout=None, stderr=None, pace=None, gate=None) -> int:
+    """``syberlabs githits ...``: 0 a result, 2 refused (an excluded target, a blocked result, or an unguarded
+    launcher call), 1 an error; ``doctor``: 0 ready, 1 not (the status says why). A lookup's output is written
+    (``write_text``) before its record, so an output that fails is recorded ``error`` and exits 1 (``Client.call``,
+    ``deliver``). ``gate`` and ``pace`` are given by the host's launcher entry, never by the operator's CLI. ``gate``
+    is called first with each lookup's request once the client and request are built: None lets it go on, a reason
+    refuses it (``Client.refuse``: recorded ``unguarded``, ``sent: false``, nothing sent, not paced). ``pace`` is then
+    called before it is sent; it returns the milliseconds it held the call (recorded as ``paced_ms``) or None."""
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     op = args.githits_command
     options = {name: getattr(args, name) for name in _OPTIONS[op]}
@@ -1381,8 +1406,12 @@ def run(args, environ=None, stdout=None, stderr=None, pace=None) -> int:
             request = list_request(args.target, **options)
         else:
             request = grep_request(args.pattern, args.targets, **options)
-        paced_ms = pace(request) if pace is not None else None
-        result = client.call(request, deliver=deliver, paced_ms=paced_ms)
+        refusal = gate(request) if gate is not None else None
+        if refusal is not None:
+            result = client.refuse(request, refusal, deliver=deliver)
+        else:
+            paced_ms = pace(request) if pace is not None else None
+            result = client.call(request, deliver=deliver, paced_ms=paced_ms)
     except GitHitsError as exc:
         try:
             write_text(stderr, f"error: {exc}\n")

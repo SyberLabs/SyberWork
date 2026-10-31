@@ -473,7 +473,8 @@ class ClaudeCodeArms(Case):
         self.claude.write_text(f"GOOD = {GOOD!r}\n" + textwrap.dedent(CLAUDE), encoding="utf-8")
         removed = ("ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
                    "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST")
-        patcher = mock.patch.dict(os.environ, {"GITHITS_API_TOKEN": "test-not-a-token"})
+        patcher = mock.patch.dict(os.environ, {"GITHITS_API_TOKEN": "test-not-a-token",
+                                               "ANTHROPIC_API_KEY": "test-not-a-key"})
         patcher.start()
         self.addCleanup(patcher.stop)
         for name in removed:
@@ -482,8 +483,8 @@ class ClaudeCodeArms(Case):
     def pilot(self, eval_id: str, *, declared: str, served: str) -> dict:
         written = tasks.import_fixtures(self.root / "tasks", ["pricing"])
         executable = ["{python}", str(self.claude), str(self.log), served]
-        base = {"kind": "claude-code", "model": declared, "effort": "medium", "bare": True, "lane": "api",
-                "max_calls": 1, "executable": executable}
+        base = {"kind": "claude-code", "model": declared, "effort": "medium", "lane": "api-hooked",
+                "trusted_tree": True, "max_calls": 1, "executable": executable}  # --githits refuses --bare
         doc = tiny_spec([w["id"] for w in written], {w["id"]: w["digest"] for w in written}, id=eval_id,
                         arms=[dict(base, name="off", githits=False), dict(base, name="on", githits=True)])
         doc["budget"] = dict(doc["budget"], prices={served: {"input_per_million": 2.0, "output_per_million": 10.0}})

@@ -5,7 +5,8 @@ repository: real Build Threads, real host checks, real acceptances, a real journ
 ``syberlabs experiment report`` over it. Two routes for arm B's GitHits:
 
 - ``--route api`` (the default; the pilot's route since #134): both arms run the real Claude Code proposer,
-  ``ClaudeCodeProvider`` on the api lane, arm B with ``githits=True``. For each call the host writes the GitHits
+  ``ClaudeCodeProvider`` on the api-hooked lane (the API key without ``--bare``, so the guard's hook runs), arm B
+  with ``githits=True``. For each call the host writes the GitHits
   launcher, its query guard judges every lookup and command, the host's own GitHits client makes each lookup and signs
   its record, and the host journals one ``lookup`` per record and its ledger of the call on the candidate
   (``signal.githits``), which is what the report reads the arm from. Only the ``claude`` executable is a stand-in: a
@@ -290,7 +291,7 @@ CLAUDE_STAND_IN = textwrap.dedent('''\
         Path(path).write_bytes(text.encode("utf-8"))  # the exact text: no newline translation on Windows
     model, usage = "stand-in-model", {"input_tokens": tokens, "output_tokens": 350}
     say({"type": "system", "subtype": "init", "claude_code_version": "2.1.309", "model": model, "effort": "high",
-         "apiKeySource": "ANTHROPIC_API_KEY" if "--bare" in sys.argv else "none", "mcp_servers": [],
+         "apiKeySource": "ANTHROPIC_API_KEY" if os.environ.get("ANTHROPIC_API_KEY") else "none", "mcp_servers": [],
          "session_id": "rehearsal", "tools": ["Read", "Edit", "Write"] + (["Bash"] if launcher else [])})
     say({"type": "assistant", "message": {"id": "msg_1", "model": model, "usage": usage,
                                           "content": [{"type": "text", "text": "Working on " + item}]}})
@@ -367,14 +368,16 @@ class LoopbackGitHits:
 
 @contextlib.contextmanager
 def api_environment(url: str):
-    """The API route's environment, put back afterwards: GitHits at the loopback stand-in under a placeholder token, no
-    GitHits setting from the shell, and no gateway or provider switch (``claude_code.THIRD_PARTY_SWITCHES`` would refuse
-    the api lane; the stand-in sends nothing anywhere)."""
+    """The API route's environment, put back afterwards: GitHits at the loopback stand-in under a placeholder token, a
+    placeholder Anthropic key (the api-hooked lane requires one; the stand-in sends nothing anywhere), no GitHits
+    setting from the shell, and no gateway or provider switch (``claude_code.THIRD_PARTY_SWITCHES`` would refuse the
+    lane)."""
     saved = dict(os.environ)
     for name in (*THIRD_PARTY_SWITCHES, githits.EXCLUDE_ENV, githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV,
                  githits.SESSION_ENV, githits.AGENT_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV):
         os.environ.pop(name, None)
-    os.environ.update({githits.TOKEN_ENV: "rehearsal-placeholder-not-a-token", githits.URL_ENV: url})
+    os.environ.update({githits.TOKEN_ENV: "rehearsal-placeholder-not-a-token", githits.URL_ENV: url,
+                       "ANTHROPIC_API_KEY": "rehearsal-placeholder-not-a-key"})
     try:
         yield
     finally:
@@ -389,11 +392,13 @@ def git(root: Path, *args: str) -> None:
 
 
 def claude_code(kit: Kit, thread, script: Path, item: str, arm: str) -> ClaudeCodeProvider:
-    """The API route's proposer, as the pilot builds it: ``syberlabs propose --claude-code --bare`` in arm A, the same
-    with ``--githits --githits-arm on`` in arm B, except on the misconfigured item, whose treatment forgot
-    ``--githits``. The executable is the stand-in; everything else is the real provider."""
-    return ClaudeCodeProvider(kit.repo, bare=True, executable=[sys.executable, str(script)], max_calls=3,
-                              githits=arm == "on" and item != MISCONFIGURED, arm=arm, thread_label=thread.id)
+    """The API route's proposer, as the pilot builds it: ``syberlabs propose --claude-code --lane api-hooked
+    --trusted-tree`` in arm A, the same with ``--githits --githits-arm on`` in arm B (never ``--bare``: Claude Code
+    2.1.312 runs no ``--settings`` hook there), except on the misconfigured item, whose treatment forgot ``--githits``.
+    The executable is the stand-in; everything else is the real provider."""
+    return ClaudeCodeProvider(kit.repo, lane="api-hooked", trusted_tree=True, executable=[sys.executable, str(script)],
+                              max_calls=3, githits=arm == "on" and item != MISCONFIGURED, arm=arm,
+                              thread_label=thread.id)
 
 
 @contextlib.contextmanager

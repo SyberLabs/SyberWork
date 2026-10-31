@@ -15,9 +15,9 @@ How Mateo runs it
    and stops if ``HEAD`` moves during the run.
 2. Put both credentials in the shell's environment, never in a file::
 
-       export ANTHROPIC_API_KEY=...          # your own key: the api lane (claude -p --bare)
+       export ANTHROPIC_API_KEY=...          # your own key: the api-hooked lane (claude -p, not --bare)
        export GITHITS_API_TOKEN=...
-       unset ANTHROPIC_BASE_URL              # and any CLAUDE_CODE_USE_* switch: the api lane refuses them
+       unset ANTHROPIC_BASE_URL              # and any CLAUDE_CODE_USE_* switch: the lane refuses them
 
    (PowerShell: ``$env:ANTHROPIC_API_KEY = "..."``; ``Remove-Item Env:ANTHROPIC_BASE_URL``.)
 3. Write the plan: ``python scripts/pilot_dry_run.py --template > plan.json``, then fill in 3 to 5 items (id, tags,
@@ -45,7 +45,7 @@ The sequence
 ------------
 
 Preflight refuses to start on any failure: the repository and its base commit; Claude Code ``2.1.295`` or newer
-(``claude_code.MIN_VERSION``: ``onFailure: "block"`` on the guard's hook); the api lane on the operator's own
+(``claude_code.MIN_VERSION``: ``onFailure: "block"`` on the guard's hook); the api-hooked lane on the operator's own
 ``ANTHROPIC_API_KEY`` with no third-party routing switch (``claude_code.third_party``: ``ANTHROPIC_BASE_URL``,
 ``CLAUDE_CODE_USE_*``, ``CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST``); ``GITHITS_API_TOKEN`` in the environment and in no
 file the run touches (the repository's tracked and untracked files, its ``.env*``, ``.mcp.json`` and local Claude
@@ -54,14 +54,16 @@ the query guard's key reaching the hook (``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`` of
 Claude Code runs it, signing a block and a pass that verify under a key the host set); the scheduling budget; and the
 contracts the run installs.
 
-The canary is one cheap call in the treatment's mode (``propose --claude-code --bare --githits``, one call, a few
+The canary is one cheap call in the treatment's mode (``propose --claude-code --lane api-hooked --trusted-tree
+--githits``: not ``--bare``, under which Claude Code 2.1.312 runs no ``--settings`` hook; one call, a few
 turns, without the web tools so the launcher is its only way to look anything up) whose objective asks for two
 launcher lookups, one the guard must refuse (it holds an email address). It passes when the guard refused a lookup
 for what it says and passed one that GitHits answered (an authentic client record), every decision verified and none
 ``unguarded``, and every model the call used is priced; a call that shows only one of the two is inconclusive and
 fails, since it proves either no refusal or no GitHits. Then each item runs in both arms from the same ``HEAD``,
 both arms back to back, the items and which arm goes first set by a seeded shuffle: ``start --unattended``,
-``experiment label`` (before the first candidate), ``propose --claude-code --bare [--githits]``, ``run --once``
+``experiment label`` (before the first candidate), ``propose --claude-code --lane api-hooked --trusted-tree
+[--githits]``, ``run --once``
 (accepts on the host's checks), ``export``. Then the blind review (``review --record``), ``experiment report --items
 FILE --delivered review [--json | --markdown]``, and the bar.
 
@@ -170,6 +172,10 @@ LABELS = {"cost": "cost", "turns": "turns", "agent_time": "agent time", "fix_rou
 PASS, FAIL, WARN = "PASS", "FAIL", "WARN"
 SCRUB_ENV = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"
 API_KEY_ENV = "ANTHROPIC_API_KEY"
+# Both arms' lane: the API key with Claude Code not in bare mode, so the query guard's --settings hook runs (Claude
+# Code 2.1.312 runs none under --bare, and the provider refuses --githits there); an empty config directory and home
+# per call keep the machine's own configuration out (docs/CLAUDE_CODE.md, the hooked API lane).
+LANE = claude_code.HOOKED
 # Files beside the code where a credential tends to be written; scanned whether or not git ignores them.
 SECRET_FILES = (".env", ".mcp.json", ".claude/settings.json", ".claude/settings.local.json", "CLAUDE.local.md")
 MAX_SCAN_BYTES = 20 * 1024 * 1024
@@ -544,14 +550,15 @@ def check_lane(env) -> Check:
     problems = []
     switches = claude_code.third_party(env)
     if switches:
-        problems.append(", ".join(switches) + " set: a --bare run would go to another endpoint or provider, not "
-                        "Anthropic's API under your key; unset it (this dry run runs the api lane only)")
+        problems.append(", ".join(switches) + " set: the run would go to another endpoint or provider, not "
+                        f"Anthropic's API under your key; unset it (this dry run runs the {LANE} lane only)")
     if not str(env.get(API_KEY_ENV, "")).strip():
-        problems.append(f"{API_KEY_ENV} is not set: the api lane (--bare) runs on your own key from the environment")
+        problems.append(f"{API_KEY_ENV} is not set: the {LANE} lane runs on your own key from the environment")
     if problems:
         return Check("credential lane", FAIL, "; ".join(problems))
-    return Check("credential lane", PASS, f"api (--bare, billed) on {API_KEY_ENV} from this environment; no "
-                                          "third-party routing switch set", {"lane": "api", "cost_basis": "billed"})
+    return Check("credential lane", PASS, f"{LANE} (the API key without --bare, so the guard's hook runs; billed) on "
+                                          f"{API_KEY_ENV} from this environment; no third-party routing switch set",
+                 {"lane": LANE, "cost_basis": "billed"})
 
 
 def scan_paths(repo: Path, extra: list) -> list[Path]:
@@ -652,7 +659,8 @@ def check_doctor(sy: Syberlabs) -> Check:
 def check_guard_key(env) -> Check:
     """The query guard's per-call key reaches its hook: Claude Code's subprocess scrub is off, and the host's own hook
     (``query_guard.hook_command``, the exec form Claude Code runs) signs a block and a pass under a key the host put in
-    its environment, both verifying. Claude Code itself running the hook under ``--bare`` is the canary's to show."""
+    its environment, both verifying. Claude Code itself running the hook (on the api-hooked lane) is the canary's to
+    show."""
     problems = []
     if truthy(env.get(SCRUB_ENV)):
         problems.append(f"{SCRUB_ENV} is set: Claude Code would strip the guard's key and the GitHits token from the "
@@ -822,9 +830,10 @@ def harness_of(events: list) -> dict:
 # ----------------------------------------------------------------------------------------------------------- canary
 
 def claude_flags(plan: dict, arm: str, max_calls: int, max_turns: int, tools: str | None = None) -> list[str]:
-    """``propose`` flags: the same in both arms but for ``--githits`` (and its arm name) in the treatment."""
-    flags = ["propose", "--claude-code", "--bare", "--max-calls", str(max_calls), "--max-turns", str(max_turns),
-             "--allowed-tools", tools or plan["allowed_tools"]]
+    """``propose`` flags: the same in both arms (the api-hooked lane, never --bare) but for ``--githits`` (and its arm
+    name) in the treatment."""
+    flags = ["propose", "--claude-code", "--lane", LANE, "--trusted-tree", "--max-calls", str(max_calls),
+             "--max-turns", str(max_turns), "--allowed-tools", tools or plan["allowed_tools"]]
     if plan["guard_max_lines"] is not None:
         flags += ["--guard-max-lines", str(plan["guard_max_lines"])]
     if plan["guard_max_chars"] is not None:
@@ -856,7 +865,7 @@ def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
             "harness": harness_of(events)}
     if finished.get("error") == "provider_guard_inactive" or unguarded:
         return FAIL, (f"the query guard did not fire: {len(unguarded)} lookup(s) ran with no verified decision "
-                      "(unguarded): under this Claude Code and --bare the --settings hook did not run, or its record "
+                      f"(unguarded): under this Claude Code on {LANE} the --settings hook did not run, or its record "
                       "was not the hook's. Do not run the pilot in this mode"), data
     if not refused or not reached:
         missing = ([] if refused else ["no lookup the guard refused for what it says (the canary asks for one "
@@ -1270,7 +1279,7 @@ class DryRun:
             receipt["plan"] = {"sha256": digest(plan_path.read_text(encoding="utf-8")),
                                "items": [{"id": i["id"], "tags": i["tags"], "paths": i["paths"],
                                           "objective_sha256": digest(i["objective"])} for i in plan["items"]]}
-            receipt["settings"] = {"lane": "api", "max_calls": plan["max_calls"], "max_turns": plan["max_turns"],
+            receipt["settings"] = {"lane": LANE, "max_calls": plan["max_calls"], "max_turns": plan["max_turns"],
                                    "allowed_tools": plan["allowed_tools"], "canary_turns": CANARY_TURNS,
                                    "guard": {"max_lines": plan["guard_max_lines"],
                                              "max_chars": plan["guard_max_chars"]},
@@ -1312,7 +1321,7 @@ class DryRun:
 
     def canary(self) -> bool:
         plan, repo = self.plan, self.repo
-        say("\ncanary: one call with --bare --githits; the guard must refuse one lookup and pass one to GitHits")
+        say(f"\ncanary: one call on {LANE} with --githits; the guard must refuse one lookup and pass one to GitHits")
         stop = gate(self.spent(), self.share, self.cap)
         if stop:
             return self.fail(f"budget: {stop}")
@@ -1443,10 +1452,10 @@ class DryRun:
         rows += report_rows(found, len(plan["items"]), reasons)
         lanes = sorted({lane for entry in self.entries for lane in entry["harness"].get("lane", [])})
         bases = sorted({basis for entry in self.entries for basis in entry["harness"].get("cost_basis", [])})
-        if lanes and (lanes != ["api"] or bases != ["billed"]):
+        if lanes and (lanes != [LANE] or bases != ["billed"]):
             rows.append({"status": FAIL, "name": "lane", "detail": f"the candidates recorded lane {lanes}, cost basis "
-                         f"{bases}; the dry run runs the api lane only"})
-            reasons.append("a candidate ran outside the api lane")
+                         f"{bases}; the dry run runs the {LANE} lane only"})
+            reasons.append(f"a candidate ran outside the {LANE} lane")
         total = receipt["spend"]["total"]
         receipt["spend"]["within_cap"] = within = total is not None and total <= self.cap + 1e-9
         rows.append({"status": PASS if within else FAIL, "name": "spend",

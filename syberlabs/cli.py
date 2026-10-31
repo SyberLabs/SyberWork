@@ -168,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="for --repair and --claude-code: the most calls in this search (default: the search's "
                               "candidate budget; 1 is one shot)")
     propose.add_argument("--bare", action="store_true",
-                         help="for --claude-code: claude --bare, API key from the environment (lane api, billed)")
+                         help="for --claude-code: claude --bare, API key from the environment (lane api, billed); "
+                              "Claude Code 2.1.312 runs no --settings hook under --bare, so --githits refuses it")
     propose.add_argument("--trusted-tree", action="store_true",
                          help="for --claude-code without --bare: declare this repository trusted; a non-bare claude -p "
                               "runs project hooks and .mcp.json servers with no trust prompt")
@@ -184,13 +185,17 @@ def main(argv: list[str] | None = None) -> int:
     propose.add_argument("--githits", action="store_true",
                          help="for --claude-code: GitHits through the API client (arm B of the pilot): a per-call "
                               "launcher as the only Bash command, guarded, its records journaled as lookups, and the "
-                              "adapted GitHits skill appended (docs/CLAUDE_CODE.md); needs GITHITS_API_TOKEN")
+                              "adapted GitHits skill appended (docs/CLAUDE_CODE.md); needs GITHITS_API_TOKEN; "
+                              "refused with --bare (no hook runs there): use --lane api-hooked --trusted-tree")
     propose.add_argument("--githits-arm", default="b", metavar="NAME",
                          help="for --githits: the arm's name in X-GitHits-Session-ID <thread>-<arm> and "
                               "X-GitHits-Agent syberfactory/<arm> (default b)")
     propose.add_argument("--max-turns", type=int, help="for --claude-code: claude --max-turns")
-    propose.add_argument("--lane", choices=("api", "subscription_local", "seat_team_enterprise", "provider_3p"),
-                         help="for --claude-code: the credential lane (default api with --bare, else subscription_local)")
+    propose.add_argument("--lane", choices=("api", "api-hooked", "subscription_local", "seat_team_enterprise",
+                                            "provider_3p"),
+                         help="for --claude-code: the credential lane (default api with --bare, else subscription_local); "
+                              "api-hooked: ANTHROPIC_API_KEY without --bare, so the query guard's hook runs, with an "
+                              "empty config directory and home per call (needs --trusted-tree)")
     propose.add_argument("--guard-max-lines", type=int, metavar="N",
                          help="for --claude-code: the query guard blocks a lookup with more than N non-blank lines "
                               "(default $SYBERLABS_GUARD_MAX_LINES, else 3)")

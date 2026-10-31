@@ -55,7 +55,8 @@ from syberlabs.canonical import canonical
 from syberlabs.claude_code import CLIENT_TOOL, GITHITS_ENTRY, LOOKUP, THIRD_PARTY_SWITCHES, ClaudeCodeProvider
 from tests.test_build_thread import GOOD, REPORT
 from tests.test_claude_code import ClaudeCodeCase
-from tests.test_githits import FakeGitHits, example_response, read_code_response, search_hit, search_response, source
+from tests.test_githits import (FakeGitHits, example_response, launch_guard, read_code_response, search_hit,
+                                search_response, source)
 
 ARM = "b"
 AGENT = f"syberfactory/{ARM}"
@@ -175,17 +176,18 @@ class GroundTruth(ClaudeCodeCase):
         self.token = "ghtest_" + secrets.token_hex(16)
         self.bearer = hashlib.sha256(f"Bearer {self.token}".encode()).hexdigest()
         kept = {k: v for k, v in os.environ.items() if k not in THIRD_PARTY_SWITCHES + GITHITS_SETTINGS}
-        patcher = mock.patch.dict(os.environ, {**kept, githits.TOKEN_ENV: self.token, githits.URL_ENV: self.server.url},
-                                  clear=True)
+        patcher = mock.patch.dict(os.environ, {**kept, githits.TOKEN_ENV: self.token, githits.URL_ENV: self.server.url,
+                                               "ANTHROPIC_API_KEY": "test-placeholder"}, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def arm_b(self, kit, thread, claude, **kwargs) -> ClaudeCodeProvider:
-        """Arm B as ``syberlabs propose --claude-code --bare --githits`` builds it: the thread's id is the session
-        label (``cli.py``)."""
+        """Arm B as ``syberlabs propose --claude-code --lane api-hooked --trusted-tree --githits`` builds it: the
+        thread's id is the session label (``cli.py``)."""
         kwargs.setdefault("max_calls", 1)
         kwargs.setdefault("thread_label", thread.id)
-        return ClaudeCodeProvider(kit.repo, bare=True, executable=claude, githits=True, **kwargs)
+        return ClaudeCodeProvider(kit.repo, lane="api-hooked", trusted_tree=True, executable=claude, githits=True,
+                                  **kwargs)
 
     def work_item(self, kit, name: str, lookups: list, **stand_in):
         thread = kit.start(f"Add a CSV export ({name})", paths=["src/", "tests/"])
@@ -341,9 +343,11 @@ class Exact(GroundTruth):
         folder, key = self.root.parent / "parallel-records", secrets.token_hex(32)
         env = {**os.environ, githits.RECORD_DIR_ENV: str(folder), githits.RECORD_KEY_ENV: key,
                githits.SESSION_ENV: "parallel-b", githits.AGENT_ENV: AGENT}
-        processes = [subprocess.Popen([sys.executable, "-I", str(GITHITS_ENTRY), "search", f"retry backoff zq9{n}",
-                                       "--target", "pypi:requests@2.32.3"], env=env, stdin=subprocess.DEVNULL,
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for n in range(8)]
+        words = [["search", f"retry backoff zq9{n}", "--target", "pypi:requests@2.32.3"] for n in range(8)]
+        env.update(self.enterContext(launch_guard(*words)))  # the query guard's hook passed all eight
+        processes = [subprocess.Popen([sys.executable, "-I", str(GITHITS_ENTRY), *argv], env=env,
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     for argv in words]
         self.assertEqual([process.wait(timeout=120) for process in processes], [0] * 8)
         read = githits.read_records(folder, key)
         self.assertEqual((len(self.server.of("parallel-b")), len(read.records), read.ignored), (8, 8, 0))
@@ -541,7 +545,8 @@ class Fixed(GroundTruth):
         threads = []
         for name in ("label-1", "label-2"):
             thread, claude = self.work_item(kit, name, [launcher(SEARCH)])
-            thread.propose(ClaudeCodeProvider(kit.repo, bare=True, executable=claude, githits=True, max_calls=1))
+            thread.propose(ClaudeCodeProvider(kit.repo, lane="api-hooked", trusted_tree=True, executable=claude,
+                                              githits=True, max_calls=1))
             threads.append(thread)
         self.assertEqual(len(self.server.log), 2)
         self.assertEqual([entry["session"] for entry in self.server.log], [f"{t.id}-{ARM}" for t in threads])

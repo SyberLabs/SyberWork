@@ -3,7 +3,8 @@
     syberlabs propose --claude-code --trusted-tree                      # the operator's login (subscription_local)
     syberlabs propose --claude-code --bare                              # an API key in the environment (api)
     syberlabs propose --claude-code --bare --mcp-config githits.json    # the same, with one more MCP server
-    syberlabs propose --claude-code --bare --githits                    # the same, with the GitHits API launcher
+    syberlabs propose --claude-code --lane api-hooked --trusted-tree    # an API key, without --bare: hooks run
+    syberlabs propose --claude-code --lane api-hooked --trusted-tree --githits   # the same, with the GitHits launcher
 
 ``ClaudeCodeProvider`` is ``providers.RepairProvider`` with one call replaced: instead of a JSON adapter, each call
 checks out the parent (the base, or the candidate being repaired) in a detached temporary worktree, runs Claude Code
@@ -79,10 +80,21 @@ prove. ``allow_code_tools_with_mcp`` (``--allow-code-tools-with-mcp``) overrides
 ``signal.guard.allow_code_tools_with_mcp``.
 
 Credential lanes (bring your own credential: SyberLabs never stores, pools or forwards a credential; the operator's
-own Claude Code runs under their own login, or ``--bare`` with their API key). ``api`` (``--bare``, the default
+own Claude Code runs under their own login, or with their API key). ``api`` (``--bare``, the default
 there) is ``billed``: the tokens are priced under the contract's ``budget.prices`` through the host's meter, as an
-adapter's usage is. ``provider_3p`` (Bedrock, Vertex, Foundry credentials) is ``estimated``: priced the same way, but
-the bill is the cloud provider's. ``subscription_local`` (an inherited login, the default without ``--bare``) and
+adapter's usage is. ``api-hooked`` (``--lane api-hooked``, never with ``--bare``) is the same API key, billed the
+same way, with Claude Code not in bare mode, so the query guard's ``--settings`` hook runs: Claude Code 2.1.312 does
+not run ``--settings`` ``PreToolUse`` hooks under ``--bare`` (live canary on a Linux VM, 2026-10-30), so ``githits``
+refuses ``--bare`` and the GitHits treatment runs only on a lane where its guard runs. Ambient configuration is kept
+out of it: each call gets a fresh, empty ``CLAUDE_CONFIG_DIR`` and ``HOME`` (``USERPROFILE`` on Windows) in the call's
+guard directory (no user settings, memory, skills, plugins or login), ``--disable-slash-commands``, and the
+``--restricted``, ``--setting-sources user`` and ``--strict-mcp-config`` every lane passes, so only managed settings
+and the provider's ``--settings`` load; ``ANTHROPIC_API_KEY`` is kept (required) and every other credential, login
+token, routing or proxy variable is removed (``LOGIN_LANE_DROPPED_ENV`` and ``CLAUDE_CODE_OAUTH_TOKEN``), while
+``ANTHROPIC_BASE_URL`` or a third-party switch is refused, as on ``api``. A non-bare run reads the worktree's memory
+files, so ``api-hooked`` needs ``trusted_tree`` like every non-bare lane. ``provider_3p`` (Bedrock, Vertex,
+Foundry credentials) is ``estimated``: priced the same way, but the bill is the cloud provider's.
+``subscription_local`` (an inherited login, the default without ``--bare``) and
 ``seat_team_enterprise`` are ``none``: no per-call bill exists, so nothing is priced and the dollar budget does not
 apply (turn, second and token budgets for those lanes are not built: ``spec/GAPS.md``).
 
@@ -124,7 +136,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from syberlabs import githits as githits_client
-from syberlabs import query_guard
+from syberlabs import githits_pace, query_guard
 from syberlabs.checks import _stop
 from syberlabs.errors import Rejected
 from syberlabs.gitspace import MAX_FILE_BYTES, Repo
@@ -133,9 +145,19 @@ from syberlabs.providers import (RepairProvider, USAGE_FIELDS, current_meter, mo
 from syberlabs.query_guard import query_text
 from syberlabs.search import SearchSpace
 
-LANES = ("api", "subscription_local", "seat_team_enterprise", "provider_3p")
+HOOKED = "api-hooked"  # the API key without --bare, so --settings hooks run; ambient configuration kept out
+LANES = ("api", HOOKED, "subscription_local", "seat_team_enterprise", "provider_3p")
 COST_BASES = ("billed", "estimated", "none")
-LANE_COST = {"api": "billed", "provider_3p": "estimated", "subscription_local": "none", "seat_team_enterprise": "none"}
+LANE_COST = {"api": "billed", HOOKED: "billed", "provider_3p": "estimated", "subscription_local": "none",
+             "seat_team_enterprise": "none"}
+API_KEY_ENV = "ANTHROPIC_API_KEY"
+# What api-hooked removes besides LOGIN_LANE_DROPPED_ENV (minus the key it runs on): the claude.ai login token, so
+# a run recorded as billed on the key cannot fall back to a subscription.
+HOOKED_DROPPED_ENV = ("CLAUDE_CODE_OAUTH_TOKEN",)
+CONFIG_DIR, HOME_DIR = "claude-config", "home"  # api-hooked: a fresh, empty config directory and home per call
+BARE_HOOKS = ("Claude Code 2.1.312 does not run --settings PreToolUse hooks under --bare (live canary on a Linux VM, "
+              "2026-10-30: the launcher ran with no guard and its lookup was sent before the run stopped "
+              "provider_guard_inactive)")
 BIN_ENV = "SYBERLABS_CLAUDE_BIN"  # the Claude Code executable (a path, or a command line); default ``claude`` on PATH
 DEFAULT_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep")  # no Bash: a shell could read the guard's key
 # The built-in tools that run commands or code that ``--restricted``'s help names (2.1.309: "Bash, PowerShell and
@@ -615,7 +637,10 @@ def run_stream(argv: Sequence[str], prompt: str, *, cwd: Path, env: dict, timeou
     return proc.returncode, lines, stderr
 
 
-def _third_party_reason(names: list[str]) -> str:
+def _third_party_reason(names: list[str], lane: str = "api") -> str:
+    if lane == HOOKED:
+        return (", ".join(names) + f" is set: this {HOOKED} run would go to another endpoint or provider, not "
+                "Anthropic's API under your key; unset it (provider_3p runs with --bare)")
     return (", ".join(names) + " is set: this --bare run would go to another endpoint or provider, not Anthropic's API "
             "under your key, so its lane is provider_3p (pass --lane provider_3p) and api is refused")
 
@@ -637,6 +662,16 @@ class ClaudeCodeProvider(RepairProvider):
             raise Rejected("invalid_provider", "lane must be one of " + ", ".join(LANES))
         if bare and lane in ("subscription_local", "seat_team_enterprise"):
             raise Rejected("invalid_provider", "--bare never reads a Claude login; its lane is api or provider_3p")
+        if bare and lane == HOOKED:
+            raise Rejected("invalid_provider", f"{HOOKED} is the API-key lane without --bare, so the query guard's "
+                                               "--settings hook runs; drop --bare")
+        if not bare and lane == "api":
+            raise Rejected("invalid_provider", f"the api lane is --bare; for the API key without --bare (hooks run) "
+                                               f"use --lane {HOOKED}")
+        if githits and bare:
+            raise Rejected("invalid_provider", f"refusing --githits with --bare: {BARE_HOOKS}. Run the treatment where "
+                                               f"its guard runs: --lane {HOOKED} --trusted-tree (the API key), or a "
+                                               "login lane; arm A runs the same lane without --githits")
         if not bare and not trusted_tree:
             raise Rejected("untrusted_tree",
                            "refusing to run Claude Code without --bare on a tree not declared trusted: a non-bare "
@@ -650,8 +685,11 @@ class ClaudeCodeProvider(RepairProvider):
             raise Rejected("invalid_provider", "allowed tools must be a non-empty list of tool names")
         if max_turns is not None and (type(max_turns) is not int or max_turns < 1):
             raise Rejected("invalid_provider", "max_turns must be a positive integer")
-        if bare and lane == "api" and third_party(os.environ):
-            raise Rejected("invalid_provider", _third_party_reason(third_party(os.environ)))
+        if lane in ("api", HOOKED) and third_party(os.environ):
+            raise Rejected("invalid_provider", _third_party_reason(third_party(os.environ), lane))
+        if lane == HOOKED and not str(os.environ.get(API_KEY_ENV, "")).strip():
+            raise Rejected("invalid_provider", f"{HOOKED} runs on {API_KEY_ENV} from the operator's environment "
+                                               "(its config directory is empty: no login, no apiKeyHelper); set it")
         self.githits, self.arm, self.thread_label = bool(githits), arm, thread_label
         self.skill: tuple[str, str] | None = None
         if self.githits:
@@ -676,7 +714,8 @@ class ClaudeCodeProvider(RepairProvider):
             try:
                 githits_client.LicensePolicy.from_env(os.environ)
                 githits_client.Exclusions.from_env(os.environ)
-            except githits_client.GitHitsError as exc:
+                githits_pace.directory(os.environ)
+            except (githits_client.GitHitsError, githits_pace.PaceError) as exc:
                 raise Rejected("invalid_provider", str(exc)) from None
             self.skill = githits_skill()
         if mcp_config is not None:
@@ -739,6 +778,8 @@ class ClaudeCodeProvider(RepairProvider):
             tools.append(f"Bash({launcher}:*)")
             note = HARNESS_NOTE + "\n\n" + self.skill_prompt(launcher)
         argv = [*self.argv, "-p"] + (["--bare"] if self.bare else [])
+        if self.lane == HOOKED:
+            argv.append("--disable-slash-commands")  # no skill or command loads, whatever the machine holds
         argv += ["--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", "--restricted",
                  "--tools", ",".join(built_in_tools(tools)),
                  "--allowedTools", ",".join(tools), "--setting-sources", "user", "--strict-mcp-config",
@@ -753,27 +794,52 @@ class ClaudeCodeProvider(RepairProvider):
 
     def environment(self) -> dict:
         """The caller's environment, narrowed: no signing seed on any lane; on a login lane nothing in
-        ``LOGIN_LANE_DROPPED_ENV``; with no GitHits route (neither ``githits=True`` nor ``mcp_config``: arm A) no
-        GitHits variable (``githits_variable``: the token, the base URL and every ``SYBERLABS_GITHITS_*``), so arm A
-        holds no GitHits credential. A ``--bare`` api run whose environment routes elsewhere is refused here too, in
+        ``LOGIN_LANE_DROPPED_ENV``; on ``api-hooked`` nothing in it either but ``ANTHROPIC_API_KEY``, and no
+        ``CLAUDE_CODE_OAUTH_TOKEN`` (each call then adds a fresh config directory and home: ``isolation``); with no
+        GitHits route (neither ``githits=True`` nor ``mcp_config``: arm A) no GitHits variable (``githits_variable``:
+        the token, the base URL and every ``SYBERLABS_GITHITS_*``), so arm A holds no GitHits credential. An api or
+        api-hooked run whose environment routes elsewhere, or an api-hooked run with no key, is refused here too, in
         case the environment changed after the provider was built."""
         route = self.githits or self.mcp_config is not None
         env = {k: v for k, v in os.environ.items() if k not in DROPPED_ENV and (route or not githits_variable(k))}
         if self.lane in ("subscription_local", "seat_team_enterprise"):
             env = {k: v for k, v in env.items() if not _dropped(k)}
-        elif self.bare and self.lane == "api" and third_party(env):
-            raise Rejected("provider_lane_mismatch", _third_party_reason(third_party(env)))
+        elif self.lane in ("api", HOOKED) and third_party(env):
+            raise Rejected("provider_lane_mismatch", _third_party_reason(third_party(env), self.lane))
+        if self.lane == HOOKED:
+            if not str(env.get(API_KEY_ENV, "")).strip():
+                raise Rejected("provider_lane_mismatch", f"{API_KEY_ENV} is no longer set; {HOOKED} runs on it")
+            env = {k: v for k, v in env.items()
+                   if k == API_KEY_ENV or not (_dropped(k) or k in HOOKED_DROPPED_ENV)}
         return env
+
+    def isolation(self, directory: Path) -> dict:
+        """``api-hooked``: what keeps the machine's own Claude Code configuration out of one call. A fresh, empty
+        ``CLAUDE_CONFIG_DIR`` ("All settings, session history, and plugins are stored under this path", Claude Code's
+        environment reference) and ``HOME`` (and ``USERPROFILE`` on Windows, where Node reads the home from it), both
+        created in the call's guard ``directory``, which is removed after the call. Empty on every other lane."""
+        if self.lane != HOOKED:
+            return {}
+        config, home = Path(directory) / CONFIG_DIR, Path(directory) / HOME_DIR
+        config.mkdir()
+        home.mkdir()
+        found = {"CLAUDE_CONFIG_DIR": str(config), "HOME": str(home)}
+        if os.name == "nt":
+            found["USERPROFILE"] = str(home)
+        return found
 
     def githits_environment(self, records: Path, record_key: str, session: str) -> dict:
         """What arm B adds to Claude Code's environment for the launcher's client: the record directory and key
-        (fresh per call), the session and agent headers, and the license and exclusion policy as explicit lists
-        (the operator's, else the defaults; ``SYBERLABS_GITHITS_EXCLUDE`` only adds to ``SyberLabs``). The token is
-        the operator's own ``GITHITS_API_TOKEN``, inherited, never written."""
+        (fresh per call), the host's example pacing directory (``SYBERLABS_GITHITS_PACE_DIR``: the operator's,
+        else the host's temporary-directory default, resolved here, so a launcher whose ``TMPDIR`` or home differs
+        still shares one pacing slot), the session and agent headers, and the license and exclusion policy as
+        explicit lists (the operator's, else the defaults; ``SYBERLABS_GITHITS_EXCLUDE`` only adds to ``SyberLabs``).
+        The token is the operator's own ``GITHITS_API_TOKEN``, inherited, never written."""
         licenses = githits_client.LicensePolicy.from_env(os.environ)
         exclude = githits_client.Exclusions.from_env(
             {k: v for k, v in os.environ.items() if k != githits_client.EXCLUDE_REPLACE_ENV})
         return {githits_client.RECORD_DIR_ENV: str(records), githits_client.RECORD_KEY_ENV: record_key,
+                githits_pace.PACE_DIR_ENV: str(githits_pace.directory(os.environ)),
                 githits_client.SESSION_ENV: session, githits_client.AGENT_ENV: f"syberfactory/{self.arm}",
                 githits_client.LICENSES_ENV: ",".join(licenses.allowed) if licenses.allowed else githits_client.ANY_LICENSE,
                 githits_client.EXCLUDE_ENV: ",".join("/".join(entry) for entry in exclude.entries)}
@@ -850,7 +916,7 @@ class ClaudeCodeProvider(RepairProvider):
                 hook_env = query_guard.hook_environment(guard_dir, key, launcher)
                 env = {k: v for k, v in self.environment().items()
                        if not (self.githits and k == githits_client.EXCLUDE_REPLACE_ENV)}
-                env = {**env, **hook_env, **extra}
+                env = {**env, **hook_env, **extra, **self.isolation(guard_dir)}
                 try:
                     code, _, stderr = run_stream(self.command(settings, launcher), prompt, cwd=tree, env=env,
                                                  timeout=self.timeout, lines=lines)
@@ -919,7 +985,7 @@ class ClaudeCodeProvider(RepairProvider):
             # without assigning a missing record to a particular concurrent command.
             self._journal(space, [unrecorded_lookup({})])
         signal = {"lane": self.lane, "cost_basis": self.cost_basis,
-                  "harness": {**transcript.harness(), "installed_version": self.version},
+                  "harness": {**transcript.harness(), "installed_version": self.version, "lane": self.lane},
                   "guard": {**self.guard, "policy_digest": hook_env[query_guard.POLICY_DIGEST_ENV],
                             **({"allow_code_tools_with_mcp": True} if self.allow_code_tools_with_mcp else {})}}
         if githits_signal is not None:

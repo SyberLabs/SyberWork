@@ -362,7 +362,7 @@ class DryRun(DryRunCase):
             on = entry["arm"] == "on"
             self.assertEqual(entry["metrics"]["githits_lookups"]["value"], 1 if on else 0)
             self.assertEqual(entry["lookups_blocked"]["value"], 1 if on else 0)
-            self.assertEqual(entry["harness"]["lane"], ["api"])
+            self.assertEqual(entry["harness"]["lane"], ["api-hooked"])
             self.assertEqual(entry["harness"].get("githits_route"), ["api"] if on else None)
             self.assertEqual(len(entry["harness"].get("license_policy", [])), 1 if on else 0,
                              "the treatment's license policy, as the host recorded it (a digest)")
@@ -377,7 +377,9 @@ class DryRun(DryRunCase):
         self.assertEqual(len(proposals), 7, "the canary and six runs")
         for argv in proposals:
             start = argv.index("propose")
-            self.assertEqual(argv[start:start + 3], ["propose", "--claude-code", "--bare"])
+            self.assertEqual(argv[start:start + 5], ["propose", "--claude-code", "--lane", "api-hooked",
+                                                     "--trusted-tree"])
+            self.assertNotIn("--bare", argv, "never --bare: no hook runs there")
         tools = [argv[argv.index("--allowed-tools") + 1] for argv in proposals]
         self.assertEqual(tools, ["Read,Edit,Write,Glob,Grep"] + ["Read,Edit,Write,Glob,Grep,WebSearch,WebFetch"] * 6,
                          "the pilot's tools in both arms; the canary without the web, so it can only use the launcher")
@@ -726,7 +728,8 @@ class OneCommand(DryRunCase):
             self.assertNotIn(secret, printed)
         log = (out / "commands.log").read_text(encoding="utf-8")
         self.assertIn("$ syberlabs githits doctor --json", log)
-        self.assertEqual(log.count(" propose --claude-code --bare "), 7, "the canary and six runs")
+        self.assertEqual(log.count(" propose --claude-code --lane api-hooked --trusted-tree "), 7,
+                         "the canary and six runs")
         self.assertEqual(len(self.fake.requests), 5, "the doctor, the canary's clean lookup, three treatment runs")
 
 
