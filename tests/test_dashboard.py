@@ -177,7 +177,7 @@ class WorkItems(Journaled):
 class Empty(RepoCase):
     def test_an_empty_home_renders_a_page(self):
         kit = self.kit()
-        page = dashboard.render(kit)
+        page = dashboard.render_html(dashboard.collect(kit))
         self.assertIn("No threads in this journal.", page)
         self.assertIn("The kernel refused nothing.", page)
         self.assertEqual(len(re.findall(r"<h2>", page)), 5, "no certificates section without certificates")

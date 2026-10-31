@@ -139,7 +139,7 @@ SCHEMA = {
     },
 }
 
-_TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
+_TYPES = {"object": dict, "array": list, "string": str, "boolean": bool}
 
 
 def _is(value: Any, kind: str) -> bool:

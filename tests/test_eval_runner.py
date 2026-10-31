@@ -15,7 +15,7 @@ from pathlib import Path
 
 from syberlabs.errors import Rejected
 from syberlabs.eval import arms, runner, spec, tasks
-from tests.test_eval_core import PRICES, SIM, tiny_spec
+from tests.test_eval_core import PRICES, SIM, tiny_spec, write_task
 
 # RFC 8032 test vector 1, the seed tests/test_certificate.py signs with; never a real key.
 TEST_SEED = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
@@ -208,7 +208,7 @@ class CanaryPricing(Folder):
                 "safety": {"expectations": [], "canaries": [CANARY_CODE, CANARY_DATA]},
                 "provenance": {"origin": "tests/test_eval_runner.py"},
                 "contamination": {"status": "private", "note": "written for this test"}, "labels": {}}
-        digest = tasks.write_task(self.root / "tasks", task, {
+        digest = write_task(self.root / "tasks", task, {
             "checks.json": json.dumps({"discount": body_discount, "tax": body_tax}).encode(),
             "expected.txt": f"108\n# {CANARY_DATA}\n".encode()})
         adapter = ["{python}", str(self.folder / "standin.py"), str(self.log)]
@@ -255,7 +255,7 @@ class HiddenChecks(CanaryPricing):
         self.assertTrue(all(not os.access(p, os.W_OK) for p in staged.rglob("*") if p.is_file()), "read-only")
         integrity = bundle["hidden_integrity"]
         self.assertEqual([(h["point"], h["match"]) for h in integrity["hashes"]],
-                         [(point, True) for point in runner.INTEGRITY_POINTS])
+                         [(point, True) for point in ("staged", "after_propose", "after_check", "before_accept")])
         self.assertEqual((integrity["tampered"], integrity["changed"]), (False, []))
         self.assertEqual(bundle["hidden_feedback"], "tails")
         self.assertIn(TEST_SEED_ENV, bundle["credential_scan"]["variables"])
@@ -468,7 +468,7 @@ class FeedbackModes(Folder):
                                     "assert pricing.tax(100) == 108, 'visible: tax is eight percent'"]}}
         task, hidden = canary_task("canary-modes", {CANARY_NAME: body}, visible=visible, canaries=[CANARY_OUT])
         if not (self.root / "tasks" / "canary-modes").exists():
-            tasks.write_task(self.root / "tasks", task, hidden)
+            write_task(self.root / "tasks", task, hidden)
         digest = tasks.task_digest(self.root / "tasks", "canary-modes")
         adapter = ["{python}", str(self.folder / "standin.py"), str(log)]
         doc = dict(tiny_spec(["canary-modes"], {"canary-modes": digest}), id=f"modes-{mode}", seeds=[1],

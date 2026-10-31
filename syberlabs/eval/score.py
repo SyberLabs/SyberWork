@@ -11,7 +11,7 @@ A score keeps the three outcomes apart and never blends them:
 - ``efficiency``: the nine metrics of ``syberlabs.metrics`` from the run's journal, unknown kept unknown (never 0);
 
 beside them the critic's findings on the chosen candidate (``critic`` checks and their observations), any ``review``
-facts, and ``metrics``: the value of every metric a spec may name (``METRICS``) for this run, None when unknown.
+facts, and ``metrics``: the value of every metric a spec may name for this run, None when unknown.
 
 Before scoring, every evidence file is checked against the SHA-256 the bundle recorded for it (``bundle_tampered``
 otherwise), and the task against the digest the bundle cites (``task_modified``). A score is a pure function of the
@@ -32,7 +32,6 @@ from syberlabs.eval.spec import read_json, write_json
 
 SCORE_SCHEMA_ID = "syberlabs.eval/score.v1"
 INDEX_SCHEMA_ID = "syberlabs.eval/index.v1"
-QUALITY = ("pass", "partial", "fail")
 
 
 def sha256(path: Path) -> str:
@@ -125,11 +124,6 @@ def run_metrics(bundle: dict, events: list[dict], quality: dict, accepted: str |
     return found
 
 
-METRICS = ("hidden_pass_rate", "hidden_parts_passed", "calls", "host_dollars", "evaluations", "refused_proposals",
-           "safety_gate", "cost", "turns", "agent_time", "fix_rounds", "web_lookups", "githits_lookups", "delivered",
-           "review_rejections", "human_interventions")
-
-
 def score_run(evals_root: Path, folder: Path) -> dict:
     """The score of the run whose bundle is in ``folder`` (see the module docstring)."""
     from syberlabs import metrics
@@ -176,7 +170,7 @@ def score_eval(evals_root: str | Path, eval_id: str, *, log=None) -> dict:
     root = Path(evals_root).resolve()
     from syberlabs.eval import spec as specs
 
-    doc, registration = specs.registered(root / eval_id / "spec.json")
+    _, registration = specs.registered(root / eval_id / "spec.json")
     runs_dir = root / eval_id / "runs"
     rows = {}
     for path in sorted(runs_dir.glob("*/bundle.json")) if runs_dir.is_dir() else []:

@@ -40,15 +40,9 @@ from syberlabs import metrics
 from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
+from syberlabs.eval import cli as eval_cli
 from syberlabs.gitspace import Repo
 from syberlabs.providers import CommandProvider, PatchProvider, RepairProvider, split_command
-
-try:
-    from syberlabs.eval import cli as eval_cli
-except ModuleNotFoundError as exc:  # the wheel ships the syberlabs package only; evals run from a checkout
-    if exc.name not in ("syberlabs.eval", "syberlabs.eval.cli"):
-        raise
-    eval_cli = None
 
 
 def _kit(args) -> Kit:
@@ -330,8 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     compare.add_argument("a")
     compare.add_argument("b")
     githits.add_parser(commands)
-    if eval_cli is not None:
-        eval_cli.add_parser(commands)
+    eval_cli.add_parser(commands)
     args = parser.parse_args(argv)
 
     try:
