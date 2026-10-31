@@ -249,7 +249,7 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         super().setUp()
         self.fake = FakeGitHits()
         self.addCleanup(self.fake.close)
-        # The api lane as an operator's machine has it: a key, no gateway or provider switch inherited from the
+        # The api-hooked lane (both arms; --githits refuses --bare) as an operator's machine has it: a key, no gateway or provider switch inherited from the
         # environment the suite runs in, and GitHits settings from nowhere but this test.
         env = {k: v for k, v in os.environ.items() if k not in THIRD_PARTY_SWITCHES and k not in GITHITS_SETTINGS}
         env.update({"ANTHROPIC_API_KEY": "test-placeholder", githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(16),
@@ -283,8 +283,8 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         self.assertEqual(code, 0, text)
         self.assertNotIn("labelled_late", text)
         claude = self.stand_in(name, first=first, repair=repair, lookups=[list(entry) for entry in lookups])
-        provider = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=3, githits=githits_on,
-                                      arm=arm, thread_label=thread.id, **options)
+        provider = ClaudeCodeProvider(kit.repo, lane="api-hooked", trusted_tree=True, executable=claude, max_calls=3,
+                                      githits=githits_on, arm=arm, thread_label=thread.id, **options)
         found = thread.propose(provider)
         receipt = thread.accept(found[-1].id, actor=RUNNER)
         self.assertEqual(receipt.status, "succeeded", receipt.reason)
