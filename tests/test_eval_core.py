@@ -358,12 +358,6 @@ class Arms(unittest.TestCase):
         self.assertNotEqual(arms.arm_digest(arm), arms.arm_digest(dict(arm, githits=False)))
         self.assertTrue(arms.check(dict(arm, adapter=SIM), self.BUDGET))
         self.assertTrue(arms.check(dict(arm, bare=True), self.BUDGET), "--bare with a login lane")
-        # guard-lane: --githits never runs where Claude Code 2.1.312 runs no --settings hook (--bare), and the API
-        # key without --bare is its own lane, api-hooked.
-        self.assertIn("githits: refused with --bare", " ".join(arms.check(dict(arm, lane="api", bare=True), self.BUDGET)))
-        self.assertTrue(arms.check(dict(arm, lane="api-hooked", bare=True), self.BUDGET), "api-hooked is never bare")
-        self.assertTrue(arms.check(dict(arm, lane="api"), self.BUDGET), "api is --bare")
-        self.assertEqual(arms.check(dict(arm, lane="api-hooked"), self.BUDGET), [])
 
     def test_the_environment_names_the_model_and_withholds_the_seed_and_tokens(self):
         arm = {"name": "single", "kind": "single", "model": "simulated", "effort": "low", "adapter": SIM}

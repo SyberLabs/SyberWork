@@ -1088,7 +1088,7 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertEqual((added[query_guard.LAUNCHER_ENV], added[githits.SESSION_ENV], added[githits.AGENT_ENV],
                           added[githits.LICENSES_ENV], added[githits.EXCLUDE_ENV]),
                          (launcher, "thread-ab-b", "syberfactory/b", ",".join(githits.LicensePolicy().allowed),
-                          "syberlabs"))
+                          "syberlabs,sykosyber,pypi:syberwork,deepwiki.com,deepwiki.org"))
         self.assertEqual(len(added[githits.RECORD_KEY_ENV]), 64)
         self.assertEqual(env_b[githits.TOKEN_ENV], self.token, "the operator's token, passed through")
         self.assertNotIn(Path(run_b["cwd"]).resolve(), Path(added[githits.RECORD_DIR_ENV]).resolve().parents)
@@ -1406,7 +1406,9 @@ class GitHitsLauncher(ClaudeCodeCase):
         for run in (run_a, run_b):
             self.assertNotIn(githits.EXCLUDE_REPLACE_ENV, run["env"])
         self.assertNotIn(githits.EXCLUDE_ENV, run_a["env"], "arm A holds no GitHits variable")
-        self.assertEqual(run_b["env"][githits.EXCLUDE_ENV], "syberlabs,acme", "SyberLabs first, the operator's added")
+        self.assertEqual(run_b["env"][githits.EXCLUDE_ENV],
+                         "syberlabs,sykosyber,pypi:syberwork,deepwiki.com,deepwiki.org,acme",
+                         "the default deny-list first, the operator's added")
         self.assertEqual(self.fake.requests, [], "the SyberLabs target was refused before any request")
 
     def test_powershell_is_judged_by_the_launcher_rule_under_the_override(self):
