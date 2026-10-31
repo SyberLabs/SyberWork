@@ -422,6 +422,23 @@ class Process(unittest.TestCase):
             capture_output=True, timeout=120, env=no_launcher)
         self.assertEqual(done.returncode, guard.BLOCK_EXIT, "without the host's launcher no Bash command passes")
         self.assertIn(b"rule: not_launcher", done.stderr)
+        # guard-lane, item 1: a passed launcher call's decision carries the digest of the arguments the hook read, which
+        # the launcher's entry claims before sending; a blocked one carries none. The MAC covers it.
+        self.assertEqual(found["toolu_b0"]["arguments_digest"], guard.arguments_digest(
+            ["search", "csv dialect sniffing", "--target", "pypi:clevercsv"]))
+        self.assertTrue(all("arguments_digest" not in found[f"toolu_b{n}"] for n in range(1, len(cases))))
+        altered = {**found["toolu_b0"], "arguments_digest": guard.arguments_digest(["search", "other"])}
+        self.assertFalse(guard.authentic(altered, KEY), "a rewritten arguments digest no longer verifies")
+        self.assertFalse(guard.authentic({**found["toolu_b0"], "arguments_digest": None}, KEY), "nor a removed one")
+        launcher_env = {guard.KEY_ENV: KEY, guard.LAUNCHER_ENV: (settings.parent / "githits").as_posix()}
+        self.assertEqual(guard.claim_launch(["search", "csv dialect sniffing", "--target", "pypi:clevercsv"],
+                                            launcher_env), (None, "toolu_b0"))
+        self.assertEqual(guard.claim_launch(["search", "csv dialect sniffing", "--target", "pypi:clevercsv"],
+                                            launcher_env)[0], guard.DECISION_USED, "one decision, one launch")
+        self.assertEqual(guard.claim_launch(["search", "q;"], launcher_env)[0], guard.NO_DECISION)
+        self.assertEqual(guard.claim_launch(["search", "x"], {guard.KEY_ENV: KEY})[0], guard.NO_GUARD)
+        self.assertEqual(guard.claim_launch(["search", "csv dialect sniffing", "--target", "pypi:clevercsv"],
+                                            {**launcher_env, guard.KEY_ENV: "another-key"})[0], guard.NO_DECISION)
 
     def test_the_hook_decides_as_the_host_does(self):
         texts = ["pydantic v2 model_validator usage", SECRET, "key AKIA" + "Q" * 16, "slack xoxb-" + "1" * 12,

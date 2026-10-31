@@ -13,6 +13,16 @@ It accepts only the five lookups (``githits.LOOKUPS``: search, example, read, li
 exists, so they write no record; ``doctor`` is the operator's, through ``syberlabs githits doctor``. ``example`` has
 no ``--license-mode`` here and always sends ``license_mode: strict``.
 
+No lookup leaves without the query guard's decision for it. Once a lookup's request is built, and before it is paced
+or sent, the entry claims a decision the guard's ``PreToolUse`` hook wrote for a launcher call with exactly this argv
+(``query_guard.claim_launch``: ``rule: pass``, the arguments' SHA-256, a MAC under the per-call
+``SYBERLABS_GUARD_KEY``, each decision claimed once). Without one it refuses: the call is recorded ``status:
+unguarded`` with ``sent: false`` (``githits.Client.refuse``), ``refused: unguarded: ...`` goes to standard error,
+the exit code is 2, and no HTTP request is made. That is what happens when Claude Code runs the launcher without
+running the hook (``claude --bare`` on 2.1.312 skips ``--settings`` hooks: live canary, 2026-10-30), with no guard
+key in the environment, or with a forged or mismatched decision. The entry is the provider's alone: operator
+lookups and ``doctor`` go through ``syberlabs githits``, which has no gate and needs no decision.
+
 An ``example`` to GitHits is paced here, on the host, before it is sent (``githits_pace.wait``): at most one per
 ``githits_pace.EXAMPLE_INTERVAL`` (40 s) across every launcher process on this host, both arms included, under a
 cross-process lock and a time file in the host's pacing directory, outside any worktree. GitHits limits its example
@@ -49,9 +59,10 @@ def main(argv: list[str] | None = None) -> int:
     if sys.path[:1] != [root]:
         sys.path.insert(0, root)
     import syberlabs
-    from syberlabs import cli, githits, githits_pace
+    from syberlabs import cli, githits, githits_pace, query_guard
 
-    if any(Path(module.__file__).resolve().parent != HERE for module in (syberlabs, cli, githits, githits_pace)):
+    if any(Path(module.__file__).resolve().parent != HERE
+           for module in (syberlabs, cli, githits, githits_pace, query_guard)):
         sys.stderr.write("error: githits_launcher: syberlabs was not imported from the host checkout\n")
         return 1
     cli.survive_unicode()  # before any output: a cp1252 pipe replaces what it cannot encode instead of raising
@@ -69,7 +80,16 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, _terminated)
     except (AttributeError, ValueError, OSError):  # no SIGTERM here, or not the main thread: run as before
         pass
-    return githits.run(args, pace=_pace)
+    return githits.run(args, pace=_pace, gate=lambda request: _gate(words))
+
+
+def _gate(words: list[str]) -> str | None:
+    """``githits.run``'s gate hook: None when this run claimed the query guard's decision for exactly ``words``
+    (``query_guard.claim_launch``); otherwise the refusal's reason, and the call is recorded unguarded, unsent."""
+    from syberlabs import query_guard
+
+    reason, detail = query_guard.claim_launch(words)
+    return None if reason is None else f"{reason}: {detail}; no request was sent"
 
 
 def _pace(request) -> int | None:

@@ -21,7 +21,7 @@ from unittest import mock
 
 from syberlabs import experiment, githits, githits_cli_entry, githits_pace, metrics
 from syberlabs.claude_code import record_lookup
-from tests.test_githits import ENTRY, FakeCase, run_entry
+from tests.test_githits import ENTRY, FakeCase, launch_guard, run_entry
 from tests.test_metrics import HOUR, T0, Journal, check
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,12 +144,14 @@ class CrossProcess(FakeCase):
         env.update(self.env)
         env.update({githits_pace.PACE_DIR_ENV: str(Path(self.pace.name) / "pace"),
                     githits_pace.PACE_SECONDS_ENV: str(self.INTERVAL)})
-        argv = [sys.executable, "-I", str(ENTRY), "example", "retry with backoff"]
-        processes = [subprocess.Popen(argv, cwd=self.pace.name, env=env, stdin=subprocess.DEVNULL,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
-        for process in processes:
-            _, err = process.communicate(timeout=120)
-            self.assertEqual(process.returncode, 0, err.decode("utf-8", "replace"))
+        words = ["example", "retry with backoff"]
+        argv = [sys.executable, "-I", str(ENTRY), *words]
+        with launch_guard(words, words) as guard:  # the hook passed both launcher calls
+            processes = [subprocess.Popen(argv, cwd=self.pace.name, env={**env, **guard}, stdin=subprocess.DEVNULL,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+            for process in processes:
+                _, err = process.communicate(timeout=120)
+                self.assertEqual(process.returncode, 0, err.decode("utf-8", "replace"))
         self.assertEqual(len(arrivals), 2)
         # Each slot is stamped just before its request leaves, so arrivals sit a whole interval apart less the first
         # request's own few milliseconds of transit.

@@ -69,9 +69,10 @@ appends one JSON line to ``githits-records.jsonl`` in that directory: ``RECORD_F
 HMAC-SHA256 over the record's canonical JSON under the key (``query_guard.sign``, the MAC the query guard's
 decisions use). No query text, no result and no token is stored; ``query_digest`` is the SHA-256 of the canonical
 request. ``sent`` says whether the request was written to the server: false when it never left (an excluded
-target, no token, a connection, TLS or proxy failure), true once it was (an answer, an HTTP error, a read timeout,
-a connection closed before the answer), null when the call was interrupted in flight. So a timeout after GitHits
-received the request and a refused connection no longer leave the same record. ``read_records`` returns the
+target, a launcher call refused ``unguarded`` before sending, no token, a connection, TLS or proxy failure), true
+once it was (an answer, an HTTP error, a read timeout, a connection closed before the answer), null when the call
+was interrupted in flight. So a timeout after GitHits received the request and a refused connection no longer leave
+the same record. ``read_records`` returns the
 records whose MAC verifies and counts the rest. A record may also carry ``paced_ms`` (``RECORD_OPTIONAL``): the
 milliseconds the host's launcher held the call before sending it, to keep GitHits' per-organization example rate
 (``githits_pace``, ``run(pace=...)``). This client never waits or retries on its own; the field is present only when
@@ -111,7 +112,14 @@ EXCLUDE_ENV = "SYBERLABS_GITHITS_EXCLUDE"
 EXCLUDE_REPLACE_ENV = "SYBERLABS_GITHITS_EXCLUDE_REPLACE"  # "1": the list replaces the default; for tests only
 LICENSES_ENV = "SYBERLABS_GITHITS_LICENSES"
 RECORD_DIR_ENV, RECORD_KEY_ENV = "SYBERLABS_GITHITS_RECORD_DIR", "SYBERLABS_GITHITS_RECORD_KEY"
-DEFAULT_EXCLUDE = ("SyberLabs",)
+# The default deny-list (the pilot's pre-registration): SyberLabs' and its founder's GitHub owners, the PyPI name of
+# this repository's distribution (``pyproject.toml``: ``syberwork``; there is no npm package), and the DeepWiki
+# front-ends that re-serve public repositories, SyberLabs' among them. ``SYBERLABS_GITHITS_EXCLUDE`` adds to it.
+DEFAULT_EXCLUDE = ("SyberLabs", "sykosyber", "pypi:syberwork", "deepwiki.com", "deepwiki.org")
+# A fork of a SyberLabs repository keeps its name under another owner (``github.com/<anyone>/SyberWork``), so a
+# repository named like a SyberLabs product, under any owner on a code host, is excluded too: by name only, so a fork
+# renamed to something else is not detected.
+FORK_NAMES = ("syberwork", "sybersdk", "syberfactory", "syberlabs", "syberstate")
 # The licenses a result may carry by default: permissive licenses whose only obligation is to keep a notice, which an
 # Apache-2.0 project can meet. Anything not listed (copyleft, NOASSERTION, unknown, none) is dropped.
 PERMISSIVE = ("MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "Zlib", "PSF-2.0",
@@ -125,7 +133,8 @@ RECORD_FIELDS = ("op", "query_digest", "targets_count", "status", "http_status",
 RECORD_OPTIONAL = ("paced_ms",)  # present only when the host's launcher paced the call (``run(pace=...)``)
 
 OK, EXCLUDED, BLOCKED, ERROR = "ok", "excluded_target", "contamination_blocked", "error"
-STATUSES = (OK, EXCLUDED, BLOCKED, ERROR)
+UNGUARDED = "unguarded"  # the launcher's entry refused the call before sending: no query-guard decision for it
+STATUSES = (OK, EXCLUDED, BLOCKED, ERROR, UNGUARDED)
 
 # Lean defaults for an agent's context window; GitHits' own default in the comment.
 SEARCH_LIMIT = 5          # hits per search (10)
@@ -144,6 +153,9 @@ REGISTRIES = ("npm", "pypi", "hex", "crates", "vcpkg", "zig", "nuget", "maven", 
 REPOSITORY_PREFIXES = {"github": "https://github.com/", "gitlab": "https://gitlab.com/",
                        "codeberg": "https://codeberg.org/"}
 _NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+_HOST_NAME = re.compile(r"^(?:[A-Za-z0-9-]+\.)+[A-Za-z][A-Za-z0-9-]*$")
+# Where a registry shows a package, for a package exclusion read in free text and result URLs.
+_REGISTRY_PAGES = {"pypi": r"pypi\.org/(?:project|simple)/", "npm": r"(?:www\.)?npmjs\.(?:com|org)/package/"}
 _HOSTS = (r"(?:[a-z0-9-]+\.)*(?:github\.com|gitlab\.com|codeberg\.org|bitbucket\.org|githubusercontent\.com)"
           r"|github|gitlab|codeberg")
 
@@ -215,7 +227,7 @@ class Request(NamedTuple):
 
 class Result(NamedTuple):
     op: str
-    status: str                    # ok, excluded_target or contamination_blocked; errors raise GitHitsError
+    status: str                    # ok, excluded_target, contamination_blocked or unguarded; errors raise GitHitsError
     data: dict | None              # the response with excluded results removed; None when refused or blocked
     http_status: int | None
     request_id: str | None
@@ -228,7 +240,7 @@ class Result(NamedTuple):
 
     @property
     def refused(self) -> bool:
-        return self.status in (EXCLUDED, BLOCKED)
+        return self.status in (EXCLUDED, BLOCKED, UNGUARDED)
 
 
 class RecordRead(NamedTuple):
@@ -239,22 +251,52 @@ class RecordRead(NamedTuple):
 # ---------------------------------------------------------------------------------------------------------- exclusions
 
 class Exclusions:
-    """Owners (``SyberLabs``) and repositories (``SyberLabs/SyberWork``) whose content must not reach a result,
-    matched case-insensitively in every reading ``_readings`` gives (as a URL parser or a lenient target parser
-    would read the text)."""
+    """Owners (``SyberLabs``), repositories (``SyberLabs/SyberWork``), packages (``pypi:syberwork``) and hosts
+    (``deepwiki.com``, with its subdomains) whose content must not reach a result, plus any code-host repository named
+    like a SyberLabs product (``FORK_NAMES``: a fork under another owner), matched case-insensitively in every reading
+    ``_readings`` gives (as a URL parser or a lenient target parser would read the text). An entry is an owner or
+    ``owner/repo``, a ``registry:name`` (``REGISTRIES``), or a host name (a dot and no slash)."""
 
-    def __init__(self, entries):
+    def __init__(self, entries, forks: bool = True):
         parsed = []
         for entry in entries:
-            parts = [part.strip() for part in str(entry).strip().strip("/").split("/")]
+            text = str(entry).strip().strip("/")
+            registry, _, package = text.partition(":")
+            if package:
+                if registry.lower() not in REGISTRIES or not _NAME.match(package.strip()):
+                    raise GitHitsError("bad_exclusion", f"a package exclusion is registry:name, got {text[:80]!r}")
+                parsed.append((f"{registry.lower()}:{package.strip().lower()}",))
+                continue
+            parts = [part.strip() for part in text.split("/")]
             if not 1 <= len(parts) <= 2 or not all(_NAME.match(part) for part in parts):
-                raise GitHitsError("bad_exclusion", f"an exclusion is an owner or owner/repo, got {str(entry)[:80]!r}")
+                raise GitHitsError("bad_exclusion", "an exclusion is an owner, owner/repo, registry:name or a host, "
+                                                    f"got {str(entry)[:80]!r}")
+            if len(parts) == 1 and "." in parts[0] and not _HOST_NAME.match(parts[0]):
+                raise GitHitsError("bad_exclusion", f"a host exclusion is a host name, got {parts[0][:80]!r}")
             parsed.append(tuple(part.lower() for part in parts))
         if not parsed:
             raise GitHitsError("bad_exclusion", "the exclusion list is empty")
         self.entries = tuple(dict.fromkeys(parsed))
         mentions, bare = [], []
-        for owner, *repo in self.entries:
+        if forks:  # FORK_NAMES under any owner: on a code host, or as a code-host shorthand or bare owner/repo
+            names = r"(?:" + "|".join(re.escape(name) for name in FORK_NAMES) + r")(?![a-z0-9_-])"
+            mentions.append(r"(?<![a-z0-9_.-])(?:" + _HOSTS + r")\.?(?::\d+)?[/:]+(?:repos/)?[a-z0-9_.-]+/" + names)
+            bare.append(r"^(?:(?:github|gitlab|codeberg):)?[@/]*[a-z0-9_-]+/" + names)
+        for entry in self.entries:
+            if ":" in entry[0]:  # a package: the target itself, and its page on the registry
+                registry, package = entry[0].split(":", 1)
+                bare.append(r"^" + re.escape(registry) + r":[@/]*" + re.escape(package) + r"(?![a-z0-9_.-])")
+                pages = _REGISTRY_PAGES.get(registry)
+                mentions.append(r"(?<![a-z0-9_.-])" + re.escape(registry) + r":" + re.escape(package)
+                                + r"(?![a-z0-9_.-])")
+                if pages:
+                    mentions.append(r"(?<![a-z0-9_.-])" + pages + re.escape(package) + r"(?![a-z0-9_.-])")
+                continue
+            if len(entry) == 1 and "." in entry[0]:  # a host, with any subdomain, a root dot and a port
+                mentions.append(r"(?<![a-z0-9_.-])(?:[a-z0-9-]+\.)*" + re.escape(entry[0])
+                                + r"\.?(?::\d+)?(?![a-z0-9_.-])")
+                continue
+            owner, *repo = entry
             tail = (r"/" + re.escape(repo[0]) + r"(?:\.git)?(?![a-z0-9_.-])") if repo else r"(?![a-z0-9_-])"
             # A host may carry the root label's dot and a port (github.com.:443), which a URL parser drops.
             mentions.append(r"(?<![a-z0-9_.-])(?:" + _HOSTS + r")\.?(?::\d+)?[/:]+(?:repos/)?"
@@ -267,14 +309,19 @@ class Exclusions:
         self._mention = re.compile("|".join(mentions), re.IGNORECASE)
         self._bare = re.compile("|".join(bare), re.IGNORECASE)
 
+    def written(self) -> str:
+        """The list as ``SYBERLABS_GITHITS_EXCLUDE`` writes it: comma-separated entries ``from_env`` reads back."""
+        return ",".join("/".join(entry) for entry in self.entries)
+
     @classmethod
     def from_env(cls, environ=None) -> "Exclusions":
-        """``DEFAULT_EXCLUDE`` plus the owners and repositories ``SYBERLABS_GITHITS_EXCLUDE`` adds; the variable never
-        removes the default. ``SYBERLABS_GITHITS_EXCLUDE_REPLACE=1`` (for tests only) makes its list replace it."""
+        """``DEFAULT_EXCLUDE`` plus the owners, repositories, packages and hosts ``SYBERLABS_GITHITS_EXCLUDE`` adds; the
+        variable never removes the default. ``SYBERLABS_GITHITS_EXCLUDE_REPLACE=1`` (for tests only) makes its list
+        replace it."""
         environ = _process_environ if environ is None else environ
         listed = [item for item in environ.get(EXCLUDE_ENV, "").split(",") if item.strip()]
         if listed and environ.get(EXCLUDE_REPLACE_ENV, "").strip() == "1":
-            return cls(listed)
+            return cls(listed, forks=False)  # the whole default replaced, the fork rule included
         return cls(list(DEFAULT_EXCLUDE) + listed)
 
     def mentioned(self, text) -> bool:
@@ -501,14 +548,23 @@ _CODE_HOST = re.compile(r"^https?://(?:[a-z0-9-]+\.)*(?:github\.com|gitlab\.com|
                         r"|githubusercontent\.com)(?::\d+)?/", re.IGNORECASE)
 # GitHits' own pages (the "Open in GitHits Web App" link every documented example ends with) are never a source.
 _GITHITS_HOST = re.compile(r"^https?://(?:[a-z0-9-]+\.)*githits\.(?:com|dev)(?::\d+)?(?:[/?#]|$)", re.IGNORECASE)
-# A "References" or "Sources" heading (ATX, bold or a bare line, as the documented examples write "### References"):
-# every link under it, up to the next heading or thematic break, is a source, whatever its host.
-_SOURCES_HEADING = re.compile(r"^[ \t]{0,3}(?:#{1,6}[ \t]+)?\**(?:references|sources)\**[ \t]*:?[ \t]*#*[ \t]*$",
+# A "References" or "Sources" heading, as the documented examples write "### References": an ATX or bold heading that
+# names a reference or source anywhere ("## Source", "### Sources and references", "**Reference links:**"), or a
+# bare line that is the word alone ("Sources:"), singular or plural, whatever the line ending (CRLF too). Every link
+# under it, up to the next heading or thematic break, is a source, whatever its host. Reading too many headings as
+# sources only asks more links for a license: an unlicensed one drops the example (fail closed).
+_SOURCE_WORD = r"\b(?:references?|sources?)\b"
+_SOURCES_HEADING = re.compile(r"^[ \t]{0,3}(?:#{1,6}[ \t]+[^\r\n]*?" + _SOURCE_WORD + r"[^\r\n]*?"
+                              r"|\*\*[^*\r\n]*?" + _SOURCE_WORD + r"[^*\r\n]*?\*\*[ \t]*:?"
+                              r"|\**(?:references?|sources?)\**[ \t]*:?)[ \t]*\r?$",
                               re.IGNORECASE | re.MULTILINE)
-_SECTION_END = re.compile(r"^[ \t]{0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-*_][ \t]*){3,}$)", re.MULTILINE)
-# Code an agent could take: a fenced block, an indented block, or HTML code. An example without any, and without a
-# source, carries nothing to license (GitHits' documented "degraded" and "no_example" answers).
-_CODE = re.compile(r"^[ \t]{0,3}(?:`{3,}|~{3,})|^(?: {4}|\t)[ \t]*\S|<(?:pre|code)\b", re.IGNORECASE | re.MULTILINE)
+_SECTION_END = re.compile(r"^[ \t]{0,3}(?:#{1,6}(?:[ \t]|\r?$)|(?:[-*_][ \t]*){3,}\r?$)", re.MULTILINE)
+# Code an agent could take: a fenced block or an indented block, at the margin or inside a blockquote (``> ```py``),
+# or HTML code. An example without any, and without a source, carries nothing to license (GitHits' documented
+# "degraded" and "no_example" answers); a quoted fence is code like any other, so an uncited one is dropped.
+_QUOTE = r"(?:>[ \t]?)*"  # a blockquote's markers, nested or not, before the block
+_CODE = re.compile(r"^[ \t]{0,3}" + _QUOTE + r"[ \t]{0,3}(?:`{3,}|~{3,})|^(?:[ \t]{0,3}>[ \t]?(?:>[ \t]?)*)?"
+                   r"(?: {4}|\t)[ \t]*\S|<(?:pre|code)\b", re.IGNORECASE | re.MULTILINE)
 _LICENSE_LINE = re.compile(r"^[ \t]*(?:[-*][ \t]*)?\**licen[cs]es?\**[ \t]*:[ \t]*(.+?)[ \t]*$",
                            re.IGNORECASE | re.MULTILINE)
 _SPDX_TAG = re.compile(r"SPDX-License-Identifier:[ \t]*(.*?)[ \t]*(?:\*/|-->)?[ \t]*$", re.IGNORECASE | re.MULTILINE)
@@ -912,11 +968,7 @@ class Client:
         caller did not receive. ``paced_ms``, when given, is how long the caller held the call before this (the
         host launcher's pacing); it is recorded, never waited here, and ``latency_ms`` never includes it."""
         started = time.monotonic()
-        record = {"op": request.op, "query_digest": query_digest(request), "targets_count": len(request.targets),
-                  "status": ERROR, "http_status": None, "request_id": None, "results_returned": 0,
-                  "results_dropped": 0, "results_dropped_license": 0, "license_policy": self.licenses.digest,
-                  "contamination_blocked": False, "latency_ms": 0,
-                  "rate_limit_remaining": None, "sent": False}
+        record = self._fresh(request)
         if paced_ms is not None:
             if type(paced_ms) is not int or paced_ms < 0:
                 raise GitHitsError("bad_pacing", "paced_ms is a non-negative integer")
@@ -960,6 +1012,22 @@ class Client:
             raise
         self._finish(record, result, started, headers, deliver)
         return result
+
+    def refuse(self, request: Request, reason: str, deliver=None) -> Result:
+        """Record ``request`` as refused before it was sent, ``status: unguarded`` and ``sent: false``, and return the
+        refused result; nothing is sent. The launcher's entry calls this when the query guard passed no launcher call
+        with these exact arguments (``query_guard.claim_launch``): Claude Code ran the launcher without the hook."""
+        started = time.monotonic()
+        result = Result(request.op, UNGUARDED, None, None, None, 0, 0, False, None, reason=reason)
+        self._finish(self._fresh(request), result, started, None, deliver)
+        return result
+
+    def _fresh(self, request: Request) -> dict:
+        """A call's record before anything is sent: ``error`` until the call says otherwise, ``sent: false``."""
+        return {"op": request.op, "query_digest": query_digest(request), "targets_count": len(request.targets),
+                "status": ERROR, "http_status": None, "request_id": None, "results_returned": 0,
+                "results_dropped": 0, "results_dropped_license": 0, "license_policy": self.licenses.digest,
+                "contamination_blocked": False, "latency_ms": 0, "rate_limit_remaining": None, "sent": False}
 
     def _finish(self, record: dict, result: Result, started: float, headers, deliver) -> None:
         failure = None
@@ -1346,12 +1414,14 @@ def write_text(stream, text: str) -> None:
     stream.flush()
 
 
-def run(args, environ=None, stdout=None, stderr=None, pace=None) -> int:
-    """``syberlabs githits ...``: 0 a result, 2 refused (an excluded target or a blocked result), 1 an error;
-    ``doctor``: 0 ready, 1 not (the status says why). A lookup's output is written (``write_text``) before its record,
-    so an output that fails is recorded ``error`` and exits 1 (``Client.call``, ``deliver``). ``pace``, given by the
-    host's launcher entry, is called with each lookup's request once the client and request are built and before it
-    is sent; it returns the milliseconds it held the call (recorded as ``paced_ms``) or None (not paced)."""
+def run(args, environ=None, stdout=None, stderr=None, pace=None, gate=None) -> int:
+    """``syberlabs githits ...``: 0 a result, 2 refused (an excluded target, a blocked result, or an unguarded
+    launcher call), 1 an error; ``doctor``: 0 ready, 1 not (the status says why). A lookup's output is written
+    (``write_text``) before its record, so an output that fails is recorded ``error`` and exits 1 (``Client.call``,
+    ``deliver``). ``gate`` and ``pace`` are given by the host's launcher entry, never by the operator's CLI. ``gate``
+    is called first with each lookup's request once the client and request are built: None lets it go on, a reason
+    refuses it (``Client.refuse``: recorded ``unguarded``, ``sent: false``, nothing sent, not paced). ``pace`` is then
+    called before it is sent; it returns the milliseconds it held the call (recorded as ``paced_ms``) or None."""
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
     op = args.githits_command
     options = {name: getattr(args, name) for name in _OPTIONS[op]}
@@ -1381,8 +1451,12 @@ def run(args, environ=None, stdout=None, stderr=None, pace=None) -> int:
             request = list_request(args.target, **options)
         else:
             request = grep_request(args.pattern, args.targets, **options)
-        paced_ms = pace(request) if pace is not None else None
-        result = client.call(request, deliver=deliver, paced_ms=paced_ms)
+        refusal = gate(request) if gate is not None else None
+        if refusal is not None:
+            result = client.refuse(request, refusal, deliver=deliver)
+        else:
+            paced_ms = pace(request) if pace is not None else None
+            result = client.call(request, deliver=deliver, paced_ms=paced_ms)
     except GitHitsError as exc:
         try:
             write_text(stderr, f"error: {exc}\n")
