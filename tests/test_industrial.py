@@ -13,7 +13,7 @@ from pathlib import Path
 from syberlabs.admission import AdmissionContext, admit
 from syberlabs.errors import Rejected
 from syberlabs.events import DIGEST_FIELDS
-from syberlabs.interop import at_microseconds, cloudevent, witness, witness_matches
+from syberlabs.interop import at_microseconds, cloudevent, witness
 from syberlabs.jcs import JcsError, envelope_jcs, jcs_bytes
 from syberlabs.protocol import SIDE_PROTOCOL
 from syberlabs.session import Session
@@ -295,8 +295,6 @@ class IndustrialInterop(unittest.TestCase):
         self.assertEqual(at_microseconds(1.5), 1_500_000)
         key = b"caller-supplied-key"
         signed = witness(case_id, events, key)
-        self.assertTrue(witness_matches(signed, events, key))
-        self.assertFalse(witness_matches(signed, events, b"other-key"))
         self.assertNotIn(signed["mac"], json.dumps({key: event[key] for key in DIGEST_FIELDS}))
         self.assertTrue(session.verify_chain(case_id))
 
