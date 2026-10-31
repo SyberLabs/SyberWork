@@ -54,6 +54,11 @@ sign one (``claude_code`` refuses a code-running tool beside an MCP server unles
 lookup with its ``guard``: the rule, ``pass``, or ``unguarded`` when no verified decision carries the lookup's exact
 tool use id, tool and query digest.
 
+A launcher call the hook passes also gets ``arguments_digest`` on its decision (the SHA-256 of the arguments it read,
+covered by the MAC). The launcher's entry (``githits_cli_entry.py``) refuses to send a lookup until it has claimed
+such a decision for its own argv (``claim_launch``), so a launcher Claude Code runs without the hook (``--bare`` on
+2.1.312 skips ``--settings`` hooks) sends nothing: its call is recorded ``unguarded`` with ``sent: false``.
+
 This is a filter over what the model typed, not a proof that no private material leaves the machine: a model can
 paraphrase code, spread it (or one credential) over several short queries, encode it (base64, hex, URL or percent
 encoding, ROT13, one character per word), or quote a line it wrote during the run (the tree hash set is taken
@@ -113,6 +118,11 @@ RULES = ("secret", "url_credentials", "email", "too_long", "code_fence", "code_l
          SHELL_SYNTAX, ERROR)
 DECISIONS = "decisions"
 DECISION_FIELDS = ("tool_use_id", "tool", "query_digest", "rule")  # what the MAC covers
+# Present only on a launcher call the hook passed: the SHA-256 of the arguments it read (``arguments_digest``), so the
+# launcher can find the decision for its own argv before it sends anything (``claim_launch``). Covered by the MAC
+# when present.
+DECISION_OPTIONAL = ("arguments_digest",)
+LAUNCHES = "launches"  # beside ``decisions/``: one empty file per decision a launcher run has claimed
 POLICY_FILE, TREE_FILE, SETTINGS_FILE = "policy.json", "tree_lines.txt", "settings.json"
 # What the host hands the hook through Claude Code's environment, which a command hook inherits (the hooks reference
 # documents no per-hook ``env`` field): the per-call MAC key and the SHA-256 of the policy and tree files it wrote.
@@ -470,19 +480,27 @@ def verify(value, given, key: str) -> bool:
     return bool(key) and isinstance(given, str) and hmac.compare_digest(given, sign(value, key))
 
 
+def _signed(entry: dict) -> dict:
+    """What a decision's MAC covers: ``DECISION_FIELDS``, and each ``DECISION_OPTIONAL`` field the entry holds."""
+    return {field: entry.get(field) for field in DECISION_FIELDS + tuple(
+        field for field in DECISION_OPTIONAL if entry.get(field) is not None)}
+
+
 def mac(entry: dict, key: str) -> str:
-    """HMAC-SHA256 of a decision's four fields (``DECISION_FIELDS``, as canonical JSON) under the per-call key."""
-    return sign({field: entry.get(field) for field in DECISION_FIELDS}, key)
+    """HMAC-SHA256 of a decision's four fields (``DECISION_FIELDS``) and its ``arguments_digest`` when it has one,
+    as canonical JSON, under the per-call key."""
+    return sign(_signed(entry), key)
 
 
 def authentic(entry: dict, key: str) -> bool:
     """True only when ``entry`` carries a MAC that verifies under ``key``; a missing or wrong MAC is not."""
-    return verify({field: entry.get(field) for field in DECISION_FIELDS}, entry.get("mac"), key)
+    return verify(_signed(entry), entry.get("mac"), key)
 
 
 def read_decisions(directory: Path) -> list[dict]:
     """The decisions in ``decisions/``, each ``{tool_use_id, tool, query_digest, rule, mac}`` (``mac`` None when
-    absent); malformed files are skipped. None is trusted until ``authentic`` verifies it."""
+    absent), plus ``arguments_digest`` on a launcher call the hook passed; malformed files are skipped. None is
+    trusted until ``authentic`` verifies it."""
     found = []
     folder = Path(directory) / DECISIONS
     for file in sorted(folder.glob("*.json")) if folder.is_dir() else []:
@@ -493,22 +511,83 @@ def read_decisions(directory: Path) -> list[dict]:
         if (isinstance(item, dict) and item.get("rule") in RULES + (PASS,) and isinstance(item.get("tool"), str)
                 and isinstance(item.get("query_digest"), str) and isinstance(item.get("tool_use_id"), (str, type(None)))):
             found.append({**{k: item[k] for k in DECISION_FIELDS},
+                          **{k: item[k] for k in DECISION_OPTIONAL if isinstance(item.get(k), str)},
                           "mac": item["mac"] if isinstance(item.get("mac"), str) else None})
     return found
 
 
-def _record(directory: Path, call: dict, rule: str, key: str) -> None:
-    tool_use_id = call.get("tool_use_id") if isinstance(call.get("tool_use_id"), str) else None
-    tool = call.get("tool_name") if isinstance(call.get("tool_name"), str) else ""
-    digest = query_digest(call.get("tool_input"))
-    entry = {"tool_use_id": tool_use_id, "tool": tool[:64], "query_digest": digest, "rule": rule}
+def arguments_digest(arguments) -> str:
+    """SHA-256 of a launcher call's arguments as canonical JSON (a list of strings): what the hook read from the
+    command (``bash_arguments``) and what the launcher receives as its argv, which agree for every command the hook
+    passes (plain words and quoted strings, no expansion)."""
+    return hashlib.sha256(utf8(canonical([str(word) for word in arguments]))).hexdigest()
+
+
+def write_decision(directory: Path, entry: dict, key: str) -> None:
+    """Write one decision into ``decisions/`` with its MAC under ``key`` (none without a key), atomically."""
+    entry = dict(entry)
     if key:
         entry["mac"] = mac(entry, key)
-    name = hashlib.sha256(utf8(canonical([tool_use_id, tool, digest, os.getpid(), os.urandom(8).hex()]))).hexdigest()
-    folder = directory / DECISIONS
+    name = hashlib.sha256(utf8(canonical([entry.get("tool_use_id"), entry.get("tool"), entry.get("query_digest"),
+                                          os.getpid(), os.urandom(8).hex()]))).hexdigest()
+    folder = Path(directory) / DECISIONS
     temporary = folder / f".{name}.tmp"
     temporary.write_text(json.dumps(entry), encoding="utf-8")
     os.replace(temporary, folder / f"{name}.json")
+
+
+def _record(directory: Path, call: dict, rule: str, key: str, arguments: list[str] | None = None) -> None:
+    tool_use_id = call.get("tool_use_id") if isinstance(call.get("tool_use_id"), str) else None
+    tool = call.get("tool_name") if isinstance(call.get("tool_name"), str) else ""
+    entry = {"tool_use_id": tool_use_id, "tool": tool[:64], "query_digest": query_digest(call.get("tool_input")),
+             "rule": rule}
+    if arguments is not None:
+        entry["arguments_digest"] = arguments_digest(arguments)
+    write_decision(directory, entry, key)
+
+
+NO_GUARD = "no_guard"            # the launcher's environment holds no guard key or launcher: not a guarded call
+NO_DECISION = "no_decision"      # no verified pass decision names these exact arguments
+DECISION_USED = "decision_used"  # every such decision was already claimed by another launcher run
+CLAIM_FAILED = "claim_failed"    # the guard's directory could not be read or written
+
+
+def claim_launch(arguments, environ=None) -> tuple[str | None, str]:
+    """Before the GitHits launcher sends anything: ``(None, tool_use_id)`` when the query guard's hook passed a
+    launcher call with exactly these ``arguments`` (a decision in ``decisions/`` beside the launcher, ``rule: pass``,
+    a shell tool, ``arguments_digest`` equal to this argv's, and a MAC that verifies under ``SYBERLABS_GUARD_KEY``),
+    which this run then claims (an empty file in ``launches/`` created exclusively, named by the decision's tool use
+    id): one decision, one launch. Otherwise ``(reason, detail)``: ``no_guard`` (no key or launcher in the
+    environment, so no hook could have decided), ``no_decision``, ``decision_used`` or ``claim_failed``.
+
+    The guard's directory is the launcher's own (``SYBERLABS_GUARD_LAUNCHER``'s parent): the provider writes the
+    launcher there, beside the hook's ``decisions/``. Under ``claude --bare`` no ``--settings`` hook runs (Claude
+    Code 2.1.312, live, 2026-10-30), so there is no decision and the launcher refuses before any request leaves."""
+    environ = os.environ if environ is None else environ
+    key, launcher = environ.get(KEY_ENV, ""), environ.get(LAUNCHER_ENV, "")
+    if not key or not launcher:
+        return NO_GUARD, (f"{KEY_ENV} and {LAUNCHER_ENV} are not both set: the launcher runs only inside a provider "
+                          "call whose query guard passed it; operator lookups go through `syberlabs githits`")
+    directory = Path(launcher).parent
+    digest = arguments_digest(arguments)
+    try:
+        passed = [d for d in read_decisions(directory)
+                  if d["rule"] == PASS and d["tool"] in SHELL_TOOLS and isinstance(d["tool_use_id"], str)
+                  and d.get("arguments_digest") == digest and authentic(d, key)]
+        if not passed:
+            return NO_DECISION, "no verified query-guard decision passed a launcher call with these exact arguments"
+        folder = directory / LAUNCHES
+        folder.mkdir(exist_ok=True)
+        for decision in passed:
+            name = hashlib.sha256(utf8(decision["tool_use_id"])).hexdigest()
+            try:
+                os.close(os.open(folder / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            except FileExistsError:
+                continue
+            return None, decision["tool_use_id"]
+    except OSError as exc:
+        return CLAIM_FAILED, f"the guard's directory could not be read or written: {exc.strerror or type(exc).__name__}"
+    return DECISION_USED, "every query-guard decision for these arguments was already used by another launcher run"
 
 
 def _matching(path: Path, expected: str) -> bytes:
@@ -526,6 +605,7 @@ def run(directory: Path, stdin, stderr, environ=None) -> int:
     environ = os.environ if environ is None else environ
     key = environ.get(KEY_ENV, "")
     call: dict = {}
+    arguments = None  # a passed launcher call's arguments, for its decision's ``arguments_digest``
     try:
         raw = stdin.buffer.read() if hasattr(stdin, "buffer") else stdin.read()
         call = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)  # Claude Code writes UTF-8
@@ -537,12 +617,14 @@ def run(directory: Path, stdin, stderr, environ=None) -> int:
             raise ValueError("no tool_use_id: no decision could be matched to this call")
         rules = json.loads(_matching(directory / POLICY_FILE, environ.get(POLICY_DIGEST_ENV, "")).decode("utf-8"))
         tree = set(_matching(directory / TREE_FILE, environ.get(TREE_DIGEST_ENV, "")).decode("utf-8").split())
-        rule = decide(call, max_lines=rules["max_lines"], max_chars=rules["max_chars"], tree=tree,
-                      launcher=environ.get(LAUNCHER_ENV) or None)
+        launcher = environ.get(LAUNCHER_ENV) or None
+        rule = decide(call, max_lines=rules["max_lines"], max_chars=rules["max_chars"], tree=tree, launcher=launcher)
+        if rule == PASS and call.get("tool_name") in SHELL_TOOLS:
+            arguments = bash_arguments(call["tool_input"].get("command"), launcher)[1]
     except Exception:  # noqa: BLE001  a guard that cannot judge blocks
-        rule = ERROR
+        rule, arguments = ERROR, None
     try:
-        _record(directory, call if isinstance(call, dict) else {}, rule, key)
+        _record(directory, call if isinstance(call, dict) else {}, rule, key, arguments)
     except Exception:  # noqa: BLE001  an unrecorded pass would read as unguarded; an unrecorded block still blocks
         if rule == PASS:
             rule = ERROR

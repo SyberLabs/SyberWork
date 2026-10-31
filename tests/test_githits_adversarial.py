@@ -34,6 +34,7 @@ from syberlabs import query_guard as guard
 from syberlabs.claude_code import GITHITS_ENTRY, ClaudeCodeProvider, record_lookup
 from tests.test_claude_code import SEARCH, ClaudeCodeCase, launcher_lookup
 from tests.test_githits import (ENV_NAMES, FakeCase, FakeGitHits, example_response, grep_hit, grep_response,
+                                launch_guard,
                                 list_response, read_doc_response, run_cli, search_hit, search_response)
 
 LAUNCHER = "/tmp/syberlabs-guard-x1/githits"  # the form claude_code.write_launcher returns
@@ -313,8 +314,10 @@ class LauncherTerminated(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k not in ENV_NAMES}
         env.update({githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(16), githits.URL_ENV: fake.url,
                     githits.RECORD_DIR_ENV: folder.name, githits.RECORD_KEY_ENV: key})
-        proc = subprocess.Popen([sys.executable, "-I", str(GITHITS_ENTRY), "search", "retry", "--target",
-                                 "pypi:requests"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        words = ["search", "retry", "--target", "pypi:requests"]
+        env.update(self.enterContext(launch_guard(words)))  # the query guard's hook passed this launcher call
+        proc = subprocess.Popen([sys.executable, "-I", str(GITHITS_ENTRY), *words], env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         deadline = time.monotonic() + 60
         while not fake.requests and time.monotonic() < deadline and proc.poll() is None:
@@ -358,7 +361,7 @@ class LauncherCase(ClaudeCodeCase):
         self.addCleanup(self.fake.close)
         self.fake.server.handle_error = lambda request, address: None  # a client the host killed is not an error
         patcher = mock.patch.dict(os.environ, {githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(16),
-                                               githits.URL_ENV: self.fake.url})
+                                               githits.URL_ENV: self.fake.url, "ANTHROPIC_API_KEY": "test-placeholder"})
         patcher.start()
         self.addCleanup(patcher.stop)
         for name in ENV_NAMES:
@@ -377,7 +380,7 @@ class ThroughTheLauncher(LauncherCase):
             launcher_lookup('search "governed work runtime" --target site:www.syberlabs.io'),
             launcher_lookup('example "retry an HTTP call with backoff" --license-mode yolo'),
             launcher_lookup('search "retry" --target pypi:requests GITHITS_API_URL=https://evil.example/v1')])
-        provider = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, githits=True, max_calls=1)
+        provider = ClaudeCodeProvider(kit.repo, lane="api-hooked", trusted_tree=True, executable=claude, githits=True, max_calls=1)
         [candidate] = thread.propose(provider)
         self.assertEqual(self.fake.requests, [], "nothing reached GitHits")
         values = [b["value"] for b in self.lookup_facts(thread)]
@@ -516,8 +519,8 @@ class InFlightAtTimeout(LauncherCase):
         kit = self.kit()
         thread = kit.start(f"Add a CSV export ({name})", paths=["src/", "tests/"])
         claude = self.stand_in(name, lookups=[launcher_lookup(SEARCH)] * lookups)
-        provider = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, githits=True, max_calls=1, timeout=10,
-                                      thread_label=thread.id)
+        provider = ClaudeCodeProvider(kit.repo, lane="api-hooked", trusted_tree=True, executable=claude, githits=True,
+                                      max_calls=1, timeout=10, thread_label=thread.id)
         self.assertEqual(thread.propose(provider), [])
         finished = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
         self.assertEqual((finished["stopped"], finished["error"]), ("error", "provider_timeout"))
@@ -550,7 +553,7 @@ class SessionPerThread(LauncherCase):
         for name in ("one", "two"):
             thread = kit.start(f"Add a CSV export ({name})", paths=["src/", "tests/"])
             claude = self.stand_in(f"session-{name}", lookups=[launcher_lookup(SEARCH)])
-            thread.propose(ClaudeCodeProvider(kit.repo, bare=True, executable=claude, githits=True, max_calls=1))
+            thread.propose(ClaudeCodeProvider(kit.repo, lane="api-hooked", trusted_tree=True, executable=claude, githits=True, max_calls=1))
             threads.append(thread)
         self.assertEqual([r["headers"]["x-githits-session-id"] for r in self.fake.requests],
                          [f"{t.id}-b" for t in threads])

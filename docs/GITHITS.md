@@ -56,9 +56,24 @@ not be shown SyberLabs code as if it were outside evidence. For the pilot, conta
 side: the work items are unpublished, both arms run locally on a pinned base, and this client is the backstop. An
 exclusion at GitHits' index is optional, not something the pilot relies on.
 
-The client works in three layers. The exclusion list is `SyberLabs` plus whatever `SYBERLABS_GITHITS_EXCLUDE` adds:
-a comma list of owners or `owner/repo`, matched case-insensitively. The variable only adds; it never removes
-`SyberLabs`, and an empty value keeps the default. `SYBERLABS_GITHITS_EXCLUDE_REPLACE=1` makes the variable's list
+The client works in three layers. The exclusion list is the default deny-list plus whatever
+`SYBERLABS_GITHITS_EXCLUDE` adds, matched case-insensitively. The default (`githits.DEFAULT_EXCLUDE`, from the
+pilot's pre-registration) is:
+
+- the GitHub owners `SyberLabs` and `sykosyber` (`github.com/sykosyber/*`, and each owner's own domains and
+  `*.github.io` pages, as for any owner);
+- `pypi:syberwork`, the PyPI name of this repository's distribution (`pyproject.toml`; there is no npm package), as a
+  target and as `pypi.org/project/syberwork` in a result;
+- `deepwiki.com` and `deepwiki.org` with their subdomains, the DeepWiki front-ends that re-serve public repositories,
+  SyberLabs' among them, as a target (`site:deepwiki.com/...`, a URL) and anywhere in a result's text;
+- forks of SyberLabs repositories where the result's URL shows one: a repository named like a SyberLabs product
+  (`githits.FORK_NAMES`: `syberwork`, `sybersdk`, `syberfactory`, `syberlabs`, `syberstate`) under any owner on a
+  code host (`github.com/<anyone>/SyberWork`, `github:<anyone>/syberfactory`). This is by name only: a fork renamed
+  to something else is not detected.
+
+An entry of the variable is an owner, `owner/repo`, a package `registry:name` (`npm:left-pad`) or a host name with a
+dot and no slash (`example.org`, which also covers its subdomains). The variable only adds; it never removes the
+default, and an empty value keeps it. `SYBERLABS_GITHITS_EXCLUDE_REPLACE=1` makes the variable's list
 replace the default; it exists for tests only, and the Claude Code provider never passes it to the launcher's client.
 Passing another list to `Client(exclude=...)` in code replaces the default too.
 
@@ -127,21 +142,29 @@ the two is an error, so a run never believes it is recording when it is not.
 {"op": "search", "query_digest": "<sha256>", "targets_count": 1, "status": "ok", "http_status": 200,
  "request_id": "<X-Request-ID>", "results_returned": 3, "results_dropped": 1, "results_dropped_license": 0,
  "license_policy": "<sha256>", "contamination_blocked": false, "latency_ms": 412, "rate_limit_remaining": 97,
- "at": "2026-10-26T17:01:16.123Z", "mac": "<hmac-sha256>"}
+ "at": "2026-10-26T17:01:16.123Z", "sent": true, "mac": "<hmac-sha256>"}
 ```
 
-- `status` is `ok`, `excluded_target`, `contamination_blocked` or `error`.
+- `status` is `ok`, `excluded_target`, `contamination_blocked`, `error`, or `unguarded` (the launcher's entry
+  refused the call before sending: no query-guard decision for it; below).
+- `sent` says whether the request was written to GitHits: `false` when it never left (an excluded target, an
+  `unguarded` refusal, no token, a connection, TLS or proxy failure), `true` once it was (an answer, an HTTP error,
+  a read timeout, a connection closed before the answer), `null` when the call was interrupted in flight.
 - `query_digest` is the SHA-256 of the canonical JSON request: the body of a POST, the query parameters of a
   read.
 - `rate_limit_remaining` is `X-RateLimit-Remaining` when the answer has it. The spec documents it for every
-  operation here except `example`.
+  operation here except `example`. Observed live (pilot canary, 2026-10-30): `search` and `grep` answers carry it
+  (599, then 598), `example` and `doctor` answers do not (`null`); `read` and `list` were not called.
 - `mac` is HMAC-SHA256 under the record key over the canonical JSON of every other field. It is
   `query_guard.sign`, the same canonical form and MAC the query guard's decisions use.
 - `read_records(directory, key)` returns the records whose MAC verifies, and counts every other line (bad MAC,
   extra or missing field, not JSON) as ignored.
 
 `paced_ms`, present only on a call the host's launcher paced (next section), is how long the launcher held the
-call before sending it; the MAC covers it, and a record without it has exactly the fields above.
+call before sending it; the MAC covers it, and a record without it has exactly the fields above. Every launcher
+`example` to GitHits goes through the pacing lock, so `paced_ms` is present on it even when nothing was waited for,
+with a small value: the lock and the time file's own cost (the canary's first example recorded `paced_ms: 4`; its
+second, held for the slot, `26312`). Read a small value as "not held", not as a wait.
 
 No query text, no result and no token is ever stored. As with the guard's key, the MAC shows that a process
 holding the key wrote the line. The key is in the environment of whatever runs the client, so it does not show
@@ -221,6 +244,13 @@ five lookups, `search`, `example`, `read`, `list` and `grep` (`githits.LOOKUPS`,
 `--license-mode`: through the launcher an example always asks for `license_mode: strict`. `doctor`, `--help`, an
 unknown operation and a usage error exit 2 with a usage message before a client exists, so nothing is sent and
 nothing is recorded. The operator keeps `syberlabs githits doctor` and `--license-mode`.
+
+A lookup is sent only when the query guard's hook passed that launcher call: the entry claims the hook's
+MAC-verified decision whose `arguments_digest` equals its own argv's (`query_guard.claim_launch`; one decision, one
+launch) before it paces or sends. Without one (no hook ran, as under `claude --bare` on 2.1.312; no guard key in
+the environment; a forged, mismatched or used decision) it records the call `status: unguarded`, `sent: false`,
+prints `refused: unguarded: ...` and exits 2, with no HTTP request (`docs/CLAUDE_CODE.md`, the pre-send refusal).
+`syberlabs githits` (the operator's) has no such gate.
 It prints as `syberlabs` does, unencodable characters replaced, and before the record: a failed print records `error`.
 
 ## The pinned contract
@@ -262,13 +292,13 @@ before its first candidate and keep everything else equal, `--allowed-tools` inc
 ```bash
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
+syberlabs propose --claude-code --lane api-hooked --trusted-tree --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
 syberlabs run --once
 
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm on --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
-    --githits --githits-arm on          # the only difference: the launcher and the skill
+syberlabs propose --claude-code --lane api-hooked --trusted-tree --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
+    --githits --githits-arm on          # the only difference: the launcher and the skill (never with --bare)
 syberlabs run --once
 
 syberlabs experiment report --name githits-pilot --items items.txt --delivered review
@@ -331,8 +361,8 @@ misreports. Claim ceiling: implemented and tested with stand-ins; no pilot has r
 | `GITHITS_API_TOKEN` | the bearer token (required for a call; a refused target needs none) |
 | `GITHITS_API_URL` | base URL, default `https://api.githits.dev/v1` |
 | `GITHITS_SESSION_ID`, `GITHITS_AGENT` | optional `X-GitHits-Session-ID` and `X-GitHits-Agent` |
-| `SYBERLABS_GITHITS_EXCLUDE` | owners or `owner/repo` to exclude besides `SyberLabs`, comma list (it only adds) |
-| `SYBERLABS_GITHITS_EXCLUDE_REPLACE` | `1`: the list above replaces `SyberLabs` (tests only) |
+| `SYBERLABS_GITHITS_EXCLUDE` | owners, `owner/repo`, `registry:name` packages or hosts to exclude besides the default deny-list (`SyberLabs`, `sykosyber`, `pypi:syberwork`, `deepwiki.com`, `deepwiki.org`, and forks by name), comma list (it only adds) |
+| `SYBERLABS_GITHITS_EXCLUDE_REPLACE` | `1`: the list above replaces the default deny-list, the fork rule included (tests only) |
 | `SYBERLABS_GITHITS_LICENSES` | allowed SPDX ids, comma list, or `any` (default: the permissive list) |
 | `SYBERLABS_GITHITS_RECORD_DIR`, `SYBERLABS_GITHITS_RECORD_KEY` | where records go and their MAC key (both or neither) |
 | `SYBERLABS_GITHITS_PACE_DIR` | the host's example pacing directory, absolute (default: `syberlabs-githits-pace` in the temporary directory) |

@@ -31,7 +31,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from syberlabs import cli, githits, githits_cli_entry
+from syberlabs import cli, githits, githits_cli_entry, query_guard
 from syberlabs.canonical import canonical
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +41,8 @@ DOCTOR_FIXTURE = ROOT / "tests" / "fixtures" / "githits_openapi_v1_languages.jso
 DOCTOR_FIXTURE_SHA256 = "492fcb7f97838a2bed4dfc4618c3858cc8589787f1f3ff92422ffff3fdc8904c"
 UPSTREAM_SHA256 = "e58048e3e56d7b0d6346e24722614d2d8907748960f18f18204895a354ab8a6a"
 ENV_NAMES = (githits.TOKEN_ENV, githits.URL_ENV, githits.SESSION_ENV, githits.AGENT_ENV, githits.EXCLUDE_ENV,
-             githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV)
+             githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV,
+             query_guard.KEY_ENV, query_guard.LAUNCHER_ENV)
 
 
 # ----------------------------------------------------------------------------------------------- the pinned contract
@@ -582,7 +583,7 @@ class Exclusion(unittest.TestCase):
                      "https%3A%2F%2Fgithub.com%2FSyberLabs%2FSyberWork", "gitlab:SyberLabs/mirror"):
             with self.subTest(text=text):
                 self.assertTrue(exclude.names(text))
-        for text in ("https://github.com/psf/requests", "github:SyberLabsX/fork", "github:other/SyberLabs",
+        for text in ("https://github.com/psf/requests", "github:SyberLabsX/fork",
                      "pypi:syberlabs-sdk", "https://github.com/syberlabs-archive/x", "npm:express@5.2.1",
                      "site:docs.python.org/3", "https://notgithub.com/SyberLabs/x", ""):
             with self.subTest(text=text):
@@ -603,7 +604,8 @@ class Exclusion(unittest.TestCase):
         self.assertTrue(custom.names("https://github.com/other/repo"))
         self.assertFalse(custom.names("https://github.com/other/else"))
         self.assertTrue(custom.names("github:SyberLabs/SyberWork"), "the default is kept")
-        self.assertEqual(custom.entries, (("syberlabs",), ("acme",), ("other", "repo")))
+        self.assertEqual(custom.entries, (("syberlabs",), ("sykosyber",), ("pypi:syberwork",), ("deepwiki.com",),
+                                          ("deepwiki.org",), ("acme",), ("other", "repo")))
         for switch in ("0", "", "yes", "true"):
             kept = githits.Exclusions.from_env({githits.EXCLUDE_ENV: "Acme", githits.EXCLUDE_REPLACE_ENV: switch})
             self.assertTrue(kept.names("github:SyberLabs/x"), f"only 1 replaces, not {switch!r}")
@@ -612,6 +614,61 @@ class Exclusion(unittest.TestCase):
         self.assertTrue(replaced.names("github:acme/x"))
         empty = githits.Exclusions.from_env({githits.EXCLUDE_ENV: " , ", githits.EXCLUDE_REPLACE_ENV: "1"})
         self.assertTrue(empty.names("github:SyberLabs/x"), "replacing with nothing keeps the default")
+
+    def test_the_default_deny_list_refuses_our_package_founder_forks_and_deepwiki(self):
+        """guard-lane (the pilot's pre-registration): besides SyberLabs, the default refuses this repository's PyPI
+        name (pyproject.toml: syberwork), github.com/sykosyber, a fork of a SyberLabs repository detectable by its
+        name under another owner (FORK_NAMES), and the DeepWiki front-ends, as targets and in result text."""
+        exclude = githits.Exclusions.from_env({})
+        self.assertEqual(githits.DEFAULT_EXCLUDE, ("SyberLabs", "sykosyber", "pypi:syberwork", "deepwiki.com",
+                                                   "deepwiki.org"))
+        for text in ("pypi:syberwork", "pypi:SyberWork@0.1.0", "pypi: syberwork", "github:sykosyber/dotfiles",
+                     "https://github.com/sykosyber/x", "https://github.com/someone/SyberWork",
+                     "github:someone/syberfactory@main", "someone/SyberSDK", "github:other/SyberLabs",
+                     "https://gitlab.com/mirror/syberwork.git", "site:deepwiki.com/SyberLabs/SyberWork",
+                     "https://deepwiki.com/psf/requests", "https://www.deepwiki.org/x", "site:DEEPWIKI.COM",
+                     "https://deepwiki.com:443/x", "https%3A%2F%2Fdeepwiki.com%2Fx"):
+            with self.subTest(refused=text):
+                self.assertTrue(exclude.names(text))
+        for text in ("pypi:syberworkx", "pypi:requests", "npm:syberwork", "https://github.com/someone/syberworking",
+                     "https://notdeepwiki.com/x", "site:docs.python.org/3", "https://github.com/psf/requests",
+                     "https://notgithub.com/x/SyberWork"):
+            with self.subTest(kept=text):
+                self.assertFalse(exclude.names(text))
+        for text in ("see https://pypi.org/project/syberwork/", "the page at deepwiki.com/psf/requests",
+                     "[Source 1](https://github.com/fork/SyberWork/blob/1/a.py) (MIT)",
+                     "(https://github.com/sykosyber/notes)"):
+            with self.subTest(mentioned=text):
+                self.assertTrue(exclude.mentioned(text))
+        self.assertFalse(exclude.mentioned("syberwork, said without a host or registry"))
+        added = githits.Exclusions.from_env({githits.EXCLUDE_ENV: "npm:left-pad, example.org"})
+        self.assertTrue(added.names("npm:left-pad@1.3.0") and added.names("https://docs.example.org/x"))
+        self.assertTrue(added.names("pypi:syberwork"), "the variable adds; the deny-list stays")
+        self.assertEqual(githits.Exclusions.from_env({githits.EXCLUDE_ENV: added.written()}).entries, added.entries,
+                         "the written list reads back as itself")
+        for bad in ("foo:bar", "pypi:", "a..b", "x/y/z"):
+            with self.subTest(bad=bad), self.assertRaises(githits.GitHitsError):
+                githits.Exclusions([bad])
+
+    def test_the_deny_list_never_leaves_and_drops_what_points_at_it(self):
+        """Refused targets send nothing; a result or an example pointing at a denied place is dropped."""
+        fake = FakeGitHits()
+        self.addCleanup(fake.close)
+        if True:
+            env = {githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(8), githits.URL_ENV: fake.url}
+            client = githits.Client.from_env(env)
+            for target in ("pypi:syberwork", "site:deepwiki.com/psf/requests", "github:sykosyber/x"):
+                with self.subTest(target=target):
+                    self.assertEqual(client.search("q", [target]).status, githits.EXCLUDED)
+            self.assertEqual(fake.requests, [], "nothing was sent")
+            fake.serve("/v1/searches", search_response([search_hit("a", "https://github.com/someone/SyberWork"),
+                                                        search_hit("b", "https://github.com/psf/requests")]))
+            result = client.search("q", ["pypi:requests"])
+            self.assertEqual((result.results_returned, result.results_dropped), (1, 1), "the fork's hit is dropped")
+            fake.serve("/v1/examples/search", {"result": "Use this.\n\nSee https://deepwiki.com/psf/requests\n",
+                                               "search_status": "complete",
+                                               "solution_id": "12345678-1234-4234-8234-123456789abc"})
+            self.assertTrue(client.example("q").contamination_blocked, "an example citing DeepWiki is dropped whole")
         for value in ("", " , "):
             self.assertTrue(githits.Exclusions.from_env({githits.EXCLUDE_ENV: value}).names("github:SyberLabs/x"))
         with self.assertRaises(githits.GitHitsError):
@@ -933,6 +990,38 @@ class DocumentedExamples(FakeCase):
                                          "[Source 1](https://github.com/a/b/blob/1/c.py) (MIT)"}), ["MIT"],
                          "outside a sources section a non-code-host link is not a source, as before")
 
+    def test_a_singular_heading_a_heading_with_more_words_and_crlf_still_open_a_sources_section(self):
+        """guard-lane, item 4 (#153's verification): the heading parser took only ``References`` or ``Sources``,
+        alone, on an LF line, so a ``## Source`` heading, ``### Sources and references`` or a CRLF answer left its
+        links outside every sources section, where an unlicensed docs link counted for nothing."""
+        read = githits.example_licenses
+        link = "\n- [a](https://docs.example.org/a)\n"  # a docs link: a source only inside a sources section
+        for heading in ("## Source", "### Reference", "Reference:", "Source", "## Sources and references",
+                        "### Reference links ###", "**Sources used:**", "## Sources"):
+            for newline in ("\n", "\r\n"):
+                with self.subTest(heading=heading, crlf=newline == "\r\n"):
+                    text = ("```py\nx\n```\n" + heading + link).replace("\n", newline)
+                    self.assertEqual(read({"result": text}), [None], "the unlicensed link is a source: dropped")
+                    licensed = text.replace("/a)", "/a) (MIT)")
+                    self.assertEqual(read({"result": licensed}), ["MIT"])
+        self.assertEqual(read({"result": "```py\nx\n```\nThe sources below are informal." + link}), [None],
+                         "a sentence is no heading: the link is not a source, and the code has none")
+
+    def test_a_fenced_block_inside_a_blockquote_is_code(self):
+        """guard-lane, item 4 (#153's verification): ``_CODE`` matched a fence only at the margin, so an example whose
+        only code sat in a blockquote, with no source, read as carrying nothing to license and passed."""
+        read = githits.example_licenses
+        for quoted in ("> ```python\n> import requests\n> ```\n", ">> ~~~\n>> x = 1\n>> ~~~\n",
+                       "> ```python\r\n> import requests\r\n> ```\r\n", ">     indented = True\n"):
+            with self.subTest(quoted=quoted):
+                self.assertEqual(read({"result": "Use this:\n\n" + quoted}), [None], "code with no source")
+        self.assertEqual(read({"result": "> A quoted remark, no code.\n"}), [], "a quote without code is not code")
+        self.fake.serve("/v1/examples/search", {"result": "Use this:\n\n> ```python\n> import requests\n> ```\n",
+                                                "search_status": "complete",
+                                                "solution_id": "12345678-1234-4234-8234-123456789abc"})
+        result = self.client().example("q")
+        self.assertEqual((result.results_dropped_license, result.data), (1, None), "an uncited quoted fence is dropped")
+
 
 class Transport(FakeCase):
     def test_lean_defaults_are_sent(self):
@@ -1199,8 +1288,29 @@ class Cli(FakeCase):
         self.assertTrue(all(record["status"] == "ok" for record in self.records().records))
 
 
-def run_entry(env: dict, *argv: str) -> tuple[int, str, str]:
-    """The GitHits launcher's entry (``githits_cli_entry.main``), what the launcher a model can run executes."""
+@contextlib.contextmanager
+def launch_guard(*argvs, key: str | None = None):
+    """A query-guard directory holding one ``pass`` decision per launcher argv in ``argvs``, as the hook writes when it
+    passes a launcher command (``arguments_digest`` of the words it read, MAC under the per-call key), and the
+    environment the launcher's entry reads it with: the key and the launcher's path in that directory."""
+    with TemporaryDirectory() as folder:
+        directory = Path(folder)
+        (directory / query_guard.DECISIONS).mkdir()
+        key = key or secrets.token_hex(32)
+        for n, argv in enumerate(argvs, 1):
+            query_guard.write_decision(directory, {
+                "tool_use_id": f"toolu_guard{n}", "tool": "Bash", "query_digest": "0" * 64, "rule": query_guard.PASS,
+                "arguments_digest": query_guard.arguments_digest(argv)}, key)
+        yield {query_guard.KEY_ENV: key, query_guard.LAUNCHER_ENV: (directory / "githits").as_posix()}
+
+
+def run_entry(env: dict, *argv: str, guarded: bool = True) -> tuple[int, str, str]:
+    """The GitHits launcher's entry (``githits_cli_entry.main``), what the launcher a model can run executes. With
+    ``guarded`` (the default) the query guard's hook has passed exactly this argv (``launch_guard``), as it has for
+    every launcher call Claude Code runs with the hook; ``guarded=False`` runs it with ``env`` alone."""
+    if guarded:
+        with launch_guard(list(argv)) as extra:
+            return run_entry({**env, **extra}, *argv, guarded=False)
     out, err = io.StringIO(), io.StringIO()
     with mock.patch.dict(os.environ, env):
         for name in ENV_NAMES:
@@ -1263,6 +1373,126 @@ class LauncherEntry(FakeCase):
         self.assertEqual(json.loads(self.fake.requests[-1]["body"])["license_mode"], "yolo")
 
 
+class LauncherGuard(FakeCase):
+    """guard-lane, item 1 (the live canary, 2026-10-30): under ``claude --bare`` Claude Code 2.1.312 ran the launcher
+    without the query guard's hook, and the client sent the lookup (``sent: true``) before the host stopped the run.
+    Now the launcher's entry sends nothing unless it claims the hook's verified decision for its exact argv: without
+    one the call is recorded ``unguarded`` with ``sent: false``, exits 2, and the loopback fake sees no request."""
+
+    WORDS = ["search", "retry backoff", "--target", "pypi:urllib3@2.2.1"]
+
+    def refused(self, env, words=None):
+        code, out, err = run_entry(env, *(words or self.WORDS), guarded=False)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("refused: unguarded:", err)
+        self.assertIn("no request was sent", err)
+        return err
+
+    def test_a_launcher_run_with_no_decision_sends_nothing_and_records_sent_false(self):
+        with launch_guard() as guard:  # a guard directory and key, and no decision at all: no hook ran
+            err = self.refused({**self.env, **guard})
+        self.assertIn(query_guard.NO_DECISION, err)
+        self.refused(self.env)  # no key and no launcher in the environment at all
+        self.assertEqual(self.fake.requests, [], "the loopback fake saw no request")
+        records = self.records().records
+        self.assertEqual(len(records), 2, "each refusal is recorded")
+        for record in records:
+            self.assertEqual((record["op"], record["status"], record["sent"], record["http_status"]),
+                             ("search", githits.UNGUARDED, False, None))
+            self.assertEqual(record["query_digest"], githits.query_digest(
+                githits.search_request("retry backoff", ["pypi:urllib3@2.2.1"])), "the request it would have sent")
+            self.assertNotIn("paced_ms", record)
+
+    def test_an_unguarded_example_is_not_paced_before_it_is_refused(self):
+        with mock.patch.object(githits_cli_entry, "_pace", side_effect=AssertionError("paced")):
+            self.refused(self.env, ["example", "retry"])
+        self.assertEqual(self.fake.requests, [])
+
+    def test_a_forged_or_mismatched_decision_is_refused(self):
+        def decision(directory, key, words, **changes):
+            entry = {"tool_use_id": "toolu_forged", "tool": "Bash", "query_digest": "0" * 64, "rule": query_guard.PASS,
+                     "arguments_digest": query_guard.arguments_digest(words)}
+            entry.update(changes)
+            query_guard.write_decision(directory, entry, key)
+
+        cases = {
+            "no MAC": lambda d, key: decision(d, "", self.WORDS),
+            "another key": lambda d, key: decision(d, secrets.token_hex(32), self.WORDS),
+            "other arguments": lambda d, key: decision(d, key, ["search", "retry", "--target", "pypi:urllib3@2.2.1"]),
+            "a blocking rule": lambda d, key: decision(d, key, self.WORDS, rule="email"),
+            "not a shell tool": lambda d, key: decision(d, key, self.WORDS, tool="mcp__githits__search"),
+            "no arguments digest": lambda d, key: decision(d, key, self.WORDS, arguments_digest=None),
+            "no tool use id": lambda d, key: decision(d, key, self.WORDS, tool_use_id=None),
+        }
+        for name, write in cases.items():
+            with self.subTest(name), launch_guard() as guard:
+                write(Path(guard[query_guard.LAUNCHER_ENV]).parent, guard[query_guard.KEY_ENV])
+                self.refused({**self.env, **guard})
+        with self.subTest("a MAC'd decision whose digest was rewritten after signing"), launch_guard(self.WORDS) as guard:
+            folder = Path(guard[query_guard.LAUNCHER_ENV]).parent / query_guard.DECISIONS
+            [file] = folder.glob("*.json")
+            entry = json.loads(file.read_text(encoding="utf-8"))
+            other = ["search", "other", "--target", "pypi:urllib3@2.2.1"]
+            entry["arguments_digest"] = query_guard.arguments_digest(other)
+            file.write_text(json.dumps(entry), encoding="utf-8")
+            self.refused({**self.env, **guard}, other)
+        self.assertEqual(self.fake.requests, [], "no forged or mismatched decision let a request out")
+        self.assertTrue(all(r["status"] == githits.UNGUARDED and r["sent"] is False for r in self.records().records))
+
+    def test_a_valid_decision_is_sent_once(self):
+        with launch_guard(self.WORDS) as guard:
+            env = {**self.env, **guard}
+            code, out, err = run_entry(env, *self.WORDS, guarded=False)
+            self.assertEqual((code, err), (0, ""))
+            self.assertTrue(out.startswith("search: "))
+            self.assertEqual(len(self.fake.requests), 1, "the guarded lookup was sent")
+            err = self.refused(env)  # the same command again: its one decision is spent
+            self.assertIn(query_guard.DECISION_USED, err)
+        self.assertEqual(len(self.fake.requests), 1)
+        first, second = self.records().records
+        self.assertEqual((first["status"], first["sent"]), ("ok", True))
+        self.assertEqual((second["status"], second["sent"]), (githits.UNGUARDED, False))
+
+    def test_two_passed_calls_with_the_same_arguments_each_send_once(self):
+        with launch_guard(self.WORDS, self.WORDS) as guard:
+            env = {**self.env, **guard}
+            self.assertEqual(run_entry(env, *self.WORDS, guarded=False)[0], 0)
+            self.assertEqual(run_entry(env, *self.WORDS, guarded=False)[0], 0)
+            self.refused(env)
+        self.assertEqual(len(self.fake.requests), 2)
+
+    def test_the_hooks_decision_for_a_passed_launcher_command_is_what_the_launcher_claims(self):
+        """End to end without Claude Code: the real hook judges the command, then the entry runs its words."""
+        launcher = "/tmp/syberlabs-guard-0000/githits"
+        command = launcher + ' search "retry backoff" --target pypi:urllib3@2.2.1'
+        with TemporaryDirectory() as folder:
+            directory = Path(folder)
+            key = secrets.token_hex(32)
+            query_guard.prepare(directory, query_guard.policy(), set(), bash=True)
+            hook_env = query_guard.hook_environment(directory, key, launcher)
+            call = {"tool_name": "Bash", "tool_input": {"command": command}, "tool_use_id": "toolu_1"}
+            code = query_guard.run(directory, io.StringIO(json.dumps(call)), io.StringIO(), hook_env)
+            self.assertEqual(code, 0)
+            [decision] = query_guard.read_decisions(directory)
+            self.assertTrue(query_guard.authentic(decision, key))
+            self.assertEqual(decision["arguments_digest"], query_guard.arguments_digest(self.WORDS))
+            env = {**self.env, query_guard.KEY_ENV: key, query_guard.LAUNCHER_ENV: (directory / "githits").as_posix()}
+            self.assertEqual(run_entry(env, *self.WORDS, guarded=False)[0], 0)
+            query_guard.remove(directory)
+        self.assertEqual(len(self.fake.requests), 1)
+
+    def test_the_operator_cli_and_doctor_need_no_decision(self):
+        for env in (self.env, {**self.env, query_guard.KEY_ENV: secrets.token_hex(32),
+                               query_guard.LAUNCHER_ENV: "/nowhere/githits"}):  # with or without a guard key around
+            code, out, _ = run_cli(env, "githits", "doctor")
+            self.assertEqual(code, 0)
+            self.assertTrue(out.startswith("githits doctor: ok"))
+            code, out, _ = run_cli(env, "githits", *self.WORDS)
+            self.assertEqual(code, 0, "the operator's own lookup is not gated")
+        self.assertEqual(len(self.fake.requests), 4)
+        self.assertEqual([(r["op"], r["status"]) for r in self.records().records], [("doctor", "ok"), ("search", "ok")] * 2)
+
+
 # Outside cp1252: two box-drawing characters (U+2500) and an emoji (U+1F680). Written as escapes: the file stays ASCII.
 WIDE_TITLE = "box \u2500\u2500 rocket \U0001F680"
 ENTRY = ROOT / "syberlabs" / "githits_cli_entry.py"
@@ -1295,10 +1525,11 @@ class LauncherOutput(FakeCase):
         env.update(self.env)
         if ioencoding is not None:
             env["PYTHONIOENCODING"] = ioencoding
-        argv = [sys.executable, *(["-I"] if isolated else []), str(ENTRY), "search", "q", "--target", "pypi:requests"]
-        with TemporaryDirectory() as cwd:  # no checkout in the current directory
-            return subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, timeout=120)
+        words = ["search", "q", "--target", "pypi:requests"]
+        argv = [sys.executable, *(["-I"] if isolated else []), str(ENTRY), *words]
+        with TemporaryDirectory() as cwd, launch_guard(words) as guard:  # no checkout in the current directory
+            return subprocess.run(argv, cwd=cwd, env={**env, **guard}, stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
 
     def test_a_result_outside_cp1252_prints_through_the_entry_on_a_piped_stdout_and_is_recorded_ok_once(self):
         # -I as the launcher runs it (PYTHONIOENCODING is then ignored: cp1252 on Windows, the locale's elsewhere);
@@ -1355,9 +1586,10 @@ class LauncherOutput(FakeCase):
                 with self.subTest(error=type(failure).__name__, json=bool(json_flag)):
                     sent, before = len(self.fake.requests), len(self.records().records)
                     err = io.StringIO()
-                    with contextlib.redirect_stdout(_BrokenStream(failure)), contextlib.redirect_stderr(err), \
-                            mock.patch.dict(os.environ, self.env):
-                        code = githits_cli_entry.main(["search", "q", "--target", "pypi:requests", *json_flag])
+                    words = ["search", "q", "--target", "pypi:requests", *json_flag]
+                    with launch_guard(words) as guard, contextlib.redirect_stdout(_BrokenStream(failure)), \
+                            contextlib.redirect_stderr(err), mock.patch.dict(os.environ, {**self.env, **guard}):
+                        code = githits_cli_entry.main(words)
                     self.assertEqual(code, 1)
                     self.assertIn("error: output_failed", err.getvalue())
                     self.assertNotIn("Traceback", err.getvalue())
