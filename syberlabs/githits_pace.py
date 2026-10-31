@@ -132,13 +132,13 @@ def _last(path: Path) -> float | None:
     return value if value == value and abs(value) != float("inf") else None
 
 
-def wait(folder=None, *, interval: float = EXAMPLE_INTERVAL, clock=time.time, sleep=time.sleep) -> int:
+def wait(folder, *, interval: float = EXAMPLE_INTERVAL, clock=time.time, sleep=time.sleep) -> int:
     """Hold the caller until this host's last example slot is ``interval`` seconds old, take the next slot, and
     return how long the caller was held in milliseconds (lock wait included). ``clock`` and ``sleep`` are injectable
     for tests; the stamp is wall-clock seconds so that separate processes compare it."""
     if not (isinstance(interval, (int, float)) and interval >= 0):
         raise PaceError("the pacing interval is a non-negative number of seconds")
-    folder = Path(folder) if folder is not None else directory()
+    folder = Path(folder)
     started = clock()
     try:
         folder.mkdir(parents=True, exist_ok=True)

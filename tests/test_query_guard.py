@@ -97,7 +97,7 @@ class Rules(unittest.TestCase):
                          "WebFetch's prompt is processed off this machine, so it is judged")
         self.assertEqual(guard.decide({"tool_name": "WebSearch", "tool_input": {"query": "csv", "extra": SECRET}}),
                          "secret", "a field WebSearch adds later is judged too")
-        self.assertEqual(guard.outbound("WebFetch", {"url": "https://x.example.test/", "prompt": "summarize"}),
+        self.assertEqual(guard.outbound({"url": "https://x.example.test/", "prompt": "summarize"}),
                          ["url", "https://x.example.test/", "prompt", "summarize"])
 
     def test_what_is_judged_is_what_leaves(self):
