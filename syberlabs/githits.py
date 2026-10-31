@@ -112,7 +112,14 @@ EXCLUDE_ENV = "SYBERLABS_GITHITS_EXCLUDE"
 EXCLUDE_REPLACE_ENV = "SYBERLABS_GITHITS_EXCLUDE_REPLACE"  # "1": the list replaces the default; for tests only
 LICENSES_ENV = "SYBERLABS_GITHITS_LICENSES"
 RECORD_DIR_ENV, RECORD_KEY_ENV = "SYBERLABS_GITHITS_RECORD_DIR", "SYBERLABS_GITHITS_RECORD_KEY"
-DEFAULT_EXCLUDE = ("SyberLabs",)
+# The default deny-list (the pilot's pre-registration): SyberLabs' and its founder's GitHub owners, the PyPI name of
+# this repository's distribution (``pyproject.toml``: ``syberwork``; there is no npm package), and the DeepWiki
+# front-ends that re-serve public repositories, SyberLabs' among them. ``SYBERLABS_GITHITS_EXCLUDE`` adds to it.
+DEFAULT_EXCLUDE = ("SyberLabs", "sykosyber", "pypi:syberwork", "deepwiki.com", "deepwiki.org")
+# A fork of a SyberLabs repository keeps its name under another owner (``github.com/<anyone>/SyberWork``), so a
+# repository named like a SyberLabs product, under any owner on a code host, is excluded too: by name only, so a fork
+# renamed to something else is not detected.
+FORK_NAMES = ("syberwork", "sybersdk", "syberfactory", "syberlabs", "syberstate")
 # The licenses a result may carry by default: permissive licenses whose only obligation is to keep a notice, which an
 # Apache-2.0 project can meet. Anything not listed (copyleft, NOASSERTION, unknown, none) is dropped.
 PERMISSIVE = ("MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "Zlib", "PSF-2.0",
@@ -146,6 +153,9 @@ REGISTRIES = ("npm", "pypi", "hex", "crates", "vcpkg", "zig", "nuget", "maven", 
 REPOSITORY_PREFIXES = {"github": "https://github.com/", "gitlab": "https://gitlab.com/",
                        "codeberg": "https://codeberg.org/"}
 _NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+_HOST_NAME = re.compile(r"^(?:[A-Za-z0-9-]+\.)+[A-Za-z][A-Za-z0-9-]*$")
+# Where a registry shows a package, for a package exclusion read in free text and result URLs.
+_REGISTRY_PAGES = {"pypi": r"pypi\.org/(?:project|simple)/", "npm": r"(?:www\.)?npmjs\.(?:com|org)/package/"}
 _HOSTS = (r"(?:[a-z0-9-]+\.)*(?:github\.com|gitlab\.com|codeberg\.org|bitbucket\.org|githubusercontent\.com)"
           r"|github|gitlab|codeberg")
 
@@ -241,22 +251,52 @@ class RecordRead(NamedTuple):
 # ---------------------------------------------------------------------------------------------------------- exclusions
 
 class Exclusions:
-    """Owners (``SyberLabs``) and repositories (``SyberLabs/SyberWork``) whose content must not reach a result,
-    matched case-insensitively in every reading ``_readings`` gives (as a URL parser or a lenient target parser
-    would read the text)."""
+    """Owners (``SyberLabs``), repositories (``SyberLabs/SyberWork``), packages (``pypi:syberwork``) and hosts
+    (``deepwiki.com``, with its subdomains) whose content must not reach a result, plus any code-host repository named
+    like a SyberLabs product (``FORK_NAMES``: a fork under another owner), matched case-insensitively in every reading
+    ``_readings`` gives (as a URL parser or a lenient target parser would read the text). An entry is an owner or
+    ``owner/repo``, a ``registry:name`` (``REGISTRIES``), or a host name (a dot and no slash)."""
 
-    def __init__(self, entries):
+    def __init__(self, entries, forks: bool = True):
         parsed = []
         for entry in entries:
-            parts = [part.strip() for part in str(entry).strip().strip("/").split("/")]
+            text = str(entry).strip().strip("/")
+            registry, _, package = text.partition(":")
+            if package:
+                if registry.lower() not in REGISTRIES or not _NAME.match(package.strip()):
+                    raise GitHitsError("bad_exclusion", f"a package exclusion is registry:name, got {text[:80]!r}")
+                parsed.append((f"{registry.lower()}:{package.strip().lower()}",))
+                continue
+            parts = [part.strip() for part in text.split("/")]
             if not 1 <= len(parts) <= 2 or not all(_NAME.match(part) for part in parts):
-                raise GitHitsError("bad_exclusion", f"an exclusion is an owner or owner/repo, got {str(entry)[:80]!r}")
+                raise GitHitsError("bad_exclusion", "an exclusion is an owner, owner/repo, registry:name or a host, "
+                                                    f"got {str(entry)[:80]!r}")
+            if len(parts) == 1 and "." in parts[0] and not _HOST_NAME.match(parts[0]):
+                raise GitHitsError("bad_exclusion", f"a host exclusion is a host name, got {parts[0][:80]!r}")
             parsed.append(tuple(part.lower() for part in parts))
         if not parsed:
             raise GitHitsError("bad_exclusion", "the exclusion list is empty")
         self.entries = tuple(dict.fromkeys(parsed))
         mentions, bare = [], []
-        for owner, *repo in self.entries:
+        if forks:  # FORK_NAMES under any owner: on a code host, or as a code-host shorthand or bare owner/repo
+            names = r"(?:" + "|".join(re.escape(name) for name in FORK_NAMES) + r")(?![a-z0-9_-])"
+            mentions.append(r"(?<![a-z0-9_.-])(?:" + _HOSTS + r")\.?(?::\d+)?[/:]+(?:repos/)?[a-z0-9_.-]+/" + names)
+            bare.append(r"^(?:(?:github|gitlab|codeberg):)?[@/]*[a-z0-9_-]+/" + names)
+        for entry in self.entries:
+            if ":" in entry[0]:  # a package: the target itself, and its page on the registry
+                registry, package = entry[0].split(":", 1)
+                bare.append(r"^" + re.escape(registry) + r":[@/]*" + re.escape(package) + r"(?![a-z0-9_.-])")
+                pages = _REGISTRY_PAGES.get(registry)
+                mentions.append(r"(?<![a-z0-9_.-])" + re.escape(registry) + r":" + re.escape(package)
+                                + r"(?![a-z0-9_.-])")
+                if pages:
+                    mentions.append(r"(?<![a-z0-9_.-])" + pages + re.escape(package) + r"(?![a-z0-9_.-])")
+                continue
+            if len(entry) == 1 and "." in entry[0]:  # a host, with any subdomain, a root dot and a port
+                mentions.append(r"(?<![a-z0-9_.-])(?:[a-z0-9-]+\.)*" + re.escape(entry[0])
+                                + r"\.?(?::\d+)?(?![a-z0-9_.-])")
+                continue
+            owner, *repo = entry
             tail = (r"/" + re.escape(repo[0]) + r"(?:\.git)?(?![a-z0-9_.-])") if repo else r"(?![a-z0-9_-])"
             # A host may carry the root label's dot and a port (github.com.:443), which a URL parser drops.
             mentions.append(r"(?<![a-z0-9_.-])(?:" + _HOSTS + r")\.?(?::\d+)?[/:]+(?:repos/)?"
@@ -269,14 +309,19 @@ class Exclusions:
         self._mention = re.compile("|".join(mentions), re.IGNORECASE)
         self._bare = re.compile("|".join(bare), re.IGNORECASE)
 
+    def written(self) -> str:
+        """The list as ``SYBERLABS_GITHITS_EXCLUDE`` writes it: comma-separated entries ``from_env`` reads back."""
+        return ",".join("/".join(entry) for entry in self.entries)
+
     @classmethod
     def from_env(cls, environ=None) -> "Exclusions":
-        """``DEFAULT_EXCLUDE`` plus the owners and repositories ``SYBERLABS_GITHITS_EXCLUDE`` adds; the variable never
-        removes the default. ``SYBERLABS_GITHITS_EXCLUDE_REPLACE=1`` (for tests only) makes its list replace it."""
+        """``DEFAULT_EXCLUDE`` plus the owners, repositories, packages and hosts ``SYBERLABS_GITHITS_EXCLUDE`` adds; the
+        variable never removes the default. ``SYBERLABS_GITHITS_EXCLUDE_REPLACE=1`` (for tests only) makes its list
+        replace it."""
         environ = _process_environ if environ is None else environ
         listed = [item for item in environ.get(EXCLUDE_ENV, "").split(",") if item.strip()]
         if listed and environ.get(EXCLUDE_REPLACE_ENV, "").strip() == "1":
-            return cls(listed)
+            return cls(listed, forks=False)  # the whole default replaced, the fork rule included
         return cls(list(DEFAULT_EXCLUDE) + listed)
 
     def mentioned(self, text) -> bool:

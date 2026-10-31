@@ -160,7 +160,7 @@ exec '<host python>' -I '<host checkout>/syberlabs/githits_cli_entry.py' "$@"
 | `GITHITS_SESSION_ID` | `<thread>-<arm>` (`X-GitHits-Session-ID`; GitHits allows only `[A-Za-z0-9_-]`, so not `/`); the thread is `thread_label` (the CLI passes the thread's id), else the search space's thread, so a provider built in Python names its thread too |
 | `GITHITS_AGENT` | `syberfactory/<arm>` (`X-GitHits-Agent`) |
 | `SYBERLABS_GITHITS_LICENSES` | the license allow list in force, written out (the operator's, else the permissive default) |
-| `SYBERLABS_GITHITS_EXCLUDE` | the exclusion list in force, written out (`syberlabs` plus what the operator added) |
+| `SYBERLABS_GITHITS_EXCLUDE` | the exclusion list in force, written out (the default deny-list, `syberlabs,sykosyber,pypi:syberwork,deepwiki.com,deepwiki.org`, plus what the operator added; `docs/GITHITS.md`) |
 | `SYBERLABS_GITHITS_PACE_DIR` | the host's example pacing directory, resolved by the host (the operator's value, else `syberlabs-githits-pace` in the host's temporary directory), so a launcher whose `TMPDIR` or home differs (`api-hooked` moves the home) still shares one pacing slot |
 
 `GITHITS_API_TOKEN` is the operator's own, inherited from the environment and never written; the provider refuses `--githits` without it. `SYBERLABS_GITHITS_EXCLUDE_REPLACE` is never passed: an operator's switch is removed from Claude Code's environment, and the exclusion list above is computed without it, so it always begins with `syberlabs` (tested in both arms). The arm defaults to `b`. Arm B passes the operator's other GitHits variables through unchanged, as before.

@@ -842,7 +842,7 @@ class ClaudeCodeProvider(RepairProvider):
                 githits_pace.PACE_DIR_ENV: str(githits_pace.directory(os.environ)),
                 githits_client.SESSION_ENV: session, githits_client.AGENT_ENV: f"syberfactory/{self.arm}",
                 githits_client.LICENSES_ENV: ",".join(licenses.allowed) if licenses.allowed else githits_client.ANY_LICENSE,
-                githits_client.EXCLUDE_ENV: ",".join("/".join(entry) for entry in exclude.entries)}
+                githits_client.EXCLUDE_ENV: exclude.written()}
 
     def _session(self, space: SearchSpace) -> str:
         """``X-GitHits-Session-ID``: ``<thread>-<arm>`` (GitHits allows ``[A-Za-z0-9_-]{1,64}``, so no ``/``). The

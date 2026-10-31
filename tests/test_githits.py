@@ -583,7 +583,7 @@ class Exclusion(unittest.TestCase):
                      "https%3A%2F%2Fgithub.com%2FSyberLabs%2FSyberWork", "gitlab:SyberLabs/mirror"):
             with self.subTest(text=text):
                 self.assertTrue(exclude.names(text))
-        for text in ("https://github.com/psf/requests", "github:SyberLabsX/fork", "github:other/SyberLabs",
+        for text in ("https://github.com/psf/requests", "github:SyberLabsX/fork",
                      "pypi:syberlabs-sdk", "https://github.com/syberlabs-archive/x", "npm:express@5.2.1",
                      "site:docs.python.org/3", "https://notgithub.com/SyberLabs/x", ""):
             with self.subTest(text=text):
@@ -604,7 +604,8 @@ class Exclusion(unittest.TestCase):
         self.assertTrue(custom.names("https://github.com/other/repo"))
         self.assertFalse(custom.names("https://github.com/other/else"))
         self.assertTrue(custom.names("github:SyberLabs/SyberWork"), "the default is kept")
-        self.assertEqual(custom.entries, (("syberlabs",), ("acme",), ("other", "repo")))
+        self.assertEqual(custom.entries, (("syberlabs",), ("sykosyber",), ("pypi:syberwork",), ("deepwiki.com",),
+                                          ("deepwiki.org",), ("acme",), ("other", "repo")))
         for switch in ("0", "", "yes", "true"):
             kept = githits.Exclusions.from_env({githits.EXCLUDE_ENV: "Acme", githits.EXCLUDE_REPLACE_ENV: switch})
             self.assertTrue(kept.names("github:SyberLabs/x"), f"only 1 replaces, not {switch!r}")
@@ -613,6 +614,61 @@ class Exclusion(unittest.TestCase):
         self.assertTrue(replaced.names("github:acme/x"))
         empty = githits.Exclusions.from_env({githits.EXCLUDE_ENV: " , ", githits.EXCLUDE_REPLACE_ENV: "1"})
         self.assertTrue(empty.names("github:SyberLabs/x"), "replacing with nothing keeps the default")
+
+    def test_the_default_deny_list_refuses_our_package_founder_forks_and_deepwiki(self):
+        """guard-lane (the pilot's pre-registration): besides SyberLabs, the default refuses this repository's PyPI
+        name (pyproject.toml: syberwork), github.com/sykosyber, a fork of a SyberLabs repository detectable by its
+        name under another owner (FORK_NAMES), and the DeepWiki front-ends, as targets and in result text."""
+        exclude = githits.Exclusions.from_env({})
+        self.assertEqual(githits.DEFAULT_EXCLUDE, ("SyberLabs", "sykosyber", "pypi:syberwork", "deepwiki.com",
+                                                   "deepwiki.org"))
+        for text in ("pypi:syberwork", "pypi:SyberWork@0.1.0", "pypi: syberwork", "github:sykosyber/dotfiles",
+                     "https://github.com/sykosyber/x", "https://github.com/someone/SyberWork",
+                     "github:someone/syberfactory@main", "someone/SyberSDK", "github:other/SyberLabs",
+                     "https://gitlab.com/mirror/syberwork.git", "site:deepwiki.com/SyberLabs/SyberWork",
+                     "https://deepwiki.com/psf/requests", "https://www.deepwiki.org/x", "site:DEEPWIKI.COM",
+                     "https://deepwiki.com:443/x", "https%3A%2F%2Fdeepwiki.com%2Fx"):
+            with self.subTest(refused=text):
+                self.assertTrue(exclude.names(text))
+        for text in ("pypi:syberworkx", "pypi:requests", "npm:syberwork", "https://github.com/someone/syberworking",
+                     "https://notdeepwiki.com/x", "site:docs.python.org/3", "https://github.com/psf/requests",
+                     "https://notgithub.com/x/SyberWork"):
+            with self.subTest(kept=text):
+                self.assertFalse(exclude.names(text))
+        for text in ("see https://pypi.org/project/syberwork/", "the page at deepwiki.com/psf/requests",
+                     "[Source 1](https://github.com/fork/SyberWork/blob/1/a.py) (MIT)",
+                     "(https://github.com/sykosyber/notes)"):
+            with self.subTest(mentioned=text):
+                self.assertTrue(exclude.mentioned(text))
+        self.assertFalse(exclude.mentioned("syberwork, said without a host or registry"))
+        added = githits.Exclusions.from_env({githits.EXCLUDE_ENV: "npm:left-pad, example.org"})
+        self.assertTrue(added.names("npm:left-pad@1.3.0") and added.names("https://docs.example.org/x"))
+        self.assertTrue(added.names("pypi:syberwork"), "the variable adds; the deny-list stays")
+        self.assertEqual(githits.Exclusions.from_env({githits.EXCLUDE_ENV: added.written()}).entries, added.entries,
+                         "the written list reads back as itself")
+        for bad in ("foo:bar", "pypi:", "a..b", "x/y/z"):
+            with self.subTest(bad=bad), self.assertRaises(githits.GitHitsError):
+                githits.Exclusions([bad])
+
+    def test_the_deny_list_never_leaves_and_drops_what_points_at_it(self):
+        """Refused targets send nothing; a result or an example pointing at a denied place is dropped."""
+        fake = FakeGitHits()
+        self.addCleanup(fake.close)
+        if True:
+            env = {githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(8), githits.URL_ENV: fake.url}
+            client = githits.Client.from_env(env)
+            for target in ("pypi:syberwork", "site:deepwiki.com/psf/requests", "github:sykosyber/x"):
+                with self.subTest(target=target):
+                    self.assertEqual(client.search("q", [target]).status, githits.EXCLUDED)
+            self.assertEqual(fake.requests, [], "nothing was sent")
+            fake.serve("/v1/searches", search_response([search_hit("a", "https://github.com/someone/SyberWork"),
+                                                        search_hit("b", "https://github.com/psf/requests")]))
+            result = client.search("q", ["pypi:requests"])
+            self.assertEqual((result.results_returned, result.results_dropped), (1, 1), "the fork's hit is dropped")
+            fake.serve("/v1/examples/search", {"result": "Use this.\n\nSee https://deepwiki.com/psf/requests\n",
+                                               "search_status": "complete",
+                                               "solution_id": "12345678-1234-4234-8234-123456789abc"})
+            self.assertTrue(client.example("q").contamination_blocked, "an example citing DeepWiki is dropped whole")
         for value in ("", " , "):
             self.assertTrue(githits.Exclusions.from_env({githits.EXCLUDE_ENV: value}).names("github:SyberLabs/x"))
         with self.assertRaises(githits.GitHitsError):

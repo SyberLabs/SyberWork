@@ -56,9 +56,24 @@ not be shown SyberLabs code as if it were outside evidence. For the pilot, conta
 side: the work items are unpublished, both arms run locally on a pinned base, and this client is the backstop. An
 exclusion at GitHits' index is optional, not something the pilot relies on.
 
-The client works in three layers. The exclusion list is `SyberLabs` plus whatever `SYBERLABS_GITHITS_EXCLUDE` adds:
-a comma list of owners or `owner/repo`, matched case-insensitively. The variable only adds; it never removes
-`SyberLabs`, and an empty value keeps the default. `SYBERLABS_GITHITS_EXCLUDE_REPLACE=1` makes the variable's list
+The client works in three layers. The exclusion list is the default deny-list plus whatever
+`SYBERLABS_GITHITS_EXCLUDE` adds, matched case-insensitively. The default (`githits.DEFAULT_EXCLUDE`, from the
+pilot's pre-registration) is:
+
+- the GitHub owners `SyberLabs` and `sykosyber` (`github.com/sykosyber/*`, and each owner's own domains and
+  `*.github.io` pages, as for any owner);
+- `pypi:syberwork`, the PyPI name of this repository's distribution (`pyproject.toml`; there is no npm package), as a
+  target and as `pypi.org/project/syberwork` in a result;
+- `deepwiki.com` and `deepwiki.org` with their subdomains, the DeepWiki front-ends that re-serve public repositories,
+  SyberLabs' among them, as a target (`site:deepwiki.com/...`, a URL) and anywhere in a result's text;
+- forks of SyberLabs repositories where the result's URL shows one: a repository named like a SyberLabs product
+  (`githits.FORK_NAMES`: `syberwork`, `sybersdk`, `syberfactory`, `syberlabs`, `syberstate`) under any owner on a
+  code host (`github.com/<anyone>/SyberWork`, `github:<anyone>/syberfactory`). This is by name only: a fork renamed
+  to something else is not detected.
+
+An entry of the variable is an owner, `owner/repo`, a package `registry:name` (`npm:left-pad`) or a host name with a
+dot and no slash (`example.org`, which also covers its subdomains). The variable only adds; it never removes the
+default, and an empty value keeps it. `SYBERLABS_GITHITS_EXCLUDE_REPLACE=1` makes the variable's list
 replace the default; it exists for tests only, and the Claude Code provider never passes it to the launcher's client.
 Passing another list to `Client(exclude=...)` in code replaces the default too.
 
@@ -346,8 +361,8 @@ misreports. Claim ceiling: implemented and tested with stand-ins; no pilot has r
 | `GITHITS_API_TOKEN` | the bearer token (required for a call; a refused target needs none) |
 | `GITHITS_API_URL` | base URL, default `https://api.githits.dev/v1` |
 | `GITHITS_SESSION_ID`, `GITHITS_AGENT` | optional `X-GitHits-Session-ID` and `X-GitHits-Agent` |
-| `SYBERLABS_GITHITS_EXCLUDE` | owners or `owner/repo` to exclude besides `SyberLabs`, comma list (it only adds) |
-| `SYBERLABS_GITHITS_EXCLUDE_REPLACE` | `1`: the list above replaces `SyberLabs` (tests only) |
+| `SYBERLABS_GITHITS_EXCLUDE` | owners, `owner/repo`, `registry:name` packages or hosts to exclude besides the default deny-list (`SyberLabs`, `sykosyber`, `pypi:syberwork`, `deepwiki.com`, `deepwiki.org`, and forks by name), comma list (it only adds) |
+| `SYBERLABS_GITHITS_EXCLUDE_REPLACE` | `1`: the list above replaces the default deny-list, the fork rule included (tests only) |
 | `SYBERLABS_GITHITS_LICENSES` | allowed SPDX ids, comma list, or `any` (default: the permissive list) |
 | `SYBERLABS_GITHITS_RECORD_DIR`, `SYBERLABS_GITHITS_RECORD_KEY` | where records go and their MAC key (both or neither) |
 | `SYBERLABS_GITHITS_PACE_DIR` | the host's example pacing directory, absolute (default: `syberlabs-githits-pace` in the temporary directory) |

@@ -73,13 +73,6 @@ def check(arm: dict, budget: dict) -> list[str]:
         errors.append("max_calls: a single arm makes one call")
     if kind == "claude-code" and arm.get("bare") and arm.get("lane") in ("subscription_local", "seat_team_enterprise"):
         errors.append("lane: --bare never reads a Claude login")
-    if kind == "claude-code" and arm.get("bare") and arm.get("lane") == "api-hooked":
-        errors.append("lane: api-hooked is the API key without --bare")
-    if kind == "claude-code" and not arm.get("bare") and arm.get("lane") == "api":
-        errors.append("lane: api is --bare; without it use api-hooked")
-    if kind == "claude-code" and arm.get("bare") and arm.get("githits"):
-        errors.append("githits: refused with --bare (Claude Code 2.1.312 runs no --settings hook there, so the query "
-                      "guard would not run); use lane api-hooked")
     if "max_calls" in arm and arm["max_calls"] > budget["calls"]:
         errors.append(f"max_calls: above the spec's budget.calls ({budget['calls']})")
     return errors
