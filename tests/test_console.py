@@ -26,7 +26,6 @@ import urllib.error
 import urllib.request
 from contextlib import closing
 from pathlib import Path
-from urllib.parse import unquote
 
 from syberlabs.admission import approval_roles
 from syberlabs.build import Kit

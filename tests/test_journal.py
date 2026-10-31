@@ -60,7 +60,7 @@ class FakeMsvcrt:
     away from zero so only code that seeks before each call records zero.
     """
 
-    LK_UNLCK, LK_LOCK, LK_NBLCK = 0, 1, 2
+    LK_UNLCK, LK_NBLCK = 0, 2
 
     def __init__(self, busy=0):
         self.busy = busy

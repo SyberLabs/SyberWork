@@ -15,7 +15,7 @@ from pathlib import Path
 
 from syberlabs.errors import Rejected
 from syberlabs.eval import arms, runner, spec, tasks
-from tests.test_eval_core import PRICES, SIM, tiny_spec, write_task
+from tests.test_eval_core import tiny_spec, write_task
 
 # RFC 8032 test vector 1, the seed tests/test_certificate.py signs with; never a real key.
 TEST_SEED = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"

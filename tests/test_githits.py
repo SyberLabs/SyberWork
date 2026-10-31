@@ -5,8 +5,8 @@ bodies valid under the pinned OpenAPI fixture, ``X-Request-ID`` and the rate-lim
 real API and no real token exists: each test makes a random one and checks where it went.
 
 The fixture ``tests/fixtures/githits_openapi_v1.json`` is ``fixture_bytes`` of the public document fetched once
-from https://api.githits.dev/v1/openapi.json on 2026-10-26 (1,364,570 bytes, SHA-256 ``UPSTREAM_SHA256``): the five
-operations this client calls with every component they reference, values unchanged, as compact sorted ASCII JSON.
+from https://api.githits.dev/v1/openapi.json on 2026-10-26 (1,364,570 bytes, SHA-256
+e58048e3e56d7b0d6346e24722614d2d8907748960f18f18204895a354ab8a6a): the five operations this client calls with every component they reference, values unchanged, as compact sorted ASCII JSON.
 The whole document is over the change-size limit of the contract this repository is built under, so only that
 closed subset is pinned. ``SpecPin`` fails when the fixture changes, and when the client sends or reads a field
 the fixture does not have. ``tests/fixtures/githits_openapi_v1_languages.json`` pins, the same way and from the same
@@ -39,7 +39,6 @@ FIXTURE = ROOT / "tests" / "fixtures" / "githits_openapi_v1.json"
 FIXTURE_SHA256 = "c388ab7e53a25fdfbd914c10634d799ae923b01ab8880750c750e775c21f1b9c"
 DOCTOR_FIXTURE = ROOT / "tests" / "fixtures" / "githits_openapi_v1_languages.json"
 DOCTOR_FIXTURE_SHA256 = "492fcb7f97838a2bed4dfc4618c3858cc8589787f1f3ff92422ffff3fdc8904c"
-UPSTREAM_SHA256 = "e58048e3e56d7b0d6346e24722614d2d8907748960f18f18204895a354ab8a6a"
 ENV_NAMES = (githits.TOKEN_ENV, githits.URL_ENV, githits.SESSION_ENV, githits.AGENT_ENV, githits.EXCLUDE_ENV,
              githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV,
              query_guard.KEY_ENV, query_guard.LAUNCHER_ENV)
@@ -676,21 +675,20 @@ class Exclusion(unittest.TestCase):
         """Refused targets send nothing; a result or an example pointing at a denied place is dropped."""
         fake = FakeGitHits()
         self.addCleanup(fake.close)
-        if True:
-            env = {githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(8), githits.URL_ENV: fake.url}
-            client = githits.Client.from_env(env)
-            for target in ("pypi:syberwork", "site:deepwiki.com/psf/requests", "github:sykosyber/x"):
-                with self.subTest(target=target):
-                    self.assertEqual(client.call(githits.search_request("q", [target])).status, githits.EXCLUDED)
-            self.assertEqual(fake.requests, [], "nothing was sent")
-            fake.serve("/v1/searches", search_response([search_hit("a", "https://github.com/someone/SyberWork"),
-                                                        search_hit("b", "https://github.com/psf/requests")]))
-            result = client.call(githits.search_request("q", ["pypi:requests"]))
-            self.assertEqual((result.results_returned, result.results_dropped), (1, 1), "the fork's hit is dropped")
-            fake.serve("/v1/examples/search", {"result": "Use this.\n\nSee https://deepwiki.com/psf/requests\n",
-                                               "search_status": "complete",
-                                               "solution_id": "12345678-1234-4234-8234-123456789abc"})
-            self.assertTrue(client.call(githits.example_request("q")).contamination_blocked, "an example citing DeepWiki is dropped whole")
+        env = {githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(8), githits.URL_ENV: fake.url}
+        client = githits.Client.from_env(env)
+        for target in ("pypi:syberwork", "site:deepwiki.com/psf/requests", "github:sykosyber/x"):
+            with self.subTest(target=target):
+                self.assertEqual(client.call(githits.search_request("q", [target])).status, githits.EXCLUDED)
+        self.assertEqual(fake.requests, [], "nothing was sent")
+        fake.serve("/v1/searches", search_response([search_hit("a", "https://github.com/someone/SyberWork"),
+                                                    search_hit("b", "https://github.com/psf/requests")]))
+        result = client.call(githits.search_request("q", ["pypi:requests"]))
+        self.assertEqual((result.results_returned, result.results_dropped), (1, 1), "the fork's hit is dropped")
+        fake.serve("/v1/examples/search", {"result": "Use this.\n\nSee https://deepwiki.com/psf/requests\n",
+                                           "search_status": "complete",
+                                           "solution_id": "12345678-1234-4234-8234-123456789abc"})
+        self.assertTrue(client.call(githits.example_request("q")).contamination_blocked, "an example citing DeepWiki is dropped whole")
         for value in ("", " , "):
             self.assertTrue(githits.Exclusions.from_env({githits.EXCLUDE_ENV: value}).names("github:SyberLabs/x"))
         with self.assertRaises(githits.GitHitsError):
