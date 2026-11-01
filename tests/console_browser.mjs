@@ -20,7 +20,6 @@ page.on('dialog', async d => { errors.push('native dialog: ' + d.message()); awa
 
 const shot = async name => { if (shots) await page.screenshot({ path: `${shots}/${name}.png`, fullPage: false }); };
 const step = name => report.steps.push(name);
-const nextText = () => page.textContent('.next p');
 async function waitNext(fragment) {
   await page.waitForFunction(f => (document.querySelector('.next p') || {}).textContent?.includes(f), fragment, { timeout: 15000 });
 }
