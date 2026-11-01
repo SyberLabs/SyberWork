@@ -62,9 +62,9 @@ def render(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_result(path: Path | None = None) -> str:
+def write_result() -> str:
     text = render(run())
-    destination = path or Path(__file__).resolve().parent / "results" / "adversarial-payment.txt"
+    destination = Path(__file__).resolve().parent / "results" / "adversarial-payment.txt"
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(text, encoding="utf-8")
     return text

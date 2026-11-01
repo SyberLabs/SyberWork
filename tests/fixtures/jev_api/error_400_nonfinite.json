@@ -1,0 +1,14 @@
+{
+ "recorded": "2026-10-28",
+ "source": "POST https://api.typesafe.ai/v1/systemone, packet jev-api phase 1",
+ "scrubbed": "request headers (Authorization), response headers (request id, cookie, CF-RAY, date)",
+ "status": 400,
+ "latency_ms": 130.1,
+ "request": "{\"model\":\"jev-1.13.0\",\"state\":{\"x\":NaN},\"questions\":{\"q\":{\"type\":\"noul\",\"instructions\":\"Is x large?\"}}}",
+ "response": {
+  "detail": {
+   "error_type": "api_usage_error",
+   "message": "Request contains NaN or infinity."
+  }
+ }
+}

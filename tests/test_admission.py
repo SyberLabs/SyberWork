@@ -7,11 +7,9 @@ from unittest.mock import patch
 
 from syberlabs import admission
 from syberlabs.admission import (
-    ECONOMIC_INSERT_AFTER,
     RULES,
     AdmissionContext,
     admit,
-    rule_order,
     rule_provenance,
 )
 from syberwork.core import Work
@@ -210,10 +208,9 @@ def budget_cases():
 
 class AdmissionRegistry(unittest.TestCase):
     def test_registry_order(self):
-        self.assertEqual(rule_order(), EXPECTED_ORDER)
+        self.assertEqual([name for name, _ in RULES], EXPECTED_ORDER)
         self.assertEqual(EXPECTED_ORDER.index("facts.required") + 1, EXPECTED_ORDER.index("economic.reserve"))
         self.assertEqual(EXPECTED_ORDER.index("economic.reserve") + 1, EXPECTED_ORDER.index("bindings.inputs"))
-        self.assertEqual(ECONOMIC_INSERT_AFTER, "facts.required")
         # The budget rules read the host's spend records of a candidate that candidate.promotable and the
         # critic already admitted; they sit right after the critic and before any approval is asked for.
         self.assertEqual(EXPECTED_ORDER.index("critic.no_high_finding") + 1, EXPECTED_ORDER.index("budget.search"))

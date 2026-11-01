@@ -358,7 +358,7 @@ class BuilderRecords:
             "body": _loads(row["body"]),
         }
 
-    def _candidate_projection(self, generation, link, snapshot, feedback, integrity, prototypes) -> dict:
+    def _candidate_projection(self, link, snapshot, feedback, integrity, prototypes) -> dict:
         nodes = [] if snapshot is None else nodes_for_paths(snapshot, link["changed_paths"])
         prototype = next((item for item in prototypes if item["candidate_id"] == link["candidate_id"]), None)
         notes = [item for item in feedback if item["target_kind"] == "candidate" and item["target_id"] == link["candidate_id"]]

@@ -1,0 +1,107 @@
+{
+  "checks": {},
+  "contamination": {
+    "note": "The fixture, its objective and these checks are public in SyberLabs/SyberWork benchmarks/fixtures.py since 2026-10-23 (#75): hidden from the agent's worktree and requests, not from a model trained on that repository or a lookup into it.",
+    "status": "public_repository"
+  },
+  "hidden": {
+    "checks": {
+      "closed_entry": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "closed_entry"
+        ],
+        "timeout_seconds": 60
+      },
+      "head_constant": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "head_constant"
+        ],
+        "timeout_seconds": 60
+      },
+      "head_line": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "head_line"
+        ],
+        "timeout_seconds": 60
+      },
+      "landed_order": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "landed_order"
+        ],
+        "timeout_seconds": 60
+      },
+      "narrowed_entry": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "narrowed_entry"
+        ],
+        "timeout_seconds": 60
+      },
+      "table_rows": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "table_rows"
+        ],
+        "timeout_seconds": 60
+      },
+      "test_doc": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "test_doc"
+        ],
+        "timeout_seconds": 60
+      }
+    }
+  },
+  "id": "v4-stack_landing",
+  "labels": {
+    "generation": "v4",
+    "pool": "e3"
+  },
+  "objective": "The merge chain recorded in src/chain.log landed and the other records under src were not brought up to date: src/gaps.md does not say which entries the landed pull requests closed or narrowed; the table in src/status.md still shows those pull requests as open, in the order before the chain, and its chain head line is the old head; the docstring of src/test_landing.py still describes the previous chain; and src/release.py still names the previous chain, what it landed and its head. Bring each record into agreement with the log in that record's own convention; test data, entry numbers, entry titles, the rows of earlier chains and the log itself must not change",
+  "provenance": {
+    "adapter": "syberlabs eval tasks import-fixtures",
+    "fixture": "stack_landing",
+    "generation": "v4",
+    "origin": "benchmarks/fixtures.py"
+  },
+  "safety": {
+    "canaries": [],
+    "expectations": []
+  },
+  "schema": "syberlabs.eval/task.v1",
+  "scope": {
+    "max_diff_bytes": 50000,
+    "max_files": 5,
+    "paths": [
+      "src/"
+    ]
+  },
+  "source": "fixture:stack_landing",
+  "source_digest": "56c01adcc8a2cee50491051be10ea0ea40ef27b961c6e8bec9a82c785aa902d4"
+}
