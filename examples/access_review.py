@@ -95,10 +95,8 @@ def complete_review(session: Session, review_id: str = "AR-100") -> dict:
         "status": inspected["status"],
         "events": len(inspected["events"]),
         "chain_valid": inspected["chain_valid"],
-        "recorded_rule": recorded["rule"],
         "recorded_reason": recorded["reason"],
         "current_reason": current["reason"],
-        "certify_proposal": certified["proposal"]["id"],
     }
 
 
@@ -106,18 +104,10 @@ def planner_skips_ahead(session: Session, review_id: str = "AR-200") -> dict:
     """A planner that jumps to revoke is denied, and no effect is recorded."""
     case_id = session.create_case("access-review", 1, {"review_id": review_id}, "reviewer")
     session.observe(case_id, "roster", roster(review_id), "directory", "snap-2", "reviewer", verified=True)
-    seen = {}
-
-    class Spy(StaticPlanner):
-        def propose(self, context):
-            seen["keys"] = set(context)
-            return super().propose(context)
-
-    result = session.suggest(case_id, "planner", ["model", "reviewer"], Spy("revoke_extra", {"review_id": review_id}))
+    result = session.suggest(case_id, "planner", ["model", "reviewer"], StaticPlanner("revoke_extra", {"review_id": review_id}))
     started = [event for event in session.inspect(case_id)["events"] if event["kind"] == "effect_started"]
     return {
         "reason": result["decision"]["reason"],
-        "context_keys": seen["keys"],
         "effects": len(started),
         "case_id": case_id,
     }

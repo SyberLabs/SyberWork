@@ -43,7 +43,6 @@ SNAPSHOT_GROUPS = (
         "builder_evaluation_bindings",
     ),
 )
-OPTIONAL_SNAPSHOT_TABLES = frozenset(name for group in SNAPSHOT_GROUPS for name in group)
 
 
 def _optional_skip(directory: Path) -> set[str]:

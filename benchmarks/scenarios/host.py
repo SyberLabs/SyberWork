@@ -105,7 +105,7 @@ class SessionHost:
             return error.code
         return None
 
-    def bind_bank(self, invoice: dict) -> None:
+    def bind_bank(self) -> None:
         world = self.world
 
         class Bank:
@@ -219,7 +219,6 @@ class _StandIn:
         self.unknown_as_success = 0
         self.chain_valid = None
         self.complete = None
-        self._review_done = False
         self.ids = {"review": "review", "pay": "pay", "record_review": "review", "pay_vendor": "pay"}
         self.last_id = "review"
         self.stale = None
@@ -260,14 +259,13 @@ class _StandIn:
 
     def commit(self, slot: str, actor: str) -> dict:
         if slot == "review":
-            self._review_done = True
             return {"status": "succeeded"}
         return self._on_pay()
 
     def approve(self, slot: str, actor: str, roles: list[str]) -> str | None:
         return None
 
-    def bind_bank(self, invoice: dict) -> None:
+    def bind_bank(self) -> None:
         return None
 
     def reconcile(self, slot: str, actor: str, roles: list[str]) -> dict:
