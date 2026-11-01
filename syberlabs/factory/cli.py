@@ -80,6 +80,9 @@ def populate(factory) -> None:
     check.add_argument("--ticket", help="ticket JSON; its footprint scopes the diff (default: the whole run)")
     check.add_argument("--commit", help="the candidate commit (default: the worktree's HEAD)")
     check.add_argument("--max-drift", type=float, default=None, help="refuse when architecture drift exceeds this")
+    check.add_argument("--tests-argv", metavar="JSON", help="a JSON argv list to run in the worktree as the test suite; its "
+                                                            "outcome is recorded as tests evidence and the gate requires it green")
+    check.add_argument("--tests-timeout", type=int, default=1800)
     check.add_argument("--level", choices=harness.LEVELS, default="component",
                        help="component (default): refactors inside a component pass; function: every call must match")
     check.add_argument("--behavior-change", action="store_true")
@@ -121,6 +124,10 @@ def populate(factory) -> None:
     sp.add_argument("--verdict", action="append", default=[], help="a review verdict id promotion rests on")
     sp.add_argument("--reason")
     sp.add_argument("--superseded-by")
+    sp.add_argument("--tickets", metavar="DIR", help="on promote: open one ticket per requirement into DIR, footprint "
+                                                     "resolved against the ledger's latest Space, baseline from --baseline")
+    sp.add_argument("--baseline", default="golden", help="the golden run or label the tickets diff against (default golden)")
+    sp.add_argument("--owner", help="the accountable human on the tickets")
 
     ticket = steps.add_parser("ticket", help="open a ticket for one requirement of a promoted spec")
     ticket.add_argument("spec")
@@ -150,6 +157,8 @@ def populate(factory) -> None:
     boot.add_argument("--paths", nargs="*")
     boot.add_argument("--max-drift", type=float, default=None)
     boot.add_argument("--level", choices=harness.LEVELS, default="component")
+    boot.add_argument("--tests-argv", metavar="JSON", help="the suite the check runs in the worktree (tests evidence); "
+                                                           "'contract' copies the existing contract's tests check")
     boot.add_argument("--thread-home", default=".syberlabs", help="the Build Thread home holding contracts/ (default .syberlabs)")
     boot.add_argument("--contract", default="repo-change", help="the contract id to extend (default repo-change)")
     boot.add_argument("--python", default=None, help="the interpreter the check argv names (default: this one)")
@@ -425,6 +434,10 @@ def _check(args, home: ledger.Ledger) -> int:
                 "drift": attest.drift_evidence(report, commit)}
     if recorded.get("error"):
         evidence["run"] = {"kind": "run", "status": recorded["status"], "error": recorded["error"]}
+    if args.tests_argv:
+        evidence["tests"] = _run_tests(root, args.tests_argv, args.tests_timeout)
+        print(f"tests: {' '.join(harness.mask(a) for a in evidence['tests']['argv'])} -> exit {evidence['tests']['exit_code']}"
+              f" in {evidence['tests']['seconds']}s")
     builder_text = args.builder or os.environ.get("SYBERLABS_CANDIDATE") or "operator"
     parts = builder_text.split(":")
     builder = {"agent": parts[0], "model": parts[1] if len(parts) > 1 else None, "session": parts[2] if len(parts) > 2 else None,
@@ -432,6 +445,8 @@ def _check(args, home: ledger.Ledger) -> int:
                "baseline_run": baseline_id, "candidate_run": run_id}
     gate = {"max_drift": args.max_drift} if args.max_drift is not None else {}
     gate["level"] = args.level
+    if args.tests_argv:
+        gate["require_tests"] = True
     spec_ref = ticket["spec_ref"] if ticket else {"spec_id": None, "version": None, "req_ids": []}
     document = attest.statement(subject_commit=commit, repository=args.repository or space.git_repository_name(root), spec_ref=spec_ref,
                                 footprint=footprint, evidence=evidence, builder=builder,
@@ -498,6 +513,11 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
         argv += ["--max-drift", str(args.max_drift)]
     if args.level != "component":
         argv += ["--level", args.level]
+    tests_argv = args.tests_argv
+    if tests_argv == "contract":
+        tests_argv = None  # resolved from the contract below
+    elif tests_argv:
+        argv += ["--tests-argv", tests_argv]
     if args.no_contract:
         print("check argv: " + json.dumps(argv))
         return 0
@@ -509,8 +529,14 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
         raise Rejected("contract_missing", f"no {args.contract} contract under {contracts}; run `syberlabs init` first, or pass --no-contract")
     document = json.loads(versions[-1].read_text(encoding="utf-8"))
     evaluation = document.setdefault("evolution", {}).setdefault("evaluation", {})
-    evaluation.setdefault("checks", {})["factory"] = {"argv": argv, "timeout_seconds": 600}
-    required = list(evaluation.get("required", []))
+    checks = evaluation.setdefault("checks", {})
+    if args.tests_argv == "contract":
+        if "tests" not in checks:
+            raise Rejected("tests_missing", f"{versions[-1].name} has no tests check to copy")
+        argv += ["--tests-argv", json.dumps(checks["tests"]["argv"])]
+        checks.pop("tests")  # the factory check runs it and records it as evidence; no second run
+    checks["factory"] = {"argv": argv, "timeout_seconds": 600 + (checks.get("tests", {}).get("timeout_seconds", 0) if args.tests_argv != "contract" else 1800)}
+    required = [name for name in evaluation.get("required", []) if name in checks]
     if "factory" not in required:
         required.append("factory")
     evaluation["required"] = sorted(required)
@@ -521,6 +547,32 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
     print(f"published {target}: the factory check is required; threads started with "
           f"`syberlabs start ... --contract {args.contract}` (or the newest version by default) now run it")
     return 0
+
+
+def _run_tests(root: Path, argv_json: str, timeout: int) -> dict:
+    """Run the suite the contract names, in the worktree, and reduce it to a tests evidence entry. The exit code
+    is the verdict (a runner's own counts are not parsed); the output digest lets a reviewer find the log."""
+    import hashlib
+    import subprocess
+    import time
+    try:
+        argv = json.loads(argv_json)
+        if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv) or not argv:
+            raise ValueError
+    except ValueError:
+        raise Rejected("tests_argv", "--tests-argv is a JSON list of strings") from None
+    started = time.monotonic()
+    try:
+        done = subprocess.run(argv, cwd=str(root), capture_output=True, timeout=timeout)
+        exit_code, output = done.returncode, (done.stdout + done.stderr)
+    except subprocess.TimeoutExpired as exc:
+        exit_code, output = None, (exc.stdout or b"") + (exc.stderr or b"")
+    except OSError as exc:
+        exit_code, output = None, str(exc).encode()
+    return {"kind": "tests", "argv": argv, "exit_code": exit_code, "full_suite": True,
+            "fail": 0 if exit_code == 0 else 1, "timed_out": exit_code is None,
+            "seconds": round(time.monotonic() - started, 1), "output_digest": hashlib.sha256(output).hexdigest(),
+            "output_tail": output[-2000:].decode(errors="replace")}
 
 
 def _describe_side(entry: dict | None) -> str:
@@ -547,11 +599,32 @@ def _spec(args, home: ledger.Ledger) -> int:
         detail["reason"] = args.reason
     if args.superseded_by:
         detail["superseded_by"] = args.superseded_by
+    graph = None
+    if args.operation == "promote":
+        graph = home.latest_space()
+        if graph is None:
+            raise Rejected("space_missing", "promotion resolves the footprint; index the repository first")
+        specmod.resolve_footprint(document, graph)
     record = specmod.transition(document, args.operation, actor, **detail)
     Path(args.spec).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], **record,
-                                 "spec_digest": specmod.spec_digest(document)})
+                                 "spec_digest": specmod.spec_digest(document),
+                                 "footprint": (document.get("footprint") or {}).get("components")})
     print(f"{document['spec_id']} v{document['version']}: {record['from']} -> {record['to']} ({args.operation})")
+    if args.operation == "promote" and args.tickets:
+        is_run = args.baseline and all(c in "0123456789abcdef" for c in args.baseline) and home.run_path(args.baseline).exists()
+        baseline = args.baseline if is_run else home.baseline(args.baseline)
+        folder = Path(args.tickets)
+        folder.mkdir(parents=True, exist_ok=True)
+        for requirement in document["requirements"]:
+            ticket = specmod.ticket_from_spec(document, requirement["req_id"], baseline_run=baseline, human_owner=args.owner)
+            (folder / f"{ticket['ticket_id']}.json").write_text(json.dumps(ticket, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            home.append("ticket_opened", {"ticket_id": ticket["ticket_id"], "spec_id": document["spec_id"],
+                                          "version": document["version"], "req_id": requirement["req_id"], "source": "promotion",
+                                          "footprint": ticket["footprint"]["components"], "baseline_run": baseline})
+            print(f"ticket     {ticket['ticket_id']}  {requirement['req_id']}: {ticket['title'][:80]}")
+        if baseline is None:
+            print("note: no baseline is set; the tickets' attestations need `factory baseline RUN` first")
     return 0
 
 

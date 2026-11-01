@@ -149,7 +149,23 @@ On this repository the check runs the host's factory, never the candidate's: the
 module name before the program under test imports its own `syberlabs`. A candidate therefore cannot edit the
 code that judges it.
 
-## Drift opens tickets
+## Tests as evidence, in the same attestation
+
+`factory check --tests-argv '["python", "-m", "unittest", ...]'` runs the suite in the worktree after the
+recording and records its outcome as `tests` evidence (exit code as the verdict, output digest, tail); the
+gate then requires it green. `bootstrap --tests-argv contract` copies the contract's existing `tests` check
+into the factory check and drops the separate one, so the suite runs once and one attestation says: trace
+diff empty, drift within bound, suite green.
+
+## Tickets open without a person
+
+Two of the plan's three automatic ticket sources are live. `factory drift --max 0 --ticket DIR` writes one
+ticket per component over the threshold (footprint: the component and the targets of its undeclared edges;
+acceptance: a clean reflexion report; exit criterion: drift evidence; `repro` lists the symbol-level edges)
+and one for unmapped files. `factory spec promote spec.json --tickets DIR --baseline golden` resolves the
+spec's footprint against the latest Space graph and opens one ticket per requirement with the scenarios as
+acceptance criteria and the golden run as the baseline. Both log `ticket_opened` with a `source`. Feature-map
+drift is the third source and is v1.
 
 `factory drift --declared arch.json --max 0 --ticket tickets/` writes one ticket per component over the
 threshold (footprint: the component and the targets of its undeclared edges; acceptance: a clean reflexion
@@ -212,10 +228,9 @@ component nothing called at a revision has no cells there, and that absence is i
 
 ## Next work package
 
-v1 closes the rest of the loop: promoted specs open tickets on their own (`spec_changed` is already logged),
-three providers propose variants from one parent spec and one reviews, the attestation gate reads a
-`tests` evidence entry from the thread's other checks, and this repository's own contract names
-`factory check` with `docs/architecture.declared.json` and `examples/build_thread.py` as the recorded
-program, so the factory inspects itself on every candidate. The open decision upstream of all of it is
+v1 closes the rest of the loop: three providers propose variants from one parent spec and one reviews; this
+repository's own contract names `factory check` (the bootstrap command exists, the contract lives in the
+operator's `.syberlabs/`, which is not tracked); a finer `docs/architecture.declared.json` so the component
+level sees more; and feature maps once the ledger has volume. The open decision upstream of all of it is
 whether a host-run trace diff over a declared footprint counts as independent review for MasterMind's auto
 class; if it does, the loop closes without changing who promotes.

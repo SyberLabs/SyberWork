@@ -472,9 +472,15 @@ class CliTests(Scratch):
         self.assertIn("worldline matches the recording", out)
         code, out, err = self.run_cli("spec", "validate", "spec.json", cwd=tree)
         self.assertEqual(code, 0, err)
-        code, out, err = self.run_cli("spec", "promote", "spec.json", "--verdict", "v1", "--actor", "model:reviewer", cwd=tree)
+        code, out, err = self.run_cli("spec", "promote", "spec.json", "--verdict", "v1", "--actor", "model:reviewer",
+                                      "--tickets", "tickets", "--baseline", run_a, "--owner", "tester", cwd=tree)
         self.assertEqual(code, 0, err)
         self.assertIn("candidate -> promoted", out)
+        self.assertIn("ticket     ", out)
+        [auto] = list((tree / "tickets").glob("*.json"))
+        auto_ticket = json.loads(auto.read_text(encoding="utf-8"))
+        self.assertEqual((auto_ticket["spec_ref"]["req_ids"], auto_ticket["repro"]["baseline_run"]), (["R1"], run_a))
+        self.assertEqual(auto_ticket["footprint"]["components"], ["effects", "ingest", "rules"])
         code, out, err = self.run_cli("ticket", "spec.json", "--req", "R1", "--baseline", run_a, "--owner", "tester",
                                       "--out", "ticket.json", cwd=tree)
         self.assertEqual(code, 0, err)
@@ -561,8 +567,9 @@ class BuildThreadCheck(Scratch):
         home.set_baseline(run_id)
         return home, run_id
 
-    def kit(self, extra_argv=()):
+    def kit(self, extra_argv=(), version=1):
         contract = self.default_contract(self.project)
+        contract["version"] = version
         contract["evolution"]["scope"] = {"paths": ["fxapp/"], "exclude": [], "max_files": 20, "max_diff_bytes": 200_000}
         contract["evolution"]["evaluation"] = {"checks": {"factory": {"argv": self.check_argv + list(extra_argv), "timeout_seconds": 300}},
                                                "required": ["factory"], "max_age_seconds": 3600, "max_output_bytes": 1_048_576}
@@ -609,6 +616,30 @@ class BuildThreadCheck(Scratch):
         self.assertFalse(last["body"]["promote"])
         self.assertFalse(last["body"]["diff_empty"])
         self.assertTrue(home.verify())
+
+    def test_tests_argv_is_recorded_as_evidence_and_required(self):
+        import sys as _sys
+        home, _ = self.golden()
+        green = json.dumps([_sys.executable, "-c", "import fxapp.rules"])
+        red = json.dumps([_sys.executable, "-c", "import sys; print('1 failed'); sys.exit(1)"])
+        kit = self.kit(extra_argv=["--tests-argv", green])
+        thread = kit.start("Tidy", paths=["fxapp/"])
+        rules = (self.project / "fxapp" / "rules.py").read_text(encoding="utf-8")
+        [candidate] = thread.propose(changes={"fxapp/rules.py": rules + "\n"})
+        verdict = thread.check(candidate.id)
+        self.assertTrue(verdict.acceptable, verdict.summary())
+        self.assertIn("full test suite green", verdict.checks[0].output_tail)
+        attested = [e for e in home.events() if e["kind"] == "attested"][-1]
+        document = json.loads((home.home / "attestations" / f"{attested['body']['attestation_digest']}.json").read_text(encoding="utf-8"))
+        tests = document["predicate"]["evidence"]["tests"]
+        self.assertEqual((tests["exit_code"], tests["fail"], tests["full_suite"]), (0, 0, True))
+        self.assertTrue(document["predicate"]["gate"]["require_tests"])
+        kit = self.kit(extra_argv=["--tests-argv", red], version=2)
+        thread = kit.start("Break", paths=["fxapp/"])
+        [candidate] = thread.propose(changes={"fxapp/rules.py": rules + "\n\n"})
+        verdict = thread.check(candidate.id)
+        self.assertFalse(verdict.acceptable)
+        self.assertIn("tests did not run the full suite green: refuse", verdict.checks[0].output_tail)
 
     def test_drift_bound_refuses_an_undeclared_dependency(self):
         self.golden()
@@ -658,8 +689,8 @@ class BuildThreadCheck(Scratch):
         import sys as _sys
         contract = self.default_contract(self.project)
         contract["evolution"]["scope"] = {"paths": ["fxapp/"], "exclude": [], "max_files": 20, "max_diff_bytes": 200_000}
-        contract["evolution"]["evaluation"] = {"checks": {"noop": {"argv": [_sys.executable, "-c", "pass"]}},
-                                               "required": ["noop"], "max_age_seconds": 3600}
+        contract["evolution"]["evaluation"] = {"checks": {"tests": {"argv": [_sys.executable, "-c", "pass"], "timeout_seconds": 60}},
+                                               "required": ["tests"], "max_age_seconds": 3600}
         contracts = self.project / ".syberlabs" / "contracts"
         contracts.mkdir(parents=True)
         (contracts / "repo-change.v1.json").write_text(json.dumps(contract), encoding="utf-8")
@@ -676,17 +707,19 @@ class BuildThreadCheck(Scratch):
             with redirect_stdout(out), redirect_stderr(err):
                 code = factory_cli.main(["--home", str(self.ledger_home), "bootstrap", "--declared", "architecture.json",
                                          "--entry", "fxapp.main:run", "--fixture", "fixture.json", "--max-drift", "1.0",
-                                         "--python", _sys.executable])
+                                         "--python", _sys.executable, "--tests-argv", "contract"])
         finally:
             os.chdir(here)
         self.assertEqual(code, 0, err.getvalue() + out.getvalue())
         published = contracts / "repo-change.v2.json"
         self.assertTrue(published.exists(), out.getvalue())
         document = json.loads(published.read_text(encoding="utf-8"))
-        self.assertEqual(document["evolution"]["evaluation"]["required"], ["factory", "noop"])
+        self.assertEqual(document["evolution"]["evaluation"]["required"], ["factory"], "the tests check folded into factory")
+        self.assertNotIn("tests", document["evolution"]["evaluation"]["checks"])
         argv = document["evolution"]["evaluation"]["checks"]["factory"]["argv"]
         self.assertEqual(argv[1:4], ["-P", "-m", "syberlabs.factory"], "the host's factory runs, not the candidate's")
         self.assertIn(str(self.ledger_home), argv)
+        self.assertEqual(json.loads(argv[argv.index("--tests-argv") + 1])[1:], ["-c", "pass"])
         home = ledger.Ledger(self.ledger_home)
         self.assertIsNotNone(home.baseline())
         # Swap the interpreter for the launcher so the check finds this checkout, then run a thread on v2.
@@ -700,7 +733,8 @@ class BuildThreadCheck(Scratch):
         [candidate] = thread.propose(changes={"fxapp/rules.py": rules + "\n"})
         verdict = thread.check(candidate.id)
         self.assertTrue(verdict.acceptable, verdict.summary())
-        self.assertEqual([(c.name, c.state) for c in verdict.checks], [("factory", "passed"), ("noop", "passed")])
+        self.assertEqual([(c.name, c.state) for c in verdict.checks], [("factory", "passed")])
+        self.assertIn("full test suite green", verdict.checks[0].output_tail)
         self.assertEqual(thread.accept(candidate.id).status, "succeeded")
 
 
