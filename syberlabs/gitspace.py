@@ -212,7 +212,7 @@ class Repo:
             shutil.rmtree(parent, ignore_errors=True)
             self.git("worktree", "prune", ok=(0, 128))
 
-    def _remove_worktree(self, target: Path, attempts: int = 6, first_delay: float = 0.1) -> None:
+    def _remove_worktree(self, target: Path) -> None:
         """Remove an evaluation worktree, retrying briefly when a file in it is still held.
 
         On Windows a check's child process can outlive the check by a moment and hold a file
@@ -222,7 +222,7 @@ class Repo:
         ``worktree prune`` runs after that removal so the registration goes with the directory.
         A worktree that cannot be removed never makes a passing check an error.
         """
-        delay = first_delay
+        attempts, delay = 6, 0.1
         for attempt in range(attempts):
             try:
                 self.git("worktree", "remove", "--force", str(target), ok=(0, 128))
