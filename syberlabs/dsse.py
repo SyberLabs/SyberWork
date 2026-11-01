@@ -53,6 +53,21 @@ def sign_dsse(payload_type: str, payload: bytes, seed: bytes) -> dict:
     }
 
 
+def _canonical_b64(text: object) -> bytes | None:
+    """The bytes ``text`` encodes when it is exactly ``base64.standard_b64encode`` of them, else None.
+
+    ``base64.standard_b64decode`` drops every character outside the alphabet (a newline, a space, ``-``, ``_``,
+    ``!``) and ignores the unused low bits before the padding, so many strings decode to one byte string. Only
+    the string that re-encodes to itself is taken; a ``str`` that is not ASCII, or anything not a ``str``, is not."""
+    if not isinstance(text, str):
+        return None
+    try:
+        decoded = base64.b64decode(text, validate=True)
+    except ValueError:  # binascii.Error, and a str that is not ASCII
+        return None
+    return decoded if base64.standard_b64encode(decoded).decode("ascii") == text else None
+
+
 def verified_payload(envelope: Mapping, public: bytes, payload_type: str) -> bytes | None:
     """Payload bytes after the signature verifies. None when it does not.
 
@@ -62,6 +77,12 @@ def verified_payload(envelope: Mapping, public: bytes, payload_type: str) -> byt
     is read: ``ed25519.verify`` takes any 32 bytes, as RFC 8032 does, and under
     a small-order key anyone can sign without a seed. A caller that needs the
     reason asks ``key_problem``.
+
+    ``payload`` and each ``sig`` count only in the one encoding ``sign_dsse``
+    writes (``_canonical_b64``): standard alphabet, padded, nothing else in
+    the string, unused bits zero. ``ed25519.verify`` refuses ``s ≥ L``, so a
+    signature has one byte form; a lenient decoder would give it many string
+    forms, and anyone holding one envelope could write others that verify.
     """
     if key_problem(public) is not None:
         return None
@@ -71,9 +92,8 @@ def verified_payload(envelope: Mapping, public: bytes, payload_type: str) -> byt
     signatures = envelope.get("signatures")
     if not isinstance(encoded, str) or not isinstance(signatures, list):
         return None
-    try:
-        payload = base64.standard_b64decode(encoded)
-    except (ValueError, TypeError):
+    payload = _canonical_b64(encoded)
+    if payload is None:
         return None
     message = pae(payload_type, payload)
     keyid = public.hex()
@@ -83,12 +103,8 @@ def verified_payload(envelope: Mapping, public: bytes, payload_type: str) -> byt
         declared = item.get("keyid")
         if declared is not None and declared != keyid:
             continue
-        encoded_sig = item.get("sig")
-        if not isinstance(encoded_sig, str):
-            continue
-        try:
-            signature = base64.standard_b64decode(encoded_sig)
-        except (ValueError, TypeError):
+        signature = _canonical_b64(item.get("sig"))
+        if signature is None:
             continue
         if verify(public, message, signature):
             return payload

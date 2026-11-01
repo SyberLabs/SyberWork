@@ -139,3 +139,68 @@ fix, and was not rerun after it; the fixed test passes on this branch.
   the hex pairs, unlike #122's certificate-key parsing.
 - The arithmetic is still not constant-time; a public-key check needs no secret, so that is unchanged here.
 - `spec/`, `.github/` and the required checks are unchanged.
+
+## After #133: a signature verifies in one encoding
+
+`ed25519.verify` refuses `s ≥ L` and a non-canonical `R`, so an Ed25519 signature has one byte form and nobody
+without the seed can write a second valid signature of a message they have seen signed (RFC 8032's strong
+unforgeability). `dsse.verified_payload` decoded `payload` and `sig` with `base64.standard_b64decode`, which drops
+every character outside the alphabet and ignores the unused bits before the padding. Whoever held one envelope could
+write others that verified with no seed: a newline or a space anywhere, a `-`, `_` or `!` inserted, a third `=`, or
+the 15 other values of the 4 spare bits in a 64-byte signature's last character. Each is a different file, and in a
+transparency log a different leaf, carrying the same signature. This change, stacked on #133, takes each string in
+the one encoding `sign_dsse` writes.
+
+Claim ceiling: **implemented** and **tested** locally (Linux, Python 3.13.5). Not deployed; CI result is the PR's.
+
+- **`dsse._canonical_b64(text)`** returns the bytes only when `text` is a `str` that `base64.b64decode(…,
+  validate=True)` accepts and `base64.standard_b64encode` gives back exactly; otherwise `None`. A `str` that is not
+  ASCII, `bytes`, `None` and other types are `None`.
+- **`dsse.verified_payload`** reads `payload` and each `sig` through it. A `payload` in another encoding gives `None`
+  for the envelope. A `sig` in another encoding is skipped like a signature that does not verify, so a canonical
+  signature beside it still counts. `verify_chain_head`, `TransparencyLog.append`, `verify_witnessed` and the
+  checkpoint reads, `serve`'s witness reads in `syberwork/core.py`, and `verify_certificate` all go through it.
+  `verify_certificate` fails such a certificate as **`signature_invalid`**, and `syberlabs verify` exits 1.
+- **`ed25519.verify` is unchanged.** It takes bytes, not strings. The tests call it on the leniently decoded bytes to
+  show that the signature itself is valid and that the refusal comes from the encoding alone.
+- **What a reader decodes without verifying is unchanged.** `syberwork/core.py:_decoded` (it picks a case's leaves
+  before they are verified), `syberwork/certificates.py:_claimed_thread` and `syberlabs/dashboard.py:certificates`
+  still decode leniently. None of them gives a verdict. A leaf whose encoding was changed is still selected for its
+  case and is now judged `bad_signature`, which is not one of `WITNESS_CONFLICTS`.
+
+**Tests** (`tests/test_dsse_one_encoding.py`, 8 new):
+
+- negative control: what `sign_dsse` writes verifies, for payloads of 0 to 6 bytes (every padding length) and a
+  chain head;
+- every other encoding of a chain head's signature (9 spellings plus the 15 spare-bit values) and of its payload is
+  read by the old decoder as the same bytes, `ed25519.verify` takes those bytes, and `verified_payload` and
+  `verify_chain_head` refuse the envelope;
+- a `sig` or `payload` that is `bytes`, `bytearray`, `None`, `0`, a list, or a `str` with full-width `=` or an
+  Arabic-Indic digit is refused;
+- a respelled signature beside the canonical one does not stop the canonical one from verifying, and the respelled
+  one alone does not verify;
+- `TransparencyLog.append` refuses a respelled head as `invalid_witness`, appends the signed one, and
+  `verify_witnessed` finds only the signed one;
+- a real certificate respelled in its `sig` or its `payload` (each variant) fails `verify_certificate` as
+  `signature_invalid`, though the PAE and the signature bytes are those of the genuine one; `syberlabs verify` exits 0
+  on the written file and 1 on a copy with a newline after the `sig`.
+
+**Mutations**, each killed by the new tests: the old lenient decoder back (86 failures); `validate=True` without the
+re-encode check (48: the spare bits and the third `=`); stripping whitespace first (15); the lenient decoder for `sig`
+only (53) or for `payload` only (35). An `isascii()` guard was dropped after its mutation survived: `b64decode`
+already raises `ValueError` for a `str` that is not ASCII.
+
+## Not done (after this change)
+
+- **DSSE's protocol text allows URL-safe base64; this verifier takes only the standard alphabet.** The old decoder did
+  not take it either in effect: it dropped `-` and `_` and read other bytes. A tool that re-encodes an envelope
+  (line-wrapping it, or switching alphabet) before handing it on now gets `signature_invalid` for a genuine
+  certificate.
+- The three unverified readers above still decode leniently; none decides anything, so they are left alone. `syberwork/certificates.py` is #121/#122's file and is not touched.
+- `keyid` is still compared as written: an upper-case hex `keyid` naming the right key skips that signature, as before.
+- A JSON envelope can still differ in whitespace, key order or extra fields and verify. The certificate layer checks
+  the signed payload is RFC 8785, not the envelope; the log stores `canonical(envelope)`, so extra fields make a
+  different leaf. Not changed here.
+- Everything in "Not done (after #126)" above still holds: `ed25519.verify` takes small-order keys on purpose,
+  #122's `usable_key` copy, one `--public` key, `bytes.fromhex` accepting spaces in `_witness_log`.
+- `spec/`, `.github/` and the required checks are unchanged. Nothing is merged.
