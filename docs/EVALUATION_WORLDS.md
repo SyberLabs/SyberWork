@@ -19,7 +19,7 @@ Four planes already exist and must stay distinct (`spec/BUILDER.md`).
 
 **KEEP** the case chain. Event kinds, including `candidate_evaluated`, live in `syberlabs/protocol.py` and `spec/event-body.schema.json`. `evaluation_record` (`syberlabs/evolution.py`) accepts exactly `{candidate, commit, tree, evaluator, checks}`. Each check is `{name, state, exit_code, duration_ms, output_digest, output_tail}`. `passed` requires exit code 0. Admission (`evaluation_denial`, `promotion_denial`) uses the newest evaluation of that candidate's registered commit and tree. Parent evaluations, lineage, and provider `signal` are unused. A model origin cannot promote (`candidate_promotion_origin`).
 
-**KEEP** the check runner as a host mechanism, and keep its stated limit. `syberlabs/checks.py` runs declared argv in a detached temporary worktree, with a scrubbed environment (`PASS_ENV` plus a candidate id), a timeout, and an output cap. The module says this is a controlled environment, not a sandbox. The evaluator name is `syberlabs.checks/1`. `environment_note()` returns the host platform and is not part of the evaluation body. `Work.record_evaluation` requires an `evaluator` credential with no automation role, and refuses the actor that registered the candidate.
+**KEEP** the check runner as a host mechanism, and keep its stated limit. `syberlabs/checks.py` runs declared argv in a detached temporary worktree, with a scrubbed environment (`PASS_ENV` plus a candidate id), a timeout, and an output cap. The module says this is a controlled environment, not a sandbox. The evaluator name is `syberlabs.checks/1`. `Work.record_evaluation` requires an `evaluator` credential with no automation role, and refuses the actor that registered the candidate.
 
 **KEEP** the generation barrier. `normalize_generation` stores `case_id`, `objective`, `base_revision` (a string, not checked against Git), `mode` (`explore|refine|harden`), `isolation`, diversity threshold, minimum approaches, and a selection-policy id and version. The table is `builder_generations` in migration `0004`. States run `drafting → sealed → launched → evaluating → selecting → closed`. Seal freezes descriptors. A candidate link requires a `candidate_registered` case event and copies `{id, commit, tree, base, operator, provider, changed_paths}` into `builder_candidate_links.authority`. Linking does not call promotion. `evaluate_selection` always sets `promotes_git` false.
 
@@ -184,7 +184,7 @@ required_evidence:
     independence: host_verified
 ```
 
-`_verdict` keeps matching `verification_status`, `verified_independence`, and `result`. A claim kind is a further predicate on the observation, added only when a policy of that shape exists. Phase 1 does not add it, and selection does not read world rows. When a later policy opts in, `predicates_satisfied` requires each claim to have its own verified pass of the requested independence and digest. One pass does not cover a different claim, a failed predicate, or a missing one. Missing bindings stay incomparable: `world_definition_matches` is false when any linked candidate has no binding.
+`_verdict` keeps matching `verification_status`, `verified_independence`, and `result`. A claim kind is a further predicate on the observation, added only when a policy of that shape exists. Phase 1 does not add it, and selection does not read world rows. Missing bindings stay incomparable: `world_definition_matches` is false when any linked candidate has no binding.
 
 ## 6. Proposed architecture
 

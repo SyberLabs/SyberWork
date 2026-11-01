@@ -3,7 +3,8 @@
 import unittest
 
 from benchmarks.scenarios.host import SessionHost
-from benchmarks.scenarios.runner import load_scenarios, run_scenario
+from benchmarks.run_scenarios import load_scenarios
+from benchmarks.scenarios.runner import run_scenario
 
 
 REQUIRED = {

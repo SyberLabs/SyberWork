@@ -16,9 +16,6 @@ from syberlabs.witness import Witness, WitnessClient
 from syberwork.core import Work
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
 def _note_contract():
     return {
         "id": "note",

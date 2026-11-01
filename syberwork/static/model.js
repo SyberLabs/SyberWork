@@ -36,13 +36,6 @@ export function observations(events) {
   return rows.map(row => ({...row, latest: latest.get(row.key) === row.seq, attest: isAttest(row)}));
 }
 
-// The evidence class of one observation, as the console shows it. "verified" means read through a
-// configured source that returned a version (ETag or X-Record-Version); it says nothing about effects.
-export function evidenceOf(observation) {
-  if (observation.verified) return 'verified';
-  return 'unverified';
-}
-
 // syberlabs/admission.py facts rule, as a forecast: the newest observation of each key is the one used.
 export function requiredFacts(contract, events, now) {
   const rows = observations(events);
