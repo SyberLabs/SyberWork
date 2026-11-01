@@ -106,7 +106,7 @@ class CellRuntime(unittest.TestCase):
             self.assertEqual(settled["status"], "succeeded")
             self.assertTrue(resumed.verify_chain(case_id))
             self.assertIsNone(run_once(resumed))
-            names = [row["name"] for row in trace.read()]
+            names = [json.loads(line)["name"] for line in trace.path.read_text(encoding="utf-8").splitlines() if line.strip()]
             self.assertIn("admission", names)
             self.assertIn("effect_claim", names)
             self.assertIn("effect_settlement", names)

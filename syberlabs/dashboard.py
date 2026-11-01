@@ -190,7 +190,7 @@ CSS = """
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 main{max-width:1100px;margin:0 auto;padding:16px}
-h1{font-size:1.35rem;margin:0 0 4px}h2{font-size:1.1rem;margin:28px 0 8px}h3{font-size:1rem;margin:16px 0 6px}
+h1{font-size:1.35rem;margin:0 0 4px}h2{font-size:1.1rem;margin:28px 0 8px}
 p.lead{margin:0 0 12px;color:var(--mute)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 .tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
@@ -421,10 +421,6 @@ def render_html(model: dict) -> str:
         "Reading this journal recorded nothing.</p></footer></main></body></html>",
     ]
     return "\n".join(parts) + "\n"
-
-
-def render(kit: Kit) -> str:
-    return render_html(collect(kit))
 
 
 def main(argv: list[str] | None = None) -> int:

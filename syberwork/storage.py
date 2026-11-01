@@ -15,7 +15,6 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
-from typing import Protocol
 from urllib.parse import urlsplit
 
 from syberlabs.errors import Rejected
@@ -287,20 +286,6 @@ def translate(sql: str, dialect: str) -> str:
     return sql.replace("?", "%s")
 
 
-class Store(Protocol):
-    dialect: str
-
-    def execute(self, sql: str, params: tuple = ()): ...
-
-    def begin(self) -> None: ...
-
-    def commit(self) -> None: ...
-
-    def rollback(self) -> None: ...
-
-    def close(self) -> None: ...
-
-
 # Advisory lock key for PostgreSQL migration. It does not depend on cell_lock existing yet.
 _MIGRATION_LOCK = 87261001
 
@@ -394,16 +379,7 @@ def open_store(target: str | Path):
 
 def _column_names(store, table: str) -> set[str]:
     if store.dialect == "sqlite":
-        rows = store.execute(f"PRAGMA table_info({table})").fetchall()
-        if not rows:
-            return set()
-        names = set()
-        for row in rows:
-            try:
-                names.add(row["name"])
-            except (KeyError, IndexError, TypeError):
-                names.add(row[1])
-        return names
+        return {row["name"] for row in store.execute(f"PRAGMA table_info({table})").fetchall()}
     rows = store.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
         (table,),
@@ -590,10 +566,10 @@ class ReservationStore:
     def __init__(self, store):
         self.store = store
 
-    def reserve(self, proposal_id, case_id, budget_id, asset, amount, state="reserved") -> None:
+    def reserve(self, proposal_id, case_id, budget_id, asset, amount) -> None:
         self.store.execute(
             "INSERT INTO economic_reservations VALUES (?,?,?,?,?,?)",
-            (proposal_id, case_id, budget_id, asset, amount, state),
+            (proposal_id, case_id, budget_id, asset, amount, "reserved"),
         )
 
     def set_state(self, proposal_id: str, state: str, *, only_reserved: bool = False) -> None:

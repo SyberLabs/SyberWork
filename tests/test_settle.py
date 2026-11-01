@@ -9,7 +9,6 @@ import subprocess
 import threading
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from spec.validate import validate_events

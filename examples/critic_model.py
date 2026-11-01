@@ -108,10 +108,10 @@ SYSTEM = (
 )
 
 
-def bounded_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> tuple[str, bool]:
-    if len(diff) <= limit:
+def bounded_diff(diff: str) -> tuple[str, bool]:
+    if len(diff) <= MAX_DIFF_CHARS:
         return diff, False
-    return diff[:limit], True
+    return diff[:MAX_DIFF_CHARS], True
 
 
 def build_prompt(request: dict) -> str:
@@ -144,7 +144,7 @@ def _clean(value, limit: int) -> str:
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
-def normalize(parsed: dict, changed_paths=(), reviewer: dict | None = None) -> tuple[dict, list[str]]:
+def normalize(parsed: dict, changed_paths=()) -> tuple[dict, list[str]]:
     """The findings document from what the model returned, and notes about what was dropped or cut.
 
     The bounds are those of spec/finding.schema.json; the reviewer's own cap is MAX_FINDINGS. A
@@ -185,7 +185,7 @@ def normalize(parsed: dict, changed_paths=(), reviewer: dict | None = None) -> t
     counts = {s: sum(1 for f in findings if f["severity"] == s) for s in SEVERITIES}
     if not summary:
         summary = f"{len(findings)} finding(s): " + ", ".join(f"{counts[s]} {s}" for s in SEVERITIES)
-    return {"version": 1, "reviewer": dict(reviewer or REVIEWER), "findings": findings, "summary": summary}, notes
+    return {"version": 1, "reviewer": dict(REVIEWER), "findings": findings, "summary": summary}, notes
 
 
 def usage_of(response) -> dict:

@@ -19,17 +19,11 @@ from syberlabs.evolution import (latest_evaluation, promotion_budget_denial, pro
 from syberlabs.values import at_path
 
 
-# economic.reserve sits after facts.required and before bindings.inputs.
-# Its source check says freshness was already checked. Non-economic actions return None.
-ECONOMIC_RULE = "economic.reserve"
-ECONOMIC_INSERT_AFTER = "facts.required"
-
 RULES: list[tuple[str, Callable]] = []
 
 
 def rule(name: str, *reasons: str):
     def decorate(fn: Callable) -> Callable:
-        fn.rule_name = name
         fn.reasons = reasons
         RULES.append((name, fn))
         return fn
@@ -384,10 +378,6 @@ def admission_passed(ctx: AdmissionContext) -> dict | None:
 def approval_roles(contract, policy, action):
     roles = [policy["actions"].get(action, {}).get("approval_role"), contract["actions"].get(action, {}).get("approval_role")]
     return list(dict.fromkeys(role for role in roles if role))
-
-
-def rule_order() -> list[str]:
-    return [name for name, _fn in RULES]
 
 
 _PROVENANCE: dict[str, dict] = {}
