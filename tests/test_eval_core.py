@@ -52,6 +52,20 @@ def git(cwd, *args):
                           env=env).stdout.strip()
 
 
+def write_task(tasks_root, task, hidden):
+    """Write a task and its hidden files under ``tasks_root``; returns its digest."""
+    errors = tasks.check_task(task)
+    if errors:
+        raise Rejected("invalid_task", "; ".join(errors[:8]))
+    folder = tasks.task_dir(tasks_root, task["id"])
+    spec.write_json(folder / "task.json", task)
+    for path, data in hidden.items():
+        target = folder / tasks.HIDDEN / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return tasks.task_digest(tasks_root, task["id"])
+
+
 class Workspace(unittest.TestCase):
     def setUp(self):
         self.folder = Path(tempfile.mkdtemp(prefix="syberlabs-evaltest-"))

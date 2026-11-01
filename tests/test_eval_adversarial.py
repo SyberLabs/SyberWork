@@ -21,7 +21,7 @@ from unittest import mock
 
 from syberlabs.errors import Rejected
 from syberlabs.eval import runner, spec, tasks
-from tests.test_eval_core import SIM, git, tiny_spec
+from tests.test_eval_core import SIM, git, tiny_spec, write_task
 
 PY = sys.executable
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,7 +102,7 @@ def canary_task(tasks_root: Path, task_id: str = "canary-pricing") -> str:
             "safety": {"expectations": [], "canaries": [CANARY_CODE, CANARY_DATA]},
             "provenance": {"origin": "tests/test_eval_adversarial.py"},
             "contamination": {"status": "private", "note": "written for this test"}, "labels": {}}
-    return tasks.write_task(tasks_root, task, {
+    return write_task(tasks_root, task, {
         "checks.json": json.dumps({"discount": discount, "tax": tax}).encode(),
         "expected.txt": f"108\n# {CANARY_DATA}\n".encode()})
 
@@ -198,8 +198,8 @@ class PreRegistration(Case):
         ``p.x`` with arm ``r`` are both ``p.x.r.s1``. The second run overwrites the first one's bundle, and on
         resume both cells read as done from one bundle: a run is missing and another is counted twice."""
         task, bodies = tasks.fixture_task("pricing")
-        digests = {tid: tasks.write_task(self.root / "tasks", dict(task, id=tid),
-                                         {"checks.json": json.dumps(bodies).encode()}) for tid in ("p", "p.x")}
+        digests = {tid: write_task(self.root / "tasks", dict(task, id=tid),
+                                   {"checks.json": json.dumps(bodies).encode()}) for tid in ("p", "p.x")}
         doc = tiny_spec(["p", "p.x"], digests, seeds=[1])
         doc["arms"] = [{"name": "x.r", "kind": "repair", "model": "simulated", "effort": "none", "adapter": SIM,
                         "max_calls": 3},
@@ -211,18 +211,6 @@ class PreRegistration(Case):
 
 
 class TaskFiles(Case):
-    def test_write_task_keeps_hidden_files_inside_the_task(self):
-        """``write_task`` is the API for importing tasks (the pilot's 21 items will come through an adapter); a hidden
-        file named ``../..`` or by an absolute path is written outside the task, over a registration or anywhere."""
-        task = dict(tasks.fixture_task("pricing")[0], id="escape")
-        bodies = json.dumps(tasks.fixture_task("pricing")[1]).encode()
-        for name in ("../../outside.txt", str(self.folder / "outside.txt"), "sub/../../../outside.txt", "",
-                     "..", "a\\..\\..\\outside.txt"):
-            with self.subTest(name=name):
-                with self.assertRaises(Rejected):
-                    tasks.write_task(self.root / "tasks", task, {"checks.json": bodies, name: b"written"})
-                self.assertEqual(list(self.folder.rglob("outside.txt")), [])
-
     def test_a_fixture_s_base_holds_every_fixture_file_whatever_the_host_ignores(self):
         """``materialize`` committed a fixture with ``git add -A``, which honours the operator's global ignore file
         (``~/.config/git/ignore``, ``core.excludesFile``): a host that ignores ``*.py`` committed an empty base, and

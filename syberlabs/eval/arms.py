@@ -12,7 +12,7 @@ An arm is an object in the spec's ``arms`` list (``spec.ARM_SCHEMA``). ``kind`` 
 - ``evolve_jev``: the same provider with ``JevPolicy``, its price prior from the contract's price table;
 - ``claude-code``: ``claude_code.ClaudeCodeProvider`` with ``lane``, ``bare``, ``trusted_tree``, ``tools``,
   ``max_turns``, ``mcp_config`` and ``executable`` (a stand-in ``claude`` for tests), and ``githits`` passed through
-  by name to the provider's keyword of that name (refused ``arm_unsupported`` when the installed provider has none);
+  by name to the provider's keyword of that name;
   a ``githits`` arm's lookups carry the run's thread and the arm's name (``X-GitHits-Session-ID``, ``-Agent``).
   The runner does not set Claude Code's model: the arm's ``model`` and ``effort`` are the spec's declaration, and the
   model that served is in the candidate's ``signal.harness``.
@@ -34,7 +34,6 @@ arm sends no feedback, and an evolve arm is refused any mode but ``tails`` by ``
 
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import re
@@ -169,8 +168,6 @@ def build(arm: dict, *, repo: Path, budget: dict, prices: dict | None, harness: 
     if "executable" in arm:
         options["executable"] = resolve(arm["executable"], harness)
     if "githits" in arm:
-        if "githits" not in inspect.signature(ClaudeCodeProvider.__init__).parameters:
-            raise Rejected("arm_unsupported", "this ClaudeCodeProvider has no githits option")
         options["githits"] = arm["githits"]
         if arm["githits"]:
             options.update(arm=githits_arm(arm["name"]), thread_label=thread_label)

@@ -218,7 +218,7 @@ class LauncherHook(FakeCase):
 class Records(FakeCase):
     def test_paced_ms_is_recorded_under_the_mac_and_read_back(self):
         self.client().call(githits.example_request("q"), paced_ms=39_250)
-        self.client().search("q", ["pypi:requests"])
+        self.client().call(githits.search_request("q", ["pypi:requests"]))
         records = self.records()
         self.assertEqual(records.ignored, 0)
         self.assertEqual([r.get("paced_ms") for r in records.records], [39_250, None])
@@ -245,7 +245,7 @@ class Records(FakeCase):
 
     def test_the_lookup_fact_carries_paced_ms_only_when_the_record_does(self):
         self.client().call(githits.example_request("q"), paced_ms=12_000)
-        self.client().search("q", ["pypi:requests"])
+        self.client().call(githits.search_request("q", ["pypi:requests"]))
         paced, unpaced = (record_lookup(r, "pass") for r in self.records().records)
         self.assertEqual(paced["paced_ms"], 12_000)
         self.assertNotIn("paced_ms", unpaced)

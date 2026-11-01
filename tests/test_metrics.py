@@ -18,7 +18,7 @@ from pathlib import Path
 
 from spec.validate import check as check_schema
 from spec.validate import validate_events
-from syberlabs import Rejected, critic, metrics
+from syberlabs import critic, metrics
 from syberlabs.cli import main as cli
 from syberlabs.evolve import CommandMutator, EvolutionaryProvider
 from syberlabs.providers import CommandProvider, RepairProvider, tool_usage

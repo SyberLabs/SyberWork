@@ -21,15 +21,13 @@ class MetricSource:
     Bearer <token>``. ``url`` is a template with the literal ``{key}`` an intervention needs.
     """
 
-    def __init__(self, port: int = 0, values: dict | None = None):
+    def __init__(self, port: int = 0):
         self._lock = threading.Lock()
         self._values: dict[str, tuple[object, float | None]] = {}
         self._versions: dict[str, int] = {}
         self.unversioned = False
         self.fail = False
         self.token: str | None = None
-        for key, value in (values or {}).items():
-            self.set(key, value)
         source = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -96,11 +94,6 @@ class MetricSource:
             self._values[key] = (value, observed_at)
             self._versions[key] = self._versions.get(key, 0) + 1
             return self._version(key)
-
-    def get(self, key: str) -> tuple[object, str, float | None]:
-        with self._lock:
-            value, observed_at = self._values[key]
-            return value, self._version(key), observed_at
 
     def close(self) -> None:
         self.server.shutdown()

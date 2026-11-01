@@ -232,7 +232,6 @@ def run(fixture: str, arm: str, adapter: str, calls: int, seed: int, folder: Pat
         policy = next((dict(e["policy"]) for e in provider.trace if "decision" in e), None)
     else:
         provider = Patches(argv, 1 if arm == "single" else calls, arm == "repair", seed)
-        provider.argv = argv
         os.chdir(root)
         try:
             thread.propose(provider, seed=seed)

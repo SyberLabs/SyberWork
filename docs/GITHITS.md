@@ -269,7 +269,7 @@ fixture_bytes`): 215,618 bytes, SHA-256 `c388ab7e53a25fdfbd914c10634d799ae923b01
 - each operation's method, path and schema names;
 - that every request the client builds, all options set, is valid under the request schema (the request
   schemas reject unknown keys);
-- that every response field the client reads (`githits.READS`) and every header it sends or reads exists.
+- that every response field the client reads (listed in `tests/test_githits.py`) and every header it sends or reads exists.
 
 It also checks that the fake server's responses are valid under the response schemas. A contract change
 therefore fails a test.

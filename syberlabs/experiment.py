@@ -493,7 +493,7 @@ def _flags(item_runs: dict[str, list[Run]], baseline: str, treatment: str, serve
     models = [set(run.models) for run in everyone if run.models]
     if models and any(m != models[0] for m in models):
         flags.append("model_mismatch")
-    if len({(run.work.cost_basis, getattr(run.work, "lane", None)) for run in everyone}) > 1:
+    if len({(run.work.cost_basis, run.work.lane) for run in everyone}) > 1:
         flags.append("cost_basis_mismatch")
     if len({run.tags for run in everyone}) > 1:
         flags.append("tag_mismatch")
@@ -629,12 +629,8 @@ def _per_arm(item_runs: Iterable[Run]) -> dict:
     hours = [max(0.0, float(r.work.agent_time.value) - r.paced / 3600) for r in found if r.work.agent_time.known]
     blocked = []
     for run in found:
-        try:
-            metric = run.work.metric("lookups_blocked")
-        except KeyError:
-            continue
-        if metric.known:
-            blocked.append(int(metric.value))
+        if run.work.lookups_blocked.known:
+            blocked.append(int(run.work.lookups_blocked.value))
     return {"threads": len(found), "accepted": sum(1 for r in found if r.accepted.value is True),
             "opened": sum(1 for r in found if r.work.opened.value is True),
             "delivered": sum(1 for r in found if r.work.delivered.value is True),

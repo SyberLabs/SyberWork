@@ -98,7 +98,7 @@ False positives on this repository: none. Every Python file was read as if it we
 
 What it took outside test files:
 - The test-scoped parts above.
-- Anchored computed imports. `syberlabs/__init__.py` resolves its lazy names with `import_module(f"syberlabs.{module}")`, and both scenario loaders (`benchmarks/run_scenarios.py`, `benchmarks/scenarios/runner.py`) use `import_module(f"benchmarks.scenarios.{name}")`. A name whose package is fixed in the source can only import that package's submodules, and a changed submodule is read itself.
+- Anchored computed imports. `syberlabs/__init__.py` resolves its lazy names with `import_module(f"syberlabs.{module}")`, and the scenario loader in `benchmarks/run_scenarios.py` uses `import_module(f"benchmarks.scenarios.{name}")`. A name whose package is fixed in the source can only import that package's submodules, and a changed submodule is read itself.
 - One rename. The runner's own result class named its reporting method `_outcome`, the name of `unittest`'s internal, so it read as `unittest_patch`. It is now `_report`.
 - The exemptions that make it so are deliberate: `os.kill(pid, 0)` (`tests/test_checks.py` asks whether a process is alive), `sys.exit` inside a test method (`unittest` records it as an error, and the runner counts it), writes to `sys.modules` under other names (the G2, G3 and G5 tests register the gate modules they load), helper classes with `__call__` or `run` that are not test cases, and every pattern inside a string (the runner's own tests carry their adversarial fixtures as strings).
 

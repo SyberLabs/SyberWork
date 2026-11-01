@@ -427,8 +427,6 @@ class Transcript:
     UTC time when the line arrived (the stream carries no time of its own)."""
 
     def __init__(self, lines: Iterable[tuple[str, str]]):
-        import json
-
         self.init: dict = {}
         self.result: dict | None = None
         self.messages: dict[str, dict] = {}  # assistant message id -> {model, usage}
@@ -594,11 +592,10 @@ def read_changes(tree: Path, parent: str) -> tuple[dict[str, str | None], list[s
 
 
 def run_stream(argv: Sequence[str], prompt: str, *, cwd: Path, env: dict, timeout: int,
-               lines: list | None = None) -> tuple[int, list, str]:
+               lines: list) -> tuple[int, list, str]:
     """Run Claude Code with ``prompt`` on stdin (not in argv: no length limit, not in a process listing) and collect
     its stdout lines with the host's arrival time into ``lines`` (a caller's list, so what was read before a
     timeout is still the caller's). Returns ``(exit code, lines, stderr head)``."""
-    lines = [] if lines is None else lines
     size = [0]
     with tempfile.TemporaryFile() as err:
         try:

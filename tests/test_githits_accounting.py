@@ -513,7 +513,7 @@ class Fixed(GroundTruth):
         client = githits.Client(token=self.token, base_url=self.server.url, record_dir=folder, record_key=key)
         self.server.plan = {"/v1/searches": [answer(NULL_HIT)]}
         with self.assertRaises(githits.GitHitsError) as caught:
-            client.search("q", ["pypi:requests"])
+            client.call(githits.search_request("q", ["pypi:requests"]))
         self.assertEqual(caught.exception.code, "malformed_response")
         self.assertEqual(len(self.server.log), 1, "the request reached the server")
         [record] = githits.read_records(folder, key).records
@@ -530,7 +530,7 @@ class Fixed(GroundTruth):
             client = githits.Client(token=self.token, base_url=base_url, record_dir=folder, record_key=key,
                                     timeout=1 if base_url == self.server.url else 5)
             with self.assertRaises(githits.GitHitsError):
-                client.search("requests retry", ["pypi:requests"])
+                client.call(githits.search_request("requests retry", ["pypi:requests"]))
         self.assertEqual(len(self.server.log), 1, "the timed-out request reached the server; the refused one did not")
         timed_out, refused = githits.read_records(folder, key).records
         self.assertEqual([(r["status"], r["http_status"], r["request_id"], r["sent"]) for r in (timed_out, refused)],

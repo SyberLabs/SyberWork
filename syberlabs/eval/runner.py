@@ -107,7 +107,6 @@ SPEND_SCHEMA_ID = "syberlabs.eval/spend.v1"
 SPEND_FILE = "spend.jsonl"
 HOST_ROOT = "syberlabs-eval-host"  # under the system temporary directory unless --hidden-root names another root
 FEEDBACK_KINDS = ("repair", "claude-code")  # the arms whose requests carry feedback (arms.feedback_filter)
-INTEGRITY_POINTS = ("staged", "after_propose", "after_check", "before_accept")
 # Host variables whose values the evidence must never hold; matched by name, values of 16 characters or more that are
 # not a path on this machine. The bundle records the names checked and where a value was found, never a value.
 CREDENTIAL_NAME = re.compile(r"(API_KEY|TOKEN|SECRET|PASSWORD|SEED|_KEY)$", re.IGNORECASE)

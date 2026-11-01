@@ -46,9 +46,8 @@ from examples.metric_source import MetricSource
 from spec.validate import validate_events
 from syberlabs import Rejected, Session
 from syberlabs import build as build_module
-from syberlabs.build import HOST, GitRefEffect, Kit, default_contract
+from syberlabs.build import GitRefEffect, Kit, default_contract
 from syberlabs.canonical import canonical
-from syberlabs.clock import as_seconds
 from syberlabs.events import verify_events
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.journal import Journal
@@ -187,7 +186,7 @@ class JournalDriver(kernel.Driver):
         self.turn = 0
         self.turns = list(turns or [])
         self.proposals, self.candidates, self.registered, self.refusals = [], [], 0, []
-        self.crashes = self.reopens = 0
+        self.crashes = 0
         self.settlements: list[tuple[str, str, str]] = []  # proposal, status mode at the time, outcome kind
         self.sessions = [self._open() for _ in range(openers)]
         first = self.sessions[0]
@@ -220,7 +219,6 @@ class JournalDriver(kernel.Driver):
         self.sessions[index]._journal.close()
         self.sessions[index] = self._open()
         self.sessions[index].bind_effect("ship", self.executor)
-        self.reopens += 1
 
     def close(self) -> None:
         for session in self.sessions:

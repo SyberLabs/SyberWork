@@ -133,7 +133,7 @@ An arm is an object in the spec's `arms`, with an explicit `model` and `effort`.
 | `repair` | `providers.RepairProvider(adapter, max_calls=K)`, the default proposer path |
 | `evolve` | `evolve.EvolutionaryProvider(CommandMutator(adapter, max_calls=K))`: fixed policy, stops at the first pass, population `min(4, K)` unless given (the E3 shape) |
 | `evolve_jev` | the same with `JevPolicy`, its price prior from the spec's price table |
-| `claude-code` | `claude_code.ClaudeCodeProvider` with `lane`, `bare`, `trusted_tree`, `tools`, `max_turns`, `mcp_config`, `executable` (a stand-in for tests), and `githits` passed by name to the provider's keyword (`arm_unsupported` if it has none). A `githits` arm's lookups carry the run's thread id and the arm's name (`X-GitHits-Session-ID`, `X-GitHits-Agent`), so each run is its own GitHits session |
+| `claude-code` | `claude_code.ClaudeCodeProvider` with `lane`, `bare`, `trusted_tree`, `tools`, `max_turns`, `mcp_config`, `executable` (a stand-in for tests), and `githits` passed by name to the provider's keyword. A `githits` arm's lookups carry the run's thread id and the arm's name (`X-GitHits-Session-ID`, `X-GitHits-Agent`), so each run is its own GitHits session |
 
 While an arm proposes, the process environment holds `SYBERLABS_MODEL` and `SYBERLABS_EFFORT` (read by `adapters/anthropic_adapter.py`), plus `SYBERLABS_FIXTURE` for the simulated model only. The certificate seed variable, `GITHUB_TOKEN` and `GH_TOKEN` are removed, so no provider process inherits them, and the environment is restored afterwards. The runner does not set Claude Code's model. A `claude-code` arm's `model` and `effort` are the spec's declaration, and the model that actually served is in the candidate's `signal.harness`.
 

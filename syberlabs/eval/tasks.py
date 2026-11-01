@@ -421,12 +421,6 @@ def list_tasks(tasks_root: Path) -> list[str]:
     return sorted(p.name for p in root.iterdir() if (p / "task.json").is_file()) if root.is_dir() else []
 
 
-def hidden_path(name: Any) -> bool:
-    """A relative POSIX path that stays under ``hidden/``: no absolute or drive path, backslash, ``.`` or ``..``."""
-    return (isinstance(name, str) and bool(name) and not name.startswith("/") and not any(c in name for c in "\\:\0")
-            and all(part not in ("", ".", "..") for part in name.split("/")))
-
-
 def tree_digests(folder: Path) -> dict[str, str]:
     """The SHA-256 of every file under ``folder`` as it is on disk, by POSIX path; a symbolic link is named by its
     target. ``stage_hidden`` writes regular files only, so the staged copy's digests change if anything rewrites,
@@ -454,18 +448,3 @@ def hidden_changes(before: dict[str, str], after: dict[str, str]) -> list[str]:
     that is the directory of a hidden test file run with no configuration file above it."""
     added = [path for path in after if path not in before and ".pytest_cache" not in path.split("/")[:-1]]
     return sorted([path for path in before if after.get(path) != before[path]] + added)
-
-
-def write_task(tasks_root: Path, task: dict, hidden: dict[str, bytes]) -> str:
-    """Write a task (used by tests and future adapters); returns its digest."""
-    errors = check_task(task)
-    errors += [f"hidden file {name!r}: a relative path under hidden/" for name in hidden if not hidden_path(name)]
-    if errors:
-        raise Rejected("invalid_task", "; ".join(errors[:8]))
-    folder = task_dir(tasks_root, task["id"])
-    write_json(folder / "task.json", task)
-    for path, data in hidden.items():
-        target = folder / HIDDEN / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-    return task_digest(tasks_root, task["id"])

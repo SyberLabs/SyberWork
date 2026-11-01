@@ -1115,13 +1115,10 @@ def exclude_from_git(repo: Path, folder: Path) -> None:
 
 
 def versions(claude: str | None) -> dict:
+    from importlib.metadata import PackageNotFoundError, version
     try:
-        from importlib.metadata import PackageNotFoundError, version
-        try:
-            syberwork = version("syberwork")
-        except PackageNotFoundError:
-            syberwork = "source"
-    except ImportError:  # pragma: no cover
+        syberwork = version("syberwork")
+    except PackageNotFoundError:
         syberwork = "source"
     try:
         git_version = subprocess.run(["git", "--version"], capture_output=True, timeout=30).stdout.decode().strip()

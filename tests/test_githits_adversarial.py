@@ -87,10 +87,10 @@ class TargetSpellings(FakeCase):
         for text in ("https://github.com:443/SyberLabs/SyberWork", "https://github.com/x/../SyberLabs/SyberWork",
                      "github: SyberLabs/SyberWork", "https://\uff47\uff49\uff54\uff48\uff55\uff42.com/SyberLabs/x"):
             with self.subTest(text=text):
-                self.assertEqual(client.read(text).status, githits.EXCLUDED)
-                self.assertEqual(client.list(text).status, githits.EXCLUDED)
-                self.assertEqual(client.grep("Retry", [text]).status, githits.EXCLUDED)
-                self.assertEqual(client.search("retry", [text]).status, githits.EXCLUDED)
+                self.assertEqual(client.call(githits.read_request(text)).status, githits.EXCLUDED)
+                self.assertEqual(client.call(githits.list_request(text)).status, githits.EXCLUDED)
+                self.assertEqual(client.call(githits.grep_request("Retry", [text])).status, githits.EXCLUDED)
+                self.assertEqual(client.call(githits.search_request("retry", [text])).status, githits.EXCLUDED)
         self.assertEqual(self.fake.requests, [], "no request left")
 
     def test_the_guard_passes_them_so_the_client_is_the_only_check(self):
@@ -127,19 +127,19 @@ class OwnerDomains(FakeCase):
                      "SyberLabs/SyberWork is mentioned without a host"):
             with self.subTest(text=text):
                 self.assertFalse(exclude.mentioned(text))
-        result = self.client().search("governed work runtime", ["site:www.syberlabs.io"])
+        result = self.client().call(githits.search_request("governed work runtime", ["site:www.syberlabs.io"]))
         self.assertEqual((result.status, self.fake.requests), (githits.EXCLUDED, []))
 
     def test_hits_served_from_the_owners_site_are_dropped_and_counted(self):
         self.fake.serve("/v1/searches", search_response([
             search_hit("page", None, source_url="https://syberlabs.io/projects/syberwork/", file_path=None),
             search_hit("theirs", "https://github.com/psf/requests")]))
-        result = self.client().search("governed work runtime", ["site:docs.example.org"])
+        result = self.client().call(githits.search_request("governed work runtime", ["site:docs.example.org"]))
         self.assertEqual(([hit["title"] for hit in result.data["result"]["results"]], result.results_dropped),
                          (["theirs"], 1))
         self.fake.serve("/v1/grep", grep_response([grep_hit(1, page_url="https://rise.syberlabs.io/guide"),
                                                    grep_hit(2, repo_url="https://github.com/psf/requests")]))
-        grep = self.client().grep("Retry", ["site:docs.example.org"])
+        grep = self.client().call(githits.grep_request("Retry", ["site:docs.example.org"]))
         self.assertEqual(([hit["line"] for hit in grep.data["hits"]], grep.results_dropped), ([2], 1))
 
 
@@ -152,18 +152,18 @@ class FreeTextInResults(FakeCase):
 
     def test_a_search_or_grep_hit_citing_an_excluded_repository_is_dropped_like_a_read_body(self):
         self.fake.serve("/v1/read", read_doc_response(self.CITING))
-        self.assertEqual(self.client().read("https://docs.example.org/fork").status, githits.BLOCKED, "as before")
+        self.assertEqual(self.client().call(githits.read_request("https://docs.example.org/fork")).status, githits.BLOCKED, "as before")
         self.fake.serve("/v1/searches", search_response([
             {**search_hit("fork", "https://github.com/someone/fork"), "summary": self.CITING},
             search_hit("theirs", "https://github.com/psf/requests")]))
-        result = self.client().search("admission kernel", ["github:someone/fork"])
+        result = self.client().call(githits.search_request("admission kernel", ["github:someone/fork"]))
         self.assertEqual(([hit["title"] for hit in result.data["result"]["results"]], result.results_dropped),
                          (["theirs"], 1))
         self.fake.serve("/v1/grep", grep_response([
             {**grep_hit(1, repo_url="https://github.com/someone/fork"),
              "line_content": "# vendored from github.com/SyberLabs/SyberWork"},
             grep_hit(2, repo_url="https://github.com/psf/requests")]))
-        grep = self.client().grep("vendored", ["github:someone/fork"])
+        grep = self.client().call(githits.grep_request("vendored", ["github:someone/fork"]))
         self.assertEqual(([hit["line"] for hit in grep.data["hits"]], grep.results_dropped), ([2], 1))
         self.assertEqual([(r["status"], r["results_dropped"]) for r in self.records().records],
                          [(githits.BLOCKED, 1), (githits.OK, 1), (githits.OK, 1)])
@@ -194,7 +194,7 @@ class ExampleLicenses(FakeCase):
             with self.subTest(text=text):
                 self.assertFalse(admitted(self.MIT + text))
         self.fake.serve("/v1/examples/search", example_response(self.MIT + self.COPYLEFT[-2]))
-        result = self.client().example("retry with backoff")
+        result = self.client().call(githits.example_request("retry with backoff"))
         self.assertEqual((result.status, result.data, result.results_dropped_license), (githits.OK, None, 1))
 
     def test_permissive_sources_in_those_forms_still_pass(self):
@@ -282,9 +282,9 @@ class RecordedWhateverHappens(FakeCase):
     and no record was written."""
 
     def test_an_unreadable_answer_is_an_error_and_is_recorded(self):
-        hostile = (("/v1/searches", lambda c: c.search("q", ["pypi:requests"]),
+        hostile = (("/v1/searches", lambda c: c.call(githits.search_request("q", ["pypi:requests"])),
                     {**search_response([]), "result": {**search_response([])["result"], "results": ["not a hit"]}}),
-                   ("/v1/grep", lambda c: c.grep("x", ["pypi:requests"]),
+                   ("/v1/grep", lambda c: c.call(githits.grep_request("x", ["pypi:requests"])),
                     b'{"hits": ' + b"[" * 100000 + b"]" * 100000 + b"}"))
         for path, call, body in hostile:
             self.fake.serve(path, body)
@@ -404,17 +404,17 @@ class PathSmuggling(FakeCase):
                 self.assertEqual(guard.decide(bash(f'{LAUNCHER} read site:docs.python.org --path "{path}"'),
                                               launcher=LAUNCHER), guard.PASS, "the guard passes it")
         client = self.client()
-        calls = (lambda: client.read("site:docs.python.org", path="//syberlabs.io/projects/syberwork/"),
-                 lambda: client.read("site:docs.python.org", path="@syberlabs.io/projects/syberwork/"),
-                 lambda: client.list("pypi:requests", paths=["https://github.com/SyberLabs/SyberWork"]),
-                 lambda: client.grep("Retry", ["pypi:requests"], globs=["//github.com/SyberLabs/**"]),
-                 lambda: client.search("retry", ["pypi:requests"], path_prefix="https://syberlabs.io/"))
+        calls = (lambda: client.call(githits.read_request("site:docs.python.org", path="//syberlabs.io/projects/syberwork/")),
+                 lambda: client.call(githits.read_request("site:docs.python.org", path="@syberlabs.io/projects/syberwork/")),
+                 lambda: client.call(githits.list_request("pypi:requests", paths=["https://github.com/SyberLabs/SyberWork"])),
+                 lambda: client.call(githits.grep_request("Retry", ["pypi:requests"], globs=["//github.com/SyberLabs/**"])),
+                 lambda: client.call(githits.search_request("retry", ["pypi:requests"], path_prefix="https://syberlabs.io/")))
         for call in calls:
             self.assertEqual(call().status, githits.EXCLUDED)
         self.assertEqual(self.fake.requests, [])
         self.assertEqual({r["targets_count"] for r in self.records().records}, {1}, "targets are counted as before")
-        client.read("pypi:requests", path="src/requests/api.py")
-        client.list("pypi:requests", paths=["src/**"])
+        client.call(githits.read_request("pypi:requests", path="src/requests/api.py"))
+        client.call(githits.list_request("pypi:requests", paths=["src/**"]))
         self.assertEqual(len(self.fake.requests), 2, "ordinary paths still go")
 
 
@@ -475,7 +475,7 @@ class SentOrNot(FakeCase):
             client = githits.Client(token=self.token, base_url=base_url, record_dir=self.folder.name,
                                     record_key=self.key, timeout=1 if base_url == self.fake.url else 5)
             with self.assertRaises(githits.GitHitsError) as caught:
-                client.search("requests retry", ["pypi:requests"])
+                client.call(githits.search_request("requests retry", ["pypi:requests"]))
             self.assertEqual(caught.exception.code, "transport")
         release.set()
         timed_out, refused = self.records().records
@@ -483,13 +483,13 @@ class SentOrNot(FakeCase):
                          [(githits.ERROR, None, None)] * 2, "as before, apart from sent")
         self.assertEqual((timed_out["sent"], refused["sent"]), (True, False))
         client = self.client()
-        client.search("q", ["github:SyberLabs/SyberWork"])
-        client.search("q", ["pypi:requests"])
+        client.call(githits.search_request("q", ["github:SyberLabs/SyberWork"]))
+        client.call(githits.search_request("q", ["pypi:requests"]))
         self.fake.serve("/v1/grep", {"code": "RATE_LIMITED"}, 429, {"Content-Type": "application/problem+json"})
         with self.assertRaises(githits.GitHitsError):
-            client.grep("x", ["pypi:requests"])
+            client.call(githits.grep_request("x", ["pypi:requests"]))
         with self.assertRaises(githits.GitHitsError) as caught:
-            githits.Client(base_url=self.fake.url, record_dir=self.folder.name, record_key=self.key).example("q")
+            githits.Client(base_url=self.fake.url, record_dir=self.folder.name, record_key=self.key).call(githits.example_request("q"))
         self.assertEqual((caught.exception.code, caught.exception.sent), ("no_token", False))
         self.assertEqual([(r["status"], r["sent"]) for r in self.records().records[2:]],
                          [(githits.EXCLUDED, False), (githits.OK, True), (githits.ERROR, True), (githits.ERROR, False)])

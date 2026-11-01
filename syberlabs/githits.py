@@ -134,7 +134,6 @@ RECORD_OPTIONAL = ("paced_ms",)  # present only when the host's launcher paced t
 
 OK, EXCLUDED, BLOCKED, ERROR = "ok", "excluded_target", "contamination_blocked", "error"
 UNGUARDED = "unguarded"  # the launcher's entry refused the call before sending: no query-guard decision for it
-STATUSES = (OK, EXCLUDED, BLOCKED, ERROR, UNGUARDED)
 
 # Lean defaults for an agent's context window; GitHits' own default in the comment.
 SEARCH_LIMIT = 5          # hits per search (10)
@@ -179,29 +178,6 @@ OPERATIONS = {
 # ``tests/fixtures/githits_openapi_v1_languages.json``.
 DOCTOR = Operation("GET", "/v1/languages", "query", "LanguageResponse")
 DOCTOR_PARAMS = {"query": "python", "limit": 1}
-DOCTOR_STATUSES = ("ok", "auth", "rate_limited", "no_token", "error")
-# The response fields this client reads, as paths through the response schema ("[]" is an array's items).
-# tests/test_githits.py resolves every one in the pinned OpenAPI fixture, so a renamed field fails a test.
-READS = {
-    "search": tuple(("result", "results", "[]", *tail) for tail in (
-        ("locator", "repo_url"), ("locator", "source_url"), ("locator", "docs_read_target"), ("locator", "git_ref"),
-        ("locator", "file_path"), ("locator", "start_line"), ("locator", "end_line"), ("locator", "package_name"),
-        ("locator", "version"), ("score",), ("title",), ("summary",), ("target_label",))) + (
-        ("result", "page", "has_more"), ("search_ref",), ("completed",)),
-    "example": (("result",), ("search_status",), ("solution_id",)),
-    "read": (("kind",), ("path",), ("content", "body"), ("content", "start_line"), ("content", "end_line"),
-             ("metadata", "total_lines"), ("metadata", "title"), ("docs_read_target",), ("source", "repo_url"),
-             ("source", "url"), ("target_resolution", "served", "repo_url"),
-             ("target_resolution", "resolved_requested", "repo_url")),
-    "list": (("entries", "[]", "path"), ("entries", "[]", "kind"), ("entries", "[]", "line_count"),
-             ("entries", "[]", "read", "target"), ("entries", "[]", "browse", "target"), ("next_cursor",),
-             ("has_more",), ("canonical_target",), ("target_resolution", "served", "repo_url"),
-             ("target_resolution", "resolved_requested", "repo_url")),
-    "grep": (("hits", "[]", "repo_url"), ("hits", "[]", "page_url"), ("hits", "[]", "file_path"),
-             ("hits", "[]", "line"), ("hits", "[]", "line_content"), ("hits", "[]", "kind"),
-             ("next_cursor",), ("total_matches",)),
-}
-HEADERS_SENT = ("X-GitHits-Client-Name", "X-GitHits-Client-Version", "X-GitHits-Session-ID", "X-GitHits-Agent")
 
 
 class GitHitsError(Exception):
@@ -884,13 +860,10 @@ def _loopback(host: str) -> bool:
 
 
 def _client_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
     try:
-        from importlib.metadata import PackageNotFoundError, version
-        try:
-            return version("syberwork")[:MAX_CLIENT_HEADER_BYTES]
-        except PackageNotFoundError:
-            return "source"
-    except ImportError:  # pragma: no cover
+        return version("syberwork")[:MAX_CLIENT_HEADER_BYTES]
+    except PackageNotFoundError:
         return "source"
 
 
@@ -943,22 +916,6 @@ class Client:
                 f"exclude={['/'.join(entry) for entry in self.exclude.entries]!r}, "
                 f"licenses={list(self.licenses.allowed) if self.licenses.allowed else ANY_LICENSE!r}, "
                 f"records={'on' if self.record_dir else 'off'})")
-
-    # The five operations. Each returns a Result, or raises GitHitsError after recording the failure.
-    def search(self, query: str, targets, **options) -> Result:
-        return self.call(search_request(query, targets, **options))
-
-    def example(self, query: str, **options) -> Result:
-        return self.call(example_request(query, **options))
-
-    def read(self, target: str, **options) -> Result:
-        return self.call(read_request(target, **options))
-
-    def list(self, target: str, **options) -> Result:
-        return self.call(list_request(target, **options))
-
-    def grep(self, pattern: str, targets, **options) -> Result:
-        return self.call(grep_request(pattern, targets, **options))
 
     def call(self, request: Request, deliver=None, paced_ms: int | None = None) -> Result:
         """Send ``request`` (unless a target is excluded), filter the answer and record the call. ``deliver``, when

@@ -200,7 +200,7 @@ def query_digest(tool_input) -> str:
     return hashlib.sha256(utf8(query_text(tool_input))).hexdigest()
 
 
-def outbound(tool_name: str, tool_input) -> list[str]:
+def outbound(tool_input) -> list[str]:
     """The texts this call sends off the machine, each judged on its own: every string of the input, dictionary keys
     included, for every matched tool (``WebFetch``'s ``prompt``, ``WebSearch``'s domain lists, and any field a tool
     adds later)."""
@@ -372,7 +372,7 @@ def decide(call: dict, *, max_lines: int = DEFAULT_MAX_LINES, max_chars: int = D
             return rule
         texts = arguments + ([" ".join(arguments)] if len(arguments) > 1 else [])
     else:
-        texts = outbound(name, tool_input)
+        texts = outbound(tool_input)
     for text in texts:
         rule = judge(text, max_lines=max_lines, max_chars=max_chars, tree=tree)
         if rule != PASS:
