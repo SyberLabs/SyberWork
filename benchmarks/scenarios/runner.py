@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
-
 from benchmarks.scenarios.probe import evaluate
 
 
@@ -25,18 +22,3 @@ def run_scenario(scenario, host) -> dict:
     report["expected_failures"] = list(getattr(scenario, "expected_failures", []))
     return report
 
-
-def load_scenarios() -> list:
-    """Import every scenario module that publishes SCENARIO."""
-    import benchmarks.scenarios as package
-
-    skip = {"probe", "runner", "host", "world"}
-    found = []
-    for module in pkgutil.iter_modules(package.__path__):
-        if module.name in skip or module.name.startswith("_"):
-            continue
-        loaded = importlib.import_module(f"benchmarks.scenarios.{module.name}")
-        scenario = getattr(loaded, "SCENARIO", None)
-        if scenario is not None:
-            found.append(scenario)
-    return found

@@ -87,7 +87,7 @@ def _approval_denial(session: Session) -> dict:
     session.commit(case_id, certified["proposal"]["id"], "reviewer")
     revoke = session.compiled_propose(case_id, "reviewer", ["reviewer", "compiled"])
     explained = session.explain_admission(case_id, revoke["proposal"]["id"])
-    return {"reason": revoke["decision"]["reason"], "rule": explained["rule"], "case_id": case_id}
+    return {"reason": revoke["decision"]["reason"], "rule": explained["rule"]}
 
 
 def _unverified(session: Session) -> dict:
@@ -95,13 +95,13 @@ def _unverified(session: Session) -> dict:
     session.observe(case_id, "roster", access_review.roster("AR-fact"), "directory", "typed", "reviewer", verified=False)
     result = session.compiled_propose(case_id, "reviewer", ["reviewer", "compiled"])
     explained = session.explain_admission(case_id, result["proposal"]["id"])
-    return {"reason": result["decision"]["reason"], "rule": explained["rule"], "case_id": case_id}
+    return {"reason": result["decision"]["reason"], "rule": explained["rule"]}
 
 
 def _prior_effect(session: Session) -> dict:
     skipped = access_review.planner_skips_ahead(session, "AR-prior")
     explained = session.explain_admission(skipped["case_id"], _proposal_id(session, skipped["case_id"]))
-    return {"reason": skipped["reason"], "rule": explained["rule"], "effects": skipped["effects"], "case_id": skipped["case_id"]}
+    return {"reason": skipped["reason"], "rule": explained["rule"], "effects": skipped["effects"]}
 
 
 def _proposal_id(session: Session, case_id: str) -> str:
@@ -156,7 +156,6 @@ def _unknown_effect() -> dict:
         "status": committed["status"],
         "succeeded": len(succeeded),
         "chain_valid": session.verify_chain(case_id),
-        "case_id": case_id,
     }
 
 

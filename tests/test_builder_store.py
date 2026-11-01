@@ -1,17 +1,8 @@
 """Builder coordination stored in a cell database."""
 
-import tempfile
-import unittest
-from pathlib import Path
-
 from syberlabs.builder import nodes_for_paths, project
 from syberlabs.errors import Rejected
-from syberwork.coordination import BuilderStore
-from syberwork.core import Work
-from tests.builder_fixtures import (
-    NOTE, POLICY, AcceptingRuntime, CellCase, _check, architecture, descriptor, git_candidate,
-)
-from tests.test_cell import _drop_postgres, _postgres_database
+from tests.builder_fixtures import POLICY, AcceptingRuntime, CellCase, _check, architecture, descriptor
 
 class StoreCases(CellCase):
     dialect = "sqlite"

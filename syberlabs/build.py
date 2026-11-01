@@ -1504,9 +1504,8 @@ class Runner:
     and an attended thread are reported as idle, not retried.
     """
 
-    def __init__(self, kit: Kit, *, thread: str | None = None, publish: bool = False, log=None,
-                 margin: float = FRESHNESS_MARGIN_SECONDS):
-        self.kit, self.only, self.publish, self.margin = kit, thread, publish, margin
+    def __init__(self, kit: Kit, *, thread: str | None = None, publish: bool = False, log=None):
+        self.kit, self.only, self.publish = kit, thread, publish
         self.log = log or (lambda line: None)
 
     def run(self, *, once: bool = False, interval: float = 30.0) -> int:
@@ -1635,7 +1634,7 @@ class Runner:
         if evaluation is None:
             return False
         max_age = thread.config["evaluation"]["max_age_seconds"]
-        margin = min(self.margin, max_age / 2)
+        margin = min(FRESHNESS_MARGIN_SECONDS, max_age / 2)
         return max_age - (time.time() - as_seconds(evaluation["at"])) <= margin
 
     def _next_publish(self, thread: "Thread", events: Sequence[dict]) -> str | None:
