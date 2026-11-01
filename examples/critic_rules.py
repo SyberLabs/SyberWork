@@ -453,13 +453,13 @@ class _Scan(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def integrity_findings(path: str, source: str | None, added: set, test: bool | None = None) -> list:
+def integrity_findings(path: str, source: str | None, added: set) -> list:
     """High findings for the lines ``added`` to Python file ``path`` (content ``source``; ``added`` None: all lines).
 
-    Test code (``test``; by default ``is_test_code(path)``) is held to every family. Any other Python
+    Test code is held to every family. Any other Python
     file is held to ``HARNESS_RULES``, without the test-only parts of ``runner_reach``.
     """
-    test = is_test_code(path) if test is None else test
+    test = is_test_code(path)
     what = "test file" if test else "Python file"
     if added is not None and not added:
         return []

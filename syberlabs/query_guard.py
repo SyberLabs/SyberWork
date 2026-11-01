@@ -16,7 +16,25 @@ for the queries themselves: before Claude Code runs a GitHits (``mcp__githits__*
   ``tree_lines.txt`` beside the hook before the run; the hook compares hashes and never holds the tree's text).
 
 Anything else passes unchanged. The outbound text is every string of the tool input, dictionary keys included, for
-every matched tool (``WebFetch``'s ``prompt`` too: it is processed off this machine). Each string is judged on its
+every matched tool (``WebFetch``'s ``prompt`` too: it is processed off this machine).
+
+``Bash`` is matched only when the host runs the GitHits client through its launcher (``claude_code``, ``githits=True``;
+``settings(..., bash=True)``), and then a command passes only when it is the launcher's absolute path
+(``SYBERLABS_GUARD_LAUNCHER`` in the hook's environment) followed by arguments the hook can read exactly as the shell
+will (``bash_arguments``): words of plain characters and single- or double-quoted strings, separated by spaces.
+
+- ``not_launcher``: any other command, or a command with no launcher configured;
+- ``shell_syntax``: a control operator, a redirection, an expansion or a substitution anywhere after the launcher
+  (``; & | < > $ ` \\ ( ) { } !``, any control character such as a newline), a glob, tilde, caret or comment
+  character outside quotes, an unquoted word that a shell reads differently (one that starts with ``=``, which zsh's
+  default EQUALS option expands to a command's path, with ``NAME=``, which bash's ``set -k`` makes an assignment into
+  the launcher's environment, or with ``@``, which PowerShell splats), an unterminated quote, ``run_in_background``,
+  or a ``timeout`` shorter than the Bash tool's default (``MIN_BASH_TIMEOUT_MS``: Claude Code would end the launcher
+  after its request left and before its client writes the record).
+
+The arguments that pass the shape check are the outbound text: each one, and all of them joined by spaces, are
+judged by the rules above, so a launcher query carrying a credential, an email, code or a tree line is blocked as a
+GitHits tool call is. Each string is judged on its
 own, as typed and folded (``fold``: NFKC, every format character such as a zero-width space removed, and the
 Cyrillic and Greek letters that look like Latin ones mapped to them); a rule broken by either form blocks. The hook
 blocks the documented way: exit code 2 with a reason on standard error, which Claude Code returns to the model as
@@ -35,6 +53,11 @@ sign one (``claude_code`` refuses a code-running tool beside an MCP server unles
 (``syberlabs.claude_code``) reads the decisions after the run, keeps only those whose MAC verifies, and records each
 lookup with its ``guard``: the rule, ``pass``, or ``unguarded`` when no verified decision carries the lookup's exact
 tool use id, tool and query digest.
+
+A launcher call the hook passes also gets ``arguments_digest`` on its decision (the SHA-256 of the arguments it read,
+covered by the MAC). The launcher's entry (``githits_cli_entry.py``) refuses to send a lookup until it has claimed
+such a decision for its own argv (``claim_launch``), so a launcher Claude Code runs without the hook (``--bare`` on
+2.1.312 skips ``--settings`` hooks) sends nothing: its call is recorded ``unguarded`` with ``sent: false``.
 
 This is a filter over what the model typed, not a proof that no private material leaves the machine: a model can
 paraphrase code, spread it (or one credential) over several short queries, encode it (base64, hex, URL or percent
@@ -85,17 +108,33 @@ TREE_DIGEST_CHARS = 32   # hex characters of SHA-256 kept per tree line
 MAX_TREE_FILE_BYTES = 1024 * 1024
 LINES_ENV, CHARS_ENV = "SYBERLABS_GUARD_MAX_LINES", "SYBERLABS_GUARD_MAX_CHARS"
 MATCHER = "^(mcp__githits__.*|WebSearch|WebFetch)$"
+MATCHER_BASH = "^(mcp__githits__.*|WebSearch|WebFetch|Bash)$"  # with the GitHits launcher (claude_code githits=True)
+# With the launcher and the operator's --allow-code-tools-with-mcp: an allowed PowerShell is judged as Bash is.
+MATCHER_SHELLS = "^(mcp__githits__.*|WebSearch|WebFetch|Bash|PowerShell)$"
+SHELL_TOOLS = ("Bash", "PowerShell")  # judged by the launcher-only rule (``bash_arguments``) when matched
 PASS, UNGUARDED, ERROR = "pass", "unguarded", "guard_error"
-RULES = ("secret", "url_credentials", "email", "too_long", "code_fence", "code_lines", "tree_line", ERROR)
+NOT_LAUNCHER, SHELL_SYNTAX = "not_launcher", "shell_syntax"
+RULES = ("secret", "url_credentials", "email", "too_long", "code_fence", "code_lines", "tree_line", NOT_LAUNCHER,
+         SHELL_SYNTAX, ERROR)
 DECISIONS = "decisions"
 DECISION_FIELDS = ("tool_use_id", "tool", "query_digest", "rule")  # what the MAC covers
+# Present only on a launcher call the hook passed: the SHA-256 of the arguments it read (``arguments_digest``), so the
+# launcher can find the decision for its own argv before it sends anything (``claim_launch``). Covered by the MAC
+# when present.
+DECISION_OPTIONAL = ("arguments_digest",)
+LAUNCHES = "launches"  # beside ``decisions/``: one empty file per decision a launcher run has claimed
 POLICY_FILE, TREE_FILE, SETTINGS_FILE = "policy.json", "tree_lines.txt", "settings.json"
 # What the host hands the hook through Claude Code's environment, which a command hook inherits (the hooks reference
 # documents no per-hook ``env`` field): the per-call MAC key and the SHA-256 of the policy and tree files it wrote.
 # Every other child of Claude Code inherits them too, stdio MCP servers included.
 KEY_ENV = "SYBERLABS_GUARD_KEY"
+LAUNCHER_ENV = "SYBERLABS_GUARD_LAUNCHER"  # the GitHits launcher's absolute path: the one Bash command allowed
 POLICY_DIGEST_ENV, TREE_DIGEST_ENV = "SYBERLABS_GUARD_POLICY_DIGEST", "SYBERLABS_GUARD_TREE_DIGEST"
 BLOCK_EXIT = 2  # Claude Code: a PreToolUse hook that exits 2 blocks the call; its stderr is the reason the model sees
+# Claude Code's Bash tool ends a command after 2 minutes unless its ``timeout`` (milliseconds) says otherwise. A
+# launcher call may lengthen that, never shorten it: an early end could come after the lookup left and before the
+# client's record is written.
+MIN_BASH_TIMEOUT_MS = 120000
 
 _EXTRA_SECRET = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/=-]{20,}")
 _URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]*(:[^\s/@]*)?@")
@@ -121,15 +160,30 @@ WHY = {
     "code_fence": "it contains a fenced code block",
     "code_lines": "it has more lines than the host allows for one lookup",
     "tree_line": "it contains a line copied from this repository",
+    NOT_LAUNCHER: "the only command allowed here is the GitHits launcher named in your instructions",
+    SHELL_SYNTAX: "the launcher's arguments may hold only plain words and quoted strings, with no shell operators, "
+                  "redirections, substitutions or expansions (quote a word that starts with =, @ or NAME=, or "
+                  "holds ^), and the call may not run in the background or set a timeout under two minutes",
     ERROR: "the guard could not read the call or its policy",
 }
+# What may follow the launcher. Anywhere: none of these (control operators, redirections, expansions, substitution,
+# escapes, grouping, history). Outside quotes: only these word characters (no glob, tilde, comment or brace; no caret,
+# a glob operator under zsh's EXTENDED_GLOB).
+_SHELL_FORBIDDEN = frozenset(";&|<>$`\\(){}!")
+_PLAIN = re.compile(r"[A-Za-z0-9_./:@=,+%-]")
+# The unquoted start of a word that a shell reads as something else: ``=cmd`` (zsh's EQUALS, on by default, expands
+# it to the command's path), ``NAME=...`` (under bash's ``set -k`` an assignment anywhere on the line goes into the
+# command's environment, so ``GITHITS_API_URL=...`` would redirect the client and its token) and ``@name``
+# (PowerShell, judged by this rule under the operator's override, splats the variable ``$name`` into arguments).
+_READ_DIFFERENTLY = re.compile(r"[=@]|[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def query_text(tool_input) -> str:
     """The query of a lookup as the host records it: ``query`` (WebSearch, GitHits search), else ``url``
-    (WebFetch), else the whole input as canonical JSON. Only its digest and length are ever recorded."""
+    (WebFetch), else ``command`` (Bash: the GitHits launcher's command line), else the whole input as canonical
+    JSON. Only its digest and length are ever recorded."""
     if isinstance(tool_input, dict):
-        for key in ("query", "url"):
+        for key in ("query", "url", "command"):
             if isinstance(tool_input.get(key), str):
                 return tool_input[key]
     return canonical(tool_input if tool_input is not None else {})
@@ -146,7 +200,7 @@ def query_digest(tool_input) -> str:
     return hashlib.sha256(utf8(query_text(tool_input))).hexdigest()
 
 
-def outbound(tool_name: str, tool_input) -> list[str]:
+def outbound(tool_input) -> list[str]:
     """The texts this call sends off the machine, each judged on its own: every string of the input, dictionary keys
     included, for every matched tool (``WebFetch``'s ``prompt``, ``WebSearch``'s domain lists, and any field a tool
     adds later)."""
@@ -169,6 +223,54 @@ def outbound(tool_name: str, tool_input) -> list[str]:
 
     walk(tool_input)
     return found
+
+
+def bash_arguments(command, launcher: str | None) -> tuple[str, list[str]]:
+    """``(rule, arguments)`` for a Bash command: ``pass`` and the arguments the shell would pass to the launcher, or
+    ``not_launcher`` / ``shell_syntax`` and none. The command must be ``launcher`` exactly, alone or followed by a
+    space; what follows may hold plain words (``_PLAIN``), ``'single'`` and ``"double"`` quoted strings and spaces,
+    and none of ``_SHELL_FORBIDDEN`` or a control character anywhere. A word is the concatenation of its adjacent
+    plain and quoted parts, as the shell reads it; a word whose unquoted start a shell reads differently
+    (``_READ_DIFFERENTLY``: ``=cmd``, ``NAME=value``, ``@name``) is refused, and passes quoted."""
+    if not isinstance(command, str) or not launcher or not (command == launcher or command.startswith(launcher + " ")):
+        return NOT_LAUNCHER, []
+    rest = command[len(launcher):]
+    if any(ch in _SHELL_FORBIDDEN or unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in rest):
+        return SHELL_SYNTAX, []
+    found: list[str] = []
+    word: list[str] | None = None
+    lead = ""            # the word's unquoted start, up to its first quote
+    quoted = False
+    index = 0
+    while index < len(rest):
+        ch = rest[index]
+        if ch == " ":
+            if word is not None:
+                if _READ_DIFFERENTLY.match(lead):
+                    return SHELL_SYNTAX, []
+                found.append("".join(word))
+                word, lead, quoted = None, "", False
+            index += 1
+            continue
+        word = [] if word is None else word
+        if ch in "'\"":
+            end = rest.find(ch, index + 1)
+            if end < 0:
+                return SHELL_SYNTAX, []
+            word.append(rest[index + 1:end])
+            quoted = True
+            index = end + 1
+            continue
+        if not _PLAIN.fullmatch(ch):
+            return SHELL_SYNTAX, []
+        word.append(ch)
+        lead += "" if quoted else ch
+        index += 1
+    if word is not None:
+        if _READ_DIFFERENTLY.match(lead):
+            return SHELL_SYNTAX, []
+        found.append("".join(word))
+    return PASS, found
 
 
 def fold(text: str) -> str:
@@ -249,12 +351,29 @@ def _judge(text: str, *, max_lines: int, max_chars: int, tree: set[str] | frozen
 
 
 def decide(call: dict, *, max_lines: int = DEFAULT_MAX_LINES, max_chars: int = DEFAULT_MAX_CHARS,
-           tree: set[str] | frozenset[str] = frozenset()) -> str:
-    """The rule for one ``PreToolUse`` input (``tool_name``, ``tool_input``): ``pass`` or the first rule broken."""
+           tree: set[str] | frozenset[str] = frozenset(), launcher: str | None = None) -> str:
+    """The rule for one ``PreToolUse`` input (``tool_name``, ``tool_input``): ``pass`` or the first rule broken.
+    A ``Bash`` or ``PowerShell`` call (``SHELL_TOOLS``) must first be the GitHits ``launcher`` with plain arguments
+    (``bash_arguments``); its arguments, each and joined, are then the outbound text."""
     name, tool_input = call.get("tool_name"), call.get("tool_input")
     if not isinstance(name, str):
         return ERROR
-    for text in outbound(name, tool_input):
+    if name in SHELL_TOOLS:
+        if not isinstance(tool_input, dict):
+            return NOT_LAUNCHER
+        if tool_input.get("run_in_background"):
+            return SHELL_SYNTAX  # a background run would outlive the call whose record the host reads
+        timeout = tool_input.get("timeout")
+        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                    or not timeout >= MIN_BASH_TIMEOUT_MS):
+            return SHELL_SYNTAX  # ended early, the launcher's lookup could leave with no record written
+        rule, arguments = bash_arguments(tool_input.get("command"), launcher)
+        if rule != PASS:
+            return rule
+        texts = arguments + ([" ".join(arguments)] if len(arguments) > 1 else [])
+    else:
+        texts = outbound(tool_input)
+    for text in texts:
         rule = judge(text, max_lines=max_lines, max_chars=max_chars, tree=tree)
         if rule != PASS:
             return rule
@@ -296,9 +415,12 @@ def hook_command(directory: Path, python: str | None = None) -> dict:
             "timeout": 30, "onFailure": "block"}
 
 
-def settings(directory: Path, python: str | None = None) -> dict:
-    """The temporary settings document passed with ``--settings``: this hook and nothing else."""
-    return {"hooks": {"PreToolUse": [{"matcher": MATCHER, "hooks": [hook_command(directory, python)]}]}}
+def settings(directory: Path, python: str | None = None, bash: bool = False, powershell: bool = False) -> dict:
+    """The temporary settings document passed with ``--settings``: this hook and nothing else. ``bash`` (the GitHits
+    launcher is in use) adds ``Bash`` to the matcher, so every shell command is judged; ``powershell`` (with
+    ``bash``, under the operator's code-tools override) adds ``PowerShell`` too, judged by the same rule."""
+    matcher = (MATCHER_SHELLS if powershell else MATCHER_BASH) if bash else MATCHER
+    return {"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [hook_command(directory, python)]}]}}
 
 
 def file_digest(path: Path) -> str:
@@ -310,7 +432,8 @@ def _write_read_only(path: Path, text: str) -> None:
     os.chmod(path, stat.S_IREAD)  # read-only for everyone; on Windows, the read-only attribute
 
 
-def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = None) -> Path:
+def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = None, bash: bool = False,
+            powershell: bool = False) -> Path:
     """Write the guard's directory (policy, tree digests and settings, each read-only, and an empty
     ``decisions/``); returns the settings file to pass with ``--settings``. ``directory`` is the host's own,
     outside any worktree. ``hook_environment`` then gives the hook the files' digests and the MAC key."""
@@ -319,16 +442,19 @@ def prepare(directory: Path, rules: dict, tree: set[str], python: str | None = N
     _write_read_only(directory / POLICY_FILE, json.dumps(rules))
     _write_read_only(directory / TREE_FILE, "".join(d + "\n" for d in sorted(tree)))
     path = directory / SETTINGS_FILE
-    _write_read_only(path, json.dumps(settings(directory, python), indent=2))
+    _write_read_only(path, json.dumps(settings(directory, python, bash, powershell), indent=2))
     return path
 
 
-def hook_environment(directory: Path, key: str) -> dict:
+def hook_environment(directory: Path, key: str, launcher: str | None = None) -> dict:
     """What the host adds to Claude Code's environment for the hook, which inherits it: the per-call MAC key and
-    the SHA-256 of the policy and tree files ``prepare`` wrote."""
+    the SHA-256 of the policy and tree files ``prepare`` wrote; with the GitHits launcher, its absolute path."""
     directory = Path(directory)
-    return {KEY_ENV: key, POLICY_DIGEST_ENV: file_digest(directory / POLICY_FILE),
-            TREE_DIGEST_ENV: file_digest(directory / TREE_FILE)}
+    found = {KEY_ENV: key, POLICY_DIGEST_ENV: file_digest(directory / POLICY_FILE),
+             TREE_DIGEST_ENV: file_digest(directory / TREE_FILE)}
+    if launcher:
+        found[LAUNCHER_ENV] = launcher
+    return found
 
 
 def remove(directory: Path) -> None:
@@ -343,21 +469,38 @@ def remove(directory: Path) -> None:
     shutil.rmtree(directory, ignore_errors=True)
 
 
+def sign(value, key: str) -> str:
+    """HMAC-SHA256 of ``value`` as canonical JSON (``utf8``) under ``key``: the MAC of a decision here and of a
+    GitHits call record (``syberlabs.githits``)."""
+    return hmac.new(key.encode("utf-8"), utf8(canonical(value)), hashlib.sha256).hexdigest()
+
+
+def verify(value, given, key: str) -> bool:
+    """True only when ``given`` is ``sign(value, key)`` under a non-empty key; a missing or wrong MAC is not."""
+    return bool(key) and isinstance(given, str) and hmac.compare_digest(given, sign(value, key))
+
+
+def _signed(entry: dict) -> dict:
+    """What a decision's MAC covers: ``DECISION_FIELDS``, and each ``DECISION_OPTIONAL`` field the entry holds."""
+    return {field: entry.get(field) for field in DECISION_FIELDS + tuple(
+        field for field in DECISION_OPTIONAL if entry.get(field) is not None)}
+
+
 def mac(entry: dict, key: str) -> str:
-    """HMAC-SHA256 of a decision's four fields (``DECISION_FIELDS``, as canonical JSON) under the per-call key."""
-    message = utf8(canonical({field: entry.get(field) for field in DECISION_FIELDS}))
-    return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    """HMAC-SHA256 of a decision's four fields (``DECISION_FIELDS``) and its ``arguments_digest`` when it has one,
+    as canonical JSON, under the per-call key."""
+    return sign(_signed(entry), key)
 
 
 def authentic(entry: dict, key: str) -> bool:
     """True only when ``entry`` carries a MAC that verifies under ``key``; a missing or wrong MAC is not."""
-    given = entry.get("mac")
-    return bool(key) and isinstance(given, str) and hmac.compare_digest(given, mac(entry, key))
+    return verify(_signed(entry), entry.get("mac"), key)
 
 
 def read_decisions(directory: Path) -> list[dict]:
     """The decisions in ``decisions/``, each ``{tool_use_id, tool, query_digest, rule, mac}`` (``mac`` None when
-    absent); malformed files are skipped. None is trusted until ``authentic`` verifies it."""
+    absent), plus ``arguments_digest`` on a launcher call the hook passed; malformed files are skipped. None is
+    trusted until ``authentic`` verifies it."""
     found = []
     folder = Path(directory) / DECISIONS
     for file in sorted(folder.glob("*.json")) if folder.is_dir() else []:
@@ -368,22 +511,83 @@ def read_decisions(directory: Path) -> list[dict]:
         if (isinstance(item, dict) and item.get("rule") in RULES + (PASS,) and isinstance(item.get("tool"), str)
                 and isinstance(item.get("query_digest"), str) and isinstance(item.get("tool_use_id"), (str, type(None)))):
             found.append({**{k: item[k] for k in DECISION_FIELDS},
+                          **{k: item[k] for k in DECISION_OPTIONAL if isinstance(item.get(k), str)},
                           "mac": item["mac"] if isinstance(item.get("mac"), str) else None})
     return found
 
 
-def _record(directory: Path, call: dict, rule: str, key: str) -> None:
-    tool_use_id = call.get("tool_use_id") if isinstance(call.get("tool_use_id"), str) else None
-    tool = call.get("tool_name") if isinstance(call.get("tool_name"), str) else ""
-    digest = query_digest(call.get("tool_input"))
-    entry = {"tool_use_id": tool_use_id, "tool": tool[:64], "query_digest": digest, "rule": rule}
+def arguments_digest(arguments) -> str:
+    """SHA-256 of a launcher call's arguments as canonical JSON (a list of strings): what the hook read from the
+    command (``bash_arguments``) and what the launcher receives as its argv, which agree for every command the hook
+    passes (plain words and quoted strings, no expansion)."""
+    return hashlib.sha256(utf8(canonical([str(word) for word in arguments]))).hexdigest()
+
+
+def write_decision(directory: Path, entry: dict, key: str) -> None:
+    """Write one decision into ``decisions/`` with its MAC under ``key`` (none without a key), atomically."""
+    entry = dict(entry)
     if key:
         entry["mac"] = mac(entry, key)
-    name = hashlib.sha256(utf8(canonical([tool_use_id, tool, digest, os.getpid(), os.urandom(8).hex()]))).hexdigest()
-    folder = directory / DECISIONS
+    name = hashlib.sha256(utf8(canonical([entry.get("tool_use_id"), entry.get("tool"), entry.get("query_digest"),
+                                          os.getpid(), os.urandom(8).hex()]))).hexdigest()
+    folder = Path(directory) / DECISIONS
     temporary = folder / f".{name}.tmp"
     temporary.write_text(json.dumps(entry), encoding="utf-8")
     os.replace(temporary, folder / f"{name}.json")
+
+
+def _record(directory: Path, call: dict, rule: str, key: str, arguments: list[str] | None = None) -> None:
+    tool_use_id = call.get("tool_use_id") if isinstance(call.get("tool_use_id"), str) else None
+    tool = call.get("tool_name") if isinstance(call.get("tool_name"), str) else ""
+    entry = {"tool_use_id": tool_use_id, "tool": tool[:64], "query_digest": query_digest(call.get("tool_input")),
+             "rule": rule}
+    if arguments is not None:
+        entry["arguments_digest"] = arguments_digest(arguments)
+    write_decision(directory, entry, key)
+
+
+NO_GUARD = "no_guard"            # the launcher's environment holds no guard key or launcher: not a guarded call
+NO_DECISION = "no_decision"      # no verified pass decision names these exact arguments
+DECISION_USED = "decision_used"  # every such decision was already claimed by another launcher run
+CLAIM_FAILED = "claim_failed"    # the guard's directory could not be read or written
+
+
+def claim_launch(arguments, environ=None) -> tuple[str | None, str]:
+    """Before the GitHits launcher sends anything: ``(None, tool_use_id)`` when the query guard's hook passed a
+    launcher call with exactly these ``arguments`` (a decision in ``decisions/`` beside the launcher, ``rule: pass``,
+    a shell tool, ``arguments_digest`` equal to this argv's, and a MAC that verifies under ``SYBERLABS_GUARD_KEY``),
+    which this run then claims (an empty file in ``launches/`` created exclusively, named by the decision's tool use
+    id): one decision, one launch. Otherwise ``(reason, detail)``: ``no_guard`` (no key or launcher in the
+    environment, so no hook could have decided), ``no_decision``, ``decision_used`` or ``claim_failed``.
+
+    The guard's directory is the launcher's own (``SYBERLABS_GUARD_LAUNCHER``'s parent): the provider writes the
+    launcher there, beside the hook's ``decisions/``. Under ``claude --bare`` no ``--settings`` hook runs (Claude
+    Code 2.1.312, live, 2026-10-30), so there is no decision and the launcher refuses before any request leaves."""
+    environ = os.environ if environ is None else environ
+    key, launcher = environ.get(KEY_ENV, ""), environ.get(LAUNCHER_ENV, "")
+    if not key or not launcher:
+        return NO_GUARD, (f"{KEY_ENV} and {LAUNCHER_ENV} are not both set: the launcher runs only inside a provider "
+                          "call whose query guard passed it; operator lookups go through `syberlabs githits`")
+    directory = Path(launcher).parent
+    digest = arguments_digest(arguments)
+    try:
+        passed = [d for d in read_decisions(directory)
+                  if d["rule"] == PASS and d["tool"] in SHELL_TOOLS and isinstance(d["tool_use_id"], str)
+                  and d.get("arguments_digest") == digest and authentic(d, key)]
+        if not passed:
+            return NO_DECISION, "no verified query-guard decision passed a launcher call with these exact arguments"
+        folder = directory / LAUNCHES
+        folder.mkdir(exist_ok=True)
+        for decision in passed:
+            name = hashlib.sha256(utf8(decision["tool_use_id"])).hexdigest()
+            try:
+                os.close(os.open(folder / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            except FileExistsError:
+                continue
+            return None, decision["tool_use_id"]
+    except OSError as exc:
+        return CLAIM_FAILED, f"the guard's directory could not be read or written: {exc.strerror or type(exc).__name__}"
+    return DECISION_USED, "every query-guard decision for these arguments was already used by another launcher run"
 
 
 def _matching(path: Path, expected: str) -> bytes:
@@ -401,6 +605,7 @@ def run(directory: Path, stdin, stderr, environ=None) -> int:
     environ = os.environ if environ is None else environ
     key = environ.get(KEY_ENV, "")
     call: dict = {}
+    arguments = None  # a passed launcher call's arguments, for its decision's ``arguments_digest``
     try:
         raw = stdin.buffer.read() if hasattr(stdin, "buffer") else stdin.read()
         call = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)  # Claude Code writes UTF-8
@@ -412,11 +617,14 @@ def run(directory: Path, stdin, stderr, environ=None) -> int:
             raise ValueError("no tool_use_id: no decision could be matched to this call")
         rules = json.loads(_matching(directory / POLICY_FILE, environ.get(POLICY_DIGEST_ENV, "")).decode("utf-8"))
         tree = set(_matching(directory / TREE_FILE, environ.get(TREE_DIGEST_ENV, "")).decode("utf-8").split())
-        rule = decide(call, max_lines=rules["max_lines"], max_chars=rules["max_chars"], tree=tree)
+        launcher = environ.get(LAUNCHER_ENV) or None
+        rule = decide(call, max_lines=rules["max_lines"], max_chars=rules["max_chars"], tree=tree, launcher=launcher)
+        if rule == PASS and call.get("tool_name") in SHELL_TOOLS:
+            arguments = bash_arguments(call["tool_input"].get("command"), launcher)[1]
     except Exception:  # noqa: BLE001  a guard that cannot judge blocks
-        rule = ERROR
+        rule, arguments = ERROR, None
     try:
-        _record(directory, call if isinstance(call, dict) else {}, rule, key)
+        _record(directory, call if isinstance(call, dict) else {}, rule, key, arguments)
     except Exception:  # noqa: BLE001  an unrecorded pass would read as unguarded; an unrecorded block still blocks
         if rule == PASS:
             rule = ERROR

@@ -3,7 +3,6 @@
 import hashlib
 import json
 import threading
-import unittest
 import urllib.error
 import urllib.request
 
