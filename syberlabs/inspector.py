@@ -134,8 +134,7 @@ def make_inspector(kit, *, port: int = 0, token: str | None = None) -> Threading
                 thread = kit.open(parts[1])
                 rest = parts[2:]
                 if not rest:
-                    self._json({"status": thread.status(), "candidates": thread._views(),
-                                "searches": [e["body"] for e in thread.history() if e["kind"].startswith("search_")]})
+                    self._json({"status": thread.status(), "candidates": thread._views()})
                 elif rest == ["events"]:
                     self._json(thread.history())
                 elif len(rest) == 3 and rest[0] == "candidates" and rest[2] == "diff":
@@ -149,6 +148,5 @@ def make_inspector(kit, *, port: int = 0, token: str | None = None) -> Threading
                 self._json({"error": "not_found"}, 404)
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    server.token = token
     server.url = f"http://127.0.0.1:{server.server_port}/#token={token}"
     return server
