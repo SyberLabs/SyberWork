@@ -132,7 +132,7 @@ class HarnessTests(Scratch):
         run_id, outcome, report = self.record(home)
         self.assertEqual(outcome["decision"], "order")
         self.assertEqual(report["status"], "ok", report)
-        self.assertEqual(report["counts"], {"call": 7, "effect": 1, "marker": 1})
+        self.assertEqual(report["counts"], {"call": 7, "effect": 1, "marker": 1, "io": 0})
         records = home.load_run(run_id)
         self.assertEqual(records[0]["t"], "run")
         self.assertEqual(records[-1]["t"], "end")
@@ -165,12 +165,63 @@ class HarnessTests(Scratch):
         self.assertEqual(home.load_run(run_c)[-1]["unconsumed_effects"], 1)
         report = harness.compare(home.load_run(run_a), home.load_run(run_c))
         self.assertFalse(report["equal"])
-        self.assertEqual(report["first_divergence"]["before"], ("effects", "submit"))
+        self.assertEqual(report["first_divergence"]["before"], ("effects", None), "component level by default")
+        strict = harness.compare(home.load_run(run_a), home.load_run(run_c), level="function")
+        self.assertEqual(strict["first_divergence"]["before"], ("effects", "submit"))
+        with self.assertRaises(Rejected):
+            harness.compare(home.load_run(run_a), home.load_run(run_c), level="line")
 
         run_d, _, other = self.record(home, replay_of=run_a, entry="fxapp.variants:other")
         self.assertEqual(other["status"], "diverged")
         self.assertIn("asked for effect 'effect:http.other'; the journal has 'marker:time'", other["error"])
         self.assertEqual(home.load_run(run_d)[-1]["status"], "diverged")
+
+    def test_a_refactor_inside_a_component_is_not_a_change_at_component_level(self):
+        home = ledger.Ledger(self.scratch / "ledger")
+        run_a, _, _ = self.record(home)
+        tree = self.scratch / "refactored"
+        shutil.copytree(FIXTURE, tree)
+        rules = tree / "fxapp" / "rules.py"
+        rules.write_text(rules.read_text(encoding="utf-8").replace(
+            'def decide(record):\n    if record["quantity"] <= 0:',
+            'def _zero(record):\n    return record["quantity"] <= 0\n\n\ndef decide(record):\n    if _zero(record):'), encoding="utf-8")
+        graph = indexed(tree, "refactor")
+        self.assertIn("s:fxapp/rules.py::_zero", graph["symbols"])
+        run_b, outcome, _ = self.record(home, root=tree, graph=graph, revision="refactor")
+        self.assertEqual(outcome["decision"], "order")
+        loose = harness.compare(home.load_run(run_a), home.load_run(run_b))
+        strict = harness.compare(home.load_run(run_a), home.load_run(run_b), level="function")
+        self.assertTrue(loose["equal"], loose)
+        self.assertFalse(strict["equal"])
+        self.assertEqual(strict["first_divergence"]["after"], ("rules", "_zero"))
+        evidence = attest.trace_diff(home.load_run(run_a), home.load_run(run_b), None)
+        self.assertTrue(evidence["diff_empty"])
+        self.assertFalse(evidence["function_level_equal"])
+
+    def test_a_subprocess_is_observed_as_io_and_counts_in_the_diff(self):
+        home = ledger.Ledger(self.scratch / "ledger")
+        script = self.scratch / "shell.py"
+        script.write_text("import subprocess, sys\nsubprocess.run([sys.executable, '-c', 'pass'], check=True)\n"
+                          "subprocess.run([sys.executable, '-c', sys.argv[1] if len(sys.argv) > 1 else 'pass'], check=True)\n",
+                          encoding="utf-8")
+        run_a = harness.new_run_id()
+        report = harness.record(self.scratch, home.run_path(run_a), str(script), run_id=run_a)
+        self.assertEqual((report["status"], report["counts"]["io"]), ("ok", 2), report)
+        home.record_run(run_a)
+        records = home.load_run(run_a)
+        io_records = [r for r in records if r["t"] == "io"]
+        self.assertEqual(io_records[0]["name"], "subprocess")
+        self.assertEqual(io_records[0]["payload"]["argv"][1:], ["-c", "pass"])
+        path = harness.worldline(records)
+        self.assertEqual([h for _, h, _ in path if str(h).startswith("io:")], ["io:subprocess", "io:subprocess"])
+        run_b = harness.new_run_id()
+        harness.record(self.scratch, home.run_path(run_b), str(script), run_id=run_b)
+        self.assertTrue(harness.compare(records, harness.read_journal(home.run_path(run_b)))["equal"])
+        quiet = harness.new_run_id()
+        harness.record(self.scratch, home.run_path(quiet), str(script), run_id=quiet, observe=())
+        self.assertEqual([r["t"] for r in harness.read_journal(home.run_path(quiet)) if r["t"] == "io"], [])
+        home.record_run(run_b)
+        self.assertEqual(home.project()["effects"], 4)
 
     def test_large_payload_goes_to_a_blob_and_replays(self):
         home = ledger.Ledger(self.scratch / "ledger")
@@ -201,8 +252,10 @@ class HarnessTests(Scratch):
         with self.assertRaises(Rejected):
             harness.current()
         script = self.scratch / "script.py"
-        script.write_text("import sys\nfrom syberlabs.factory.harness import current\nctx = current()\n"
-                          "print(ctx.marker('answer', 42))\nsys.exit(0)\n", encoding="utf-8")
+        # The child keeps the host's checkout off the program's path on purpose (a candidate's own syberlabs must
+        # win on this repository), so a program that wants current() imports syberlabs from where it has it.
+        script.write_text(f"import sys\nsys.path.insert(0, {str(ROOT)!r})\nfrom syberlabs.factory.harness import current\n"
+                          "ctx = current()\nprint(ctx.marker('answer', 42))\nsys.exit(0)\n", encoding="utf-8")
         report = harness.record(self.scratch, self.scratch / "s.jsonl", str(script))
         self.assertEqual(report["status"], "ok", report)
         self.assertEqual(report["stdout"].strip(), "42")
@@ -338,8 +391,9 @@ class AttestTests(Scratch):
         self.assertEqual((same["baseline_run"], same["candidate_run"]), (run_a, run_b))
         changed = attest.trace_diff(home.load_run(run_a), home.load_run(run_c), footprint)
         self.assertFalse(changed["diff_empty"])
-        self.assertEqual(changed["first_divergence"]["before"], ["effects", "submit"] if isinstance(
-            changed["first_divergence"]["before"], list) else ("effects", "submit"))
+        self.assertEqual((changed["level"], tuple(changed["first_divergence"]["before"])), ("component", ("effects", None)))
+        self.assertFalse(changed["function_level_equal"])
+        self.assertTrue(same["function_level_equal"])
         spec_ref = {"spec_id": "order-path", "version": 1, "req_ids": ["R1"]}
         builder = {"agent": "test", "model": None, "session": None}
         promoted = attest.statement(subject_commit="cand", repository="fx", spec_ref=spec_ref, footprint=footprint,
@@ -613,7 +667,7 @@ class BuildThreadCheck(Scratch):
         # launcher that puts it on sys.path first and otherwise behaves as the interpreter.
         launcher = self.scratch / "python-with-checkout.py"
         launcher.write_text(f"import runpy, sys\nsys.path.insert(0, {str(ROOT)!r})\n"
-                            "assert sys.argv[1] == '-m'\nsys.argv = sys.argv[2:]\nrunpy.run_module(sys.argv[0], run_name='__main__', alter_sys=True)\n",
+                            "assert sys.argv[1:3] == ['-P', '-m']\nsys.argv = sys.argv[3:]\nrunpy.run_module(sys.argv[0], run_name='__main__', alter_sys=True)\n",
                             encoding="utf-8")
         out, err = io.StringIO(), io.StringIO()
         here = os.getcwd()
@@ -631,7 +685,7 @@ class BuildThreadCheck(Scratch):
         document = json.loads(published.read_text(encoding="utf-8"))
         self.assertEqual(document["evolution"]["evaluation"]["required"], ["factory", "noop"])
         argv = document["evolution"]["evaluation"]["checks"]["factory"]["argv"]
-        self.assertEqual(argv[1:3], ["-m", "syberlabs.factory"])
+        self.assertEqual(argv[1:4], ["-P", "-m", "syberlabs.factory"], "the host's factory runs, not the candidate's")
         self.assertIn(str(self.ledger_home), argv)
         home = ledger.Ledger(self.ledger_home)
         self.assertIsNotNone(home.baseline())
@@ -648,3 +702,64 @@ class BuildThreadCheck(Scratch):
         self.assertTrue(verdict.acceptable, verdict.summary())
         self.assertEqual([(c.name, c.state) for c in verdict.checks], [("factory", "passed"), ("noop", "passed")])
         self.assertEqual(thread.accept(candidate.id).status, "succeeded")
+
+
+class SelfHosting(Scratch):
+    """The factory on this repository: examples/build_thread.py recorded under the declared layering. A refactor
+    passes; dropping the compare-and-swap from accept is caught by the io observation with no edit to the program."""
+
+    def test_mask(self):
+        self.assertEqual(harness.mask("a" * 40), "<hex>")
+        self.assertEqual(harness.mask("/tmp/tmpab12cd_x/project"), "<path>/project")
+        self.assertEqual(harness.mask("tmpab12cd_x"), "<tmp>")
+        self.assertEqual(harness.mask("refs/heads/syberlabs/f6853a94"), "<path>/<hex>")
+        self.assertEqual(harness.mask("accept c2 (bd57b9bf-53e8-4803-8c7c-ae22237e8bcb)"), "accept c2 (<hex>)")
+        self.assertEqual(harness.mask("a3973731f2552abd581f2c7bdf5ee3b92ed7d466^{tree}"), "<hex>^{tree}")
+        self.assertEqual(harness.mask("--format=%(refname)"), "--format=%(refname)")
+        self.assertEqual(harness.mask("c1"), "c1")
+
+    def test_build_thread_example_records_and_a_weakened_accept_is_caught(self):
+        import subprocess
+        home = ledger.Ledger(self.scratch / "ledger")
+        declared = json.loads((ROOT / "docs" / "architecture.declared.json").read_text(encoding="utf-8"))
+        graph = space.index(ROOT, paths=["syberlabs", "syberwork"], revision="checkout")
+        space.map_components(graph, declared)
+        home.record_space(graph)
+        golden = harness.new_run_id()
+        report = harness.record(ROOT, home.run_path(golden), str(ROOT / "examples" / "build_thread.py"),
+                                file_components=file_components(graph), run_id=golden, revision="checkout",
+                                blobs=home.home / "blobs")
+        self.assertEqual(report["status"], "ok", report.get("error"))
+        self.assertGreater(report["counts"]["call"], 1000)
+        self.assertGreater(report["counts"]["io"], 20, "git subprocesses are observed")
+        home.record_run(golden)
+        again = harness.new_run_id()
+        harness.record(ROOT, home.run_path(again), str(ROOT / "examples" / "build_thread.py"),
+                       file_components=file_components(graph), run_id=again, revision="checkout", blobs=home.home / "blobs")
+        same = attest.trace_diff(home.load_run(golden), home.load_run(again), None)
+        self.assertTrue(same["diff_empty"], same["divergence_detail"])
+        self.assertTrue(same["function_level_equal"], "the example is deterministic once io keys are masked")
+
+        tree = self.scratch / "weakened"
+        shutil.copytree(ROOT, tree, ignore=shutil.ignore_patterns(".git", "__pycache__", ".syberlabs", "*.sqlite3"))
+        gitspace = tree / "syberlabs" / "gitspace.py"
+        text = gitspace.read_text(encoding="utf-8")
+        weakened = text.replace('self.git("update-ref", "-m", message, ref, new, old or self.zero, env=WRITER)',
+                                'self.git("update-ref", "-m", message, ref, new, env=WRITER)')
+        self.assertNotEqual(text, weakened)
+        gitspace.write_text(weakened, encoding="utf-8")
+        candidate = harness.new_run_id()
+        report = harness.record(tree, home.run_path(candidate), str(tree / "examples" / "build_thread.py"),
+                                file_components=file_components(graph), run_id=candidate, revision="weakened",
+                                blobs=home.home / "blobs")
+        self.assertEqual(report["status"], "ok", report.get("error"))
+        changed = attest.trace_diff(home.load_run(golden), home.load_run(candidate), None)
+        self.assertFalse(changed["diff_empty"])
+        detail = changed["divergence_detail"]
+        self.assertEqual(detail["before"]["name"], "subprocess")
+        self.assertIn("update-ref", detail["before"]["payload"]["argv"])
+        self.assertEqual(len(detail["before"]["payload"]["argv"]) - len(detail["after"]["payload"]["argv"]), 1,
+                         "the expected old value is the argument that went missing")
+        statement = attest.statement(subject_commit="weakened", repository="syberwork", spec_ref={"spec_id": None},
+                                     footprint=None, evidence={"trace_diff": changed}, builder={"agent": "test"})
+        self.assertFalse(statement["predicate"]["policy"]["promote"])

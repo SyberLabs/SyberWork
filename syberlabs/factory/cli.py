@@ -80,6 +80,8 @@ def populate(factory) -> None:
     check.add_argument("--ticket", help="ticket JSON; its footprint scopes the diff (default: the whole run)")
     check.add_argument("--commit", help="the candidate commit (default: the worktree's HEAD)")
     check.add_argument("--max-drift", type=float, default=None, help="refuse when architecture drift exceeds this")
+    check.add_argument("--level", choices=harness.LEVELS, default="component",
+                       help="component (default): refactors inside a component pass; function: every call must match")
     check.add_argument("--behavior-change", action="store_true")
     check.add_argument("--builder", default=None, help="agent[:model[:session]] (default: $SYBERLABS_CANDIDATE or operator)")
     check.add_argument("--repository", default=None)
@@ -133,6 +135,7 @@ def populate(factory) -> None:
     att.add_argument("--ticket", required=True, help="ticket JSON from `factory ticket`")
     att.add_argument("--commit", required=True, help="the candidate commit the attestation is about")
     att.add_argument("--repository", default=None, help="repository name in the subject (default: the root's name)")
+    att.add_argument("--level", choices=harness.LEVELS, default="component")
     att.add_argument("--behavior-change", action="store_true", help="the ticket intends a behavior change")
     att.add_argument("--builder", default="human:operator", help="who produced the candidate: agent[:model[:session]]")
     att.add_argument("--seed-env", default=None, metavar="NAME",
@@ -146,6 +149,7 @@ def populate(factory) -> None:
     boot.add_argument("--fixture")
     boot.add_argument("--paths", nargs="*")
     boot.add_argument("--max-drift", type=float, default=None)
+    boot.add_argument("--level", choices=harness.LEVELS, default="component")
     boot.add_argument("--thread-home", default=".syberlabs", help="the Build Thread home holding contracts/ (default .syberlabs)")
     boot.add_argument("--contract", default="repo-change", help="the contract id to extend (default repo-change)")
     boot.add_argument("--python", default=None, help="the interpreter the check argv names (default: this one)")
@@ -417,7 +421,7 @@ def _check(args, home: ledger.Ledger) -> int:
     run_event = home.record_run(run_id)
     ticket = _read_json(args.ticket, "ticket") if args.ticket else None
     footprint = ticket.get("footprint") if ticket else None
-    evidence = {"trace_diff": attest.trace_diff(home.load_run(baseline_id), home.load_run(run_id), footprint),
+    evidence = {"trace_diff": attest.trace_diff(home.load_run(baseline_id), home.load_run(run_id), footprint, args.level),
                 "drift": attest.drift_evidence(report, commit)}
     if recorded.get("error"):
         evidence["run"] = {"kind": "run", "status": recorded["status"], "error": recorded["error"]}
@@ -427,6 +431,7 @@ def _check(args, home: ledger.Ledger) -> int:
                "fixture_digest": digest(fixture), "space_digest": space_event["body"]["space_digest"],
                "baseline_run": baseline_id, "candidate_run": run_id}
     gate = {"max_drift": args.max_drift} if args.max_drift is not None else {}
+    gate["level"] = args.level
     spec_ref = ticket["spec_ref"] if ticket else {"spec_id": None, "version": None, "req_ids": []}
     document = attest.statement(subject_commit=commit, repository=args.repository or space.git_repository_name(root), spec_ref=spec_ref,
                                 footprint=footprint, evidence=evidence, builder=builder,
@@ -439,11 +444,16 @@ def _check(args, home: ledger.Ledger) -> int:
     policy = document["predicate"]["policy"]
     promote = policy["promote"] and recorded["status"] == "ok"
     diff = evidence["trace_diff"]
+    other = "function" if args.level == "component" else "component"
     print(f"factory check {commit[:10]}: run {run_id} {recorded['status']}; trace diff {'empty' if diff['diff_empty'] else 'NOT empty'}"
+          f" at {args.level} level ({other} level {'equal' if diff[f'{other}_level_equal'] else 'differs'})"
           f" over {diff['footprint'] or 'the whole run'} against {baseline_id}; drift {report['max_drift']:.3f}; "
           f"promote {promote}")
     for reason in policy["reasons"]:
         print(f"  {reason}")
+    if not diff["diff_empty"] and diff.get("divergence_detail"):
+        for side in ("before", "after"):
+            print(f"  {side:7}{_describe_side(diff['divergence_detail'][side])}")
     if recorded["status"] != "ok":
         print(f"  the program did not end cleanly ({recorded['status']}): refuse")
     print(f"attestation {event['body']['attestation_digest']} (ledger seq {event['seq']}; run seq {run_event['seq']})")
@@ -476,7 +486,9 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
               "every candidate will be refused until the declaration or the code changes", file=sys.stderr)
     ledger_home = home.home.resolve()
     declared_arg = args.declared if not Path(args.declared).is_absolute() else str(Path(args.declared).resolve())
-    argv = [args.python or sys.executable, "-m", "syberlabs.factory", "--home", str(ledger_home), "check",
+    # ``-P`` keeps the worktree off sys.path: the host's installed factory judges the candidate, never the
+    # candidate's own copy of it. A check without it on this repository would run whatever the candidate wrote.
+    argv = [args.python or sys.executable, "-P", "-m", "syberlabs.factory", "--home", str(ledger_home), "check",
             "--declared", declared_arg, "--entry", args.entry]
     if args.fixture:
         argv += ["--fixture", args.fixture if not Path(args.fixture).is_absolute() else str(Path(args.fixture).resolve())]
@@ -484,6 +496,8 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
         argv += ["--paths", *args.paths]
     if args.max_drift is not None:
         argv += ["--max-drift", str(args.max_drift)]
+    if args.level != "component":
+        argv += ["--level", args.level]
     if args.no_contract:
         print("check argv: " + json.dumps(argv))
         return 0
@@ -507,6 +521,17 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
     print(f"published {target}: the factory check is required; threads started with "
           f"`syberlabs start ... --contract {args.contract}` (or the newest version by default) now run it")
     return 0
+
+
+def _describe_side(entry: dict | None) -> str:
+    if entry is None:
+        return "(the run ended)"
+    if entry.get("kind") == "call":
+        return f"call in {entry.get('component') or '(unmapped)'}" + (f" {entry['fn']}" if entry.get("fn") else "")
+    payload = entry.get("payload")
+    if isinstance(payload, dict) and "argv" in payload:
+        return f"{entry['kind']} {entry['name']}: {' '.join(payload['argv'])[:160]}"
+    return f"{entry['kind']} {entry['name']}: {json.dumps(payload, sort_keys=True, default=str)[:160]}"
 
 
 def _spec(args, home: ledger.Ledger) -> int:
@@ -534,7 +559,7 @@ def _attest(args, home: ledger.Ledger) -> int:
     ticket = _read_json(args.ticket, "ticket")
     baseline = home.load_run(args.baseline)
     candidate = home.load_run(args.candidate)
-    evidence = {"trace_diff": attest.trace_diff(baseline, candidate, ticket.get("footprint"))}
+    evidence = {"trace_diff": attest.trace_diff(baseline, candidate, ticket.get("footprint"), args.level)}
     parts = args.builder.split(":")
     builder = {"agent": parts[0], "model": parts[1] if len(parts) > 1 else None, "session": parts[2] if len(parts) > 2 else None,
                "fixture_digest": candidate[0].get("fixture_digest")}

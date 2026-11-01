@@ -27,12 +27,20 @@ PREDICATE_TYPE = "https://syberlabs.space/attestation/spec-satisfied/v1"
 PAYLOAD_TYPE = "application/vnd.in-toto+json"
 
 
-def trace_diff(baseline: list[dict], candidate: list[dict], footprint: dict | None) -> dict:
-    """The evidence entry: did the candidate run walk the same cells, in the same order, with the same effect
-    results, over the footprint's components? ``footprint`` is a ticket's footprint (``components``) or None
-    for the whole run."""
+def trace_diff(baseline: list[dict], candidate: list[dict], footprint: dict | None, level: str = "component") -> dict:
+    """The evidence entry: did the candidate run cross the same component boundaries, in the same order, with
+    the same effect results, over the footprint's components? ``footprint`` is a ticket's footprint
+    (``components``) or None for the whole run. ``level`` is ``component`` (the default: a refactor inside a
+    component is not a change) or ``function`` (every call must match). The other level's verdict is recorded
+    beside the chosen one so a reviewer sees both."""
     components = set(footprint["components"]) if footprint else None
-    report = harness.compare(baseline, candidate, components)
+    report = harness.compare(baseline, candidate, components, level)
+    other = "function" if level == "component" else "component"
+    other_report = harness.compare(baseline, candidate, components, other)
+    detail = None
+    if report["first_divergence"]:
+        detail = {"before": _describe(baseline, report["first_divergence"]["before"]),
+                  "after": _describe(candidate, report["first_divergence"]["after"])}
     base_header = baseline[0] if baseline and baseline[0].get("t") == "run" else {}
     cand_header = candidate[0] if candidate and candidate[0].get("t") == "run" else {}
     return {
@@ -40,11 +48,33 @@ def trace_diff(baseline: list[dict], candidate: list[dict], footprint: dict | No
         "baseline_run": base_header.get("run_id"), "baseline_revision": base_header.get("revision"),
         "candidate_run": cand_header.get("run_id"), "candidate_revision": cand_header.get("revision"),
         "footprint": sorted(components) if components else None,
+        "level": level,
         "diff_empty": report["equal"],
         "steps_before": report["steps_before"], "steps_after": report["steps_after"],
         "first_divergence": report["first_divergence"],
+        "divergence_detail": detail,
+        f"{other}_level_equal": other_report["equal"],
+        f"{other}_level_first_divergence": other_report["first_divergence"],
         "diff_digest": digest(report),
     }
+
+
+def _describe(records: list[dict], entry) -> dict | None:
+    """What a projected entry was: for an effect, marker or io, the record's name and payload (argv for a
+    subprocess, masked); for a call, the component. None when a run was shorter."""
+    if entry is None:
+        return None
+    head, tail = entry
+    if isinstance(head, str) and ":" in head and head.split(":", 1)[0] in ("effect", "marker", "io"):
+        kind, name = head.split(":", 1)
+        for record in records:
+            if record.get("t") == kind and record.get("name") == name and record.get("digest") == tail:
+                payload = record.get("payload")
+                if kind == "io" and isinstance(payload, dict) and "argv" in payload:
+                    payload = {"argv": [harness.mask(a) for a in payload["argv"]]}
+                return {"kind": kind, "name": name, "seq": record["seq"], "payload": payload}
+        return {"kind": kind, "name": name, "payload": None}
+    return {"kind": "call", "component": head, "fn": tail}
 
 
 def drift_evidence(report: dict, revision: str | None) -> dict:
@@ -87,7 +117,7 @@ def statement(*, subject_commit: str, repository: str, spec_ref: dict, footprint
 
 
 def policy(predicate: dict, *, require_tests: bool = False, mutation_threshold: float | None = None,
-           max_drift: float | None = None) -> dict:
+           max_drift: float | None = None, level: str | None = None) -> dict:
     """The gate. Promote when the trace diff over the footprint is empty, or is non-empty and the ticket
     carries the behavior-change label; then when tests ran the full suite (if required), the mutation
     score meets the threshold (if set), and architecture drift at the candidate stays at or under
@@ -100,7 +130,7 @@ def policy(predicate: dict, *, require_tests: bool = False, mutation_threshold: 
         reasons.append("no trace diff: refuse")
         promote = False
     elif diff.get("diff_empty"):
-        reasons.append("trace diff over the footprint is empty")
+        reasons.append(f"trace diff over the footprint is empty at {diff.get('level', level or 'component')} level")
     elif predicate.get("behavior_change_label"):
         reasons.append("trace diff is not empty and the ticket is labeled as a behavior change")
     else:

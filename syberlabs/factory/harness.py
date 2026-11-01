@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -43,7 +44,10 @@ from pathlib import Path
 from syberlabs.canonical import canonical, digest
 from syberlabs.errors import Rejected
 
-RECORDER_VERSION = "profile-0.1"
+RECORDER_VERSION = "profile-0.2"
+# What the child observes without the program's cooperation. Each is a wrapper installed in the child before
+# the run: a subprocess's argv and cwd, a socket's peer. Observed, journaled as ``io``, never replayed.
+OBSERVERS = ("subprocess", "socket")
 INLINE_PAYLOAD_BYTES = 65_536
 MAX_RECORDS = 5_000_000
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,10 +56,16 @@ _CURRENT: list["Recorder"] = []
 
 def current() -> "Context":
     """The context of the recorder that is running this program (``syber record`` sets it up); a script says
-    ``ctx = current()`` and routes its effects through ``ctx.run``. Raises when no recorder is active."""
-    if not _CURRENT:
+    ``ctx = current()`` and routes its effects through ``ctx.run``. Raises when no recorder is active.
+
+    The child loads the host's harness under the private name ``_factory_harness`` so the program's own
+    ``syberlabs`` import is never the recorder's; this looks there first."""
+    private = sys.modules.get("_factory_harness")
+    stack = getattr(private, "_CURRENT", None) if private is not None and private is not sys.modules.get(__name__) else None
+    stack = stack or _CURRENT
+    if not stack:
         raise Rejected("no_recorder", "no recorder is active; run under `python -m syberlabs.factory record`")
-    return _CURRENT[-1].context
+    return stack[-1].context
 
 
 class Diverged(Rejected):
@@ -67,6 +77,26 @@ class Diverged(Rejected):
         self.seq = seq
         self.asked = asked
         self.journaled = journaled
+
+
+_HEX = re.compile(r"^[0-9a-f]{7,64}$")
+_HEX_INSIDE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{20,64}")
+_PATHY = re.compile(r"[\\/]")
+_TEMP = re.compile(r"^(tmp|syberlabs-[a-z]+-)[A-Za-z0-9_]{6,}$")
+
+
+def mask(token: str) -> str:
+    """A subprocess argument with its run-specific identity removed: a path becomes its basename, a hex id
+    becomes ``<hex>``, a temporary name becomes ``<tmp>``, so two runs that reach for the same program the
+    same way share an io key."""
+    if _HEX.match(token):
+        return "<hex>"
+    if _TEMP.match(token):
+        return "<tmp>"
+    if _PATHY.search(token):
+        base = token.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        return "<path>/" + ("<hex>" if _HEX.match(base) else "<tmp>" if _TEMP.match(base) else _HEX_INSIDE.sub("<hex>", base))
+    return _HEX_INSIDE.sub("<hex>", token)
 
 
 def new_run_id() -> str:
@@ -124,7 +154,7 @@ class Recorder:
         self._replay_cursor = 0
         self._replayed_run: str | None = None
         self.seq = 0
-        self.counts = {"call": 0, "effect": 0, "marker": 0}
+        self.counts = {"call": 0, "effect": 0, "marker": 0, "io": 0}
         self._stack: list[tuple[int, object]] = []
         self._handle = None
         self._t0 = 0
@@ -241,12 +271,23 @@ class Recorder:
         self._journal_value("marker", name, value)
         return value
 
-    def _journal_value(self, kind: str, name: str, value) -> None:
+    def io(self, name: str, value, key=None) -> None:
+        """An observation of the program reaching outside itself that nobody wrapped in ``ctx.run``: a subprocess
+        started, a socket opened. Journaled as an ``io`` record whose digest is of ``key`` when given (the
+        observation with its run-specific parts masked: temporary paths, commit hashes) and of ``value``
+        otherwise; the payload keeps the real ``value``. Counted in the trace diff like an effect, never
+        replayed (replay runs the program's own code, so the io happens again and is observed again). The
+        child bootstrap installs the observers; see ``OBSERVERS``."""
+        if self._handle is None:
+            return
+        self._journal_value("io", name, value, key)
+
+    def _journal_value(self, kind: str, name: str, value, key=None) -> None:
         self._busy = True
         try:
             payload, native = _to_json(value)
             text = canonical(payload)
-            sha = digest(payload)
+            sha = digest(payload if key is None else key)
             self.seq += 1
             self.counts[kind] += 1
             record = {"t": kind, "seq": self.seq, "ns": self._now(), "name": name, "digest": sha, "json": native,
@@ -296,16 +337,39 @@ class Recorder:
 # The child's whole program. It is a string so that no importable file in this repository installs a profile
 # hook (see the module docstring). The parent hands it one JSON object on stdin; it prints one JSON line.
 BOOTSTRAP = r"""
-import importlib, json, runpy, sys
+import importlib, importlib.util, json, runpy, sys
 config = json.loads(sys.stdin.read())
+# The recorder is the host's, loaded by file under a private name; the program under test then imports
+# whatever ``syberlabs`` its own tree holds (on this repository, the candidate's). The two never share a name.
 sys.path.insert(0, config["syberlabs_parent"])
-if config["root"] not in sys.path:
-    sys.path.insert(0, config["root"])
-from syberlabs.factory import harness
+_spec = importlib.util.spec_from_file_location("_factory_harness", config["harness_path"])
+harness = importlib.util.module_from_spec(_spec)
+sys.modules["_factory_harness"] = harness
+_spec.loader.exec_module(harness)
+for _name in [n for n in sys.modules if n == "syberlabs" or n.startswith("syberlabs.")]:
+    del sys.modules[_name]
+sys.path.remove(config["syberlabs_parent"])
+sys.path.insert(0, config["root"])
 recorder = harness.Recorder(config["root"], config["journal"], config["file_components"], run_id=config["run_id"],
                             revision=config["revision"], entrypoint=config["entry"], fixture_digest=config["fixture_digest"],
                             space_digest=config["space_digest"], replay_of=config["replay_of"], blobs=config["blobs"])
 report = {"run_id": config["run_id"], "status": None, "error": None, "outcome": None, "counts": None}
+if "subprocess" in config["observe"]:
+    import subprocess as _sp
+    _popen_init = _sp.Popen.__init__
+    def _observed_init(self, args, *rest, **kwargs):
+        argv = [str(a) for a in (args if isinstance(args, (list, tuple)) else [args])]
+        recorder.io("subprocess", {"argv": argv[:64], "cwd": str(kwargs.get("cwd") or "")},
+                    key={"argv": [harness.mask(a) for a in argv[:64]]})
+        return _popen_init(self, args, *rest, **kwargs)
+    _sp.Popen.__init__ = _observed_init
+if "socket" in config["observe"]:
+    import socket as _so
+    _connect = _so.socket.connect
+    def _observed_connect(self, address):
+        recorder.io("socket.connect", {"address": str(address)})
+        return _connect(self, address)
+    _so.socket.connect = _observed_connect
 try:
     with recorder:
         if config["function"]:
@@ -341,13 +405,14 @@ sys.stdout.write("\n" + json.dumps(report) + "\n")
 def record(root: str | Path, journal: str | Path, entry: str, *, file_components: dict | None = None,
            fixture: dict | None = None, run_id: str | None = None, revision: str | None = None,
            space_digest: str | None = None, replay_of: str | Path | None = None, blobs: str | Path | None = None,
-           python: str | None = None, timeout: float = 3600.0) -> dict:
+           python: str | None = None, timeout: float = 3600.0, observe: tuple = OBSERVERS) -> dict:
     """Run ``entry`` under the recorder in a child interpreter and return its report.
 
     ``entry`` is ``module:function`` (imported from ``root``, called as ``function(ctx, fixture)``) or a script
     path (run as ``__main__``; it takes its context from :func:`current`). The report has ``run_id``, ``status``
     (``ok``, ``diverged``, ``error``, or ``killed`` on timeout), ``counts``, ``outcome`` and ``error``. The
-    journal is at ``journal`` whatever happened. The child inherits this process's environment: a program's
+    journal is at ``journal`` whatever happened. ``observe`` names the io observers the child installs
+    (default: subprocesses and socket connections); pass ``()`` for none. The child inherits this process's environment: a program's
     own secrets stay its own, and nothing here is a sandbox."""
     root = Path(root).resolve()
     run_id = run_id or new_run_id()
@@ -363,8 +428,8 @@ def record(root: str | Path, journal: str | Path, entry: str, *, file_components
         "run_id": run_id, "revision": revision, "entry": entry, "fixture": fixture if fixture is not None else {},
         "fixture_digest": digest(fixture if fixture is not None else {}), "space_digest": space_digest,
         "replay_of": str(Path(replay_of).resolve()) if replay_of else None, "blobs": str(Path(blobs).resolve()) if blobs else None,
-        "module": module, "function": function, "script": script,
-        "syberlabs_parent": str(Path(__file__).resolve().parents[2]),
+        "module": module, "function": function, "script": script, "observe": list(observe),
+        "syberlabs_parent": str(Path(__file__).resolve().parents[2]), "harness_path": str(Path(__file__).resolve()),
     }
     Path(journal).parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -431,7 +496,7 @@ def spans(records: list[dict]) -> list[dict]:
             found[record["span"]]["end_ns"] = record["ns"]
         elif kind == "effect_begin":
             effect_depth += 1
-        elif kind in ("effect", "marker"):
+        elif kind in ("effect", "marker", "io"):
             if kind == "effect" and effect_depth and not record.get("replayed"):
                 effect_depth -= 1
             if record.get("span") in found:
@@ -456,27 +521,49 @@ def worldline(records: list[dict], components_only: bool = False, skip_effect_bo
         kind = record.get("t")
         if kind == "call" and record["span"] not in inside:
             path.append((record["seq"], record["component"], None if components_only else record["fn"]))
-        elif kind in ("effect", "marker"):
+        elif kind in ("effect", "marker", "io"):
             path.append((record["seq"], f"{kind}:{record['name']}", record["digest"]))
     return path
 
 
-def compare(before: list[dict], after: list[dict], components: set | None = None) -> dict:
-    """Where two runs' worldlines part: projected to (component, fn) per call and (kind:name, digest) per
-    effect, optionally restricted to ``components`` (effects are kept whatever their span's component).
+LEVELS = ("component", "function")
 
-    ``equal`` is true when the projections match element for element. Otherwise ``first_divergence`` is the
-    index in the projection and the two sides' entries there (one may be None when a run is shorter)."""
-    def project(records):
-        out = []
-        for _seq, head, tail in worldline(records):
-            is_effect = isinstance(head, str) and head.startswith(("effect:", "marker:"))
-            if not is_effect and components is not None and head not in components:
-                continue
+
+def project(records: list[dict], components: set | None = None, level: str = "component") -> list[tuple]:
+    """A run reduced to what a trace diff compares.
+
+    ``component`` level: the sequence of component transitions (consecutive calls in one component collapse
+    to one entry) and every effect and marker as (kind:name, result digest). A helper added, a function
+    renamed, or two calls reordered inside one component changes nothing here; code moving across a
+    component boundary, or an effect changing, does. This is the ledger's own unit and the default.
+
+    ``function`` level: every call as (component, qualified function name) plus the effects, the strict
+    form a ticket can ask for when the spec claims a path, not just a footprint.
+
+    ``components`` restricts calls to those components; effects, markers and io observations are kept
+    whatever span they ran in, since reaching outside the program is never a refactor."""
+    if level not in LEVELS:
+        raise Rejected("diff_level", f"a diff level is one of {LEVELS}, not {level!r}")
+    out: list[tuple] = []
+    for _seq, head, tail in worldline(records):
+        is_effect = isinstance(head, str) and head.startswith(("effect:", "marker:", "io:"))
+        if is_effect:
             out.append((head, tail))
-        return out
+            continue
+        if components is not None and head not in components:
+            continue
+        entry = (head, tail) if level == "function" else (head, None)
+        if level == "component" and out and out[-1] == entry:
+            continue
+        out.append(entry)
+    return out
 
-    a, b = project(before), project(after)
+
+def compare(before: list[dict], after: list[dict], components: set | None = None, level: str = "component") -> dict:
+    """Where two runs part at ``level`` (see :func:`project`). ``equal`` is true when the projections match
+    element for element; otherwise ``first_divergence`` is the index and the two sides' entries there (one
+    may be None when a run is shorter)."""
+    a, b = project(before, components, level), project(after, components, level)
     first = None
     for index in range(max(len(a), len(b))):
         left = a[index] if index < len(a) else None
@@ -484,7 +571,7 @@ def compare(before: list[dict], after: list[dict], components: set | None = None
         if left != right:
             first = {"index": index, "before": left, "after": right}
             break
-    return {"equal": first is None, "steps_before": len(a), "steps_after": len(b), "first_divergence": first}
+    return {"level": level, "equal": first is None, "steps_before": len(a), "steps_after": len(b), "first_divergence": first}
 
 
 def chrome_trace(records: list[dict]) -> dict:

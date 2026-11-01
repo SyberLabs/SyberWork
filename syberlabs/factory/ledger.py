@@ -242,7 +242,7 @@ class Ledger:
                                                (span["component"], body["run_id"], span["span"], body.get("revision")))
                             counts["cells"] += 1
                     for record in records:
-                        if record.get("t") in ("effect", "marker"):
+                        if record.get("t") in ("effect", "marker", "io"):
                             connection.execute("INSERT INTO effects VALUES (?,?,?,?,?,?)",
                                                (body["run_id"], record["seq"], record.get("span"), record["t"],
                                                 record["name"], record["digest"]))

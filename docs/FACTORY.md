@@ -115,6 +115,40 @@ refused with `candidate_check_failed:factory` and the attestation says where the
 code changes. The ledger names everything by absolute path on argv, since the check's working directory is
 the worktree and its environment is scrubbed; it refuses a relative `--home`.
 
+## What the diff compares, and what it saw on this repository
+
+The trace diff has two levels. At `component` level (the default) a run is the sequence of component
+transitions plus every effect, marker and io observation; consecutive calls inside one component collapse,
+so a helper added, a function renamed, or two calls reordered inside a component is not a change, while code
+crossing a boundary or an effect changing is. At `function` level every call must match. The attestation
+records the verdict at both levels, and the first divergence is described (the io's masked argv, or the
+call's component and function) so a reviewer reads what changed, not an index.
+
+Io observations are what make this work on a program nobody instrumented. The child installs wrappers before
+the run (`harness.OBSERVERS`: `subprocess.Popen`, `socket.connect`) that journal each reach outside the
+program as an `io` record. Its digest is of a masked key (paths to their basename, hex ids and UUIDs to
+`<hex>`, temporary names to `<tmp>`) so two runs that shell out the same way share a key; the payload keeps
+the real arguments. Io is observed, never replayed.
+
+Measured on this repository with `examples/build_thread.py` as the recorded program (about 6,200 spans, 72
+subprocesses) and `docs/architecture.declared.json` as the declaration, in the container the tests ran in:
+
+| Candidate | Component level | Function level | Verdict |
+| --- | --- | --- | --- |
+| A comment added to `metrics.py` | equal | equal | promote |
+| `digest` split into a helper (`canonical.py`) | equal | differs | promote |
+| `Thread.check` reruns by default (`build.py`) | equal | differs | promote: the example never re-checks, so nothing observed it |
+| `update_ref` without the expected old value (`gitspace.py`) | differs at the `update-ref` io | differs | refuse: the io lost one argument |
+
+The third row is the honest limit: a gate sees what the recorded program exercises, as a test suite does. The
+fourth is the point: an invariant from `AGENTS.md` (acceptance is a compare-and-swap) is caught from the
+outside, with no edit to the code under test. `tests/test_factory.py::SelfHosting` pins both.
+
+On this repository the check runs the host's factory, never the candidate's: the published argv carries
+`-P` so the worktree is not on `sys.path`, and the child loads the host's harness by file under a private
+module name before the program under test imports its own `syberlabs`. A candidate therefore cannot edit the
+code that judges it.
+
 ## Drift opens tickets
 
 `factory drift --declared arch.json --max 0 --ticket tickets/` writes one ticket per component over the
@@ -165,10 +199,14 @@ component nothing called at a revision has no cells there, and that absence is i
 - Replay re-executes the program's own code. It is not a sandbox and nothing here is.
 - One writer per ledger at a time. The ledger refuses to append to a log whose chain does not verify, but
   it has no cross-process lock; the harness journal is written by the process that records.
-- The trace diff compares component and function names and effect result digests. It does not compare
-  arguments, return values of ordinary calls, or timing, so two runs that differ only in what a pure
-  function returned diff empty. The spec's scenarios and the tests evidence kind are where those claims
-  go.
+- The trace diff compares component transitions (or function names), effect result digests and masked io
+  keys. It does not compare arguments or return values of ordinary calls, or timing, so two runs that
+  differ only in what a pure function returned diff empty. The spec's scenarios and the tests evidence kind
+  are where those claims go. Coarse declarations give a coarse component level: with four components, a
+  change inside `syberlabs` that reaches nothing outside is invisible at that level and visible only at
+  function level.
+- Io observation covers subprocesses and socket connections. File writes, HTTP through a library that does
+  not open a socket per request in this process, and anything a subprocess does are not observed.
 - A `CALLS` edge carries a confidence (0.6 to 0.9) and `source: ast`. The reflexion report counts edges
   without weighting by confidence.
 

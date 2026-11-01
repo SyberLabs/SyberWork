@@ -116,4 +116,6 @@ A coordination record is not a case event. A displayed comment, diversity score,
 | CLI and a self-contained replay viewer | Implemented and tested | `syberlabs factory ...`, `syberlabs/static/factory.html`, `CliTests` |
 | `factory check` as a host-run Build Thread check: a candidate's evaluation cites the trace diff and drift attestation | Implemented and tested | `syberlabs/factory/cli.py::_check`, `tests/test_factory.py::BuildThreadCheck` |
 | Drift opens tickets without a person | Implemented and tested | `factory drift --ticket`, `spec.tickets_from_drift` |
+| Component-level structural diff (refactors pass) with function level recorded beside it | Implemented and tested | `harness.project`, `attest.trace_diff`, `test_a_refactor_inside_a_component_is_not_a_change_at_component_level` |
+| Io observation (subprocess, socket) with masked keys; a weakened compare-and-swap in `gitspace.py` caught on this repository's own Build Thread example | Implemented and tested; one measured run per candidate | `harness.OBSERVERS`, `harness.mask`, `tests/test_factory.py::SelfHosting`, the table in [docs/FACTORY.md](FACTORY.md) |
 | Promoted specs opening tickets; multi-model spec variants; feature maps; this repository's own contract naming the check | Proposed (v1) | [docs/FACTORY.md](FACTORY.md) |
