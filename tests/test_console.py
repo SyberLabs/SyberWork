@@ -26,7 +26,6 @@ import urllib.error
 import urllib.request
 from contextlib import closing
 from pathlib import Path
-from urllib.parse import unquote
 
 from syberlabs.admission import approval_roles
 from syberlabs.build import Kit
@@ -932,13 +931,13 @@ class ConsoleWitnessRequest(CellCase):
         self.cell.work.register_principal("person-1", "human", "lead", "local", ["manager"], token="token-lead")
         self.cell.tokens["lead"] = "token-lead"
         self.cell.json(f"/api/cases/{case}/witness", {}, who="lead")
-        rows = [r for r in self.cell.work.trace.read() if r["name"] == "witness_request"]
+        lines = (self.log_path.parent / "traces.jsonl").read_text(encoding="utf-8").splitlines()
+        rows = [r for r in map(json.loads, filter(str.strip, lines)) if r["name"] == "witness_request"]
         self.assertEqual([(r["case_id"], r["actor"], r["principal"], r["status"]) for r in rows],
                          [(case, "manager", None, "signed"), (case, "manager", None, "already_witnessed"),
                           ("no-such-case", "manager", None, "unknown_case"), (case, "lead", "person-1", "already_witnessed")],
                          "a role refusal never reaches Work")
         self.assertEqual(rows[0]["head"], self.cell.work.inspect(case)["events"][-1]["hash"])
-        self.assertEqual(self.cell.work.metrics["witness_request"], 4)
 
     def test_the_console_is_told_who_may_ask(self):
         self.assertEqual(self.cell.json("/api/console", who="supplier")[1]["witness"], {"log": True, "request_role": "manager"})
@@ -1685,14 +1684,12 @@ class ConsolePreview(CellCase):
         self.assertEqual(preview["head"], {"seq": head["seq"], "hash": head["hash"]}, "the head the answer was computed against")
         self.assertEqual((preview["written"], preview["policy_version"], preview["origin"]), (False, 1, "human"))
 
-    def test_each_preview_is_counted_and_traced_though_no_event_records_it(self):
+    def test_each_preview_is_traced_though_no_event_records_it(self):
         case = self.case()
         recorded = []
         self.cell.work.trace = type("Trace", (), {"record": lambda _self, name, **fields: recorded.append((name, fields))})()
         self.addCleanup(setattr, self.cell.work, "trace", None)
-        before = self.cell.work.metrics.get("admission_preview", 0)
         self.cell.json(f"/api/cases/{case}/preview", {"action": "issue_order", "args": {"amount": 30000}}, who="manager")
-        self.assertEqual(self.cell.work.metrics["admission_preview"], before + 1)
         self.assertEqual(recorded, [("admission_preview", {"case_id": case, "actor": "manager", "action": "issue_order", "status": "denied",
                                                            "reason": "actor_role_missing", "rule": "actor.role"})])
 

@@ -13,7 +13,6 @@ from pathlib import Path
 from syberwork.backup import export_cell, restore_cell
 from syberwork.core import Work
 from syberwork.trace import TraceLog
-from syberwork.worker import run_once
 
 
 NOTE = {

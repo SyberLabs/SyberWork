@@ -365,8 +365,8 @@ Gaps from #95, closed or still open:
     - **Nothing is written to the case.** The test compares a full dump of the case database before and after. The
       witness appends one leaf and one checkpoint to its own log. A leaf cannot be removed through any API, so the
       button arms first and its note says so.
-    - **Who asked.** The log records no requester. Each request that reaches `Work` is counted
-      (`witness_request` in `Work.metrics`) and written to the trace when one is configured. Each record has the
+    - **Who asked.** The log records no requester. Each request that reaches `Work` is written
+      to the trace when one is configured. Each record has the
       case, the actor's name, its `principal_id` for a database principal (`null` for a `users.json` identity) and
       the outcome: `signed` with count and head, or the refusal code, `unknown_case` included. A role refusal is
       answered by the server before `Work` and is not traced, like the other role checks in `server.py`.
@@ -643,7 +643,7 @@ Gaps from #95, closed or still open:
   **Open decision: probing without a record.** A proposal can reveal the same facts the preview does: the
   policy's `max_amount` (`limits.amount`) and, for an economic action, how much of a shared budget other cases
   hold. Before this route, each probe left a denied decision on the case history. A preview leaves none.
-  Each preview is counted (`admission_preview` in `Work.metrics`) and written to the trace when one is
+  Each preview is written to the trace when one is
   configured (`syberwork/trace.py`), with the actor, action, status, reason and rule. The case history holds
   nothing. Replay does not cover this: it re-decides only proposals already recorded. Policy bodies are
   restricted to admin and manager because they carry budget limits. If a recordless probe of those limits is

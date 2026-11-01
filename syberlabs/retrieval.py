@@ -66,7 +66,7 @@ def _windows(lines: list[int], total: int) -> list[tuple[int, int]]:
 
 
 def select(repo: Repo, commit: str, scope: dict, objective: str, *, max_bytes: int = 24_000,
-           max_files: int = 12, drop: tuple[str, ...] = ()) -> list[Excerpt]:
+           drop: tuple[str, ...] = ()) -> list[Excerpt]:
     """Excerpts for ``objective`` from files ``scope`` admits at ``commit``."""
     allowed = [path for path in repo.files(commit) if in_scope(scope, path) and path not in drop]
     allowed_set = set(allowed)
@@ -95,7 +95,7 @@ def select(repo: Repo, commit: str, scope: dict, objective: str, *, max_bytes: i
             bonus = sum(3 for term in wanted if term in path.lower())
             if bonus:
                 hits.setdefault(path, {"lines": [], "score": 0})["score"] += bonus
-    ranked = sorted(hits, key=lambda path: (-hits[path]["score"], path))[:max_files]
+    ranked = sorted(hits, key=lambda path: (-hits[path]["score"], path))[:12]
     excerpts, spent = [], 0
     guidance = [path for path in GUIDANCE if path in allowed_set]
     for path, reason in [(p, "guidance") for p in guidance[:2]] + [(p, "match") for p in ranked if p not in guidance]:

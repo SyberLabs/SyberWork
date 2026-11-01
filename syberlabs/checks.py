@@ -50,10 +50,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 import signal
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -216,6 +214,3 @@ def evaluate(repo: Repo, candidate: dict, evaluation: dict, *, context: dict | N
     return {"candidate": candidate["id"], "commit": candidate["commit"], "tree": candidate["tree"],
             "evaluator": EVALUATOR, "checks": results}
 
-
-def environment_note() -> str:
-    return f"{platform.system()} {platform.machine()} python {sys.version.split()[0]}"
