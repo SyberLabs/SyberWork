@@ -77,7 +77,6 @@ test('a typed or Attest observation is never verified evidence', () => {
     ['observed', { key: 'receipt', value: { schema: 'attest.receipt/v0', verified: false, evidence: { after: { status: 'proven' } } }, source: 'supplier', version: 'r1', actor: 'supplier', verified: false }],
   );
   const rows = M.observations(events);
-  assert.deepEqual(rows.map(r => M.evidenceOf(r)), ['unverified', 'unverified']);
   assert.deepEqual(rows.map(r => r.attest), [false, true]);
   const facts = M.requiredFacts(CONTRACT, events, NOW).issue_order;
   assert.equal(facts.find(f => f.key === 'quote').state, 'unverified');

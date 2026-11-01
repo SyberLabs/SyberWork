@@ -12,8 +12,8 @@ from benchmarks.scenarios.flaky_bank import SCENARIO
 from benchmarks.scenarios.host import SessionHost
 from benchmarks.scenarios.probe import Probe, evaluate
 from benchmarks.scenarios.world import Ledger
-from benchmarks.scenarios.runner import load_scenarios, run_scenario
-from benchmarks.scenarios.world import Ledger
+from benchmarks.run_scenarios import load_scenarios
+from benchmarks.scenarios.runner import run_scenario
 
 
 class _EmptyHost:

@@ -19,7 +19,7 @@ from syberlabs.admission import AdmissionContext, admit, approval_roles, explain
 from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
 from syberlabs.clock import stamp
-from syberlabs.contracts import check_case_inputs, compile_path, prepare_contract
+from syberlabs.contracts import check_case_inputs, prepare_contract
 from syberlabs.dsse import CHAIN_HEAD_TYPE, head_payload, verified_payload
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
@@ -44,7 +44,7 @@ from syberwork.storage import (
     open_store,
 )
 
-__all__ = ["METRIC_KEYS", "Rejected", "Work", "canonical", "digest", "trusted_origin"]
+__all__ = ["METRIC_KEYS", "Rejected", "Work", "digest"]
 
 # The cell's own numbers, each counted from the store by ``Work.metric``. The service serves them at
 # ``GET /metrics/<key>`` (plus ``uptime_seconds``, which is the process's, not the store's).
@@ -132,7 +132,6 @@ class Work:
         self.database = str(database)
         self.effects = effects
         self.trace = trace
-        self.metrics = {"admission": 0, "effect_claim": 0, "effect_settlement": 0, "effect_unknown": 0, "reconciliation": 0}
         self._lock = threading.Lock()
         self._witness_lock = threading.Lock()
         self._db = open_store(database)
@@ -147,7 +146,6 @@ class Work:
             pass
 
     def _emit(self, name: str, **fields) -> None:
-        self.metrics[name] = self.metrics.get(name, 0) + 1
         if self.trace is not None:
             self.trace.record(name, **fields)
 
@@ -171,10 +169,6 @@ class Work:
             if row and row["body"] != canonical(doc):
                 raise Rejected("immutable_contract", "publish a new version")
             contracts.insert_new(doc["id"], doc["version"], canonical(doc))
-
-    @staticmethod
-    def _compile_path(doc: dict) -> list[str]:
-        return compile_path(doc)
 
     def artifacts(self, contract_id: str, version: int) -> dict:
         with self.tx() as db:
