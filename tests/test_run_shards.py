@@ -647,6 +647,76 @@ FORGERY_CALLER = """
             raise AssertionError("must run")
 """
 
+# Test code that replaces another test's method, so that the replaced test reports whatever the replacement does.
+# Serial unittest reports OK for each; the runner records every test's method as its module is loaded.
+REPLACES_IN_A_TEST = """
+    import unittest
+
+    class Victim(unittest.TestCase):
+        def test_0_replace(self):
+            Victim.test_1_must_fail = lambda self: None
+        def test_1_must_fail(self):
+            self.fail("must fail")
+"""
+REPLACES_AT_IMPORT = """
+    import unittest
+    from test_r_victim import Victim
+
+    Victim.test_must_fail = lambda self: None
+
+    class Other(unittest.TestCase):
+        def test_ok(self): pass
+"""
+REPLACED_VICTIM = """
+    import unittest
+
+    class Victim(unittest.TestCase):
+        def test_must_fail(self):
+            self.fail("must fail")
+"""
+REPLACES_IN_A_CLASS_FIXTURE = """
+    import unittest
+
+    class Replacer(unittest.TestCase):
+        @classmethod
+        def setUpClass(cls):
+            setattr(Victim, "test_must_fail", lambda self: None)
+        def test_a(self): pass
+
+    class Victim(unittest.TestCase):
+        def test_must_fail(self):
+            self.fail("must fail")
+"""
+# The negative control: what looks like replacing a test method and is not one the loader found. Tests generated
+# at import before their module is loaded, an instance attribute of another name, and a TestCase a test builds and
+# runs itself, whose method it replaces. All pass under both runners.
+NOT_A_REPLACEMENT = """
+    import io, unittest
+
+    def make(n):
+        def test(self):
+            self.assertGreaterEqual(n, 0)
+        return test
+
+    class Generated(unittest.TestCase):
+        def setUp(self):
+            self.test_dir = "scratch"
+        def test_uses_an_attribute(self):
+            self.test_dir = None
+
+    for n in range(3):
+        setattr(Generated, f"test_generated_{n}", make(n))
+
+    class Builds(unittest.TestCase):
+        def test_runs_its_own_inner_case(self):
+            class Inner(unittest.TestCase):
+                def test_x(self):
+                    self.fail("replaced before it runs")
+            Inner.test_x = lambda self: None
+            result = unittest.TextTestRunner(stream=io.StringIO()).run(Inner("test_x"))
+            self.assertTrue(result.wasSuccessful())
+"""
+
 
 class Integrity(unittest.TestCase):
     """Test code runs in the shard's process; these are the ways it can try to lie, and what catches each."""
@@ -781,6 +851,64 @@ class Integrity(unittest.TestCase):
                 findings = critic_rules.integrity_findings(f"tests/{name}", textwrap.dedent(body).lstrip(), None)
                 self.assertEqual({f["claim"].split("(")[1].split(")")[0] for f in findings}, {rule})
                 self.assertTrue(all(f["severity"] == "high" for f in findings))
+
+    def test_a_test_that_replaces_another_test_s_method_fails_the_shard(self):
+        """Replaced in a test's body, at import by a module loaded later, or in a class fixture: what ``unittest``
+        would call is no longer the method its module defined when it was loaded. Every discovered test is compared,
+        so which shard the replaced test was packed into does not matter."""
+        rows = (({"test_replace.py": REPLACES_IN_A_TEST},
+                 "test code changed test_replace.Victim.test_1_must_fail while test_replace.Victim.test_0_replace ran"),
+                ({"test_r_victim.py": REPLACED_VICTIM, "test_s_replacer.py": REPLACES_AT_IMPORT},
+                 "after test code changed test_r_victim.Victim.test_must_fail"),
+                ({"test_fixture.py": REPLACES_IN_A_CLASS_FIXTURE},
+                 "ran test_fixture.Replacer.test_a after test code changed test_fixture.Victim.test_must_fail"))
+        for extra, says in rows:
+            with self.subTest(files=sorted(extra)):
+                self.assertTrue(_summary(_serial_suite(extra))[1].startswith("OK"))  # serial unittest is fooled
+                for shards in ("1", "2"):
+                    ran = self.run_suite(extra, "--shards", shards)
+                    self.assertEqual(ran.returncode, 1, ran.stdout)
+                    self.assertIn(says, ran.stdout)
+                    self.assertIn("shard_incomplete", _summary(ran.stdout)[1])
+
+    def test_a_test_that_replaces_its_own_method_on_its_instance_fails_the_shard(self):
+        """Conservative: the test has already fetched its own method, but the instance no longer holds what was
+        loaded, and the runner does not judge what a replacement could do."""
+        body = "import unittest\n\nclass Own(unittest.TestCase):\n    def test_a(self):\n        self.test_a = None\n"
+        ran = self.run_suite({"test_own.py": body})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertIn("test code changed test_own.Own.test_a while test_own.Own.test_a ran", ran.stdout)
+
+    def test_what_only_looks_like_replacing_a_test_method_passes(self):
+        """The negative control: tests generated before their module is loaded, an instance attribute named
+        test..., and a test case a test builds and runs itself. The run is OK and counts what serial unittest
+        counts."""
+        base = _summary(_serial_suite({}))[0]
+        with tempfile.TemporaryDirectory() as folder:
+            _write_suite(Path(folder), {"test_lookalike.py": NOT_A_REPLACEMENT})
+            serial = _summary(_serial(Path(folder)).stderr)
+            self.assertEqual(serial[0], base + 5)  # the three generated tests are discovered and run
+            for shards in ("1", "2"):
+                ran = _shards(Path(folder), "--shards", shards)
+                self.assertEqual(ran.returncode, 0, ran.stdout)
+                self.assertNotIn("test code changed", ran.stdout)
+                self.assertEqual(_summary(ran.stdout), serial)
+        # The critic matches names, not objects: it flags the inner case's replaced method too (docs/CRITIC.md).
+        findings = critic_rules.integrity_findings("tests/test_lookalike.py",
+                                                   textwrap.dedent(NOT_A_REPLACEMENT).lstrip(), None)
+        self.assertEqual([f["claim"].split(": ")[1] for f in findings], ["assigns Inner.test_x"])
+
+    def test_the_critic_flags_each_replacement(self):
+        for name, body, line in (("test_replace.py", REPLACES_IN_A_TEST, 5),
+                                 ("test_s_replacer.py", REPLACES_AT_IMPORT, 4),
+                                 ("test_fixture.py", REPLACES_IN_A_CLASS_FIXTURE, 6)):
+            with self.subTest(name=name):
+                findings = critic_rules.integrity_findings(f"tests/{name}", textwrap.dedent(body).lstrip(), None)
+                self.assertEqual([(f["line"], f["claim"].split("(")[1].split(")")[0]) for f in findings],
+                                 [(line, "test_replaced")])
+                self.assertTrue(all(f["severity"] == "high" for f in findings))
+        self.assertEqual(critic_rules.integrity_findings("tests/test_r_victim.py",
+                                                         textwrap.dedent(REPLACED_VICTIM).lstrip(), None), [])
 
     def test_bytes_on_the_channel_without_the_nonce_discard_the_shard(self):
         ran = self.run_suite({"test_garbage.py": CHANNEL_GARBAGE})

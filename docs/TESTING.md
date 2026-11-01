@@ -132,7 +132,17 @@ otherwise:
   the change (`test code changed X while T ran`); so a test whose `setUp` or
   body gives its instance one of the refused methods (`self.subTest = ...`),
   after the check at its start, also fails the shard. A change made and
-  undone within one test, before it stops, is not seen.
+  undone within one test, before it stops, is not seen. The same checks
+  compare every discovered test's method, on its class and its instance,
+  with the one its module defined when the loader loaded it (recorded per
+  module, before the next module is imported): test code that replaces or
+  deletes another test's method (`Victim.test_x = lambda self: None` in a
+  test body, at import from a module loaded later, or in `setUpClass`) fails
+  the shard, naming the replaced test. Every discovered test is compared,
+  not only the shard's own, so the verdict does not depend on packing. A
+  test that replaces its own method on its instance is refused too
+  (conservatively: it has already fetched it). Tests a module generates at
+  import, before the loader reads it, are what was loaded.
 - **After running:** every shard's stream is intact and ends with `done`;
   every test it started reported an outcome before it stopped (a success,
   failure, error, skip, expected failure, unexpected success or failed
@@ -267,6 +277,9 @@ critic finding, and the honest rows still pass:
 | A `TestCase` defines `subTest` to suppress what its block raises; its subtest fails (after #123) | **0** | 1, `harness_override` | before: none; now high (`harness_override`, rules@4) |
 | A `TestCase` defines `doCleanups` to drop its cleanups; a cleanup fails (after #123) | **0** | 1, `harness_override` | before: none; now high (`harness_override`, rules@4) |
 | A test's `setUp` sets `self.subTest` to suppress exceptions; its subtest fails (after #123) | **0** | 1, `harness_changed` (seen when the test stops) | before: none; now high (`unittest_patch`, rules@4) |
+| A test replaces another test's method in its body; the replaced test would fail (after #130) | **0** | 1, `harness_changed` (seen when the replacing test stops) | before: none; now high (`test_replaced`, rules@5) |
+| A test module, loaded later, replaces an earlier module's test method at import (after #130) | **0** | 1, `harness_changed` (seen when the next test starts) | before: none; now high (`test_replaced`, rules@5) |
+| A `setUpClass` replaces another class's test method with `setattr` (after #130) | **0** | 1, `harness_changed` | before: none; now high (`test_replaced`, rules@5) |
 | A test patches `TestCase._callTestMethod` at run time (new) | **0** | 1, `harness_changed` | high (`unittest_patch`) |
 | A test writes a line without the nonce to the channel (new) | n/a | 1, `channel_tampered` | high (`runner_reach`) |
 | A test finds the runner in its own process and writes a consistent, false stream (new) | n/a | **0: not caught** | high (`runner_reach`, `process_exit`) |
@@ -286,7 +299,10 @@ The three rows marked "after #119" ran the same way on `main` at `296e3ca`
 (before) and on this change (after); serial `unittest discover` says `OK` for
 each of them as well. The three rows marked "after #123" ran the same way on
 #123's head at `2a8bdeb` (before) and on its follow-up (after); serial
-`unittest discover` says `OK` for each. `tests/test_run_shards.py` holds every
+`unittest discover` says `OK` for each. The three rows marked "after #130"
+ran the same way on #130's head restacked onto `main` (`c0e58bc`, before) and
+on its follow-up (after), with `--shards 1`; serial `unittest discover` says
+`OK` for each. `tests/test_run_shards.py` holds every
 row of the table that the runner catches.
 
 The guarantee, exactly: with the factory's `tests` check (the host
@@ -306,8 +322,10 @@ host already trusts it. Two further gaps are named in `spec/GAPS.md` 58:
 - Test code can keep every test in the set but make tests vacuous: its own
   in the diff, or another's at run time by replacing its method. No count can
   see this. Swallowing its own failures through the cleanup and subtest
-  methods is refused (above); a `try`/`except` around its own assertions, or
-  an assertion removed, is not.
+  methods is refused (above), and so is replacing a discovered test's method
+  (above), unless it is made and undone within one test; a `try`/`except`
+  around its own assertions, an assertion removed, or a helper or assertion
+  method a test calls replaced at run time, is not.
 - Outside test files, the patterns that end the process or write to raw
   descriptors do not apply, because production code does both.
 

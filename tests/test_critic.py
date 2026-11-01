@@ -421,6 +421,19 @@ TRIPS = {
         "import ctypes\n",
         "LOGS = 'syberlabs-' 'shards-'\n",
     ],
+    "test_replaced": [
+        "import unittest\n\nclass T(unittest.TestCase):\n    def test_0(self):\n        T.test_1 = lambda self: None\n"
+        "    def test_1(self):\n        self.fail('x')\n",
+        "from tests.test_other import Victim\nVictim.test_fails = lambda self: None\n",
+        "def helper(victim):\n    setattr(victim, 'test_fails', None)\n",
+        "def helper(test):\n    del type(test).test_fails\n",
+        "def helper(test):\n    test.__class__.test_fails, x = None, 1\n",
+        "import unittest\n\nclass T(unittest.TestCase):\n    @classmethod\n    def setUpClass(cls):\n"
+        "        cls.test_a = lambda self: None\n",
+        "from unittest import mock\n\ndef helper(Victim):\n    return mock.patch.object(Victim, 'test_fails')\n",
+        "from unittest import mock\n\ndef helper(Victim):\n    return mock.patch.multiple(Victim, test_fails=None)\n",
+        "from unittest.mock import patch\nSTOP = patch('tests.test_other.Victim.test_fails').start()\n",
+    ],
     "dynamic_code": [
         "exec('import os')\n",
         "def helper(text):\n    return eval(text)\n",
@@ -442,6 +455,13 @@ CLEAN = [
     "import unittest\n\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.addCleanup(print)\n"
     "        with self.subTest(i=0):\n            self.doCleanups()\n",
     "class Steps:\n    def subTest(self):\n        return None\n",
+    # an instance's own attributes named test... (a test fetches its own method before its code runs)
+    "import unittest\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.test_dir = 'x'\n"
+    "        setattr(self, 'testing', True)\n    def test_a(self):\n        self.test_dir = None\n",
+    "from unittest import mock\n\ndef helper(obj):\n    obj.tests_dir.path = 'x'\n"
+    "    return mock.patch.dict('os.environ', {'test_mode': '1'}), mock.patch.object(obj, 'path')\n",
+    "import unittest\n\ndef make(n):\n    return lambda self: None\n\nclass T(unittest.TestCase):\n    pass\n\n"
+    "for n in range(3):\n    setattr(T, f'test_{n}', make(n))\n",
 ]
 
 
@@ -568,7 +588,7 @@ class IntegrityBeyondTests(unittest.TestCase):
         self.assertEqual(self.rules(document, "tests/test_forge.py"), set())
         self.assertEqual(sorted(f["line"] for f in document["findings"]), [1, 2, 6, 7])
         self.assertTrue(all("a test can import this file" in f["claim"] for f in document["findings"]))
-        self.assertEqual(document["reviewer"], {"name": "rules", "revision": "4"})
+        self.assertEqual(document["reviewer"], {"name": "rules", "revision": "5"})
 
     def test_the_harness_families_apply_to_any_python_file(self):
         write_side = ("os.write", "syberlabs-")  # the runner_reach snippets that stay test-scoped (next test)

@@ -30,6 +30,9 @@ Completeness, checked and never assumed:
   in two shards, and no discovered test takes the ``unittest`` machinery that starts
   and reports it (``run``, ``__call__``, ``debug``, ``id``, ...), or that runs its
   cleanups and subtests (``doCleanups``, ``subTest``, ...), from outside ``unittest``;
+* while running, the method of every discovered test stays the one its module defined when
+  it was loaded: test code that replaces a test's method (on its class or its instance)
+  fails the shard when the next test starts or this one stops;
 * after running, every shard's stream is intact and finished, it started every id it
   was assigned (or names the class or module fixture that skipped or failed before it
   could start, as ``unittest`` itself does), and the totals add up;
@@ -112,6 +115,8 @@ SUITE_METHODS = ("run", "__call__", "__iter__", "_handleClassSetUp", "_handleMod
 # Also watched at run time: the functions of ``unittest.case`` through which ``TestCase.run`` reports a skip
 # or an error. A test that replaced ``_addError`` with a no-op would have every later failure vanish.
 CASE_FUNCTIONS = ("_addSkip", "_addError")
+# What a test's own method is, by identity: absent from the instance and the class (``_test_method``).
+_ABSENT = object()
 # Files Python could import: one of these, untracked, anywhere in the worktree, is a change a test run sees.
 IMPORTABLE = (".py", ".pyc", ".pyo", ".pyd", ".pth", ".so", ".dll")
 
@@ -127,14 +132,42 @@ def _flatten(suite):
             yield item
 
 
-def discover(start: str, pattern: str, top_level: str | None) -> list:
+def _test_method(test) -> tuple:
+    """Where ``test``'s own test method comes from now, by identity: the instance's attribute of that name, the
+    first class along the MRO that defines it, and what that class holds (each ``_ABSENT`` when there is none)."""
+    name = getattr(test, "_testMethodName", None)
+    if not isinstance(name, str):
+        return _ABSENT, _ABSENT, _ABSENT
+    owner = next((klass for klass in type(test).__mro__ if name in vars(klass)), None)
+    return (getattr(test, "__dict__", {}).get(name, _ABSENT), _ABSENT if owner is None else owner,
+            _ABSENT if owner is None else vars(owner)[name])
+
+
+class _Loader(unittest.TestLoader):
+    """A ``TestLoader`` that records each test's method (``_test_method``) as soon as its module is loaded.
+
+    Recorded per module, before the next test module is imported: a module imported later that replaces an
+    earlier module's test method at import is a change from what was loaded, not part of it.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.loaded: list = []  # (test, its _test_method when its module was loaded)
+
+    def loadTestsFromModule(self, module, *args, **kwargs):
+        suite = super().loadTestsFromModule(module, *args, **kwargs)
+        self.loaded += [(test, _test_method(test)) for test in _flatten(suite) if isinstance(test, unittest.TestCase)]
+        return suite
+
+
+def discover(start: str, pattern: str, top_level: str | None, loader: unittest.TestLoader | None = None) -> list:
     """The test cases ``python -m unittest discover -s START -p PATTERN [-t TOP]`` would run, in its order.
 
     A fresh ``TestLoader``, which is what ``unittest.defaultTestLoader`` is in a process that has not
     discovered before: on Python 3.11 the shared loader keeps the top-level directory of an earlier
     ``discover`` call, so a second call in the same process could resolve a different start directory.
     """
-    return list(_flatten(unittest.TestLoader().discover(start, pattern, top_level)))
+    return list(_flatten((loader or unittest.TestLoader()).discover(start, pattern, top_level)))
 
 
 def _fixture_key(test) -> str | None:
@@ -464,16 +497,20 @@ def _harness_snapshot() -> dict:
 
 
 class _ShardResult(unittest.TextTestResult):
-    def __init__(self, *args, channel=None, pristine=None, **kwargs):
+    def __init__(self, *args, channel=None, pristine=None, loaded=(), **kwargs):
         super().__init__(*args, **kwargs)
         self.channel = channel
         self.pristine = pristine
+        # (test, _test_method) for every discovered test, as its module was loaded. Every one, not only this shard's:
+        # whether a replacement fails the run must not depend on which shard the replaced test was packed into.
+        self.loaded = list(loaded)
         self.changed = False
         self.durations: dict = {}
         self._mark = time.perf_counter()
 
     def _check_harness(self, test, at="start"):
-        """Report, once, a test that starts after test code changed how tests are run or reported.
+        """Report, once, a test that starts after test code changed how tests are run or reported, or replaced
+        a discovered test's method (by id: what ``unittest`` would call is no longer what its module defined).
 
         Checked again when the test stops (``at``), which names the test that made the change: its ``setUp`` or
         body can also give the instance a method that a class could not take (``self.subTest = ...``).
@@ -484,6 +521,8 @@ class _ShardResult(unittest.TextTestResult):
         what = sorted(f"{cls}.{name}" for (cls, name), value in now.items() if self.pristine.get((cls, name)) is not value)
         what += sorted(f"result.{name}" for name in RESULT_METHODS if name in vars(self))
         what += [f"{type(test).__qualname__}.{name}" for name in _overrides(test)]
+        what += sorted({case.id() for case, loaded in self.loaded
+                        if any(a is not b for a, b in zip(_test_method(case), loaded))})
         if what:
             self.changed = True
             self._send("harness_changed", id=test.id(), what=what, at=at)
@@ -562,10 +601,11 @@ def run_child() -> int:
 
     wanted = set(spec["ids"])
     pristine = _harness_snapshot()  # before any test module is imported
-    tests = [t for t in discover(spec["start"], spec["pattern"], spec["top_level"]) if t.id() in wanted]
+    loader = _Loader()
+    tests = [t for t in discover(spec["start"], spec["pattern"], spec["top_level"], loader) if t.id() in wanted]
     runner = unittest.TextTestRunner(
         stream=sys.stderr, verbosity=2, warnings=None if sys.warnoptions else "default",
-        resultclass=lambda *a, **k: _ShardResult(*a, channel=channel, pristine=pristine, **k))
+        resultclass=lambda *a, **k: _ShardResult(*a, channel=channel, pristine=pristine, loaded=loader.loaded, **k))
     result = runner.run(unittest.TestSuite(tests))
 
     def described(pairs):
