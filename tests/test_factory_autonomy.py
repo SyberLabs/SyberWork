@@ -44,11 +44,14 @@ def candidate_spec(project: Path) -> dict:
 
 
 def promoted_spec(project: Path, home: ledger.Ledger, *, seed: bytes = OWNER_SEED, public: bytes = OWNER_PUBLIC) -> dict:
-    """The candidate promoted the way `factory spec promote` does it (C1's goal gate): a model's variant, an
-    independent reviewer's accepting verdict and the validate that wrote the candidate are on the ledger; the
-    owner signs an approval over the spec's digest, `gate` resolves the verdict and verifies the approval,
-    `transition` promotes, the approval is recorded and the `spec_changed` cites it."""
+    """The candidate promoted the way `factory spec promote` does it (C1's goal gate): the ledger pins the owner
+    key (bootstrap, once); a model's variant, an independent reviewer's accepting verdict and the validate that
+    wrote the candidate are on the ledger; the owner signs an approval over the spec's digest, `gate` resolves the
+    verdict and verifies the approval under the pinned key, `transition` promotes, the approval is recorded and
+    the `spec_changed` cites it."""
     document = candidate_spec(project)
+    if home.owner_key() is None:
+        home.set_owner_key(public)
     before = specmod.spec_digest(document)
     reviewer = {"kind": "model", "id": "gpt", "model": "gpt-5", "family": "openai"}
     home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], "operation": "mutate",
@@ -58,8 +61,7 @@ def promoted_spec(project: Path, home: ledger.Ledger, *, seed: bytes = OWNER_SEE
     home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], "operation": "validate",
                                  "accepted_variant": "var1", "verdict_id": VERDICT, "spec_digest": before})
     envelope = specmod.sign_approval(specmod.approval_payload(document, "promote", OWNER, verdict_ids=[VERDICT]), seed)
-    approval, resolved = specmod.gate(document, "promote", OWNER, home.events(), envelope, public, verdict_ids=[VERDICT],
-                                      spec_digest_value=before)
+    approval, resolved = specmod.gate(document, "promote", OWNER, home.events(), envelope, verdict_ids=[VERDICT], spec_digest_value=before)
     record = specmod.transition(document, "promote", OWNER, verdict_ids=[VERDICT], approval=approval, spec_digest=before,
                                 resolved_verdicts=resolved)
     event = home.record_approval(envelope, approval)
@@ -105,14 +107,14 @@ class Scratch(unittest.TestCase):
         return ledger.Ledger(self.scratch / name)
 
     def make_loop(self, project: Path, mapping: dict, document: dict, home: ledger.Ledger, *, calls_total=10, attempts=2, mode="",
-                  policy=None, kill_switch=None, arms=None, owner_public=None) -> loop.Loop:
+                  policy=None, kill_switch=None, arms=None) -> loop.Loop:
         envelope = loop.new_envelope(featuremap.map_digest(mapping), dollars_total=0.0, calls_total=calls_total, seconds_total=600,
                                      attempts_per_feature=attempts, kill_switch=kill_switch, arms=arms)
         argv = [sys.executable, str(AUTONOMY / "standin_proposer.py"), str(project)] + ([mode] if mode else [])
         checks = {"tests": {"argv": [sys.executable, "-c", "import fxapp.main, fxapp.variants"], "timeout_seconds": 60}}
         return loop.Loop(repo_root=project, kit_home=project / ".syberlabs", ledger=home, map=mapping, spec=document, envelope=envelope,
                          policy=policy or policymod.OfflinePolicy(), proposer_argv=argv, checks=checks, hidden_catalogue=hidden_catalogue(),
-                         human_owner="tester", owner_public=owner_public)
+                         human_owner="tester")
 
     def ready_loop(self, name="project", ledger_name="ledger", **overrides) -> tuple[loop.Loop, Path, str, dict]:
         """A project, a promoted spec on a fresh ledger and an approved fixture map: the loop ready to compile."""
@@ -408,10 +410,10 @@ class EndToEnd(Scratch):
         featuremap.approve(mapping, OWNER)
         recorded = policymod.recorded_answers({"next_feature": "F3", "budget_tier": "S", "proposer_arm": "standin"})
         shadow = policymod.ShadowPolicy(policymod.OfflinePolicy(), recorded, shadow_name="recorded-jev")
-        run = self.make_loop(project, mapping, document, home, policy=shadow, owner_public=OWNER_PUBLIC)
+        run = self.make_loop(project, mapping, document, home, policy=shadow)
         tickets = run.compile()
         self.assertEqual([t["map_ref"]["feature_id"] for t in tickets], ["F1", "F2", "F3"])
-        self.assertTrue(run.promotion["verified"], "the owner's approval was re-verified under the owner's key")
+        self.assertEqual(run.promotion["keyid"], OWNER_PUBLIC.hex(), "the approval was re-verified under the key the ledger pins")
         opened = [e for e in home.events() if e["kind"] == "ticket_opened"]
         self.assertEqual([(e["body"]["feature_id"], e["body"]["source"], e["body"]["human_owner"]) for e in opened],
                          [("F1", "map", "tester"), ("F2", "map", "tester"), ("F3", "map", "tester")])
@@ -484,7 +486,7 @@ class EndToEnd(Scratch):
 
     def test_compile_needs_the_ledgers_promotion_record_not_the_files_state(self):
         """The file's ``state`` decides nothing: the ledger must hold a promote of exactly this spec, citing a
-        recorded approval by a human, whose envelope is stored; with the owner's key it must verify."""
+        recorded approval by a human, whose envelope is stored and verifies under the owner key the ledger pinned."""
         project, base = self.project()
         home = self.home()
         in_memory = candidate_spec(project)
@@ -511,24 +513,40 @@ class EndToEnd(Scratch):
 
         mapping = fixture_map(document, base)
         featuremap.approve(mapping, OWNER)
-        with self.assertRaises(Rejected) as refused:
-            self.make_loop(project, mapping, document, home, owner_public=generate()[1]).compile()
-        self.assertEqual(refused.exception.code, "approval_unverified", "another owner's key: the stored approval is no approval")
+        # A promotion whose approval was signed under a key the ledger never pinned, or on a ledger that pins no
+        # key, is a record without a trust root: refused whatever the file and the events say.
+        other_seed, other_public = generate()
+        for name, pin, code in (("unpinned", False, "owner_key_unset"), ("other-key", True, "owner_key_mismatch")):
+            forged_home = self.home(name)
+            if pin:
+                forged_home.set_owner_key(OWNER_PUBLIC)
+            forged = candidate_spec(project)
+            envelope = specmod.sign_approval(specmod.approval_payload(forged, "promote", OWNER, verdict_ids=[VERDICT]), other_seed)
+            approval = specmod.verify_approval(envelope, other_public, forged, "promote", verdict_ids=[VERDICT])
+            record = specmod.transition(forged, "promote", OWNER, verdict_ids=[VERDICT], approval=approval)
+            event = forged_home.record_approval(envelope, approval)
+            record["approval"] = {**record["approval"], "event_hash": event["hash"], "approval_digest": event["body"]["approval_digest"]}
+            forged_home.append("spec_changed", {"spec_id": forged["spec_id"], "version": forged["version"], **record,
+                                                "spec_digest": specmod.spec_digest(forged), "footprint": forged["footprint"]["components"]})
+            self.assertEqual(specmod.spec_digest(forged), specmod.spec_digest(document), "the same spec, differently approved")
+            with self.assertRaises(Rejected, msg=name) as refused:
+                self.make_loop(project, mapping, forged, forged_home).compile()
+            self.assertEqual(refused.exception.code, code, name)
 
         approvals = next(p for p in (home.home / "approvals").glob("*.json"))
         kept = approvals.read_text(encoding="utf-8")
         approvals.write_text(kept.replace('"', "'", 1), encoding="utf-8")
         with self.assertRaises(Rejected) as refused:
             self.make_loop(project, mapping, document, home).compile()
-        self.assertEqual(refused.exception.code, "spec_unpromoted", "a damaged approval envelope refuses even without a key")
+        self.assertEqual(refused.exception.code, "spec_unpromoted", "a damaged approval envelope refuses")
         approvals.write_text(kept, encoding="utf-8")
 
-        run = self.make_loop(project, mapping, document, home, owner_public=OWNER_PUBLIC)
+        run = self.make_loop(project, mapping, document, home)
         run.compile()
         self.assertEqual(run.promotion["approver"], OWNER)
         self.assertEqual(run.promotion["verdict_ids"], [VERDICT])
-        self.assertTrue(run.promotion["verified"])
-        self.assertEqual(loop.promotion_record(home, document)["verified"], False, "without a key the record is checked, not the signature")
+        self.assertEqual(run.promotion["keyid"], OWNER_PUBLIC.hex())
+        self.assertEqual(loop.promotion_record(home, document)["seq"], run.promotion["seq"])
 
     def test_a_map_without_owner_approval_is_refused(self):
         project, base = self.project()

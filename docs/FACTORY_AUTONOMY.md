@@ -25,8 +25,8 @@ spec (promoted)  ─►  FeatureMap (typed DAG)  ─►  mapcheck  ─►  owner
 | --- | --- |
 | `featuremap.py` | `feature-map.v1`: features with id, objective, `req_ids` (the spec requirements they trace to), scope paths, shown criteria, hidden-check names (names only), `depends_on`, act class, size, risk inputs. `spec_from_markdown` turns a sectioned Markdown spec (`## R1: text`, `- given, when, then` bullets) into #154's spec object (owner decision 11, D2). `mapcheck` is the deterministic floor: schema, spec digest, coverage, acyclic DAG, scope conflicts (an intersection must be declared with an order that agrees with the DAG), act class, size ceilings, hidden-check names, approval digest. `taskgraph`: critical path, total work, work/critical ratio, Dilworth width with a maximum antichain, conflict graph. `risk_plan`: seven risk inputs computed by code, `r_i` as a weighted sum, standardized `z_i`, `v_i = V * softmax(z_i / tau)` as integer units above a floor that is listed beside every allocation and never moves. `compile_ticket`: one feature to one ticket in `ticket_from_spec`'s shape (D5). `degenerate_map`: the map `ticket_from_spec` implies, one feature per requirement. |
 | `policy.py` | `Question` (closed options built by code; the state a policy reads is ids and numbers only), `Answer`, `validate` (an answer outside the options is `policy_invalid`), `OfflinePolicy` (critical path first, cheapest arm and tier, retry then stronger arm then owner, park when the cap is spent, stop on the envelope), `ShadowPolicy` (acts on one policy, records what an injected second one would have answered and whether it agrees; an invalid or failing shadow is recorded and changes nothing), `recorded_answers` (a shadow over a fixture). |
-| `loop.py` | `Loop.compile`: refuses a map without a current owner approval (`map_unapproved`), a spec the ledger did not promote (`spec_unpromoted`, see `promotion_record`), or a map with findings; writes one contract per feature; logs `map_frozen` (with `promoted_by`) and `ticket_opened{source: map}`. `Loop.run`: kill switch, eligibility, three policy questions recorded as proposals, envelope reservation, one unattended Build Thread, one proposer call through `CommandProvider`, then `syberlabs run`'s `Runner` drives the thread (D17), the envelope settles from the journal, the outcome is recorded; a `Rejected` while running still writes the envelope's `stop` and the ledger's `loop_stopped{reason: <code>}` before it propagates. `promotion_record`: the goal gate's record on the ledger for exactly this spec (the `spec_changed` promote whose `spec_digest` is the file's, the `approval_recorded` it cites, the envelope under `approvals/`), re-verified under the owner's public key when one is given. `EnvelopeLedger`: the eval spend ledger's shape generalized to attempts (D13), one file per envelope digest under `envelopes/`, strict on every line. `why`: ticket -> feature -> map (approval) -> spec (promotion), from the ledger. `event_digests`: one digest per autonomy event without its volatile `refs`. |
-| `autonomy_cli.py` | `syberlabs factory autonomy check | approve | envelope | run | why`, registered from one hook line at the end of `factory/cli.py`. `run --owner-public KEY` re-verifies the promotion's approval under the owner's key. |
+| `loop.py` | `Loop.compile`: refuses a map without a current owner approval (`map_unapproved`), a spec the ledger did not promote (`spec_unpromoted`, see `promotion_record`), or a map with findings; writes one contract per feature; logs `map_frozen` (with `promoted_by`) and `ticket_opened{source: map}`. `Loop.run`: kill switch, eligibility, three policy questions recorded as proposals, envelope reservation, one unattended Build Thread, one proposer call through `CommandProvider`, then `syberlabs run`'s `Runner` drives the thread (D17), the envelope settles from the journal, the outcome is recorded; a `Rejected` while running still writes the envelope's `stop` and the ledger's `loop_stopped{reason: <code>}` before it propagates. `promotion_record`: the goal gate's record on the ledger for exactly this spec (the `spec_changed` promote whose `spec_digest` is the file's, the `approval_recorded` it cites, the envelope under `approvals/`), re-verified under the owner key the ledger pinned at that point (`owner_key_set`); `owner_key_unset` and `owner_key_mismatch` refuse. `EnvelopeLedger`: the eval spend ledger's shape generalized to attempts (D13), one file per envelope digest under `envelopes/`, strict on every line. `why`: ticket -> feature -> map (approval) -> spec (promotion), from the ledger. `event_digests`: one digest per autonomy event without its volatile `refs`. |
+| `autonomy_cli.py` | `syberlabs factory autonomy check | approve | envelope | run | why`, registered from one hook line at the end of `factory/cli.py`. |
 
 ### A run on the fixture
 
@@ -62,21 +62,23 @@ envelope holds an arm ranked above the one that failed) offers only the stronger
 ### From a terminal
 
 ```sh
+python -m syberlabs.factory --home .syberlabs/factory owner --public owner.pub           # pin the owner key on the ledger (once)
 python -m syberlabs.factory --home .syberlabs/factory spec validate spec.json          # the spec, as in FACTORY.md
 python -m syberlabs.factory --home .syberlabs/factory approve spec.json --verdict VERDICT --actor human:mateo \
     --seed-env SYBERLABS_FACTORY_OWNER_SEED --out approval.json                         # the goal gate (C1): the owner signs
 python -m syberlabs.factory --home .syberlabs/factory spec promote spec.json --verdict VERDICT --actor human:mateo \
-    --approval approval.json --owner-public owner.pub                                   # verified, recorded, cited on the ledger
+    --approval approval.json                                                            # verified under the pinned key, recorded, cited
 python -m syberlabs.factory autonomy check --map map.json --spec spec.json              # findings, graph, risk plan; exit 1 on findings
 python -m syberlabs.factory autonomy approve --map map.json --by mateo                  # the owner's act; any edit leaves it stale
 python -m syberlabs.factory autonomy envelope --map map.json --calls 6 --attempts 2 --out envelope.json
 python -m syberlabs.factory --home .syberlabs/factory autonomy run --map map.json --spec spec.json --envelope envelope.json \
-    --owner mateo --owner-public owner.pub --proposer "/abs/python standin.py ." --check "tests=/abs/python -m unittest -q" \
+    --owner mateo --proposer "/abs/python standin.py ." --check "tests=/abs/python -m unittest -q" \
     --hidden "hidden.f1.marker=/abs/python -c ..."                                      # exit 0 when a feature is ready
 python -m syberlabs.factory --home .syberlabs/factory autonomy why TICKET
 ```
 
-`run` reads the spec's promotion from the same `--home` the promote wrote to. An envelope is one grant: its
+`run` reads the spec's promotion from the same `--home` the promote wrote to and re-verifies its approval under the
+owner key that ledger pins; no key is passed on the command line. An envelope is one grant: its
 ledger lives at `envelopes/<envelope digest>.jsonl`, a second map or a new envelope in the same home starts
 clean, and a run over an envelope whose ledger already carries a `stop` is refused (`envelope_stopped`). On
 Windows, `--check` and `--hidden` commands with nested quotes need a script file (`split_command` is non-POSIX
@@ -153,7 +155,7 @@ there; pre-existing in #154).
 - **The map approval is a record, not a credential.** `featuremap.approve` writes `{digest, actor}` and
   `approved()` checks the digest against the map, not the actor against a signature: swapping `approval.actor.id`
   leaves the map approved. The spec's promotion is now bound to the owner's signed approval through C1's seam
-  (`promotion_record`, re-verified with `--owner-public`); the map's approval has no such seam yet. Binding it is a
+  (`promotion_record`, re-verified under the pinned owner key); the map's approval has no such seam yet. Binding it is a
   signed `approval_payload` over the map digest, which is C1's shape applied to a second artifact; proposed for the
   packet that gives the factory a kernel case to hang approvals on.
 - **The floor is listed, not enforced, by this slice.** `FLOOR` names host checks, hidden checks, critic and safety

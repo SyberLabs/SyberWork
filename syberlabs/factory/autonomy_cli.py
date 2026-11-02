@@ -18,7 +18,6 @@ import json
 import sys
 from pathlib import Path
 
-from syberlabs import certificate
 from syberlabs.errors import Rejected
 from syberlabs.factory import featuremap, loop
 from syberlabs.factory import policy as policymod
@@ -69,7 +68,8 @@ def add_commands(steps) -> None:
     env.add_argument("--out", required=True)
     runp = sub.add_parser("run", help="compile the approved map to tickets and drive each feature through a Build Thread")
     runp.add_argument("--map", required=True)
-    runp.add_argument("--spec", required=True)
+    runp.add_argument("--spec", required=True, help="the promoted spec JSON; its promotion is read from --home and re-verified under "
+                                                     "the owner key the ledger pins (factory owner)")
     runp.add_argument("--envelope", required=True)
     runp.add_argument("--owner", required=True, help="the accountable human on every ticket")
     runp.add_argument("--kit-home", default=".syberlabs", help="the Build Thread home under --root (default .syberlabs)")
@@ -80,8 +80,6 @@ def add_commands(steps) -> None:
     runp.add_argument("--baseline", help="the golden run id to name on tickets")
     runp.add_argument("--max-steps", type=int, default=50)
     runp.add_argument("--shadow", help="recorded answers JSON for a shadow policy; recorded beside each decision, never acted on")
-    runp.add_argument("--owner-public", metavar="KEY", help="the owner's .pub file: re-verify the spec's promotion approval under it "
-                                                            "(without it the ledger's hash-chained record and stored envelope are checked)")
     why = sub.add_parser("why", help="walk a ticket back to its feature, map, approval, spec and its promotion")
     why.add_argument("ticket")
 
@@ -149,11 +147,10 @@ def _run(args) -> int:
             raise Rejected("check_argument", "name at least one visible check with --check NAME=COMMAND")
         root = Path(args.root).resolve()
         kit_home = Path(args.kit_home)
-        owner_public = certificate.read_public(args.owner_public) if args.owner_public else None
         driver = loop.Loop(repo_root=root, kit_home=kit_home if kit_home.is_absolute() else root / kit_home,
                            ledger=ledgermod.Ledger(args.home), map=document, spec=spec, envelope=envelope, policy=policy,
                            proposer_argv=split_command(args.proposer), checks=checks, hidden_catalogue=_parse_checks(args.hidden, "--hidden"),
-                           human_owner=args.owner, baseline_run=args.baseline, log=print, owner_public=owner_public)
+                           human_owner=args.owner, baseline_run=args.baseline, log=print)
         tickets = driver.compile()
         for ticket in tickets:
             print(f"ticket     {ticket['ticket_id']}  {ticket['map_ref']['feature_id']}  {ticket['title']}")

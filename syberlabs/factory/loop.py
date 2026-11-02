@@ -37,8 +37,10 @@ the envelope it belongs to, so two maps or two grants in one home never read eac
 
 The spec is promoted when the ledger says so, not when the file says so: ``promotion_record`` finds the
 ``spec_changed`` that promoted exactly this spec (its digest), the ``approval_recorded`` it cites and the
-owner's envelope under ``approvals/``, and with the owner's public key re-verifies the signature (the goal
-gate's ``verify_approval``). ``compile`` refuses a spec the ledger did not promote (``spec_unpromoted``).
+owner's envelope under ``approvals/``, and re-verifies the signature under the owner key the ledger pinned
+(``owner_key_set``; the goal gate's ``verify_approval``). ``compile`` refuses a spec the ledger did not
+promote (``spec_unpromoted``), a ledger without a pinned key (``owner_key_unset``) and an approval under
+another key (``owner_key_mismatch``).
 """
 
 from __future__ import annotations
@@ -272,16 +274,17 @@ def event_digests(ledger, map_digest: str | None = None) -> list[str]:
             for e in autonomy_events(ledger, map_digest)]
 
 
-def promotion_record(ledger, spec: dict, owner_public: bytes | None = None) -> dict:
+def promotion_record(ledger, spec: dict) -> dict:
     """The ledger's record that the owner promoted exactly this spec, through the goal gate's own shape.
 
     The spec on disk must be the spec the ledger wrote after a ``promote`` (or a later ``canonize``): the
     ``spec_changed`` whose ``spec_digest`` is this file's digest, with ``to`` promoted or canonical. The
     promotion's ``approval`` must cite an ``approval_recorded`` event (by hash) for this spec and version by a
-    human approver, whose envelope is under ``approvals/`` at the recorded digest. With ``owner_public`` the
-    envelope is re-verified (``spec.verify_approval`` over the digest the owner signed), so the record becomes
-    a credential; without it the hash-chained ledger and the stored envelope are what is checked. The file's
-    ``state`` string decides nothing here."""
+    human approver, whose envelope is under ``approvals/`` at the recorded digest and was signed under the owner
+    key the ledger pinned at that point (``owner_key_set``, read with ``spec.pinned_owner_key``; a later
+    rotation does not unmake an earlier approval). The envelope is re-verified under that key
+    (``spec.verify_approval`` over the digest the owner signed), so the record is a credential, not a string.
+    The file's ``state`` string decides nothing here."""
     events = ledger.events()
     changes = [e for e in events if e["kind"] == "spec_changed" and e["body"].get("spec_id") == spec.get("spec_id")]
     current = specmod.spec_digest(spec)
@@ -314,12 +317,17 @@ def promotion_record(ledger, spec: dict, owner_public: bytes | None = None) -> d
         raise Rejected("spec_unpromoted", f"the approval envelope {body['approval_digest'][:12]} is missing or unreadable: {type(exc).__name__}") from None
     if digest(envelope) != body["approval_digest"]:
         raise Rejected("spec_unpromoted", f"approvals/{body['approval_digest'][:12]} does not match its recorded digest")
-    if owner_public is not None:
-        specmod.verify_approval(envelope, owner_public, spec, "promote", verdict_ids=list(body.get("verdict_ids") or []),
-                                spec_digest_value=body.get("spec_digest"))
-    return {"seq": promotion["seq"], "approval_seq": recorded["seq"], "approver": dict(approver), "keyid": body.get("keyid"),
+    pinned = specmod.pinned_owner_key([e for e in events if e["seq"] < recorded["seq"]])
+    if pinned is None:
+        raise Rejected("owner_key_unset", f"the ledger pinned no owner key before approval event {recorded['seq']}; the approval rests on no trust root")
+    if body.get("keyid") != pinned:
+        raise Rejected("owner_key_mismatch", f"approval event {recorded['seq']} is under key {str(body.get('keyid'))[:10]}, not the owner key "
+                                             f"the ledger pinned then ({pinned[:10]})")
+    specmod.verify_approval(envelope, bytes.fromhex(pinned), spec, "promote", verdict_ids=list(body.get("verdict_ids") or []),
+                            spec_digest_value=body.get("spec_digest"))
+    return {"seq": promotion["seq"], "approval_seq": recorded["seq"], "approver": dict(approver), "keyid": pinned,
             "verdict_ids": list(body.get("verdict_ids") or []), "approval_digest": body["approval_digest"],
-            "signed_digest": body.get("spec_digest"), "verified": owner_public is not None}
+            "signed_digest": body.get("spec_digest")}
 
 
 def why(ledger, ticket_id: str) -> dict:
@@ -374,13 +382,11 @@ def feature_contract(ticket: dict, *, checks: dict, hidden_catalogue: dict, max_
 class Loop:
     def __init__(self, *, repo_root: str | Path, kit_home: str | Path, ledger, map: dict, spec: dict, envelope: dict,
                  policy, proposer_argv: list[str], checks: dict, hidden_catalogue: dict | None = None, human_owner: str,
-                 baseline_run: str | None = None, actor: str = "factory@syberlabs.host", log=None, max_passes: int = MAX_PASSES,
-                 owner_public: bytes | None = None):
+                 baseline_run: str | None = None, actor: str = "factory@syberlabs.host", log=None, max_passes: int = MAX_PASSES):
         self.repo_root, self.kit_home, self.ledger = Path(repo_root), Path(kit_home), ledger
         self.map, self.spec, self.envelope, self.policy = map, spec, envelope, policy
         self.proposer_argv, self.checks, self.hidden = list(proposer_argv), dict(checks), dict(hidden_catalogue or {})
         self.human_owner, self.baseline_run, self.actor = human_owner, baseline_run, actor
-        self.owner_public = owner_public
         self.log = log or (lambda line: None)
         self.max_passes = max_passes
         self.map_digest = featuremap.map_digest(map)
@@ -408,7 +414,7 @@ class Loop:
             raise Rejected("map_unapproved", "the loop runs only an owner-approved map whose approval covers its current digest")
         if self.spec.get("state") not in ("promoted", "canonical"):
             raise Rejected("spec_state", f"work opens under a promoted spec, not one in state {self.spec.get('state')!r}")
-        self.promotion = promotion_record(self.ledger, self.spec, self.owner_public)
+        self.promotion = promotion_record(self.ledger, self.spec)
         findings = featuremap.mapcheck(self.map, self.spec)
         if findings:
             raise Rejected("map_invalid", "; ".join(findings))
@@ -431,7 +437,7 @@ class Loop:
             record(self.ledger, "map_frozen", self.map_digest, {
                 "map_id": self.map["id"], "spec_id": self.spec["spec_id"], "spec_version": self.spec["version"],
                 "spec_digest": self.map["spec_ref"]["spec_digest"], "approved_by": self.map["approval"]["actor"],
-                "promoted_by": self.promotion["approver"], "promotion_verified": self.promotion["verified"],
+                "promoted_by": self.promotion["approver"],
                 "envelope_digest": envelope_digest(self.envelope), "features": [f["id"] for f in self.map["features"]],
                 "critical_path": self.graph["critical_path"], "critical_path_length": self.graph["critical_path_length"],
                 "width": self.graph["width"], "work_critical_ratio": self.graph["work_critical_ratio"],
