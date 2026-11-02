@@ -38,8 +38,10 @@ the envelope it belongs to, so two maps or two grants in one home never read eac
 The spec is promoted when the ledger says so, not when the file says so: ``promotion_record`` finds the
 ``spec_changed`` that promoted exactly this spec (its digest), the ``approval_recorded`` it cites and the
 owner's envelope under ``approvals/``, and re-verifies the signature under the owner key the ledger pinned
-(``owner_key_set``; the goal gate's ``verify_approval``). ``compile`` refuses a spec the ledger did not
-promote (``spec_unpromoted``), a ledger without a pinned key (``owner_key_unset``) and an approval under
+(``owner_key_set``, read through the ledger's verified lineage with its stored rotations; the goal gate's
+``verify_approval``). ``compile`` refuses a spec the ledger did not promote (``spec_unpromoted``), a ledger
+whose owner-key lineage does not verify (``owner_key_lineage``: a bare second pin, an unsigned or stale
+rotation, a malformed key), a ledger without a pinned key (``owner_key_unset``) and an approval under
 another key (``owner_key_mismatch``).
 """
 
@@ -281,8 +283,11 @@ def promotion_record(ledger, spec: dict) -> dict:
     ``spec_changed`` whose ``spec_digest`` is this file's digest, with ``to`` promoted or canonical. The
     promotion's ``approval`` must cite an ``approval_recorded`` event (by hash) for this spec and version by a
     human approver, whose envelope is under ``approvals/`` at the recorded digest and was signed under the owner
-    key the ledger pinned at that point (``owner_key_set``, read with ``spec.pinned_owner_key``; a later
-    rotation does not unmake an earlier approval). The envelope is re-verified under that key
+    key the ledger pinned at that point (``owner_key_set``, read with ``spec.pinned_owner_key`` through the
+    ledger's verified lineage, its stored rotations supplied by ``ledger.load_rotation``; a later rotation does
+    not unmake an earlier approval). The whole ledger's lineage must verify first: a pin appended after the
+    approval that is not a signed rotation leaves the ledger pinning nothing (``owner_key_lineage`` refuses,
+    never ``owner_key_unset`` and never an earlier key). The envelope is re-verified under that key
     (``spec.verify_approval`` over the digest the owner signed), so the record is a credential, not a string.
     The file's ``state`` string decides nothing here."""
     events = ledger.events()
@@ -317,7 +322,8 @@ def promotion_record(ledger, spec: dict) -> dict:
         raise Rejected("spec_unpromoted", f"the approval envelope {body['approval_digest'][:12]} is missing or unreadable: {type(exc).__name__}") from None
     if digest(envelope) != body["approval_digest"]:
         raise Rejected("spec_unpromoted", f"approvals/{body['approval_digest'][:12]} does not match its recorded digest")
-    pinned = specmod.pinned_owner_key([e for e in events if e["seq"] < recorded["seq"]])
+    specmod.pinned_owner_key(events, ledger.load_rotation)  # the whole lineage verifies, or the ledger pins nothing
+    pinned = specmod.pinned_owner_key([e for e in events if e["seq"] < recorded["seq"]], ledger.load_rotation)
     if pinned is None:
         raise Rejected("owner_key_unset", f"the ledger pinned no owner key before approval event {recorded['seq']}; the approval rests on no trust root")
     if body.get("keyid") != pinned:

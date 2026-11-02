@@ -47,7 +47,8 @@ def promoted_spec(project: Path, home: ledger.Ledger, *, seed: bytes = OWNER_SEE
     """The candidate promoted the way `factory spec promote` does it (C1's goal gate): the ledger pins the owner
     key (bootstrap, once); a model's variant, an independent reviewer's accepting verdict and the validate that
     wrote the candidate are on the ledger; the owner signs an approval over the spec's digest, `gate` resolves the
-    verdict and verifies the approval under the pinned key, `transition` promotes, the approval is recorded and
+    verdict and verifies the approval under the pinned key (read through the lineage with the ledger's stored
+    rotations), `transition` promotes, the approval is recorded and
     the `spec_changed` cites it."""
     document = candidate_spec(project)
     if home.owner_key() is None:
@@ -61,7 +62,8 @@ def promoted_spec(project: Path, home: ledger.Ledger, *, seed: bytes = OWNER_SEE
     home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], "operation": "validate",
                                  "accepted_variant": "var1", "verdict_id": VERDICT, "spec_digest": before})
     envelope = specmod.sign_approval(specmod.approval_payload(document, "promote", OWNER, verdict_ids=[VERDICT]), seed)
-    approval, resolved = specmod.gate(document, "promote", OWNER, home.events(), envelope, verdict_ids=[VERDICT], spec_digest_value=before)
+    approval, resolved = specmod.gate(document, "promote", OWNER, home.events(), envelope, verdict_ids=[VERDICT], spec_digest_value=before,
+                                       load_rotation=home.load_rotation)
     record = specmod.transition(document, "promote", OWNER, verdict_ids=[VERDICT], approval=approval, spec_digest=before,
                                 resolved_verdicts=resolved)
     event = home.record_approval(envelope, approval)
@@ -547,6 +549,50 @@ class EndToEnd(Scratch):
         self.assertEqual(run.promotion["verdict_ids"], [VERDICT])
         self.assertEqual(run.promotion["keyid"], OWNER_PUBLIC.hex())
         self.assertEqual(loop.promotion_record(home, document)["seq"], run.promotion["seq"])
+
+    def test_compile_reads_the_owner_key_through_the_ledgers_lineage(self):
+        """M3 of the #164 verification, on the autonomy side: the owner key is the ledger's verified lineage, read
+        with the ledger's stored rotations. A spec promoted after an honest rotation (bootstrap -> rotation signed
+        by the first key, the approval signed by the second) compiles under the second key; that lineage cannot be
+        read without the loader. A bare second ``owner_key_set`` appended through the public ``append`` after the
+        promotion (the hash chain intact) leaves the ledger pinning nothing: ``compile`` refuses
+        ``owner_key_lineage``, not ``owner_key_unset`` and not the earlier key, and writes nothing."""
+        project, base = self.project()
+        home = self.home()
+        second_seed, second_public = generate()
+        home.set_owner_key(OWNER_PUBLIC)
+        home.set_owner_key(second_public, seed=OWNER_SEED)
+        self.assertEqual(home.owner_key(), second_public.hex())
+        document = promoted_spec(project, home, seed=second_seed, public=second_public)
+        with self.assertRaises(Rejected) as refused:
+            specmod.pinned_owner_key(home.events())
+        self.assertEqual(refused.exception.code, "owner_key_lineage", "a rotated ledger is unreadable without the loader")
+        mapping = fixture_map(document, base)
+        featuremap.approve(mapping, OWNER)
+        run = self.make_loop(project, mapping, document, home)
+        run.compile()
+        self.assertEqual(run.promotion["keyid"], second_public.hex(), "the key pinned before the approval, through the rotation")
+        self.assertTrue(home.verify())
+        self.assertEqual(len(notes(home.events(), "map_frozen")), 1)
+
+        # The M3 repro: an honest bootstrap and promotion, then a bare owner_key_set appended with the chain intact.
+        project, base = self.project("tampered")
+        tampered = self.home("tampered-ledger")
+        document = promoted_spec(project, tampered)
+        _, attacker_public = generate()
+        tampered.append("owner_key_set", {"keyid": attacker_public.hex(), "previous": None, "rotation_digest": None})
+        self.assertTrue(ledger._verify_chain(tampered.events()), "the chain is intact; only the lineage is broken")
+        self.assertFalse(tampered.verify())
+        mapping = fixture_map(document, base)
+        featuremap.approve(mapping, OWNER)
+        before = len(tampered.events())
+        with self.assertRaises(Rejected) as refused:
+            self.make_loop(project, mapping, document, tampered).compile()
+        self.assertEqual(refused.exception.code, "owner_key_lineage")
+        self.assertIn("a bare pin does not re-root the ledger", refused.exception.detail)
+        self.assertEqual(loop.autonomy_events(tampered), [], "nothing was logged")
+        self.assertEqual(len(tampered.events()), before, "the ledger was not written")
+        self.assertFalse((project / ".syberlabs" / "contracts").exists(), "no contract was written")
 
     def test_a_map_without_owner_approval_is_refused(self):
         project, base = self.project()
