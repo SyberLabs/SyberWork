@@ -7,36 +7,48 @@ Layout under the ledger home (``.syberlabs/factory`` by default)::
     runs/<run_id>.jsonl     harness journals
     blobs/<sha256>          effect payloads too large to inline
     attestations/<digest>.json
+    approvals/<digest>.json the owner's signed approvals a promotion rests on
     index.sqlite3           the projection: components, runs, steps, cells, edges; rebuilt from the above
+    .journal/               the kernel journal's lock file for this ledger (``syberlabs.journal``)
 
 The event log is the system of record. Every event carries ``seq``, ``kind``, ``body``, ``at`` (integer
-microseconds), ``previous`` and ``hash``; ``verify`` walks the chain. Bodies hold digests and ids, not
-payloads, so the log stays small while artifacts stay content-addressed.
+microseconds), ``previous`` and ``hash``; ``verify`` walks the chain and then every artifact an event names,
+comparing the file with the digest the event recorded. Bodies hold digests and ids, not payloads, so the log
+stays small while artifacts stay content-addressed. An artifact is never read by name alone: ``load_run``
+and ``load_space`` refuse a file whose digest is not the one on the ledger, so an edited golden journal cannot
+become a gate's baseline.
+
+Appends go through the kernel journal's writer (``syberlabs.journal.Journal``): a cross-process lock (``flock``
+or ``msvcrt.locking``), flush and fsync per record, and truncation of a torn final line before the next read.
+Two factory commands on one home therefore serialize instead of forking the chain.
 
 A cell is (component, step, commit): one span of one run, attributed to the component that owned its file at
 that run's revision. The grid is sparse; only steps that ran become cells. ``cells_for`` slices by component
-across commits, ``worldline`` slices by run, ``active_at`` slices by step.
-
-One process writes a ledger at a time. There is no cross-process lock here, by design: the factory runs as a
-CLI or a test, not a service, and a lock that works on Windows and POSIX alike is the journal's job, not this
-file's.
+across commits, ``worldline`` slices by run, ``active_at`` slices by step. The projection is rebuilt when the
+log it was built from has moved on (its ``meta`` row records the chain head it reflects); the ``features``
+table ``features.build`` keeps in the same file survives a rebuild.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
+from syberlabs import journal as kernel_journal
 from syberlabs.canonical import canonical, digest
 from syberlabs.errors import Rejected
-from syberlabs.factory import PROTOCOL, harness, space
+from syberlabs.factory import PROTOCOL, attest, harness, space
 
 GENESIS = "0" * 64
 EVENT_FIELDS = ("seq", "kind", "body", "at", "previous")
+RUN_KINDS = frozenset({"run_recorded", "run_replayed"})
 KINDS = frozenset({"space_indexed", "run_recorded", "run_replayed", "spec_changed", "ticket_opened",
-                   "attested", "drift_reported", "baseline_set", "note"})
+                   "attested", "drift_reported", "baseline_set", "approval_recorded", "note"})
+PROJECTION_TABLES = ("components", "edges", "runs", "steps", "effects", "cells", "meta")
 
 
 def event_digest(event: dict) -> str:
@@ -55,44 +67,101 @@ def _verify_chain(events: list[dict]) -> bool:
     return True
 
 
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 class Ledger:
     def __init__(self, home: str | Path = ".syberlabs/factory"):
         self.home = Path(home)
-        for name in ("space", "runs", "blobs", "attestations"):
+        for name in ("space", "runs", "blobs", "attestations", "approvals"):
             (self.home / name).mkdir(parents=True, exist_ok=True)
         self.log = self.home / "ledger.jsonl"
         self.database = self.home / "index.sqlite3"
 
     # -- the event log -----------------------------------------------------------------------------------------
 
-    def events(self) -> list[dict]:
-        if not self.log.exists():
-            return []
-        out = []
-        for number, line in enumerate(self.log.read_text(encoding="utf-8").splitlines(), 1):
-            if not line.strip():
-                continue
-            try:
-                out.append(json.loads(line))
-            except ValueError:
-                raise Rejected("ledger_unreadable", f"{self.log}: line {number} is not JSON") from None
-        return out
+    @contextmanager
+    def _locked(self):
+        """The kernel journal's lock over this ledger, held for one read or one read-then-append. A fresh
+        ``Journal`` per operation: every command reads the ledger from its first byte anyway, and no lock
+        handle outlives the call (a held handle would pin the directory on Windows)."""
+        writer = kernel_journal.Journal(self.home / ".journal")
+        try:
+            with writer.locked():
+                yield writer
+        finally:
+            writer.close()
 
-    def verify(self) -> bool:
-        return _verify_chain(self.events())
+    def _read(self, writer: kernel_journal.Journal) -> list[dict]:
+        try:
+            return writer.read_new(self.log)
+        except Rejected as exc:
+            raise Rejected("ledger_unreadable", f"{self.log}: {exc.detail}") from None
+
+    def events(self) -> list[dict]:
+        with self._locked() as writer:
+            return self._read(writer)
+
+    def head(self, events: list[dict] | None = None) -> str:
+        events = self.events() if events is None else events
+        return events[-1]["hash"] if events else GENESIS
+
+    def problems(self, events: list[dict] | None = None) -> list[str]:
+        """Why the ledger does not verify: the chain first, then every artifact an event names whose file is
+        missing or whose digest is not the recorded one (Space graphs, journals and the blobs they reference,
+        attestations, approvals). Empty when everything holds."""
+        events = self.events() if events is None else events
+        if not _verify_chain(events):
+            return ["the event chain does not verify"]
+        found = []
+        for event in events:
+            body, kind = event["body"], event["kind"]
+            try:
+                if kind == "space_indexed":
+                    path = self.space_path(body["space_digest"])
+                    if not path.exists():
+                        found.append(f"space/{body['space_digest'][:12]} is missing")
+                    elif space.graph_digest(json.loads(path.read_text(encoding="utf-8"))) != body["space_digest"]:
+                        found.append(f"space/{body['space_digest'][:12]} does not match its digest")
+                elif kind in RUN_KINDS:
+                    path = self.run_path(body["run_id"])
+                    if not path.exists():
+                        found.append(f"runs/{body['run_id']} is missing")
+                    elif _file_digest(path) != body["journal_digest"]:
+                        found.append(f"runs/{body['run_id']} does not match the digest recorded at seq {event['seq']}")
+                    else:
+                        for record in harness.read_journal(path):
+                            blob = record.get("blob")
+                            if blob and (not (self.home / "blobs" / blob).exists() or _file_digest(self.home / "blobs" / blob) != blob):
+                                found.append(f"blobs/{blob[:12]} of run {body['run_id']} is missing or does not match")
+                elif kind in ("attested", "approval_recorded"):
+                    folder, key = ("attestations", "attestation_digest") if kind == "attested" else ("approvals", "approval_digest")
+                    path = self.home / folder / f"{body[key]}.json"
+                    if not path.exists():
+                        found.append(f"{folder}/{body[key][:12]} is missing")
+                    elif digest(json.loads(path.read_text(encoding="utf-8"))) != body[key]:
+                        found.append(f"{folder}/{body[key][:12]} does not match its digest")
+            except (KeyError, TypeError, ValueError, OSError, Rejected) as exc:
+                found.append(f"seq {event['seq']} ({kind}): {type(exc).__name__}")
+        return found
+
+    def verify(self, events: list[dict] | None = None) -> bool:
+        """True when the chain verifies and every artifact the events name matches its recorded digest."""
+        return not self.problems(events)
 
     def append(self, kind: str, body: dict) -> dict:
         if kind not in KINDS:
             raise Rejected("ledger_kind", f"unknown event kind {kind!r}")
-        events = self.events()
-        previous = events[-1]["hash"] if events else GENESIS
-        if not _verify_chain(events):
-            raise Rejected("ledger_corrupt", "the hash chain does not verify; refusing to append to an edited ledger")
-        event = {"seq": len(events) + 1, "kind": kind, "body": body, "at": int(time.time() * 1_000_000),
-                 "previous": previous}
-        event["hash"] = event_digest(event)
-        with self.log.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(canonical(event) + "\n")
+        with self._locked() as writer:
+            events = self._read(writer)
+            if not _verify_chain(events):
+                raise Rejected("ledger_corrupt", "the hash chain does not verify; refusing to append to an edited ledger")
+            event = {"seq": len(events) + 1, "kind": kind, "body": body, "at": int(time.time() * 1_000_000),
+                     "previous": events[-1]["hash"] if events else GENESIS}
+            event["hash"] = event_digest(event)
+            # The kernel journal's append: flushed, fsynced, and refused if another writer slipped in between.
+            writer._write(self.log, event)
         return event
 
     # -- artifacts -----------------------------------------------------------------------------------------------
@@ -110,13 +179,19 @@ class Ledger:
         return self.append("space_indexed", body)
 
     def space_path(self, sha: str) -> Path:
+        if not sha or any(c not in "0123456789abcdef" for c in sha):
+            raise Rejected("space_digest", f"a Space digest is lowercase hex, not {sha!r}")
         return self.home / "space" / f"{sha}.json"
 
     def load_space(self, sha: str) -> dict:
+        """The Space graph named ``sha``, refused unless its content digests to that name."""
         path = self.space_path(sha)
         if not path.exists():
             raise Rejected("space_missing", f"no Space graph {sha[:12]} in {self.home}")
-        return json.loads(path.read_text(encoding="utf-8"))
+        graph = json.loads(path.read_text(encoding="utf-8"))
+        if space.graph_digest(graph) != sha:
+            raise Rejected("artifact_tampered", f"space/{sha[:12]}.json does not digest to its name")
+        return graph
 
     def latest_space(self, revision: str | None = None) -> dict | None:
         """The most recently logged Space graph, or the most recent one for ``revision``."""
@@ -131,32 +206,50 @@ class Ledger:
         return self.home / "runs" / f"{run_id}.jsonl"
 
     def record_run(self, run_id: str, replay_of: str | None = None) -> dict:
-        """Log a journal the harness wrote into ``runs/``. Returns the event."""
+        """Log a journal the harness delivered into ``runs/``. Returns the event. The digest recorded here is
+        what every later ``load_run`` checks the file against."""
         path = self.run_path(run_id)
+        if not path.exists():
+            raise Rejected("run_missing", f"no run {run_id} in {self.home}")
         records = harness.read_journal(path)
         if not records or records[0].get("t") != "run" or records[0].get("run_id") != run_id:
             raise Rejected("journal_unreadable", f"{path} is not the journal of run {run_id}")
         header, tail = records[0], records[-1]
-        body = {"run_id": run_id, "journal_digest": harness.journal_digest(path), "revision": header.get("revision"),
+        body = {"run_id": run_id, "journal_digest": _file_digest(path), "revision": header.get("revision"),
                 "entrypoint": header.get("entrypoint"), "space_digest": header.get("space_digest"),
                 "fixture_digest": header.get("fixture_digest"), "status": tail.get("status") if tail.get("t") == "end" else "open",
-                "counts": tail.get("counts") if tail.get("t") == "end" else None, "replay_of": replay_of or header.get("replay_of")}
+                "counts": tail.get("counts") if tail.get("t") == "end" else None, "replay_of": replay_of or header.get("replay_of"),
+                "sealed": bool(header.get("sealed"))}
         return self.append("run_replayed" if body["replay_of"] else "run_recorded", body)
 
+    def run_record(self, run_id: str, events: list[dict] | None = None) -> dict | None:
+        """The ledger's record of ``run_id`` (the newest ``run_recorded`` or ``run_replayed`` body), or None."""
+        for event in reversed(self.events() if events is None else events):
+            if event["kind"] in RUN_KINDS and event["body"].get("run_id") == run_id:
+                return event["body"]
+        return None
+
     def load_run(self, run_id: str) -> list[dict]:
+        """A recorded run's journal, refused when the ledger never logged it or the file no longer matches the
+        digest the ledger recorded."""
         path = self.run_path(run_id)
         if not path.exists():
             raise Rejected("run_missing", f"no run {run_id} in {self.home}")
+        recorded = self.run_record(run_id)
+        if recorded is None:
+            raise Rejected("run_unrecorded", f"run {run_id} is in runs/ but not on the ledger; refusing to read an unlogged journal")
+        if _file_digest(path) != recorded["journal_digest"]:
+            raise Rejected("artifact_tampered", f"runs/{run_id}.jsonl does not match the digest the ledger recorded")
         return harness.read_journal(path)
 
     def runs(self) -> list[dict]:
-        return [e["body"] for e in self.events() if e["kind"] in ("run_recorded", "run_replayed")]
+        return [e["body"] for e in self.events() if e["kind"] in RUN_KINDS]
 
     def set_baseline(self, run_id: str, label: str = "golden") -> dict:
         """Name a recorded run as the golden a later ``check`` diffs against. Labels are free text; the
-        newest ``baseline_set`` for a label wins, so re-pointing is one more event, never an edit."""
-        if not self.run_path(run_id).exists():
-            raise Rejected("run_missing", f"no run {run_id} in {self.home}")
+        newest ``baseline_set`` for a label wins, so re-pointing is one more event, never an edit. The run
+        must be on the ledger and intact (``load_run``)."""
+        self.load_run(run_id)
         if not label or any(c in label for c in " /\\"):
             raise Rejected("baseline_label", f"a label is one word, not {label!r}")
         return self.append("baseline_set", {"label": label, "run_id": run_id})
@@ -168,31 +261,49 @@ class Ledger:
                 return event["body"]["run_id"]
         return None
 
-    def record_attestation(self, document: dict) -> dict:
-        """Store an attestation (a statement or its DSSE envelope) by digest and log it."""
+    def record_attestation(self, document: dict, public: bytes | None = None) -> dict:
+        """Store an attestation (a statement or its DSSE envelope) by digest and log it. ``signed`` is true
+        only when the envelope's signature verifies under ``public``; an envelope recorded without the key,
+        or one that does not verify, is logged ``signed: false`` with ``envelope: true``."""
         sha = digest(document)
         (self.home / "attestations" / f"{sha}.json").write_text(canonical(document), encoding="utf-8")
-        statement = document
-        if "payloadType" in document:
-            import base64
-            statement = json.loads(base64.standard_b64decode(document["payload"]))
+        envelope = "payloadType" in document
+        statement = attest.verify(document, public) if envelope and public is not None else None
+        signed = statement is not None
+        if statement is None:
+            try:
+                statement = attest.unwrap(document)
+            except (ValueError, TypeError, KeyError):
+                raise Rejected("attestation_unreadable", "the envelope's payload is not a statement") from None
         predicate = statement.get("predicate", {})
-        body = {"attestation_digest": sha, "signed": "payloadType" in document,
+        body = {"attestation_digest": sha, "signed": signed, "envelope": envelope,
+                "keyid": public.hex() if signed else None,
                 "subject": [s.get("name") for s in statement.get("subject", [])],
                 "spec": predicate.get("spec", {}).get("spec_id"), "ticket": predicate.get("ticket"),
                 "diff_empty": (predicate.get("evidence", {}).get("trace_diff") or {}).get("diff_empty"),
                 "promote": (predicate.get("policy") or {}).get("promote")}
         return self.append("attested", body)
 
+    def record_approval(self, envelope: dict, approval: dict) -> dict:
+        """Store a verified owner approval (its DSSE envelope) by digest and log it; ``approval`` is the
+        payload :func:`spec.verify_approval` returned. The event's hash is what the ``spec_changed`` cites."""
+        sha = digest(envelope)
+        (self.home / "approvals" / f"{sha}.json").write_text(canonical(envelope), encoding="utf-8")
+        body = {"approval_digest": sha, "keyid": approval["keyid"], "approver": approval["approver"],
+                "operation": approval["operation"], "spec_id": approval["spec_id"], "version": approval["version"],
+                "spec_digest": approval["spec_digest"], "verdict_ids": list(approval.get("verdict_ids") or [])}
+        return self.append("approval_recorded", body)
+
     # -- the projection -----------------------------------------------------------------------------------------
 
-    def project(self) -> dict:
-        """Rebuild ``index.sqlite3`` from the log and its artifacts. Returns row counts."""
-        if self.database.exists():
-            self.database.unlink()
+    def project(self, events: list[dict] | None = None) -> dict:
+        """Rebuild the projection tables in ``index.sqlite3`` from the log and its artifacts. Returns row
+        counts. Tables other modules keep in the same file (``features``) are left alone."""
+        events = self.events() if events is None else events
         connection = sqlite3.connect(self.database)
         try:
-            connection.executescript("""
+            connection.executescript("".join(f"DROP TABLE IF EXISTS {table};" for table in PROJECTION_TABLES) + """
+                CREATE TABLE meta (head TEXT, count INTEGER);
                 CREATE TABLE components (space_digest TEXT, revision TEXT, id TEXT, label TEXT, files INTEGER);
                 CREATE TABLE edges (space_digest TEXT, src TEXT, dst TEXT, count INTEGER, declared INTEGER);
                 CREATE TABLE runs (run_id TEXT PRIMARY KEY, revision TEXT, entrypoint TEXT, space_digest TEXT,
@@ -206,7 +317,7 @@ class Ledger:
                 CREATE INDEX steps_run ON steps (run_id, seq_start);
             """)
             counts = {"components": 0, "edges": 0, "runs": 0, "steps": 0, "effects": 0, "cells": 0}
-            for event in self.events():
+            for event in events:
                 body = event["body"]
                 if event["kind"] == "space_indexed":
                     graph = self.load_space(body["space_digest"])
@@ -221,10 +332,10 @@ class Ledger:
                                            (body["space_digest"], edge["from"], edge["to"], edge["count"],
                                             int((edge["from"], edge["to"]) in declared)))
                         counts["edges"] += 1
-                elif event["kind"] in ("run_recorded", "run_replayed"):
+                elif event["kind"] in RUN_KINDS:
                     path = self.run_path(body["run_id"])
-                    if not path.exists():
-                        continue
+                    if not path.exists() or _file_digest(path) != body["journal_digest"]:
+                        continue  # a missing or edited journal projects nothing; ``verify`` names it
                     records = harness.read_journal(path)
                     connection.execute("INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?,?,?)",
                                        (body["run_id"], body.get("revision"), body.get("entrypoint"),
@@ -247,14 +358,29 @@ class Ledger:
                                                (body["run_id"], record["seq"], record.get("span"), record["t"],
                                                 record["name"], record["digest"]))
                             counts["effects"] += 1
+            connection.execute("INSERT INTO meta VALUES (?, ?)", (self.head(events), len(events)))
             connection.commit()
         finally:
             connection.close()
         return counts
 
-    def _query(self, sql: str, params: tuple = ()) -> list[tuple]:
+    def _stale(self, events: list[dict]) -> bool:
+        """True when the projection is missing or was built from a shorter or different log."""
         if not self.database.exists():
-            self.project()
+            return True
+        connection = sqlite3.connect(self.database)
+        try:
+            row = connection.execute("SELECT head, count FROM meta").fetchone()
+        except sqlite3.Error:
+            return True
+        finally:
+            connection.close()
+        return row is None or row[0] != self.head(events) or row[1] != len(events)
+
+    def _query(self, sql: str, params: tuple = ()) -> list[tuple]:
+        events = self.events()
+        if self._stale(events):
+            self.project(events)
         connection = sqlite3.connect(self.database)
         try:
             return connection.execute(sql, params).fetchall()
@@ -285,8 +411,11 @@ class Ledger:
 
     def describe(self) -> dict:
         events = self.events()
-        return {"protocol": PROTOCOL, "home": str(self.home), "events": len(events), "verified": self.verify(),
+        problems = self.problems(events)
+        return {"protocol": PROTOCOL, "home": str(self.home), "events": len(events), "verified": not problems,
+                "problems": len(problems),
                 "spaces": sum(1 for e in events if e["kind"] == "space_indexed"),
-                "runs": sum(1 for e in events if e["kind"] in ("run_recorded", "run_replayed")),
+                "runs": sum(1 for e in events if e["kind"] in RUN_KINDS),
                 "attestations": sum(1 for e in events if e["kind"] == "attested"),
-                "head": events[-1]["hash"] if events else GENESIS}
+                "approvals": sum(1 for e in events if e["kind"] == "approval_recorded"),
+                "head": self.head(events)}

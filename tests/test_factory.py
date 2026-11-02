@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from syberlabs.ed25519 import generate
 from syberlabs.errors import Rejected
-from syberlabs.factory import attest, features, harness, ledger, space
+from syberlabs.factory import attest, features, harness, independence, ledger, space
 from syberlabs.factory import cli as factory_cli
 from syberlabs.factory import spec as specmod
 
@@ -19,6 +20,15 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "factory_app"
 DECLARED = json.loads((FIXTURE / "architecture.json").read_text(encoding="utf-8"))
 ACTOR = {"kind": "human", "id": "tester"}
+OWNER_SEED, OWNER_PUBLIC = generate()
+
+
+def approved(document, operation, verdict_ids=(), approver=ACTOR, seed=OWNER_SEED, public=OWNER_PUBLIC):
+    """An owner approval of ``operation`` on ``document`` as it is now, signed and verified: what ``transition``
+    takes for a gated operation."""
+    payload = specmod.approval_payload(document, operation, approver, verdict_ids=list(verdict_ids))
+    envelope = specmod.sign_approval(payload, seed)
+    return specmod.verify_approval(envelope, public, document, operation, verdict_ids=list(verdict_ids))
 
 
 def indexed(root=FIXTURE, revision="fixture"):
@@ -226,6 +236,83 @@ class HarnessTests(Scratch):
         home.record_run(run_b)
         self.assertEqual(home.project()["effects"], 4)
 
+    def test_a_forging_candidate_is_refused_and_an_honest_one_passes(self):
+        """S2: the candidate's process cannot pass by printing a report, by writing journal lines around the
+        recorder, or by writing its own clean end; the honest program still passes. The child is never told the
+        ledger's path, and the journal it wrote is sealed under a key the parent holds."""
+        home = ledger.Ledger(self.scratch / "ledger")
+        graph = indexed()
+        honest, outcome, report = self.record(home, graph=graph)
+        self.assertEqual((report["status"], outcome["decision"]), ("ok", "order"))
+        records = home.load_run(honest)
+        self.assertTrue(records[0]["sealed"])
+        self.assertTrue(all("m" in r for r in records), "every record carries its seal")
+        forged = harness.new_run_id()
+        report = harness.record(FIXTURE, home.run_path(forged), "fxapp.variants:forge_report", file_components=file_components(graph),
+                                fixture={"part": "p-104", "quantity": 2}, run_id=forged, revision="fixture", blobs=home.home / "blobs")
+        self.assertEqual(report["status"], "error", report)
+        self.assertTrue(any(s in report["error"] for s in ("no end record", "journal is empty", "torn")), report["error"])
+        self.assertFalse(home.run_path(forged).exists(), "a journal the recorder never closed is not delivered")
+        self.assertIsNone(report["outcome"], "the printed line is stdout, not a report")
+        self.assertIn('"status": "ok"', report["stdout"])
+        planted = harness.new_run_id()
+        report = harness.record(FIXTURE, home.run_path(planted), "fxapp.variants:forge_journal", file_components=file_components(graph),
+                                fixture={}, run_id=planted, revision="fixture", blobs=home.home / "blobs")
+        self.assertEqual(report["status"], "error", report)
+        self.assertIn("journal_unsealed", report["error"])
+        self.assertFalse(home.run_path(planted).exists(), "an unsealed journal is not delivered to the ledger")
+        false_end = harness.new_run_id()
+        report = harness.record(FIXTURE, home.run_path(false_end), "fxapp.variants:forge_end", file_components=file_components(graph),
+                                fixture={}, run_id=false_end, revision="fixture", blobs=home.home / "blobs")
+        self.assertEqual(report["status"], "error", report)
+        self.assertIn("journal_unsealed", report["error"])
+        self.assertFalse(home.run_path(false_end).exists())
+        # The seal itself, with a known key: intact verifies; an edited line, an unsealed line and a torn tail do not.
+        sealed = self.scratch / "sealed.jsonl"
+        with harness.Recorder(FIXTURE, sealed, key="ab" * 32) as recorder:
+            recorder.io("x", {"a": 1})
+            recorder.io("y", {"b": 2})
+        self.assertIsNone(harness.verify_journal(sealed, "ab" * 32))
+        self.assertIn("line 1", harness.verify_journal(sealed, "cd" * 32))
+        lines = sealed.read_text(encoding="utf-8").splitlines()
+        edited = lines[:1] + [lines[1].replace('"name":"x"', '"name":"z"', 1)] + lines[2:]
+        sealed.write_text("\n".join(edited) + "\n", encoding="utf-8")
+        self.assertIn("line 2", harness.verify_journal(sealed, "ab" * 32))
+        sealed.write_text("\n".join(lines) + '\n{"t":"marker","seq":9}\n', encoding="utf-8")
+        self.assertIn("carries no seal", harness.verify_journal(sealed, "ab" * 32))
+        sealed.write_text("\n".join(lines) + "\n" + lines[-1][:20], encoding="utf-8")
+        self.assertIn("torn", harness.verify_journal(sealed, "ab" * 32))
+
+    def test_scrub(self):
+        self.assertEqual(harness.scrub("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "<redacted>")
+        self.assertEqual(harness.scrub("GITHUB_TOKEN=whatever"), "GITHUB_TOKEN=<redacted>")
+        self.assertEqual(harness.scrub("http.extraheader=AUTHORIZATION: basic abc"), "http.extraheader=<redacted>")
+        self.assertEqual(harness.scrub("Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123"), "Authorization: Bearer <redacted>")
+        self.assertEqual(harness.scrub("core.hooksPath=.githooks"), "core.hooksPath=.githooks")
+        self.assertEqual(harness.scrub("--format=%(refname)"), "--format=%(refname)")
+        self.assertEqual(harness.scrub_argv(["git", "-c", "http.extraheader=AUTHORIZATION: basic abc", "fetch"]),
+                         ["git", "-c", "http.extraheader=<redacted>", "fetch"])
+        self.assertEqual(harness.scrub_argv(["curl", "-H", "Authorization: Bearer x", "--token=abc", "--password", "p", "https://h/"]),
+                         ["curl", "-H", "<redacted>", "--token=<redacted>", "--password", "<redacted>", "https://h/"])
+        self.assertEqual(harness.scrub_text("a\nkey sk-ant-abcdefghijklmnop\nb", 100), "a\nkey <redacted>\nb")
+        self.assertEqual(len(harness.scrub_text("x" * 5000, 100)), 100)
+
+    def test_a_subprocess_argv_is_scrubbed_before_it_is_journaled(self):
+        home = ledger.Ledger(self.scratch / "ledger")
+        script = self.scratch / "leaky.py"
+        script.write_text("import subprocess, sys\n"
+                          "subprocess.run([sys.executable, '-c', 'pass', '--token', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789',"
+                          " 'API_KEY=sk-ant-abcdefghijklmnopqrstuvwxyz'], check=True)\n", encoding="utf-8")
+        run_id = harness.new_run_id()
+        report = harness.record(self.scratch, home.run_path(run_id), str(script), run_id=run_id)
+        self.assertEqual(report["status"], "ok", report)
+        text = home.run_path(run_id).read_text(encoding="utf-8")
+        self.assertNotIn("ghp_", text)
+        self.assertNotIn("sk-ant-", text)
+        home.record_run(run_id)
+        [io_record] = [r for r in home.load_run(run_id) if r["t"] == "io"]
+        self.assertEqual(io_record["payload"]["argv"][3:], ["--token", "<redacted>", "API_KEY=<redacted>"])
+
     def test_large_payload_goes_to_a_blob_and_replays(self):
         home = ledger.Ledger(self.scratch / "ledger")
         big = {"rows": ["x" * 100] * 1000}
@@ -296,6 +383,60 @@ class LedgerTests(Scratch):
         with self.assertRaises(Rejected):
             ledger.Ledger(self.scratch / "other").append("not_a_kind", {})
 
+    def test_artifacts_are_checked_against_their_recorded_digests(self):
+        """S1: an edited golden journal fails verify and cannot be loaded, so it cannot become a baseline; an
+        edited Space graph and an unlogged journal are refused the same way; a torn ledger tail is repaired."""
+        home = ledger.Ledger(self.scratch / "ledger")
+        graph = indexed()
+        home.record_space(graph)
+        run_id, _, _ = self.record(home, graph=graph)
+        home.set_baseline(run_id)
+        self.assertTrue(home.verify())
+        path = home.run_path(run_id)
+        original = path.read_bytes()
+        self.assertIn(b'"status":201', original)
+        path.write_bytes(original.replace(b'"status":201', b'"status":500', 1))  # one byte of the golden's effect result
+        self.assertFalse(home.verify())
+        self.assertTrue(any(f"runs/{run_id}" in p for p in home.problems()), home.problems())
+        with self.assertRaises(Rejected) as refused:
+            home.load_run(run_id)
+        self.assertEqual(refused.exception.code, "artifact_tampered")
+        with self.assertRaises(Rejected):
+            home.set_baseline(run_id)
+        self.assertEqual(home.project()["runs"], 0, "an edited journal projects nothing")
+        path.write_bytes(original)
+        self.assertTrue(home.verify())
+        space_path = home.space_path(space.graph_digest(graph))
+        edited = json.loads(space_path.read_text(encoding="utf-8"))
+        edited["revision"] = "elsewhere"
+        space_path.write_text(json.dumps(edited), encoding="utf-8")
+        with self.assertRaises(Rejected) as refused:
+            home.latest_space()
+        self.assertEqual(refused.exception.code, "artifact_tampered")
+        self.assertFalse(home.verify())
+        space_path.write_text(space.dumps(graph), encoding="utf-8")
+        stray = harness.new_run_id()
+        shutil.copyfile(path, home.run_path(stray))
+        with self.assertRaises(Rejected) as refused:
+            home.load_run(stray)
+        self.assertEqual(refused.exception.code, "run_unrecorded")
+        with home.log.open("a", encoding="utf-8") as handle:
+            handle.write('{"seq": 99, "torn')
+        self.assertEqual(len(home.events()), 3, "the torn tail is truncated on the next locked read, as the journal does")
+        home.append("note", {"text": "after the tear"})
+        self.assertTrue(home.verify())
+        self.assertEqual(home.describe()["problems"], 0)
+
+    def test_projection_follows_the_log(self):
+        home = ledger.Ledger(self.scratch / "ledger")
+        graph = indexed()
+        home.record_space(graph)
+        run_a, _, _ = self.record(home, graph=graph)
+        self.assertEqual(len(home.worldline(run_a)), 7)
+        run_b, _, _ = self.record(home, graph=graph, revision="second")
+        self.assertEqual(len(home.worldline(run_b)), 7, "a run appended after the projection was built is queryable")
+        self.assertEqual({c["revision"] for c in home.cells_for("rules")}, {"fixture", "second"})
+
     def test_projection_and_queries(self):
         home = ledger.Ledger(self.scratch / "ledger")
         graph = indexed()
@@ -333,22 +474,111 @@ class SpecTests(unittest.TestCase):
         graph = indexed()
         self.assertEqual(document["state"], "draft")
         with self.assertRaises(Rejected):
-            specmod.transition(document, "promote", ACTOR, verdict_ids=["v1"])
+            specmod.transition(document, "promote", ACTOR, verdict_ids=["v1"], approval=approved(document, "promote", ["v1"]))
         specmod.transition(document, "revise", ACTOR, delta={"added": [{"req_id": "R2", "text": "Reject zero quantity."}]})
         self.assertEqual(document["version"], 2)
         self.assertEqual([r["req_id"] for r in document["requirements"]], ["R1", "R2"])
         specmod.transition(document, "validate", ACTOR, space=graph)
         self.assertEqual(document["state"], "candidate")
+        # The goal gate: a model actor is refused whatever it carries; a human without the owner's approval is
+        # refused; a dictionary shaped like an approval is refused; an approval of another operation, another
+        # version or other verdicts is refused; the approver must be the actor.
+        approval = approved(document, "promote", ["v1"])
+        with self.assertRaises(Rejected) as refused:
+            specmod.transition(document, "promote", {"kind": "model", "id": "reviewer"}, verdict_ids=["v1"], approval=approval)
+        self.assertEqual(refused.exception.code, "spec_actor")
+        with self.assertRaises(Rejected) as refused:
+            specmod.transition(document, "promote", ACTOR, verdict_ids=["v1"])
+        self.assertEqual(refused.exception.code, "spec_approval")
+        with self.assertRaises(Rejected) as refused:
+            specmod.transition(document, "promote", ACTOR, verdict_ids=["v1"], approval=dict(approval))
+        self.assertEqual(refused.exception.code, "spec_approval")
+        with self.assertRaises(Rejected) as refused:
+            specmod.transition(document, "promote", ACTOR, verdict_ids=["v2"], approval=approval)
+        self.assertEqual(refused.exception.code, "spec_verdict")
+        with self.assertRaises(Rejected) as refused:
+            specmod.transition(document, "promote", ACTOR, verdict_ids=["v1"], approval=approved(document, "canonize"))
+        self.assertEqual(refused.exception.code, "approval_mismatch")
+        with self.assertRaises(Rejected) as refused:
+            specmod.transition(document, "promote", {"kind": "human", "id": "someone-else"}, verdict_ids=["v1"], approval=approval)
+        self.assertEqual(refused.exception.code, "approval_actor")
         with self.assertRaises(Rejected):
-            specmod.transition(document, "promote", ACTOR)
-        specmod.transition(document, "promote", {"kind": "model", "id": "reviewer"}, verdict_ids=["v1"])
-        specmod.transition(document, "canonize", ACTOR)
-        specmod.transition(document, "retire", ACTOR, superseded_by="order-path:3")
+            approved(document, "promote", ["v1"], approver={"kind": "model", "id": "reviewer"})
+        with self.assertRaises(Rejected) as refused:
+            approved(document, "promote", ["v1"], public=generate()[1])
+        self.assertEqual(refused.exception.code, "approval_unverified")
+        self.assertEqual(document["state"], "candidate", "nothing above moved the spec")
+        record = specmod.transition(document, "promote", ACTOR, verdict_ids=["v1"], approval=approval)
+        self.assertEqual(record["approval"]["approver"], ACTOR)
+        self.assertEqual(record["approval"]["keyid"], OWNER_PUBLIC.hex())
+        with self.assertRaises(Rejected):
+            specmod.transition(document, "canonize", ACTOR)
+        specmod.transition(document, "canonize", ACTOR, approval=approved(document, "canonize"))
+        specmod.transition(document, "retire", ACTOR, superseded_by="order-path:3", approval=approved(document, "retire"))
         self.assertEqual([h["operation"] for h in document["history"]],
                          ["revise", "validate", "promote", "canonize", "retire"])
         self.assertEqual(document["supersedes"], "order-path:3")
         with self.assertRaises(Rejected):
             specmod.transition(document, "bogus", ACTOR)
+
+    def test_principal(self):
+        self.assertEqual(specmod.principal("human:mateo"), {"kind": "human", "id": "mateo"})
+        self.assertEqual(specmod.principal("model:claude-sonnet-4-5"), {"kind": "model", "id": "claude-sonnet-4-5"})
+        for bad in ("operator", "owner:mateo", "human:", "human:has space", "model:" + "x" * 65, ""):
+            with self.assertRaises(Rejected, msg=bad):
+                specmod.principal(bad)
+
+    def test_verdicts_resolve_against_the_ledger(self):
+        """A promotion's verdict ids are not strings: each is a review on the ledger that accepted the very variant
+        this spec is, and the approver may not have proposed or reviewed it."""
+        document = self.spec()
+        current = specmod.spec_digest(document)
+        reviewer = {"kind": "model", "id": "gpt", "model": "gpt-5", "family": "openai"}
+        events = [
+            {"kind": "spec_changed", "body": {"spec_id": "order-path", "operation": "mutate", "variant_id": "var1",
+                                              "actor": {"kind": "model", "id": "claude"}}},
+            {"kind": "spec_changed", "body": {"spec_id": "order-path", "operation": "review", "verdict_id": "ok1",
+                                              "variant_id": "var1", "decision": "accept", "actor": reviewer}},
+            {"kind": "spec_changed", "body": {"spec_id": "order-path", "operation": "review", "verdict_id": "no1",
+                                              "variant_id": "var2", "decision": "reject", "actor": reviewer}},
+            {"kind": "spec_changed", "body": {"spec_id": "order-path", "operation": "validate", "accepted_variant": "var1",
+                                              "verdict_id": "ok1", "spec_digest": current}},
+        ]
+        [resolved] = specmod.resolve_verdicts(events, document, ["ok1"])
+        self.assertEqual((resolved["variant_id"], resolved["proposers"]), ("var1", ["claude"]))
+        for ids, why in (([], "none given"), (["ghost"], "not a review"), (["no1"], "did not accept")):
+            with self.assertRaises(Rejected, msg=why) as refused:
+                specmod.resolve_verdicts(events, document, ids)
+            self.assertEqual(refused.exception.code, "spec_verdict")
+        edited = dict(document, capability="something else")
+        with self.assertRaises(Rejected):
+            specmod.resolve_verdicts(events, edited, ["ok1"])
+        envelope = specmod.sign_approval(specmod.approval_payload(document, "promote", ACTOR, verdict_ids=["ok1"]), OWNER_SEED)
+        approval, found = specmod.gate(document, "promote", ACTOR, events, envelope, OWNER_PUBLIC, verdict_ids=["ok1"])
+        self.assertIsInstance(approval, specmod.Approved)
+        self.assertEqual(found[0]["verdict_id"], "ok1")
+        proposer_as_owner = {"kind": "human", "id": "claude"}
+        own = specmod.sign_approval(specmod.approval_payload(document, "promote", proposer_as_owner, verdict_ids=["ok1"]), OWNER_SEED)
+        with self.assertRaises(Rejected) as refused:
+            specmod.gate(document, "promote", proposer_as_owner, events, own, OWNER_PUBLIC, verdict_ids=["ok1"])
+        self.assertEqual(refused.exception.code, "approval_not_independent")
+        with self.assertRaises(Rejected) as refused:
+            specmod.gate(document, "promote", {"kind": "model", "id": "gpt"}, events, envelope, OWNER_PUBLIC, verdict_ids=["ok1"])
+        self.assertEqual(refused.exception.code, "spec_actor")
+
+    def test_independence_is_by_provider_family(self):
+        claude = {"kind": "model", "id": "a", "model": "claude-sonnet-4-5"}
+        gpt = {"kind": "model", "id": "b", "model": "gpt-5"}
+        self.assertEqual(independence.family(claude), "anthropic")
+        self.assertEqual(independence.family({"signal": {"harness": {"model": "grok-4"}}}), "xai")
+        self.assertEqual(independence.family({"provider": {"model": "openrouter/google/gemini-2.5-pro"}}), "google")
+        self.assertEqual(independence.family({"family": "OpenAI"}), "openai")
+        self.assertIsNone(independence.family({"kind": "model", "id": "mystery"}))
+        self.assertIsNone(independence.family({"model": "frobnicator-9"}))
+        self.assertTrue(independence.independence(claude, gpt)[0])
+        self.assertFalse(independence.independence(claude, {"id": "other-name", "model": "claude-opus-4-1"})[0], "same family, other name")
+        self.assertFalse(independence.independence(claude, {"id": "unknown"})[0], "an unknown family refuses")
+        self.assertFalse(independence.independence(None, gpt)[0])
 
     def test_validation_findings(self):
         document = specmod.new_spec("x", "y", [{"req_id": "R1", "text": " "}], ["nowhere"])
@@ -366,7 +596,7 @@ class SpecTests(unittest.TestCase):
         with self.assertRaises(Rejected):
             specmod.ticket_from_spec(document, "R1")
         specmod.transition(document, "validate", ACTOR, space=graph)
-        specmod.transition(document, "promote", ACTOR, verdict_ids=["v1"])
+        specmod.transition(document, "promote", ACTOR, verdict_ids=["v1"], approval=approved(document, "promote", ["v1"]))
         with self.assertRaises(Rejected):
             specmod.ticket_from_spec(document, "R1")
         footprint = specmod.resolve_footprint(document, graph)
@@ -423,12 +653,22 @@ class AttestTests(Scratch):
         self.assertIsNone(attest.verify(envelope, generate()[1]))
         self.assertEqual(attest.unwrap(envelope), promoted)
         self.assertEqual(attest.unwrap(promoted), promoted)
-        event = home.record_attestation(envelope)
+        event = home.record_attestation(envelope, public)
         self.assertEqual(event["body"]["signed"], True)
+        self.assertEqual(event["body"]["keyid"], public.hex())
         self.assertEqual(event["body"]["promote"], True)
         self.assertEqual(event["body"]["subject"], ["git:fx@cand"])
         self.assertTrue((home.home / "attestations" / f"{event['body']['attestation_digest']}.json").exists())
+        unchecked = home.record_attestation(envelope)
+        self.assertEqual((unchecked["body"]["signed"], unchecked["body"]["envelope"]), (False, True),
+                         "envelope shape alone is not a signature")
+        self.assertFalse(home.record_attestation(envelope, generate()[1])["body"]["signed"], "the wrong key is not a signature")
         self.assertTrue(home.verify())
+        # A signed statement whose written policy says more than its evidence: verify recomputes and refuses.
+        forged = json.loads(json.dumps(refused))
+        forged["predicate"]["policy"] = {"promote": True, "reasons": ["looks fine"]}
+        self.assertFalse(attest.recompute(forged["predicate"])["promote"])
+        self.assertTrue(attest.recompute(promoted["predicate"])["promote"])
 
 
 class CliTests(Scratch):
@@ -475,16 +715,68 @@ class CliTests(Scratch):
         self.assertIn("worldline matches the recording", out)
         code, out, err = self.run_cli("spec", "validate", "spec.json", cwd=tree)
         self.assertEqual(code, 0, err)
-        code, out, err = self.run_cli("spec", "promote", "spec.json", "--verdict", "v1", "--actor", "model:reviewer",
+        # Promotion is an owner act over a reviewed variant: a model actor is refused, a human without the owner's
+        # approval is refused, a verdict that is not on the ledger is refused, and the reviewed, approved variant passes.
+        seed, public = generate()
+        os.environ["SYBERLABS_FACTORY_TEST_SEED"] = seed.hex()
+        self.addCleanup(os.environ.pop, "SYBERLABS_FACTORY_TEST_SEED", None)
+        (tree / "owner.pub").write_text(public.hex(), encoding="utf-8")
+        code, out, err = self.run_cli("spec", "promote", "spec.json", "--verdict", "v1", "--actor", "model:reviewer", cwd=tree)
+        self.assertEqual(code, 2)
+        self.assertIn("spec_actor", err)
+        code, out, err = self.run_cli("spec", "promote", "spec.json", "--verdict", "v1", "--actor", "human:tester", cwd=tree)
+        self.assertEqual(code, 2)
+        self.assertIn("spec_approval", err)
+        code, out, err = self.run_cli("approve", "spec.json", "--verdict", "v1", "--actor", "human:tester",
+                                      "--seed-env", "SYBERLABS_FACTORY_TEST_SEED", "--out", "approval.json", cwd=tree)
+        self.assertEqual(code, 0, err)
+        code, out, err = self.run_cli("spec", "promote", "spec.json", "--verdict", "v1", "--actor", "human:tester",
+                                      "--approval", "approval.json", "--owner-public", "owner.pub", cwd=tree)
+        self.assertEqual(code, 2)
+        self.assertIn("spec_verdict", err, "v1 is a string, not a review on the ledger")
+        self.assertEqual(json.loads(spec_path.read_text(encoding="utf-8"))["state"], "candidate")
+        run = lambda role: f"{sys.executable} {tree / 'proposers.py'} {role}"
+        code, out, err = self.run_cli("variants", "spec.json", "--proposer", f"claude={run('tighten')}",
+                                      "--reviewer", f"gpt={run('review')}", cwd=tree)
+        self.assertEqual(code, 0, err + out)
+        self.assertNotIn("--actor model:", out, "the loop no longer hints at a model promoting")
+        verdict_id = out.split("--verdict ")[1].split()[0]
+        candidate_spec = "order-path.v2.json"
+        code, out, err = self.run_cli("approve", candidate_spec, "--verdict", verdict_id, "--actor", "human:tester",
+                                      "--seed-env", "SYBERLABS_FACTORY_TEST_SEED", "--out", "approval.json", cwd=tree)
+        self.assertEqual(code, 0, err)
+        code, out, err = self.run_cli("spec", "promote", candidate_spec, "--verdict", verdict_id, "--actor", "human:claude",
+                                      "--approval", "approval.json", "--owner-public", "owner.pub", cwd=tree)
+        self.assertEqual(code, 2)
+        self.assertIn("approval_actor", err, "the approval names tester, not the actor")
+        (tree / "other.pub").write_text(generate()[1].hex(), encoding="utf-8")
+        code, out, err = self.run_cli("spec", "promote", candidate_spec, "--verdict", verdict_id, "--actor", "human:tester",
+                                      "--approval", "approval.json", "--owner-public", "other.pub", cwd=tree)
+        self.assertEqual(code, 2)
+        self.assertIn("approval_unverified", err, "an approval under another key is no approval")
+        code, out, err = self.run_cli("spec", "promote", candidate_spec, "--verdict", verdict_id, "--actor", "human:tester",
+                                      "--approval", "approval.json", "--owner-public", "owner.pub",
                                       "--tickets", "tickets", "--baseline", run_a, "--owner", "tester", cwd=tree)
         self.assertEqual(code, 0, err)
         self.assertIn("candidate -> promoted", out)
         self.assertIn("ticket     ", out)
+        promoted = json.loads((tree / candidate_spec).read_text(encoding="utf-8"))
+        self.assertEqual(promoted["state"], "promoted")
+        self.assertEqual(promoted["history"][-1]["approval"]["approver"], {"kind": "human", "id": "tester"})
+        home = ledger.Ledger(tree / ".syberlabs" / "factory")
+        approvals = [e for e in home.events() if e["kind"] == "approval_recorded"]
+        self.assertEqual(len(approvals), 1)
+        promotion = [e for e in home.events() if e["kind"] == "spec_changed" and e["body"].get("to") == "promoted"][-1]
+        self.assertEqual(promotion["body"]["approval"]["event_hash"], approvals[0]["hash"], "the promotion cites the approval event")
+        self.assertTrue(home.verify())
+        code, out, err = self.run_cli("spec", "promote", candidate_spec, "--verdict", verdict_id, "--actor", "human:tester",
+                                      "--approval", "approval.json", "--owner-public", "owner.pub", cwd=tree)
+        self.assertEqual(code, 2, "a promoted spec is not promoted twice")
         [auto] = list((tree / "tickets").glob("*.json"))
         auto_ticket = json.loads(auto.read_text(encoding="utf-8"))
         self.assertEqual((auto_ticket["spec_ref"]["req_ids"], auto_ticket["repro"]["baseline_run"]), (["R1"], run_a))
         self.assertEqual(auto_ticket["footprint"]["components"], ["effects", "ingest", "rules"])
-        code, out, err = self.run_cli("ticket", "spec.json", "--req", "R1", "--baseline", run_a, "--owner", "tester",
+        code, out, err = self.run_cli("ticket", candidate_spec, "--req", "R1", "--baseline", run_a, "--owner", "tester",
                                       "--out", "ticket.json", cwd=tree)
         self.assertEqual(code, 0, err)
         ticket = json.loads((tree / "ticket.json").read_text(encoding="utf-8"))
@@ -493,26 +785,36 @@ class CliTests(Scratch):
                                       "--revision", "cand", cwd=tree)
         self.assertEqual(code, 0, err)
         run_b = out.split("recorded run ")[1].split()[0]
-        seed, public = generate()
-        os.environ["SYBERLABS_FACTORY_TEST_SEED"] = seed.hex()
-        self.addCleanup(os.environ.pop, "SYBERLABS_FACTORY_TEST_SEED", None)
         code, out, err = self.run_cli("attest", "--baseline", run_a, "--candidate", run_b, "--ticket", "ticket.json",
                                       "--commit", "cand", "--seed-env", "SYBERLABS_FACTORY_TEST_SEED",
                                       "--out", "attestation.json", cwd=tree)
         self.assertEqual(code, 0, err)
         self.assertIn("promote True", out)
+        attested = [e for e in ledger.Ledger(tree / ".syberlabs" / "factory").events() if e["kind"] == "attested"][-1]
+        self.assertEqual((attested["body"]["signed"], attested["body"]["keyid"]), (True, public.hex()))
         (tree / "key.pub").write_text(public.hex(), encoding="utf-8")
         code, out, err = self.run_cli("verify", "attestation.json", "--public", "key.pub", cwd=tree)
         self.assertEqual(code, 0, err)
         self.assertIn("verified: git:tree@cand", out)
+        self.assertIn("recomputed from the evidence", out)
         (tree / "wrong.pub").write_text(generate()[1].hex(), encoding="utf-8")
         code, out, _ = self.run_cli("verify", "attestation.json", "--public", "wrong.pub", cwd=tree)
         self.assertEqual(code, 1)
+        # A statement the signer graded itself: signed with the right key, but its policy says more than its evidence.
+        self_graded = json.loads((tree / "attestation.json").read_text(encoding="utf-8"))
+        statement = attest.unwrap(self_graded)
+        statement["predicate"]["evidence"]["trace_diff"]["diff_empty"] = False
+        (tree / "graded.json").write_text(json.dumps(attest.sign(statement, seed)), encoding="utf-8")
+        code, out, _ = self.run_cli("verify", "graded.json", "--public", "key.pub", cwd=tree)
+        self.assertEqual(code, 1)
+        self.assertIn("policy mismatch", out)
         code, out, err = self.run_cli("export", run_a, "--chrome", "trace.json", "--view", "run.html", cwd=tree)
         self.assertEqual(code, 0, err)
         page = (tree / "run.html").read_text(encoding="utf-8")
         self.assertIn('"run_id": "' + run_a + '"', page)
         self.assertNotIn("/*__FACTORY_DATA__*/null", page)
+        self.assertNotIn('"payload"', page, "the viewer references effects by digest; payloads stay in the journal")
+        self.assertNotIn("innerHTML", page)
         self.assertEqual(json.loads((tree / "trace.json").read_text(encoding="utf-8"))["metadata"]["run_id"], run_a)
         code, out, _ = self.run_cli("status", cwd=tree)
         self.assertIn("verified       True", out)
@@ -620,6 +922,47 @@ class BuildThreadCheck(Scratch):
         self.assertFalse(last["body"]["diff_empty"])
         self.assertTrue(home.verify())
 
+    def test_an_edited_golden_refuses_the_check(self):
+        """S1 through the seam: the golden journal is edited after the baseline was set; the check refuses before
+        the candidate runs, and nothing is attested."""
+        home, golden = self.golden()
+        path = home.run_path(golden)
+        original = path.read_bytes()
+        self.assertIn(b'"status":201', original)
+        path.write_bytes(original.replace(b'"status":201', b'"status":500', 1))
+        self.assertFalse(home.verify())
+        kit = self.kit()
+        thread = kit.start("Tidy", paths=["fxapp/"])
+        rules = (self.project / "fxapp" / "rules.py").read_text(encoding="utf-8")
+        [candidate] = thread.propose(changes={"fxapp/rules.py": rules + "\n"})
+        verdict = thread.check(candidate.id)
+        self.assertFalse(verdict.acceptable, verdict.summary())
+        self.assertEqual(verdict.reason, "candidate_check_failed:factory")
+        self.assertIn("ledger_corrupt", verdict.checks[0].output_tail)
+        self.assertIn(f"runs/{golden}", verdict.checks[0].output_tail)
+        self.assertEqual([e for e in home.events() if e["kind"] == "attested"], [], "nothing was attested over an edited baseline")
+
+    def test_a_candidate_that_forges_its_report_is_refused(self):
+        """S2 through the seam: the candidate rewrites the recorded entrypoint to print a clean report and exit. The
+        check reads the journal's end record itself and takes the report only over the nonce-bound channel."""
+        home, _ = self.golden()
+        kit = self.kit()
+        thread = kit.start("Make the gate happy", paths=["fxapp/"])
+        main = (self.project / "fxapp" / "main.py").read_text(encoding="utf-8")
+        forged = main.replace("from fxapp import rules\n", "from fxapp import rules\nfrom fxapp import variants\n") \
+                     .replace("def run(ctx, payload):\n", "def run(ctx, payload):\n    return variants.forge_report(ctx, payload)\n")
+        self.assertNotEqual(main, forged)
+        [candidate] = thread.propose(changes={"fxapp/main.py": forged})
+        verdict = thread.check(candidate.id)
+        self.assertFalse(verdict.acceptable, verdict.summary())
+        self.assertEqual(verdict.reason, "candidate_check_failed:factory")
+        tail = verdict.checks[0].output_tail
+        self.assertIn("no journal:", tail, "the forged line on stdout is not a report, and a journal without an end is not delivered")
+        self.assertIn('"status": "ok"', tail, "what the candidate printed is in the log, as output, not as a verdict")
+        self.assertEqual([e for e in home.events() if e["kind"] == "attested"], [], "nothing was attested")
+        self.assertEqual([r for r in home.runs() if r["revision"] == candidate.commit], [], "the forged run is not on the ledger")
+        self.assertTrue(home.verify())
+
     def test_tests_argv_is_recorded_as_evidence_and_required(self):
         import sys as _sys
         home, _ = self.golden()
@@ -643,6 +986,20 @@ class BuildThreadCheck(Scratch):
         verdict = thread.check(candidate.id)
         self.assertFalse(verdict.acceptable)
         self.assertIn("tests did not run the full suite green: refuse", verdict.checks[0].output_tail)
+        # A suite that hangs is stopped at the contract's timeout, with its process tree, and is not a full suite.
+        hanging = json.dumps([_sys.executable, "-c", "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); time.sleep(60)"])
+        kit = self.kit(extra_argv=["--tests-argv", hanging, "--tests-timeout", "2"], version=3)
+        thread = kit.start("Hang", paths=["fxapp/"])
+        [candidate] = thread.propose(changes={"fxapp/rules.py": rules + "\n\n\n"})
+        import time as _time
+        started = _time.monotonic()
+        verdict = thread.check(candidate.id)
+        self.assertLess(_time.monotonic() - started, 40)
+        self.assertFalse(verdict.acceptable)
+        attested = [e for e in home.events() if e["kind"] == "attested"][-1]
+        document = json.loads((home.home / "attestations" / f"{attested['body']['attestation_digest']}.json").read_text(encoding="utf-8"))
+        tests = document["predicate"]["evidence"]["tests"]
+        self.assertEqual((tests["timed_out"], tests["full_suite"], tests["exit_code"]), (True, False, None))
 
     def test_drift_bound_refuses_an_undeclared_dependency(self):
         self.golden()
@@ -723,6 +1080,8 @@ class BuildThreadCheck(Scratch):
         self.assertEqual(argv[1:4], ["-P", "-m", "syberlabs.factory"], "the host's factory runs, not the candidate's")
         self.assertIn(str(self.ledger_home), argv)
         self.assertEqual(json.loads(argv[argv.index("--tests-argv") + 1])[1:], ["-c", "pass"])
+        self.assertEqual(argv[argv.index("--tests-timeout") + 1], "60", "the contract's own tests timeout, not 1800")
+        self.assertEqual(document["evolution"]["evaluation"]["checks"]["factory"]["timeout_seconds"], 660)
         home = ledger.Ledger(self.ledger_home)
         self.assertIsNotNone(home.baseline())
         # Swap the interpreter for the launcher so the check finds this checkout, then run a thread on v2.
@@ -774,10 +1133,12 @@ class SelfHosting(Scratch):
                                "def check(self, candidate: str, *, rerun: bool = True, run: bool = True,")
         self.assertNotEqual(text, changed)
         build.write_text(changed, encoding="utf-8")
+        home.record_run(golden)
         candidate = harness.new_run_id()
         report = harness.record(tree, home.run_path(candidate), str(tree / "examples" / "factory_self_check.py"),
                                 file_components=file_components(graph), run_id=candidate, revision="rerun", blobs=home.home / "blobs")
         self.assertEqual(report["status"], "ok", report.get("error"))
+        home.record_run(candidate)
         self.assertGreater(report["counts"]["io"], [r for r in home.load_run(golden) if r["t"] == "io"].__len__(),
                            "rerunning by default starts more check processes")
         diff = attest.trace_diff(home.load_run(golden), home.load_run(candidate), None)
@@ -801,6 +1162,7 @@ class SelfHosting(Scratch):
         again = harness.new_run_id()
         harness.record(ROOT, home.run_path(again), str(ROOT / "examples" / "build_thread.py"),
                        file_components=file_components(graph), run_id=again, revision="checkout", blobs=home.home / "blobs")
+        home.record_run(again)
         same = attest.trace_diff(home.load_run(golden), home.load_run(again), None)
         self.assertTrue(same["diff_empty"], same["divergence_detail"])
         self.assertTrue(same["function_level_equal"], "the example is deterministic once io keys are masked")
@@ -818,6 +1180,7 @@ class SelfHosting(Scratch):
                                 file_components=file_components(graph), run_id=candidate, revision="weakened",
                                 blobs=home.home / "blobs")
         self.assertEqual(report["status"], "ok", report.get("error"))
+        home.record_run(candidate)
         changed = attest.trace_diff(home.load_run(golden), home.load_run(candidate), None)
         self.assertFalse(changed["diff_empty"])
         detail = changed["divergence_detail"]
@@ -861,16 +1224,18 @@ class Variants(Scratch):
     def test_primitives(self):
         parent = json.loads(self.spec_path.read_text(encoding="utf-8"))
         graph = self.home.latest_space()
-        good = specmod.make_variant(parent, {"modified": [{"req_id": "R1", "text": "tighter"}], "rationale": "r"},
-                                    {"kind": "model", "id": "a"}, graph)
-        bad = specmod.make_variant(parent, {"footprint_hint": ["ghost"]}, {"kind": "model", "id": "b"}, graph)
+        a, b = specmod.party("model", "a", {"model": "claude-sonnet-4-5"}), specmod.party("model", "b", {"model": "grok-4"})
+        self.assertEqual((a["family"], b["family"]), ("anthropic", "xai"))
+        good = specmod.make_variant(parent, {"modified": [{"req_id": "R1", "text": "tighter"}], "rationale": "r"}, a, graph)
+        bad = specmod.make_variant(parent, {"footprint_hint": ["ghost"]}, b, graph)
         self.assertEqual((good["state"], good["version"], good["findings"]), ("mutated", 2, []))
         self.assertTrue(bad["findings"])
         self.assertNotEqual(good["variant_id"], bad["variant_id"])
         self.assertEqual(parent["version"], 1, "the parent is untouched")
         with self.assertRaises(Rejected):
-            specmod.make_variant(parent, {"rationale": "nothing"}, {"kind": "model", "id": "a"}, graph)
-        reviewer = {"kind": "model", "id": "r"}
+            specmod.make_variant(parent, {"rationale": "nothing"}, a, graph)
+        reviewer = specmod.party("model", "r", {"signal": {"harness": {"model": "gpt-5"}}})
+        self.assertEqual(reviewer["family"], "openai")
         review = specmod.judge([good, bad], [{"variant_id": good["variant_id"], "decision": "accept"},
                                              {"variant_id": bad["variant_id"], "decision": "reject"}], reviewer)
         self.assertEqual(review["accepted"], good["variant_id"])
@@ -879,8 +1244,12 @@ class Variants(Scratch):
                                         {"variant_id": good["variant_id"], "decision": "reject"}], reviewer)
         with self.assertRaises(Rejected):
             specmod.judge([good, bad], [{"variant_id": good["variant_id"], "decision": "accept"}], reviewer)
-        with self.assertRaises(Rejected):
-            specmod.judge([good], [{"variant_id": good["variant_id"], "decision": "accept"}], {"kind": "model", "id": "a"})
+        # Independence is the provider family, not the name: another name on the proposer's family is refused, and
+        # so is a reviewer whose family is not recorded.
+        for not_independent in (specmod.party("model", "other", {"model": "claude-opus-4-1"}), specmod.party("model", "r", None)):
+            with self.assertRaises(Rejected) as refused:
+                specmod.judge([good], [{"variant_id": good["variant_id"], "decision": "accept"}], not_independent)
+            self.assertEqual(refused.exception.code, "reviewer_not_independent")
 
     def test_loop_through_the_cli(self):
         run = lambda role: f"{self.py} {self.proposers} {role}"
@@ -898,9 +1267,10 @@ class Variants(Scratch):
         self.assertEqual(accepted["state"], "candidate")
         self.assertIn("exactly one order", accepted["requirements"][0]["text"])
         self.assertEqual([h["operation"] for h in accepted["history"]], ["validate", "mutate", "validate"])
-        self.assertEqual(accepted["history"][1]["actor"], {"kind": "model", "id": "claude"})
+        self.assertEqual(accepted["history"][1]["actor"], {"kind": "model", "id": "claude", "model": "claude-sonnet-4-5", "family": "anthropic"})
         review = json.loads((self.tree / "order-path.variants" / "review.json").read_text(encoding="utf-8"))
         self.assertEqual({v["decision"] for v in review["verdicts"]}, {"accept", "reject"})
+        self.assertEqual(review["verdicts"][0]["reviewer"]["family"], "openai")
         kinds = [(e["body"]["operation"], e["body"].get("to"), e["body"]["actor"]["id"]) for e in self.home.events() if e["kind"] == "spec_changed"]
         self.assertIn(("mutate", "mutated", "claude"), kinds)
         self.assertIn(("mutate", "mutated", "grok"), kinds)
@@ -908,17 +1278,46 @@ class Variants(Scratch):
         self.assertIn(("review", None, "gpt"), kinds)
         self.assertEqual(kinds[-1][:2], ("validate", "candidate"))
         verdict_id = out.split("--verdict ")[1].split()[0]
+        self.assertNotIn("--actor model:", out)
         code, out, err = self.cli("spec", "promote", str(target), "--verdict", verdict_id, "--actor", "model:gpt",
+                                  "--tickets", str(self.tree / "tickets"))
+        self.assertEqual(code, 2, "the reviewer cannot promote what it reviewed, nor can any model")
+        self.assertIn("spec_actor", err)
+        os.environ["SYBERLABS_FACTORY_TEST_SEED"] = OWNER_SEED.hex()
+        self.addCleanup(os.environ.pop, "SYBERLABS_FACTORY_TEST_SEED", None)
+        (self.tree / "owner.pub").write_text(OWNER_PUBLIC.hex(), encoding="utf-8")
+        approval = self.tree / "approval.json"
+        code, out, err = self.cli("approve", str(target), "--verdict", verdict_id, "--actor", "human:mateo",
+                                  "--seed-env", "SYBERLABS_FACTORY_TEST_SEED", "--out", str(approval))
+        self.assertEqual(code, 0, err)
+        # The spec edited after review is not the variant that was reviewed.
+        edited = json.loads(target.read_text(encoding="utf-8"))
+        edited["requirements"][0]["text"] += " (and something the reviewer never saw)"
+        target.write_text(json.dumps(edited), encoding="utf-8")
+        code, out, err = self.cli("spec", "promote", str(target), "--verdict", verdict_id, "--actor", "human:mateo",
+                                  "--approval", str(approval), "--owner-public", str(self.tree / "owner.pub"))
+        self.assertEqual(code, 2)
+        self.assertIn("spec_verdict", err)
+        target.write_text(json.dumps(accepted, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        code, out, err = self.cli("spec", "promote", str(target), "--verdict", verdict_id, "--actor", "human:mateo",
+                                  "--approval", str(approval), "--owner-public", str(self.tree / "owner.pub"),
                                   "--tickets", str(self.tree / "tickets"))
         self.assertEqual(code, 0, err)
         self.assertEqual(len(list((self.tree / "tickets").glob("*.json"))), 1)
+        self.assertTrue(self.home.verify())
 
-    def test_a_reviewer_who_proposed_is_refused_and_a_review_accepting_two_is_refused(self):
-        run = lambda role: f"{self.py} {self.proposers} {role}"
-        code, out, err = self.cli("variants", str(self.spec_path), "--proposer", f"gpt={run('tighten')}",
-                                  "--reviewer", f"gpt={run('review')}")
+    def test_a_reviewer_of_the_proposers_family_is_refused_and_a_review_accepting_two_is_refused(self):
+        run = lambda role, model="": f"{self.py} {self.proposers} {role} {model}".rstrip()
+        code, out, err = self.cli("variants", str(self.spec_path), "--proposer", f"a={run('tighten', 'gpt-5')}",
+                                  "--reviewer", f"b={run('review')}")
         self.assertEqual(code, 2)
         self.assertIn("reviewer_not_independent", err)
+        self.assertIn("both served by openai", err, "same family under two names")
+        code, out, err = self.cli("variants", str(self.spec_path), "--proposer", f"a={run('tighten')}",
+                                  "--reviewer", f"r={run('review', 'none')}")
+        self.assertEqual(code, 2)
+        self.assertIn("reviewer_not_independent", err)
+        self.assertIn("not recorded", err, "a reviewer that declares no model is refused, not trusted")
         code, out, err = self.cli("variants", str(self.spec_path), "--proposer", f"a={run('tighten')}",
                                   "--proposer", f"b={run('tighten')}", "--reviewer", f"r={run('review-all')}")
         self.assertEqual(code, 2)

@@ -1,11 +1,15 @@
 """Stand-in proposers and a reviewer for the factory's variant loop. Each role reads JSON on stdin and writes
-JSON on stdout, the process boundary a real model adapter would sit behind. Usage: proposers.py ROLE."""
+JSON on stdout, the process boundary a real model adapter would sit behind, and declares the model that served
+it (``model``), which is what the loop judges independence on. Usage: proposers.py ROLE [MODEL]; without MODEL
+each role declares its own default, and ``MODEL`` may be ``none`` to declare nothing."""
 
 import json
 import sys
 
+DEFAULT_MODELS = {"tighten": "claude-sonnet-4-5", "overreach": "grok-4", "review": "gpt-5", "review-all": "gpt-5"}
 
-def main(role: str) -> int:
+
+def main(role: str, model: str | None = None) -> int:
     request = json.load(sys.stdin)
     if role == "tighten":
         # A sound proposal: one requirement made testable, nothing else touched.
@@ -33,9 +37,12 @@ def main(role: str) -> int:
         out = {"verdicts": [{"variant_id": v["variant_id"], "decision": "accept"} for v in request["variants"]]}
     else:
         return 2
+    declared = DEFAULT_MODELS.get(role) if model is None else model
+    if declared and declared != "none":
+        out["model"] = declared
     json.dump(out, sys.stdout)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else ""))
+    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "", sys.argv[2] if len(sys.argv) > 2 else None))

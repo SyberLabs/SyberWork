@@ -7,7 +7,9 @@
     syberlabs factory show RUN                                       # the worldline, one line per step
     syberlabs factory at RUN --seq 12                                # what was active at a logical time
     syberlabs factory export RUN --chrome trace.json | --view run.html
-    syberlabs factory spec validate|promote|canonize|retire spec.json
+    syberlabs factory spec validate spec.json
+    syberlabs factory approve spec.json --verdict V --actor human:mateo --seed-env NAME --out approval.json
+    syberlabs factory spec promote|canonize|retire spec.json --actor human:mateo --approval approval.json --owner-public KEY
     syberlabs factory ticket spec.json --req R1 --out ticket.json
     syberlabs factory attest --baseline A --candidate B --ticket ticket.json --commit SHA
     syberlabs factory verify attestation.json --public KEY
@@ -117,17 +119,29 @@ def populate(factory) -> None:
     export.add_argument("--chrome", metavar="FILE")
     export.add_argument("--view", metavar="FILE", help="write an HTML page that scrubs the run over its Space graph")
 
-    sp = steps.add_parser("spec", help="move a spec file through its lifecycle; each step is logged")
+    sp = steps.add_parser("spec", help="move a spec file through its lifecycle; each step is logged. promote, canonize and "
+                                       "retire are owner acts: a human --actor plus --approval and --owner-public")
     sp.add_argument("operation", choices=sorted(specmod.TRANSITIONS))
     sp.add_argument("spec", help="the spec JSON file; rewritten in place")
-    sp.add_argument("--actor", default="human:operator", help="kind:id (default human:operator)")
-    sp.add_argument("--verdict", action="append", default=[], help="a review verdict id promotion rests on")
+    sp.add_argument("--actor", default="human:operator", help="kind:id, kind in human|model|compiled (default human:operator)")
+    sp.add_argument("--verdict", action="append", default=[], help="a review verdict id promotion rests on; resolved on the ledger")
+    sp.add_argument("--approval", metavar="FILE", help="the owner's signed approval from `factory approve` (promote, canonize, retire)")
+    sp.add_argument("--owner-public", metavar="KEY", help="the owner's .pub file the approval must verify under")
     sp.add_argument("--reason")
     sp.add_argument("--superseded-by")
     sp.add_argument("--tickets", metavar="DIR", help="on promote: open one ticket per requirement into DIR, footprint "
                                                      "resolved against the ledger's latest Space, baseline from --baseline")
     sp.add_argument("--baseline", default="golden", help="the golden run or label the tickets diff against (default golden)")
     sp.add_argument("--owner", help="the accountable human on the tickets")
+
+    ap = steps.add_parser("approve", help="sign the owner's approval of a promote, canonize or retire of a spec as it is on disk; "
+                                          "the seed is read from an environment variable and never written")
+    ap.add_argument("spec")
+    ap.add_argument("--operation", choices=sorted(specmod.GATED), default="promote")
+    ap.add_argument("--verdict", action="append", default=[], help="the verdict ids the promotion rests on (must match `spec promote`)")
+    ap.add_argument("--actor", default="human:operator", help="the approving human, human:id (default human:operator)")
+    ap.add_argument("--seed-env", required=True, metavar="NAME", help="the owner's signing seed, as `syberlabs certify` reads it")
+    ap.add_argument("--out", required=True, help="where to write the approval envelope")
 
     var = steps.add_parser("variants", help="several proposers each mutate a parent spec; one reviewer judges; the accepted "
                                             "variant is written as the spec's next version. Proposers and the reviewer are "
@@ -169,7 +183,9 @@ def populate(factory) -> None:
     boot.add_argument("--max-drift", type=float, default=None)
     boot.add_argument("--level", choices=harness.LEVELS, default="component")
     boot.add_argument("--tests-argv", metavar="JSON", help="the suite the check runs in the worktree (tests evidence); "
-                                                           "'contract' copies the existing contract's tests check")
+                                                           "'contract' copies the existing contract's tests check and its timeout")
+    boot.add_argument("--tests-timeout", type=int, default=1800, help="seconds for a --tests-argv suite (default 1800; "
+                                                                      "'contract' takes the contract's own)")
     boot.add_argument("--thread-home", default=".syberlabs", help="the Build Thread home holding contracts/ (default .syberlabs)")
     boot.add_argument("--contract", default="repo-change", help="the contract id to extend (default repo-change)")
     boot.add_argument("--python", default=None, help="the interpreter the check argv names (default: this one)")
@@ -340,6 +356,9 @@ def _run(args) -> int:
     if command == "spec":
         return _spec(args, home)
 
+    if command == "approve":
+        return _approve(args)
+
     if command == "variants":
         return _variants(args, home)
 
@@ -375,10 +394,17 @@ def _run(args) -> int:
             print("signature does not verify under that key, or the payload is not a statement")
             return 1
         predicate = document["predicate"]
+        # The signer's own policy line is not the verdict: compute it again from the evidence and the gate the
+        # statement carries, and refuse a statement whose written policy says more than its evidence does.
+        recomputed = attest.recompute(predicate)
+        written = predicate.get("policy") or {}
         print(f"verified: {document['subject'][0]['name']}  spec {predicate['spec']['spec_id']} v{predicate['spec']['version']}"
-              f"  ticket {predicate.get('ticket')}  promote {predicate['policy']['promote']}")
-        for reason in predicate["policy"]["reasons"]:
+              f"  ticket {predicate.get('ticket')}  promote {recomputed['promote']} (recomputed from the evidence)")
+        for reason in recomputed["reasons"]:
             print(f"  {reason}")
+        if written.get("promote") != recomputed["promote"] or list(written.get("reasons") or []) != recomputed["reasons"]:
+            print(f"policy mismatch: the statement says promote {written.get('promote')}; the evidence says {recomputed['promote']}")
+            return 1
         return 0
 
     if command == "status":
@@ -454,6 +480,14 @@ def _check(args, home: ledger.Ledger) -> int:
     baseline_id = args.baseline if is_run_id else home.baseline(args.baseline)
     if baseline_id is None:
         raise Rejected("baseline_missing", f"no baseline {args.baseline!r}: record the golden run, then `factory baseline RUN`")
+    # The ledger is verified, chain and artifacts, before the candidate runs, and the baseline is read then; the
+    # candidate's process never learns the ledger's path, but the ledger is checked again after it exits so
+    # that anything that did reach it in the meantime refuses the check rather than becoming its baseline.
+    before = home.events()
+    problems = home.problems(before)
+    if problems:
+        raise Rejected("ledger_corrupt", f"the ledger does not verify before the check: {problems[0]}")
+    baseline_records = home.load_run(baseline_id)
     fixture = _read_json(args.fixture, "fixture") if args.fixture else {}
     run_id = harness.new_run_id()
     recorded = harness.record(root, home.run_path(run_id), args.entry,
@@ -462,13 +496,17 @@ def _check(args, home: ledger.Ledger) -> int:
                               blobs=home.home / "blobs")
     if recorded.get("stdout"):
         print(recorded["stdout"])
+    after = home.events()
+    if home.head(after) != home.head(before) or len(after) != len(before) or home.problems(after):
+        print("the ledger changed while the candidate ran: refuse", file=sys.stderr)
+        return 1
     if recorded["status"] == "killed" or not home.run_path(run_id).exists():
         print(f"no journal: {recorded.get('error')}", file=sys.stderr)
         return 1
     run_event = home.record_run(run_id)
     ticket = _read_json(args.ticket, "ticket") if args.ticket else None
     footprint = ticket.get("footprint") if ticket else None
-    evidence = {"trace_diff": attest.trace_diff(home.load_run(baseline_id), home.load_run(run_id), footprint, args.level),
+    evidence = {"trace_diff": attest.trace_diff(baseline_records, home.load_run(run_id), footprint, args.level),
                 "drift": attest.drift_evidence(report, commit)}
     if recorded.get("error"):
         evidence["run"] = {"kind": "run", "status": recorded["status"], "error": recorded["error"]}
@@ -490,10 +528,11 @@ def _check(args, home: ledger.Ledger) -> int:
                                 footprint=footprint, evidence=evidence, builder=builder,
                                 ticket=ticket["ticket_id"] if ticket else None, behavior_change_label=args.behavior_change,
                                 gate=gate)
-    written = document
+    written, public = document, None
     if args.seed_env:
-        written = attest.sign(document, certificate.load_seed(args.seed_env))
-    event = home.record_attestation(written)
+        seed = certificate.load_seed(args.seed_env)
+        written, public = attest.sign(document, seed), public_from_seed(seed)
+    event = home.record_attestation(written, public)
     policy = document["predicate"]["policy"]
     promote = policy["promote"] and recorded["status"] == "ok"
     diff = evidence["trace_diff"]
@@ -552,10 +591,12 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
     if args.level != "component":
         argv += ["--level", args.level]
     tests_argv = args.tests_argv
+    tests_timeout = 0
     if tests_argv == "contract":
-        tests_argv = None  # resolved from the contract below
+        tests_argv = None  # resolved from the contract below, with its own timeout
     elif tests_argv:
-        argv += ["--tests-argv", tests_argv]
+        tests_timeout = args.tests_timeout
+        argv += ["--tests-argv", tests_argv, "--tests-timeout", str(tests_timeout)]
     if args.no_contract:
         print("check argv: " + json.dumps(argv))
         return 0
@@ -571,9 +612,11 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
     if args.tests_argv == "contract":
         if "tests" not in checks:
             raise Rejected("tests_missing", f"{versions[-1].name} has no tests check to copy")
-        argv += ["--tests-argv", json.dumps(checks["tests"]["argv"])]
-        checks.pop("tests")  # the factory check runs it and records it as evidence; no second run
-    checks["factory"] = {"argv": argv, "timeout_seconds": 600 + (checks.get("tests", {}).get("timeout_seconds", 0) if args.tests_argv != "contract" else 1800)}
+        # The contract's own tests check moves into the factory check with its own timeout; no second run.
+        tests_timeout = int(checks["tests"].get("timeout_seconds") or args.tests_timeout)
+        argv += ["--tests-argv", json.dumps(checks["tests"]["argv"]), "--tests-timeout", str(tests_timeout)]
+        checks.pop("tests")
+    checks["factory"] = {"argv": argv, "timeout_seconds": 600 + tests_timeout}
     required = [name for name in evaluation.get("required", []) if name in checks]
     if "factory" not in required:
         required.append("factory")
@@ -587,12 +630,20 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
     return 0
 
 
+TESTS_TAIL_CHARS = 2000
+
+
 def _run_tests(root: Path, argv_json: str, timeout: int) -> dict:
     """Run the suite the contract names, in the worktree, and reduce it to a tests evidence entry. The exit code
-    is the verdict (a runner's own counts are not parsed); the output digest lets a reviewer find the log."""
+    is the verdict (a runner's own counts are not parsed); the output digest lets a reviewer find the log, and
+    the tail that enters the attestation is capped and scrubbed of credential shapes. ``full_suite`` is true
+    only when the suite ran to completion: a timed-out or unstartable run is not a full suite. On timeout the
+    whole process tree is stopped, as the Build Thread's own checks do."""
     import hashlib
     import subprocess
+    import tempfile
     import time
+    from syberlabs.checks import _stop as stop_tree
     try:
         argv = json.loads(argv_json)
         if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv) or not argv:
@@ -600,17 +651,31 @@ def _run_tests(root: Path, argv_json: str, timeout: int) -> dict:
     except ValueError:
         raise Rejected("tests_argv", "--tests-argv is a JSON list of strings") from None
     started = time.monotonic()
-    try:
-        done = subprocess.run(argv, cwd=str(root), capture_output=True, timeout=timeout)
-        exit_code, output = done.returncode, (done.stdout + done.stderr)
-    except subprocess.TimeoutExpired as exc:
-        exit_code, output = None, (exc.stdout or b"") + (exc.stderr or b"")
-    except OSError as exc:
-        exit_code, output = None, str(exc).encode()
-    return {"kind": "tests", "argv": argv, "exit_code": exit_code, "full_suite": True,
-            "fail": 0 if exit_code == 0 else 1, "timed_out": exit_code is None,
+    exit_code, timed_out = None, False
+    with tempfile.TemporaryFile() as log:
+        try:
+            proc = subprocess.Popen(argv, cwd=str(root), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                    start_new_session=hasattr(os, "setsid"))
+        except OSError as exc:
+            log.write(f"could not start {argv[0]!r}: {exc.strerror or exc}\n".encode())
+        else:
+            deadline = started + timeout
+            while True:
+                try:
+                    exit_code = proc.wait(timeout=0.05)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if time.monotonic() > deadline:
+                    stop_tree(proc)
+                    timed_out = True
+                    break
+        log.seek(0)
+        output = log.read()
+    return {"kind": "tests", "argv": harness.scrub_argv(argv), "exit_code": exit_code, "full_suite": exit_code is not None,
+            "fail": 0 if exit_code == 0 else 1, "timed_out": timed_out,
             "seconds": round(time.monotonic() - started, 1), "output_digest": hashlib.sha256(output).hexdigest(),
-            "output_tail": output[-2000:].decode(errors="replace")}
+            "output_tail": harness.scrub_text(output[-TESTS_TAIL_CHARS * 4:].decode(errors="replace"), TESTS_TAIL_CHARS)}
 
 
 def _map(args, home: ledger.Ledger) -> int:
@@ -691,7 +756,7 @@ def _variants(args, home: ledger.Ledger) -> int:
         name, _, command = entry.partition("=")
         if not name or not command:
             raise Rejected("variants_proposers", f"a proposer is NAME=COMMAND, not {entry!r}")
-        proposer = {"kind": "model", "id": name}
+        proposer = specmod.party("model", name, None)
         try:
             delta = run_json(split_command(command), request, timeout=args.timeout)
         except Rejected as exc:
@@ -699,6 +764,11 @@ def _variants(args, home: ledger.Ledger) -> int:
             home.append("spec_changed", {"spec_id": parent["spec_id"], "version": parent["version"], "operation": "mutate",
                                          "actor": proposer, "from": parent["state"], "to": None, "failed": exc.code})
             continue
+        # The command declares the model that served it (``model`` or ``signal.harness.model``); the family it
+        # belongs to is what independence is judged on. The declaration is the adapter's, as ``model_usage`` is.
+        proposer = specmod.party("model", name, delta)
+        if isinstance(delta, dict):
+            delta = {k: v for k, v in delta.items() if k not in ("model", "signal", "provider")}
         try:
             variant = specmod.make_variant(parent, delta, proposer, graph)
         except Rejected as exc:
@@ -718,10 +788,10 @@ def _variants(args, home: ledger.Ledger) -> int:
         print(f"{len(variants)} variant(s) written to {out}; review with --reviewer, or pick one and `spec validate` it")
         return 0
     name, _, command = args.reviewer.partition("=")
-    reviewer = {"kind": "model", "id": name}
     answer = run_json(split_command(command), specmod.review_request(parent, variants, args.objective), timeout=args.timeout)
     if not isinstance(answer, dict) or not isinstance(answer.get("verdicts"), list):
         raise Rejected("review_invalid", "the reviewer answers {\"verdicts\": [...]}")
+    reviewer = specmod.party("model", name, answer)
     review = specmod.judge(variants, answer["verdicts"], reviewer)
     (out / "review.json").write_text(json.dumps(review, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     for verdict in review["verdicts"]:
@@ -742,8 +812,10 @@ def _variants(args, home: ledger.Ledger) -> int:
     home.append("spec_changed", {"spec_id": chosen["spec_id"], "version": chosen["version"], "operation": "validate",
                                  "actor": reviewer, "from": "mutated", "to": "candidate", "spec_digest": specmod.spec_digest(chosen),
                                  "accepted_variant": review["accepted"], "verdict_id": verdict_id})
-    print(f"accepted {review['accepted']} -> {target.name} (candidate); promote with: "
-          f"factory spec promote {target.name} --verdict {verdict_id} --actor model:{name} --tickets DIR")
+    print(f"accepted {review['accepted']} -> {target.name} (candidate); the owner promotes it: "
+          f"factory approve {target.name} --verdict {verdict_id} --actor human:OWNER --seed-env NAME --out approval.json, then "
+          f"factory spec promote {target.name} --verdict {verdict_id} --actor human:OWNER --approval approval.json "
+          f"--owner-public KEY --tickets DIR")
     return 0
 
 
@@ -758,10 +830,24 @@ def _describe_side(entry: dict | None) -> str:
     return f"{entry['kind']} {entry['name']}: {json.dumps(payload, sort_keys=True, default=str)[:160]}"
 
 
+def _approve(args) -> int:
+    """The owner signs an approval of one gated operation on a spec as it is on disk. Nothing touches the
+    ledger here; `spec promote` verifies and records the approval."""
+    document = _read_json(args.spec, "spec")
+    actor = specmod.principal(args.actor)
+    payload = specmod.approval_payload(document, args.operation, actor, verdict_ids=args.verdict)
+    seed = certificate.load_seed(args.seed_env)
+    envelope = specmod.sign_approval(payload, seed)
+    Path(args.out).write_text(json.dumps(envelope, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"approved {args.operation} of {document['spec_id']} v{document['version']} (digest {payload['spec_digest'][:12]}) "
+          f"by {actor['id']}, key {public_from_seed(seed).hex()[:10]}, seed from ${args.seed_env}; wrote {args.out}")
+    return 0
+
+
 def _spec(args, home: ledger.Ledger) -> int:
     document = _read_json(args.spec, "spec")
-    kind, _, actor_id = args.actor.partition(":")
-    actor = {"kind": kind or "human", "id": actor_id or "operator"}
+    actor = specmod.principal(args.actor)
+    before_digest = specmod.spec_digest(document)  # the spec as reviewed and as approved, before the footprint moves
     detail = {}
     if args.operation == "validate":
         detail["space"] = home.latest_space()
@@ -771,6 +857,18 @@ def _spec(args, home: ledger.Ledger) -> int:
         detail["reason"] = args.reason
     if args.superseded_by:
         detail["superseded_by"] = args.superseded_by
+    approval_event = None
+    if args.operation in specmod.GATED:
+        if actor["kind"] != "human":
+            raise Rejected("spec_actor", f"{args.operation} is an owner act: the actor's kind is human, not {actor['kind']!r}")
+        if not args.approval or not args.owner_public:
+            raise Rejected("spec_approval", f"{args.operation} is an owner act: pass --approval FILE (from `factory approve`) and --owner-public KEY")
+        envelope = _read_json(args.approval, "approval")
+        approval, resolved = specmod.gate(document, args.operation, actor, home.events(), envelope, certificate.read_public(args.owner_public),
+                                          verdict_ids=args.verdict, spec_digest_value=before_digest)
+        detail["approval"] = approval
+        detail["spec_digest"] = before_digest
+        detail["resolved_verdicts"] = resolved
     graph = None
     if args.operation == "promote":
         graph = home.latest_space()
@@ -778,6 +876,9 @@ def _spec(args, home: ledger.Ledger) -> int:
             raise Rejected("space_missing", "promotion resolves the footprint; index the repository first")
         specmod.resolve_footprint(document, graph)
     record = specmod.transition(document, args.operation, actor, **detail)
+    if args.operation in specmod.GATED:
+        approval_event = home.record_approval(envelope, detail["approval"])
+        record["approval"] = {**record["approval"], "event_hash": approval_event["hash"], "approval_digest": approval_event["body"]["approval_digest"]}
     Path(args.spec).write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], **record,
                                  "spec_digest": specmod.spec_digest(document),
@@ -811,13 +912,13 @@ def _attest(args, home: ledger.Ledger) -> int:
     document = attest.statement(subject_commit=args.commit, repository=args.repository or Path(args.root).resolve().name,
                                 spec_ref=ticket["spec_ref"], footprint=ticket.get("footprint"), evidence=evidence,
                                 builder=builder, ticket=ticket["ticket_id"], behavior_change_label=args.behavior_change)
-    written = document
+    written, public = document, None
     note = "unsigned"
     if args.seed_env:
         seed = certificate.load_seed(args.seed_env)
-        written = attest.sign(document, seed)
-        note = f"signed, key {public_from_seed(seed).hex()[:10]}, seed from ${args.seed_env}"
-    event = home.record_attestation(written)
+        written, public = attest.sign(document, seed), public_from_seed(seed)
+        note = f"signed, key {public.hex()[:10]}, seed from ${args.seed_env}"
+    event = home.record_attestation(written, public)
     out = Path(args.out) if args.out else home.home / "attestations" / f"{event['body']['attestation_digest']}.json"
     if args.out:
         out.write_text(json.dumps(written, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -832,10 +933,21 @@ def _attest(args, home: ledger.Ledger) -> int:
 
 
 def viewer_page(records: list[dict], graph: dict | None) -> str:
-    """A self-contained HTML page: the Space graph with components lit as a slider scrubs the run."""
+    """A self-contained HTML page: the Space graph with components lit as a slider scrubs the run. Effects are
+    referenced (seq, name, digest), never embedded: an io record shows its masked argv and nothing else, so a
+    payload that reached the journal does not travel with the page."""
     template = Path(__file__).resolve().parents[1] / "static" / "factory.html"
-    data = {"run": records[0] if records else {}, "spans": harness.spans(records),
-            "effects": [r for r in records if r.get("t") in ("effect", "marker", "io")],
+    effects = []
+    for record in records:
+        if record.get("t") not in ("effect", "marker", "io"):
+            continue
+        entry = {"t": record["t"], "seq": record["seq"], "span": record.get("span"), "name": record["name"],
+                 "digest": record["digest"], "replayed": bool(record.get("replayed"))}
+        payload = record.get("payload")
+        if record["t"] == "io" and isinstance(payload, dict) and isinstance(payload.get("argv"), list):
+            entry["argv"] = [harness.mask(harness.scrub(str(a))) for a in payload["argv"][:8]]
+        effects.append(entry)
+    data = {"run": records[0] if records else {}, "spans": harness.spans(records), "effects": effects,
             "end": records[-1] if records and records[-1].get("t") == "end" else None,
             "components": [{"id": c["id"], "label": c["label"], "files": len(c["files"])}
                            for c in (graph or {}).get("components", {}).values()],

@@ -171,6 +171,16 @@ def policy(predicate: dict, *, require_tests: bool = False, mutation_threshold: 
     return {"promote": promote, "reasons": reasons}
 
 
+GATE_PARAMETERS = ("require_tests", "mutation_threshold", "max_drift", "level")
+
+
+def recompute(predicate: dict) -> dict:
+    """The policy's result computed again from the predicate's evidence and gate, so a verifier compares
+    what the signer wrote under ``policy`` with what the evidence says. Unknown gate keys are ignored."""
+    gate = {k: v for k, v in (predicate.get("gate") or {}).items() if k in GATE_PARAMETERS}
+    return policy(predicate, **gate)
+
+
 def sign(document: dict, seed: bytes) -> dict:
     """A one-signature DSSE envelope over the canonical statement. ``keyid`` is the public key, hex."""
     return sign_dsse(PAYLOAD_TYPE, canonical(document).encode("utf-8"), seed)

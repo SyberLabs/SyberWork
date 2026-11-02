@@ -12,7 +12,7 @@ architecture conformance, spec-driven development, attestation, ledger storage) 
 are in the architecture plan this slice was built from. This page is what the repository does today.
 
 Package: `syberlabs/factory/`. Standard library only. `syberlabs` still does not import `syberwork`.
-Claim ceiling for this page: **implemented** and **tested** (`tests/test_factory.py`, 18 tests, and the
+Claim ceiling for this page: **implemented** and **tested** (`tests/test_factory.py`, 45 tests, and the
 CLI run below). Nothing here is measured, deployed or externally validated.
 
 ## The v0 slice
@@ -43,8 +43,10 @@ python -m syberlabs.factory show RUN_A                                    # the 
 python -m syberlabs.factory at RUN_A --seq 10                             # main.run and effects.submit are open
 python -m syberlabs.factory replay RUN_A --entry fxapp.main:run --fixture fixture.json   # effects come from the journal
 python -m syberlabs.factory spec validate spec.json
-python -m syberlabs.factory spec promote spec.json --verdict review-1 --actor model:reviewer
-python -m syberlabs.factory ticket spec.json --req R1 --baseline RUN_A --owner mateo --out ticket.json
+python -m syberlabs.factory variants spec.json --proposer claude=CMD --reviewer gpt=CMD   # writes spec.v2.json, prints the verdict id
+python -m syberlabs.factory approve spec.v2.json --verdict VERDICT --actor human:mateo --seed-env SYBERLABS_FACTORY_OWNER_SEED --out approval.json
+python -m syberlabs.factory spec promote spec.v2.json --verdict VERDICT --actor human:mateo --approval approval.json --owner-public owner.pub
+python -m syberlabs.factory ticket spec.v2.json --req R1 --baseline RUN_A --owner mateo --out ticket.json
 python -m syberlabs.factory record --entry fxapp.main:run --fixture fixture.json --revision candidate1
 python -m syberlabs.factory attest --baseline RUN_A --candidate RUN_B --ticket ticket.json --commit candidate1 \
     --seed-env SYBERLABS_FACTORY_SEED --out attestation.json             # exit 0: diff empty, promote True
@@ -57,9 +59,40 @@ An entrypoint is `module:function`, imported from the root and called as `functi
 hook installed after the import so the import is not part of the run, or a script run as `__main__` whose
 own body is its first span and which takes its context from `syberlabs.factory.harness.current()`. Effects
 go through `ctx.run(name, fn, ...)`; that is the only instrumentation a program needs, and the only part
-replay cannot do without. The child inherits the caller's environment, as provider commands do; it is not a
-sandbox. The signing seed is read from the named environment variable the way `syberlabs certify` reads
-it; only the name is recorded.
+replay cannot do without. The child inherits the caller's environment, as provider commands do (`-I` drops
+the `PYTHON*` variables); it is not a sandbox. The signing seed is read from the named environment variable
+the way `syberlabs certify` reads it; only the name is recorded.
+
+## The goal gate
+
+The factory may propose a spec at any level; it may promote none. `spec promote`, `canonize` and `retire`
+take a human `--actor` (`kind:id`, resolved to a principal; free text is refused) and an approval that
+verifies: `factory approve` signs, with the owner's seed, a payload naming the spec (id, version and its
+digest as it is on disk), the operation and the verdict ids; `spec promote` verifies it under
+`--owner-public`, requires the approver to be the actor, and resolves each `--verdict` on the ledger to a
+`review` event that accepted the very variant the file is (the `validate` event's digest must match, so a
+spec edited after review is refused), whose proposers and reviewer the approver is not. The approval is
+stored under `approvals/` and logged as `approval_recorded`; the `spec_changed` cites that event's hash. A
+model actor, a missing approval, a verdict that is a string rather than a review, or an approval under
+another key each refuse, and the variant loop no longer suggests that the reviewer promote what it reviewed.
+The intended source of the approval is a kernel `approved` event on a goal case (approver not proposer,
+`session.py`); until the factory has a case to hang it on, the owner's signature stands in (`spec/GAPS.md`).
+
+## The candidate is not trusted
+
+The candidate's program runs in a child the parent does not believe. The child runs `python -I` in a
+host-owned scratch directory outside the worktree and outside the ledger, and is never told where the
+ledger is; the parent moves the journal into `runs/` afterwards. Every journal record carries a seal, an
+HMAC chained from the previous record under a per-run key the parent generated, and the parent refuses a
+journal with a line written around the recorder, a line edited afterwards, a torn tail, or no `end`. The
+child's report travels over a private pipe and must carry the run's nonce; a line printed to stdout is
+output, never a report, and the status it claims must agree with the `end` record the parent reads itself.
+`factory check` verifies the ledger, chain and artifacts, before the candidate runs and again after it
+exits, and refuses if anything moved in between. Every artifact load checks the file against the digest the
+ledger recorded, so an edited golden journal cannot become a baseline (`load_run` refuses it, `verify`
+names it). The residual is memory: code in the child can reach the recorder and its key through
+`sys.modules`, because io observation has to run in the candidate's process. That is recorded in
+`spec/GAPS.md`, and this is still not a sandbox.
 
 The repository checks itself the same way. `docs/architecture.declared.json` declares four components
 (`syberlabs`, `syberlabs.eval`, `syberlabs.factory`, `syberwork`) and the edges allowed between them;
@@ -197,12 +230,16 @@ removed, footprint hint, rationale). Each delta becomes a variant through `mutat
 the latest Space graph (findings stay on the variant rather than hiding it), and is logged as
 `spec_changed` with the proposer as actor; a proposer that returns no JSON is logged as a failed mutate
 and the loop continues. The reviewer is one command that sees every variant with its findings and answers
-a verdict per variant. `judge` enforces three rules: the reviewer did not propose any variant (the critic
-rule's independence), a variant with findings cannot be accepted, and at most one variant is accepted. The
-accepted variant is validated to candidate and written as the spec's next version; `spec promote` with the
-verdict id then opens its tickets. `tests/fixtures/factory_app/proposers.py` stands in for the models, and
-`tests/test_factory.py::Variants` runs the loop with one sound proposer, one that overreaches, and one that
-breaks. Nothing here imports a model SDK; the adapter for a real model is the command.
+a verdict per variant. `judge` enforces three rules: the reviewer is independent of every proposer by
+provider family (`factory/independence.py`: the family is read from the model the command declared in its
+answer, `model` or `signal.harness.model`; two names on one family are not independent, and a party whose
+family is not recorded refuses rather than passes), a variant with findings cannot be accepted, and at most
+one variant is accepted. The accepted variant is validated to candidate and written as the spec's next
+version; the owner then approves and promotes it (the goal gate above) and the promotion opens its tickets.
+`tests/fixtures/factory_app/proposers.py` stands in for the models, and `tests/test_factory.py::Variants`
+runs the loop with one sound proposer, one that overreaches, and one that breaks. Nothing here imports a
+model SDK; the adapter for a real model is the command. `independence()` is small and importable so that
+`critic.independent` can adopt it; `critic` is unchanged here.
 
 ## Where this departs from the plan, and why
 
@@ -230,7 +267,8 @@ breaks. Nothing here imports a model SDK; the adapter for a real model is the co
   be converted to it later.
 - **Spec variants are commands.** The plan had Claude, Grok and Cursor propose and GPT review. They do, as
   commands at a process boundary, which is how this repository treats every model; the `--proposer` and
-  `--reviewer` names are what the ledger records as actors.
+  `--reviewer` names are what the ledger records as actors, beside the model and provider family each
+  command declared.
 
 ## What a cell is, exactly
 
@@ -246,9 +284,17 @@ component nothing called at a revision has no cells there, and that absence is i
   through `ctx.run` as an effect result, which is the right boundary anyway.
 - Python only. A function call is a span; a module's import runs as one `<module>` span; statements
   outside any function in an already-imported module are not visible.
-- Replay re-executes the program's own code. It is not a sandbox and nothing here is.
-- One writer per ledger at a time. The ledger refuses to append to a log whose chain does not verify, but
-  it has no cross-process lock; the harness journal is written by the process that records.
+- Replay re-executes the program's own code. It is not a sandbox and nothing here is; the trust boundary
+  above raises the cost of a forged run, and the residual (the recorder shares the candidate's memory) is
+  in `spec/GAPS.md`.
+- Ledger appends go through the kernel journal's writer (lock, fsync, torn-tail repair), so two factory
+  commands on one home serialize; the harness journal is written by the recorder in the child and sealed
+  under the parent's per-run key.
+- Subprocess argv and cwd, socket addresses and the test runner's output tail are scrubbed of credential
+  shapes (the kernel's shared pattern, bearer tokens, PEM keys, `KEY=value` with a credential key, the value
+  after a credential flag) before they are journaled or attested; a credential in some other shape is not.
+- The behavior-change label is a flag on the check's argv, so it is per contract, not per ticket; a ticket
+  that intends a behavior change cannot yet say so on its own.
 - The trace diff compares component transitions (or function names), effect result digests and masked io
   keys. It does not compare arguments or return values of ordinary calls, or timing, so two runs that
   differ only in what a pure function returned diff empty. The spec's scenarios and the tests evidence kind
