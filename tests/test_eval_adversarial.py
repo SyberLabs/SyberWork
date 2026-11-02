@@ -180,6 +180,26 @@ class PreRegistration(Case):
             spec.register(path)
         self.assertFalse((path.parent / "registration.json").exists())
 
+    def test_a_metric_no_scorer_computes_or_a_threshold_no_float_holds_is_not_a_valid_spec(self):
+        """hunt-fixes-1, F5 and F6: on dc69499491 a primary metric named ``made_up`` registered (nothing would ever
+        compute it, so every decision read "not computable" after the money was spent), and a threshold of
+        ``10**400`` passed ``{"type": "number"}`` as an integer, to raise OverflowError in the report."""
+        doc = self.canary_spec("made-up", self.adapter({"changes": {"src/pricing.py": GOOD}}))
+        self.assertEqual(spec.check(doc), [])
+        unknown = json.loads(json.dumps(doc))
+        unknown["primary_metric"]["name"] = unknown["decision_rule"]["metric"] = "made_up"
+        unknown["secondary_metrics"] = [{"name": "also_made_up", "definition": "nothing computes this either"}]
+        errors = spec.check(unknown)
+        self.assertEqual([e.split(":")[0] for e in errors],
+                         ["$.primary_metric.name", "$.decision_rule.metric", "$.secondary_metrics[0].name"], errors)
+        for name in spec.METRIC_NAMES:
+            self.assertIn(name, errors[0], "the refusal lists every known metric name")
+        huge = json.loads(json.dumps(doc))
+        huge["decision_rule"]["threshold"] = 10 ** 400
+        self.assertEqual(spec.check(huge), ["$.decision_rule.threshold: must be a number a finite float can hold"])
+        huge["decision_rule"]["threshold"] = 10 ** 300
+        self.assertEqual(spec.check(huge), [], "a large finite integer is a number a float holds")
+
     def test_a_spec_with_a_duplicate_key_is_refused(self):
         """``json.loads`` keeps the last of two equal keys, so a reader of the file can see one threshold while the
         registered digest freezes the other."""
