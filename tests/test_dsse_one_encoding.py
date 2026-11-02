@@ -49,7 +49,22 @@ def variants(encoded: str) -> dict[str, str]:
         for bits in range(1, 1 << unused):
             found[f"unused bits {bits:0{unused}b}"] = stem[:-1] + ALPHABET[value | bits] + encoded[len(stem):]
     for name, text in found.items():
-        assert text != encoded and LAX(text) == LAX(encoded), name
+        if text == encoded or LAX(text) != LAX(encoded):   # not a bare assert: python -O would drop it
+            raise AssertionError(f"{name}: not a second spelling the old decoder read as the same bytes")
+    return found
+
+
+def other_alphabets(encoded: str) -> dict[str, str]:
+    """Spellings a reader of another base64 dialect takes as the same bytes, though ``LAX`` did not: URL-safe (DSSE's
+    protocol text allows it) and unpadded. Accepting either would give a signature a second spelling again."""
+    found = {}
+    if "+" in encoded or "/" in encoded:
+        found["URL-safe alphabet"] = encoded.translate(str.maketrans("+/", "-_"))
+    if encoded.endswith("="):
+        found["padding dropped"] = encoded.rstrip("=")
+    for name, text in found.items():
+        if text == encoded or base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)) != LAX(encoded):
+            raise AssertionError(f"{name}: not the same bytes in that dialect")
     return found
 
 
@@ -94,6 +109,29 @@ class OneEncoding(unittest.TestCase):
                 self.assertTrue(ed25519.verify(self.public, pae(CHAIN_HEAD_TYPE, LAX(payload)), self.signature))
                 self.assertIsNone(verified_payload(envelope, self.public, CHAIN_HEAD_TYPE))
                 self.assertFalse(verify_chain_head(envelope, [], self.public))
+
+    def test_a_url_safe_or_unpadded_spelling_is_refused(self):
+        """A reader that also took URL-safe or unpadded base64 would give the signature a second spelling."""
+        seed, public = self.seed, self.public
+        # A signature and a payload whose standard spelling holds a + or a / and padding. ASCII JSON gives one only
+        # where a > or ? is the third byte of a group, so the case id carries three ?s.
+        for case in range(64):
+            signed = sign_chain_head(f"case-???-{case}", [], seed)
+            sig, payload = signed["signatures"][0]["sig"], signed["payload"]
+            if set("+/") & set(sig) and set("+/") & set(payload) and payload.endswith("="):
+                break
+        else:
+            self.fail("no signature and payload with + or / in 64 tries")
+        sigs, payloads = other_alphabets(sig), other_alphabets(payload)
+        self.assertEqual(set(sigs), {"URL-safe alphabet", "padding dropped"})
+        self.assertEqual(set(payloads), {"URL-safe alphabet", "padding dropped"})
+        self.assertTrue(verify_chain_head(signed, [], public))
+        for name, text in sigs.items():
+            with self.subTest("sig, " + name):
+                self.assertIsNone(verified_payload(with_sig(signed, text), public, CHAIN_HEAD_TYPE))
+        for name, text in payloads.items():
+            with self.subTest("payload, " + name):
+                self.assertIsNone(verified_payload(dict(signed, payload=text), public, CHAIN_HEAD_TYPE))
 
     def test_a_sig_or_payload_that_is_not_an_ascii_string_is_refused(self):
         sig = self.signed["signatures"][0]["sig"]

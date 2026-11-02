@@ -168,13 +168,16 @@ Claim ceiling: **implemented** and **tested** locally (Linux, Python 3.13.5). No
   still decode leniently. None of them gives a verdict. A leaf whose encoding was changed is still selected for its
   case and is now judged `bad_signature`, which is not one of `WITNESS_CONFLICTS`.
 
-**Tests** (`tests/test_dsse_one_encoding.py`, 8 new):
+**Tests** (`tests/test_dsse_one_encoding.py`, 9 new):
 
 - negative control: what `sign_dsse` writes verifies, for payloads of 0 to 6 bytes (every padding length) and a
   chain head;
 - every other encoding of a chain head's signature (9 spellings plus the 15 spare-bit values) and of its payload is
   read by the old decoder as the same bytes, `ed25519.verify` takes those bytes, and `verified_payload` and
   `verify_chain_head` refuse the envelope;
+- the URL-safe spelling (`+/` as `-_`) and the unpadded spelling of a signature and of a payload are refused. The
+  old decoder did not read these as the same bytes, but a reader of another dialect would, and accepting them would
+  give the signature a second spelling again;
 - a `sig` or `payload` that is `bytes`, `bytearray`, `None`, `0`, a list, or a `str` with full-width `=` or an
   Arabic-Indic digit is refused;
 - a respelled signature beside the canonical one does not stop the canonical one from verifying, and the respelled
@@ -187,13 +190,23 @@ Claim ceiling: **implemented** and **tested** locally (Linux, Python 3.13.5). No
 
 **Mutations**, each killed by the new tests: the old lenient decoder back (86 failures); `validate=True` without the
 re-encode check (48: the spare bits and the third `=`); stripping whitespace first (15); the lenient decoder for `sig`
-only (53) or for `payload` only (35). An `isascii()` guard was dropped after its mutation survived: `b64decode`
+only (53) or for `payload` only (35); also accepting URL-safe base64, or unpadded base64 (each killed only by the
+URL-safe/unpadded test, added after an independent review found both survived the first 8 tests). An `isascii()` guard was dropped after its mutation survived: `b64decode`
 already raises `ValueError` for a `str` that is not ASCII.
+
+**Review:** a separate Claude session reviewed this change without my conclusions. It compared `_canonical_b64`
+against an independent reference on every string of up to 4 characters over the alphabet, `=` and 7 other
+characters (27.25M strings, no mismatch, no exception), and on 200k random edits. It found no code bug and no
+envelope in the repository that is now refused. Its findings are fixed: the URL-safe and unpadded test above (both
+wrong implementations passed the first 8 tests), the `signature_invalid` row's claim that missing padding was read
+as the same bytes before (it raised `Incorrect padding`), the URL-safe wording, and a bare `assert` in the test
+helper that `python -O` would drop.
 
 ## Not done (after this change)
 
 - **DSSE's protocol text allows URL-safe base64; this verifier takes only the standard alphabet.** The old decoder did
-  not take it either in effect: it dropped `-` and `_` and read other bytes. A tool that re-encodes an envelope
+  not take it either in effect: it dropped `-` and `_` and read other bytes. A URL-safe string with neither is the
+  standard one and is accepted. A tool that re-encodes an envelope
   (line-wrapping it, or switching alphabet) before handing it on now gets `signature_invalid` for a genuine
   certificate.
 - The three unverified readers above still decode leniently; none decides anything, so they are left alone. `syberwork/certificates.py` is #121/#122's file and is not touched.
