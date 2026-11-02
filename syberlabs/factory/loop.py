@@ -32,6 +32,13 @@ The envelope ledger (D13) is the eval spend ledger's shape (one JSON object per 
 work and settled after it, read strictly) generalized to attempts: ``reserve`` before an attempt holds the
 tier's dollars and one call, ``settle`` replaces the hold with what the journal recorded, ``stop`` closes
 the run with a reason. Totals are the settled values plus unsettled holds, so a killed attempt stays counted.
+One file per envelope (``envelopes/<envelope digest>.jsonl`` under the factory home), and every line names
+the envelope it belongs to, so two maps or two grants in one home never read each other's spend or stop.
+
+The spec is promoted when the ledger says so, not when the file says so: ``promotion_record`` finds the
+``spec_changed`` that promoted exactly this spec (its digest), the ``approval_recorded`` it cites and the
+owner's envelope under ``approvals/``, and with the owner's public key re-verifies the signature (the goal
+gate's ``verify_approval``). ``compile`` refuses a spec the ledger did not promote (``spec_unpromoted``).
 """
 
 from __future__ import annotations
@@ -45,11 +52,13 @@ from syberlabs.build import ACT_CLASSES, PROMOTE, Kit, Runner
 from syberlabs.canonical import canonical, digest
 from syberlabs.errors import Rejected
 from syberlabs.factory import PROTOCOL, featuremap, policy as policymod
+from syberlabs.factory import spec as specmod
 from syberlabs.providers import CommandProvider
 
 ENVELOPE_SCHEMA = "syberfactory/envelope.v1"
 ENVELOPE_LINE_SCHEMA = "syberlabs.factory/envelope-ledger.v1"
-ENVELOPE_FILE = "envelope.jsonl"
+ENVELOPE_DIR = "envelopes"
+ENVELOPE_LINE_KINDS = ("reserve", "settle", "stop")
 ACTIONS = ("start_thread", "propose", "check", "accept_to_thread_branch")  # closed; no merge, push or publish
 EVENTS = ("map_frozen", "policy_proposal", "envelope_reserved", "envelope_settled", "attempt_started", "thread_step",
           "feature_ready", "feature_failed", "feature_parked", "feature_escalated", "feature_waiting", "loop_stopped")
@@ -85,7 +94,22 @@ def new_envelope(map_digest: str, *, dollars_total: float, calls_total: int, sec
 
 
 def envelope_digest(envelope: dict) -> str:
-    return digest(envelope)
+    """The grant's digest. The kill switch is a path on this host, not a term of the grant, so it stays out:
+    two runs of one fixture with and without a switch give one ``map_frozen`` digest."""
+    return digest({k: v for k, v in envelope.items() if k != "kill_switch"})
+
+
+def envelope_path(home: str | Path, envelope: dict) -> Path:
+    return Path(home) / ENVELOPE_DIR / f"{envelope_digest(envelope)}.jsonl"
+
+
+def _amount(value, name: str, where: str, *, integer: bool = False) -> float:
+    """A finite, non-negative number (an int when ``integer``); anything else is refused, never summed."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise Rejected("envelope_unpriced", f"{where}: {name} must be a finite number of at least 0, not {value!r}")
+    if integer and type(value) is not int:
+        raise Rejected("envelope_unpriced", f"{where}: {name} must be an integer, not {value!r}")
+    return value
 
 
 def _strict_loads(text: str):
@@ -104,11 +128,33 @@ def _strict_loads(text: str):
 
 
 class EnvelopeLedger:
-    """Append-only lines under the factory home. Reserve, settle, stop; totals from the lines."""
+    """Append-only lines for one envelope under the factory home. Reserve, settle, stop; totals from the lines.
+
+    Read strictly, as the eval spend ledger is: a torn line, a repeated key, a non-finite number, a line of
+    another schema or another envelope, a line without a kind, a negative or non-finite amount, a second
+    ``reserve`` for one attempt or a ``settle`` without its ``reserve`` each refuse the whole file rather than
+    change a total. The loop writes none of these; a hand-edited or corrupted file does."""
 
     def __init__(self, path: str | Path, envelope: dict):
         self.path, self.envelope = Path(path), envelope
+        self.digest = envelope_digest(envelope)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _check(self, line: dict, where: str) -> None:
+        if line.get("envelope_digest") != self.digest:
+            raise Rejected("envelope_unreadable", f"{where} belongs to envelope {str(line.get('envelope_digest'))[:12]}, not {self.digest[:12]}")
+        kind = line.get("kind")
+        if kind not in ENVELOPE_LINE_KINDS:
+            raise Rejected("envelope_unreadable", f"{where}: kind must be one of {ENVELOPE_LINE_KINDS}, not {kind!r}")
+        if kind == "stop":
+            if not isinstance(line.get("reason"), str) or not line["reason"]:
+                raise Rejected("envelope_unreadable", f"{where}: a stop names its reason")
+            return
+        if not isinstance(line.get("feature"), str) or not line["feature"] or type(line.get("attempt")) is not int or line["attempt"] < 1:
+            raise Rejected("envelope_unreadable", f"{where}: a {kind} names a feature and an attempt number of at least 1")
+        _amount(line.get("dollars"), "dollars", where)
+        _amount(line.get("calls"), "calls", where, integer=True)
+        _amount(line.get("seconds"), "seconds", where)
 
     def lines(self) -> list[dict]:
         if not self.path.is_file():
@@ -117,34 +163,47 @@ class EnvelopeLedger:
         for number, raw in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
             if not raw.strip():
                 continue
+            where = f"{self.path}: line {number}"
             try:
                 value = _strict_loads(raw)
             except ValueError as exc:
-                raise Rejected("envelope_unreadable", f"{self.path}: line {number}: {exc}") from None
+                raise Rejected("envelope_unreadable", f"{where}: {exc}") from None
             if not isinstance(value, dict) or value.get("schema") != ENVELOPE_LINE_SCHEMA:
-                raise Rejected("envelope_unreadable", f"{self.path}: line {number} is not an envelope ledger line")
+                raise Rejected("envelope_unreadable", f"{where} is not an envelope ledger line")
+            self._check(value, where)
             out.append(value)
         return out
 
     def _append(self, line: dict) -> dict:
-        line = {"schema": ENVELOPE_LINE_SCHEMA, "envelope_digest": envelope_digest(self.envelope), **line}
+        line = {"schema": ENVELOPE_LINE_SCHEMA, "envelope_digest": self.digest, **line}
+        self._check(line, f"{self.path}: new {line.get('kind')} line")
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(canonical(line) + "\n")
             handle.flush()
         return line
 
-    def totals(self) -> dict:
+    def _fold(self) -> tuple[dict, dict, str | None]:
         reserved: dict[tuple, dict] = {}
         settled: dict[tuple, dict] = {}
         stopped = None
-        for line in self.lines():
+        for number, line in enumerate(self.lines(), 1):
             key = (line.get("feature"), line.get("attempt"))
             if line["kind"] == "reserve":
+                if key in reserved:
+                    raise Rejected("envelope_conflict", f"{self.path}: line {number} reserves {key[0]} attempt {key[1]} a second time")
                 reserved[key] = line
             elif line["kind"] == "settle":
+                if key not in reserved:
+                    raise Rejected("envelope_conflict", f"{self.path}: line {number} settles {key[0]} attempt {key[1]}, which was never reserved")
+                if key in settled:
+                    raise Rejected("envelope_conflict", f"{self.path}: line {number} settles {key[0]} attempt {key[1]} a second time")
                 settled[key] = line
-            elif line["kind"] == "stop":
+            else:
                 stopped = line["reason"]
+        return reserved, settled, stopped
+
+    def totals(self) -> dict:
+        reserved, settled, stopped = self._fold()
         dollars = calls = seconds = 0.0
         for key, hold in reserved.items():
             actual = settled.get(key, hold)
@@ -163,15 +222,25 @@ class EnvelopeLedger:
                 and totals["calls_left"] >= calls and totals["seconds_left"] > 0)
 
     def reserve(self, feature: str, attempt: int, tier: str, arm: str) -> dict:
+        reserved, _, _ = self._fold()
+        if (feature, attempt) in reserved:
+            raise Rejected("envelope_conflict", f"{feature} attempt {attempt} is already reserved")
         if not self.room(tier):
             raise Rejected("envelope_exhausted", f"no room for tier {tier} on {feature}: {self.totals()}")
         return self._append({"kind": "reserve", "feature": feature, "attempt": attempt, "tier": tier, "arm": arm,
                              "dollars": self.envelope["dollars"]["tiers"][tier], "calls": 1, "seconds": 0.0})
 
     def settle(self, feature: str, attempt: int, *, dollars: float, calls: int, seconds: float, unknown_models: list) -> dict:
-        if not isinstance(dollars, (int, float)) or not math.isfinite(dollars) or dollars < 0:
-            raise Rejected("envelope_unpriced", f"{feature} attempt {attempt}: dollars are not a finite number of at least 0")
-        return self._append({"kind": "settle", "feature": feature, "attempt": attempt, "dollars": float(dollars), "calls": int(calls),
+        where = f"{feature} attempt {attempt}"
+        _amount(dollars, "dollars", where)
+        _amount(calls, "calls", where, integer=True)
+        _amount(seconds, "seconds", where)
+        reserved, settled, _ = self._fold()
+        if (feature, attempt) not in reserved:
+            raise Rejected("envelope_conflict", f"{where} was never reserved; nothing to settle")
+        if (feature, attempt) in settled:
+            raise Rejected("envelope_conflict", f"{where} is already settled")
+        return self._append({"kind": "settle", "feature": feature, "attempt": attempt, "dollars": float(dollars), "calls": calls,
                              "seconds": round(float(seconds), 3), "unknown_models": list(unknown_models)})
 
     def stop(self, reason: str) -> dict:
@@ -203,8 +272,58 @@ def event_digests(ledger, map_digest: str | None = None) -> list[str]:
             for e in autonomy_events(ledger, map_digest)]
 
 
+def promotion_record(ledger, spec: dict, owner_public: bytes | None = None) -> dict:
+    """The ledger's record that the owner promoted exactly this spec, through the goal gate's own shape.
+
+    The spec on disk must be the spec the ledger wrote after a ``promote`` (or a later ``canonize``): the
+    ``spec_changed`` whose ``spec_digest`` is this file's digest, with ``to`` promoted or canonical. The
+    promotion's ``approval`` must cite an ``approval_recorded`` event (by hash) for this spec and version by a
+    human approver, whose envelope is under ``approvals/`` at the recorded digest. With ``owner_public`` the
+    envelope is re-verified (``spec.verify_approval`` over the digest the owner signed), so the record becomes
+    a credential; without it the hash-chained ledger and the stored envelope are what is checked. The file's
+    ``state`` string decides nothing here."""
+    events = ledger.events()
+    changes = [e for e in events if e["kind"] == "spec_changed" and e["body"].get("spec_id") == spec.get("spec_id")]
+    current = specmod.spec_digest(spec)
+    written = next((e for e in reversed(changes) if e["body"].get("spec_digest") == current), None)
+    if written is None or written["body"].get("to") not in ("promoted", "canonical"):
+        raise Rejected("spec_unpromoted", f"the ledger holds no promotion of spec {spec.get('spec_id')!r} at digest {current[:12]}; "
+                                          "the file was edited after promotion, or was never promoted through `factory spec promote`")
+    version = written["body"].get("version")
+    promotion = next((e for e in reversed(changes[: changes.index(written) + 1]) if e["body"].get("operation") == "promote"
+                      and e["body"].get("to") == "promoted" and e["body"].get("version") == version), None)
+    if promotion is None:
+        raise Rejected("spec_unpromoted", f"spec {spec['spec_id']} v{version} has no promote event before its current record")
+    cited = promotion["body"].get("approval")
+    actor = promotion["body"].get("actor")
+    if not isinstance(actor, dict) or actor.get("kind") != "human" or not isinstance(cited, dict) or not cited.get("event_hash"):
+        raise Rejected("spec_unpromoted", f"the promotion of {spec['spec_id']} at seq {promotion['seq']} names no human actor or no approval event")
+    recorded = next((e for e in events if e["kind"] == "approval_recorded" and e["hash"] == cited["event_hash"]), None)
+    if recorded is None:
+        raise Rejected("spec_unpromoted", f"the promotion cites approval event {str(cited['event_hash'])[:12]}, which is not on the ledger")
+    body = recorded["body"]
+    approver = body.get("approver") or {}
+    if (body.get("operation") != "promote" or body.get("spec_id") != spec["spec_id"] or body.get("version") != version
+            or approver.get("kind") != "human" or not approver.get("id") or body.get("approval_digest") != cited.get("approval_digest")
+            or approver != actor):
+        raise Rejected("spec_unpromoted", f"approval event {recorded['seq']} does not cover the promotion of {spec['spec_id']} v{version} by {actor.get('id')!r}")
+    path = Path(ledger.home) / "approvals" / f"{body['approval_digest']}.json"
+    try:
+        envelope = _strict_loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Rejected("spec_unpromoted", f"the approval envelope {body['approval_digest'][:12]} is missing or unreadable: {type(exc).__name__}") from None
+    if digest(envelope) != body["approval_digest"]:
+        raise Rejected("spec_unpromoted", f"approvals/{body['approval_digest'][:12]} does not match its recorded digest")
+    if owner_public is not None:
+        specmod.verify_approval(envelope, owner_public, spec, "promote", verdict_ids=list(body.get("verdict_ids") or []),
+                                spec_digest_value=body.get("spec_digest"))
+    return {"seq": promotion["seq"], "approval_seq": recorded["seq"], "approver": dict(approver), "keyid": body.get("keyid"),
+            "verdict_ids": list(body.get("verdict_ids") or []), "approval_digest": body["approval_digest"],
+            "signed_digest": body.get("spec_digest"), "verified": owner_public is not None}
+
+
 def why(ledger, ticket_id: str) -> dict:
-    """The §1.3 walk as far as the ledger goes: ticket -> feature -> map (its approval) -> spec reference."""
+    """The §1.3 walk as far as the ledger goes: ticket -> feature -> map (its approval) -> spec (its promotion)."""
     opened = next((e for e in ledger.events() if e["kind"] == "ticket_opened" and e["body"].get("ticket_id") == ticket_id), None)
     if opened is None:
         raise Rejected("ticket_unknown", f"no ticket_opened event for {ticket_id}")
@@ -213,10 +332,12 @@ def why(ledger, ticket_id: str) -> dict:
                    and e["body"].get("map_digest") == body.get("map_digest")), None)
     ready = next((e for e in ledger.events() if e["kind"] == "note" and e["body"].get("note") == "feature_ready"
                   and e["body"].get("ticket_id") == ticket_id), None)
+    frozen_body = (frozen or {}).get("body", {})
     return {"ticket": ticket_id, "feature": body.get("feature_id"), "requirements": body.get("req_ids"),
             "map": {"digest": body.get("map_digest"), "frozen_seq": frozen["seq"] if frozen else None,
-                    "approved_by": (frozen or {}).get("body", {}).get("approved_by")},
-            "spec": {"spec_id": body.get("spec_id"), "version": body.get("version"), "digest": (frozen or {}).get("body", {}).get("spec_digest")},
+                    "approved_by": frozen_body.get("approved_by")},
+            "spec": {"spec_id": body.get("spec_id"), "version": body.get("version"), "digest": frozen_body.get("spec_digest"),
+                     "promoted_by": frozen_body.get("promoted_by"), "promotion": frozen_body.get("refs", {}).get("promotion")},
             "ready_for_owner_merge": {"seq": ready["seq"], **ready["body"]["refs"]} if ready else None}
 
 
@@ -253,22 +374,26 @@ def feature_contract(ticket: dict, *, checks: dict, hidden_catalogue: dict, max_
 class Loop:
     def __init__(self, *, repo_root: str | Path, kit_home: str | Path, ledger, map: dict, spec: dict, envelope: dict,
                  policy, proposer_argv: list[str], checks: dict, hidden_catalogue: dict | None = None, human_owner: str,
-                 baseline_run: str | None = None, actor: str = "factory@syberlabs.host", log=None, max_passes: int = MAX_PASSES):
+                 baseline_run: str | None = None, actor: str = "factory@syberlabs.host", log=None, max_passes: int = MAX_PASSES,
+                 owner_public: bytes | None = None):
         self.repo_root, self.kit_home, self.ledger = Path(repo_root), Path(kit_home), ledger
         self.map, self.spec, self.envelope, self.policy = map, spec, envelope, policy
         self.proposer_argv, self.checks, self.hidden = list(proposer_argv), dict(checks), dict(hidden_catalogue or {})
         self.human_owner, self.baseline_run, self.actor = human_owner, baseline_run, actor
+        self.owner_public = owner_public
         self.log = log or (lambda line: None)
         self.max_passes = max_passes
         self.map_digest = featuremap.map_digest(map)
         if envelope.get("map_digest") != self.map_digest:
             raise Rejected("envelope_map", "the envelope names a different map digest")
-        self.spend = EnvelopeLedger(self.ledger.home / ENVELOPE_FILE, envelope)
+        self.spend = EnvelopeLedger(envelope_path(self.ledger.home, envelope), envelope)
         self.graph = None
         self.plan = None
+        self.promotion = None
         self.tickets: dict[str, dict] = {}
         self.features = {f["id"]: f for f in map["features"]}
-        self.state = {fid: {"state": "open", "attempts": 0, "dollars": 0.0, "thread": None, "commit": None, "last_reason": None}
+        self.state = {fid: {"state": "open", "attempts": 0, "dollars": 0.0, "thread": None, "commit": None, "last_reason": None,
+                            "last_arm": None, "arm_floor": 0}
                       for fid in self.features}
         self.kit = None
         self.order: list[str] = []
@@ -276,12 +401,14 @@ class Loop:
     # -- compile -----------------------------------------------------------------------------------------------------------
 
     def compile(self) -> list[dict]:
-        """Refuse a map without a current owner approval or with findings; write one contract per feature; log
-        ``map_frozen`` and one ``ticket_opened`` per feature. Idempotent for one map digest."""
+        """Refuse a map without a current owner approval, a spec the ledger did not promote, or a map with
+        findings; write one contract per feature; log ``map_frozen`` and one ``ticket_opened`` per feature.
+        Idempotent for one map digest."""
         if not featuremap.approved(self.map):
             raise Rejected("map_unapproved", "the loop runs only an owner-approved map whose approval covers its current digest")
         if self.spec.get("state") not in ("promoted", "canonical"):
             raise Rejected("spec_state", f"work opens under a promoted spec, not one in state {self.spec.get('state')!r}")
+        self.promotion = promotion_record(self.ledger, self.spec, self.owner_public)
         findings = featuremap.mapcheck(self.map, self.spec)
         if findings:
             raise Rejected("map_invalid", "; ".join(findings))
@@ -304,10 +431,12 @@ class Loop:
             record(self.ledger, "map_frozen", self.map_digest, {
                 "map_id": self.map["id"], "spec_id": self.spec["spec_id"], "spec_version": self.spec["version"],
                 "spec_digest": self.map["spec_ref"]["spec_digest"], "approved_by": self.map["approval"]["actor"],
+                "promoted_by": self.promotion["approver"], "promotion_verified": self.promotion["verified"],
                 "envelope_digest": envelope_digest(self.envelope), "features": [f["id"] for f in self.map["features"]],
                 "critical_path": self.graph["critical_path"], "critical_path_length": self.graph["critical_path_length"],
                 "width": self.graph["width"], "work_critical_ratio": self.graph["work_critical_ratio"],
-                "risk": self.plan["r"], "verification_units": self.plan["units"], "tau": self.plan["tau"], "floor": self.plan["floor"]})
+                "risk": self.plan["r"], "verification_units": self.plan["units"], "tau": self.plan["tau"], "floor": self.plan["floor"]},
+                   refs={"promotion": {k: self.promotion[k] for k in ("seq", "approval_seq", "approval_digest", "keyid", "verdict_ids")}})
             for ticket in tickets:
                 self.ledger.append("ticket_opened", {
                     "ticket_id": ticket["ticket_id"], "spec_id": self.spec["spec_id"], "version": self.spec["version"],
@@ -375,13 +504,21 @@ class Loop:
     # -- run ----------------------------------------------------------------------------------------------------------------
 
     def run(self, max_steps: int = 50) -> dict:
+        """Steps until nothing is eligible, the envelope is spent, the kill switch is set or ``max_steps`` pass.
+        An envelope whose ledger already carries a ``stop`` is refused before anything starts: a grant is spent
+        once. A ``Rejected`` raised while running (an invalid policy answer, a refused reservation, a thread or
+        checkout the kernel refused) still ends the record: the envelope gets its ``stop`` line and the ledger
+        its ``loop_stopped`` with the refusal's code as the reason, and then the refusal propagates."""
         if not self.tickets:
             self.compile()
+        previous = self.spend.totals()["stopped"]
+        if previous:
+            raise Rejected("envelope_stopped", f"this envelope's ledger already stopped ({previous}); issue a new envelope for a new run")
         self.order = [f["id"] for f in self.map["features"]]
         kill = self.envelope.get("kill_switch")
-        stopped = None
-        self.kit = Kit.local(self.kit_home, self.repo_root, actor=self.actor)
+        stopped, failure = None, None
         try:
+            self.kit = Kit.local(self.kit_home, self.repo_root, actor=self.actor)
             for _ in range(max_steps):
                 if kill and Path(kill).exists():
                     stopped = "kill_switch"
@@ -398,18 +535,35 @@ class Loop:
                     stopped = "envelope_exhausted"
                     break
                 chosen = self.ask("next_feature", None, eligible).value
-                arms = [a["id"] for a in self.envelope["arms"]]
-                arm = self.ask("proposer_arm", chosen, arms).value
+                arm = self.ask("proposer_arm", chosen, self._arms(chosen)).value
                 tier = self.ask("budget_tier", chosen, tiers).value
                 self._attempt(chosen, arm, tier)
             else:
                 stopped = "max_steps"
+        except Rejected as exc:
+            stopped, failure = exc.code, exc
         finally:
-            self.kit.close()
+            if self.kit is not None:
+                self.kit.close()
         self.spend.stop(stopped)
         record(self.ledger, "loop_stopped", self.map_digest, {"reason": stopped, "states": {fid: row["state"] for fid, row in self.state.items()},
-                                                               "calls": self.spend.totals()["calls"], "dollars": self.spend.totals()["dollars"]})
+                                                               "calls": self.spend.totals()["calls"], "dollars": self.spend.totals()["dollars"]},
+               refs={"detail": failure.detail} if failure else None)
+        if failure is not None:
+            raise failure
         return self.summary(stopped)
+
+    def _arm_rank(self, arm_id: str) -> int:
+        return int(next(a for a in self.envelope["arms"] if a["id"] == arm_id).get("tier_rank", 0))
+
+    def _arms(self, fid: str) -> list[str]:
+        """The arms this feature may run now: every arm of the envelope, or after ``retry_escalate_arm`` only the
+        arms ranked above the one that failed, so the recorded decision is the one that happens."""
+        floor = self.state[fid]["arm_floor"]
+        offered = [a["id"] for a in self.envelope["arms"] if int(a.get("tier_rank", 0)) >= floor]
+        if not offered:
+            raise Rejected("arm_unavailable", f"{fid}: no arm of the envelope is ranked at or above {floor}")
+        return offered
 
     def summary(self, stopped: str | None = None) -> dict:
         totals = self.spend.totals()
@@ -428,14 +582,16 @@ class Loop:
         record(self.ledger, "envelope_reserved", self.map_digest, {"feature": fid, "attempt": attempt, "tier": tier, "arm": arm_id,
                                                                    "dollars": self.envelope["dollars"]["tiers"][tier]})
         arm = next(a for a in self.envelope["arms"] if a["id"] == arm_id)
+        row["last_arm"] = arm_id
         started = time.monotonic()
         stacked = None
-        if item["depends_on"] and self.map["integration"] == "stack":
-            stacked = self.state[item["depends_on"][-1]]["commit"]  # one branch: the last dependency's accepted commit
-            self.kit.repo.git("checkout", "-q", "-B", f"syberfactory/{self.map['id']}/{fid}", stacked)
         objective = f"{fid}: {ticket['objective']}\nCriteria: " + "; ".join(f"{c['id']} {c['text']}" for c in ticket["acceptance_criteria"])
         contract = f"syberfactory-{ticket['ticket_id']}.v1"
-        thread = self.kit.start(objective, contract=contract, paths=item["scope"]["paths"], act_class=item["act_class"], unattended=True)
+        if item["depends_on"] and self.map["integration"] == "stack":
+            stacked = self.state[item["depends_on"][-1]]["commit"]  # one branch: the last dependency's accepted commit
+            thread = self._start_stacked(fid, stacked, objective, contract, item)
+        else:
+            thread = self.kit.start(objective, contract=contract, paths=item["scope"]["paths"], act_class=item["act_class"], unattended=True)
         row["state"], row["thread"] = "building", thread.id
         record(self.ledger, "attempt_started", self.map_digest, {"feature": fid, "attempt": attempt, "ticket_id": ticket["ticket_id"],
                                                                  "arm": arm_id, "tier": tier, "contract": contract, "stacked": stacked is not None},
@@ -470,6 +626,27 @@ class Loop:
         record(self.ledger, "feature_failed", self.map_digest, {"feature": fid, "attempt": attempt, "reason": reason}, refs={"thread": thread.id})
         self._after_failure(fid)
 
+    def _start_stacked(self, fid: str, commit: str, objective: str, contract: str, item: dict):
+        """Start a thread from a dependency's accepted commit. ``Kit.start`` starts from HEAD, so HEAD is moved
+        to that commit on a scratch branch for the start and put back afterwards (the branch or detached commit
+        the owner had), whether or not the start succeeded; the scratch branch is deleted. A working tree with
+        uncommitted tracked changes is refused first (``repository_dirty``): a checkout would carry or lose them."""
+        repo = self.kit.repo
+        if repo.git("status", "--porcelain", "--untracked-files=no").strip():
+            raise Rejected("repository_dirty", f"{repo.root} has uncommitted changes; commit or stash them before a stacked feature starts")
+        branch = repo.current_branch()
+        head = repo.rev("HEAD")
+        scratch = f"syberfactory/{self.map['id']}/{fid}"
+        repo.git("checkout", "-q", "-B", scratch, commit)
+        try:
+            return self.kit.start(objective, contract=contract, paths=item["scope"]["paths"], act_class=item["act_class"], unattended=True)
+        finally:
+            if branch:
+                repo.git("checkout", "-q", branch[len("refs/heads/"):] if branch.startswith("refs/heads/") else branch)
+            else:
+                repo.git("checkout", "-q", "--detach", head)
+            repo.git("branch", "-q", "-D", scratch, ok=(0, 1))
+
     def _drive(self, thread, fid: str, attempt: int) -> tuple[str, str | None]:
         """``syberlabs run``'s passes over this one thread until nothing is left: the kernel checks, accepts and
         recovers; this records what each pass did."""
@@ -495,13 +672,17 @@ class Loop:
         options = ["continue", "stop"] if left > 0 else ["stop"]
         worth = self.ask("worth_continuing", fid, options).value
         choices = []
+        last_rank = self._arm_rank(row["last_arm"]) if row["last_arm"] else 0
+        stronger = [a["id"] for a in self.envelope["arms"] if int(a.get("tier_rank", 0)) > last_rank]
         if worth == "continue" and left > 0:
             choices.append("retry_same")
-            if len(self.envelope["arms"]) > 1:
+            if stronger:
                 choices.append("retry_escalate_arm")
         choices += ["escalate_owner", "park"]
         decision = self.ask("after_failure", fid, choices).value
         if decision in ("retry_same", "retry_escalate_arm"):
+            if decision == "retry_escalate_arm":
+                row["arm_floor"] = last_rank + 1  # the next attempt's proposer_arm offers only the stronger arms
             row["state"] = "open"  # eligible again; the next step may pick it or another feature
             return
         row["state"] = "escalated" if decision == "escalate_owner" else "parked"

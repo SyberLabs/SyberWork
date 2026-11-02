@@ -10,7 +10,8 @@ The questions (autonomous design, section 4.2), each with the option set code bu
 
 - ``next_feature`` (choice): the eligible features (dependencies satisfied, no conflicting scope running, act
   class allowed, room in the envelope, attempts left). With no eligible feature the loop stops; no question.
-- ``proposer_arm`` (choice): the envelope's arms that fit the remaining dollars.
+- ``proposer_arm`` (choice): the envelope's arms; after ``retry_escalate_arm`` only the arms ranked above the one
+  that failed, so the cheapest answer is then the cheapest stronger arm.
 - ``budget_tier`` (choice): the tiers whose ceiling fits the remaining dollars (``S``, ``M``, ``L``).
 - ``after_failure`` (choice): ``retry_same``, ``retry_escalate_arm``, ``escalate_owner``, ``park``; an option is
   removed when the caps forbid it (no attempts left removes the retries).

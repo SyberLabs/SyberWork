@@ -1,8 +1,10 @@
 """The autonomy thin slice (AM1) on the fixture app: spec -> approved feature map -> tickets on the ledger -> Build
 Threads driven by the runner with a stand-in proposer -> features ready for the owner's merge, inside an envelope.
-Offline, no model, no network, no merge."""
+Offline, no model, no network, no merge. The spec is promoted through the goal gate's real path: review and
+validate events on the ledger, the owner's signed approval verified and recorded, the promotion citing it."""
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -11,6 +13,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from syberlabs.canonical import canonical
+from syberlabs.ed25519 import generate
 from syberlabs.errors import Rejected
 from syberlabs.factory import featuremap, ledger, loop, space
 from syberlabs.factory import policy as policymod
@@ -21,20 +25,47 @@ APP = ROOT / "tests" / "fixtures" / "factory_app"
 AUTONOMY = ROOT / "tests" / "fixtures" / "autonomy"
 DECLARED = json.loads((APP / "architecture.json").read_text(encoding="utf-8"))
 OWNER = {"kind": "human", "id": "tester"}
+OWNER_SEED, OWNER_PUBLIC = generate()
+VERDICT = "review-1"
 GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.test", "GIT_COMMITTER_NAME": "t",
            "GIT_COMMITTER_EMAIL": "t@example.test", "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
            "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"}
 
 
-def promoted_spec(project: Path) -> dict:
-    """The fixture spec as #154's object: from sectioned Markdown, footprint resolved against Space, validated, promoted."""
+def candidate_spec(project: Path) -> dict:
+    """The fixture spec as #154's object: from sectioned Markdown, footprint resolved against Space, validated."""
     document = featuremap.spec_from_markdown((AUTONOMY / "spec.md").read_text(encoding="utf-8"), "order-markers",
                                              "delivery markers on the order path", ["rules", "ingest", "main"], author=OWNER)
     graph = space.index(project, revision="base")
     space.map_components(graph, DECLARED)
     specmod.resolve_footprint(document, graph)
     specmod.transition(document, "validate", OWNER, space=graph)
-    specmod.transition(document, "promote", OWNER, verdict_ids=["review-1"])
+    return document
+
+
+def promoted_spec(project: Path, home: ledger.Ledger, *, seed: bytes = OWNER_SEED, public: bytes = OWNER_PUBLIC) -> dict:
+    """The candidate promoted the way `factory spec promote` does it (C1's goal gate): a model's variant, an
+    independent reviewer's accepting verdict and the validate that wrote the candidate are on the ledger; the
+    owner signs an approval over the spec's digest, `gate` resolves the verdict and verifies the approval,
+    `transition` promotes, the approval is recorded and the `spec_changed` cites it."""
+    document = candidate_spec(project)
+    before = specmod.spec_digest(document)
+    reviewer = {"kind": "model", "id": "gpt", "model": "gpt-5", "family": "openai"}
+    home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], "operation": "mutate",
+                                 "variant_id": "var1", "actor": {"kind": "model", "id": "claude", "family": "anthropic"}})
+    home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], "operation": "review",
+                                 "verdict_id": VERDICT, "variant_id": "var1", "decision": "accept", "actor": reviewer})
+    home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], "operation": "validate",
+                                 "accepted_variant": "var1", "verdict_id": VERDICT, "spec_digest": before})
+    envelope = specmod.sign_approval(specmod.approval_payload(document, "promote", OWNER, verdict_ids=[VERDICT]), seed)
+    approval, resolved = specmod.gate(document, "promote", OWNER, home.events(), envelope, public, verdict_ids=[VERDICT],
+                                      spec_digest_value=before)
+    record = specmod.transition(document, "promote", OWNER, verdict_ids=[VERDICT], approval=approval, spec_digest=before,
+                                resolved_verdicts=resolved)
+    event = home.record_approval(envelope, approval)
+    record["approval"] = {**record["approval"], "event_hash": event["hash"], "approval_digest": event["body"]["approval_digest"]}
+    home.append("spec_changed", {"spec_id": document["spec_id"], "version": document["version"], **record,
+                                 "spec_digest": specmod.spec_digest(document), "footprint": document["footprint"]["components"]})
     return document
 
 
@@ -51,6 +82,11 @@ def hidden_catalogue() -> dict:
     return {name: [arg.replace("{python}", sys.executable) for arg in argv] for name, argv in raw.items() if not name.startswith("_")}
 
 
+def git(project: Path, *args: str) -> str:
+    env = {**os.environ, **GIT_ENV}
+    return subprocess.run(["git", "-C", str(project), *args], check=True, capture_output=True, text=True, env=env).stdout.strip()
+
+
 class Scratch(unittest.TestCase):
     def setUp(self):
         self.scratch = Path(tempfile.mkdtemp(prefix="autonomy-"))
@@ -60,23 +96,36 @@ class Scratch(unittest.TestCase):
         """A copy of the fixture app as a Git repository with a deterministic base commit."""
         project = self.scratch / name
         shutil.copytree(APP, project)
-        env = {**os.environ, **GIT_ENV}
-        git = lambda *a: subprocess.run(["git", "-C", str(project), *a], check=True, capture_output=True, text=True, env=env).stdout.strip()
-        git("init", "-q", "-b", "main")
-        git("add", ".")
-        git("-c", "commit.gpgsign=false", "commit", "-qm", "base")
-        return project, git("rev-parse", "HEAD")
+        git(project, "init", "-q", "-b", "main")
+        git(project, "add", ".")
+        git(project, "-c", "commit.gpgsign=false", "commit", "-qm", "base")
+        return project, git(project, "rev-parse", "HEAD")
 
-    def make_loop(self, project: Path, mapping: dict, document: dict, *, calls_total=10, attempts=2, mode="", policy=None,
-                  kill_switch=None, ledger_name="ledger") -> loop.Loop:
-        home = ledger.Ledger(self.scratch / ledger_name)
+    def home(self, name="ledger") -> ledger.Ledger:
+        return ledger.Ledger(self.scratch / name)
+
+    def make_loop(self, project: Path, mapping: dict, document: dict, home: ledger.Ledger, *, calls_total=10, attempts=2, mode="",
+                  policy=None, kill_switch=None, arms=None, owner_public=None) -> loop.Loop:
         envelope = loop.new_envelope(featuremap.map_digest(mapping), dollars_total=0.0, calls_total=calls_total, seconds_total=600,
-                                     attempts_per_feature=attempts, kill_switch=kill_switch)
+                                     attempts_per_feature=attempts, kill_switch=kill_switch, arms=arms)
         argv = [sys.executable, str(AUTONOMY / "standin_proposer.py"), str(project)] + ([mode] if mode else [])
         checks = {"tests": {"argv": [sys.executable, "-c", "import fxapp.main, fxapp.variants"], "timeout_seconds": 60}}
         return loop.Loop(repo_root=project, kit_home=project / ".syberlabs", ledger=home, map=mapping, spec=document, envelope=envelope,
                          policy=policy or policymod.OfflinePolicy(), proposer_argv=argv, checks=checks, hidden_catalogue=hidden_catalogue(),
-                         human_owner="tester")
+                         human_owner="tester", owner_public=owner_public)
+
+    def ready_loop(self, name="project", ledger_name="ledger", **overrides) -> tuple[loop.Loop, Path, str, dict]:
+        """A project, a promoted spec on a fresh ledger and an approved fixture map: the loop ready to compile."""
+        project, base = self.project(name)
+        home = self.home(ledger_name)
+        document = promoted_spec(project, home)
+        mapping = fixture_map(document, base, **overrides.pop("map", {}))
+        featuremap.approve(mapping, OWNER)
+        return self.make_loop(project, mapping, document, home, **overrides), project, base, mapping
+
+
+def notes(events, note):
+    return [e for e in events if e["kind"] == "note" and e["body"]["note"] == note]
 
 
 class SpecAndMap(Scratch):
@@ -91,7 +140,7 @@ class SpecAndMap(Scratch):
 
     def test_fixture_map_validates_and_the_task_graph_measures(self):
         project, base = self.project()
-        document = promoted_spec(project)
+        document = promoted_spec(project, self.home())
         mapping = fixture_map(document, base)
         self.assertEqual(featuremap.mapcheck(mapping, document), [])
         graph = featuremap.taskgraph(mapping)
@@ -115,7 +164,7 @@ class SpecAndMap(Scratch):
 
     def test_mapcheck_refuses_a_cycle_flags_a_scope_conflict_and_checks_coverage(self):
         project, base = self.project()
-        document = promoted_spec(project)
+        document = promoted_spec(project, self.home())
         cyclic = fixture_map(document, base)
         cyclic["features"][0]["depends_on"] = ["F2"]
         findings = featuremap.mapcheck(cyclic, document)
@@ -151,10 +200,18 @@ class SpecAndMap(Scratch):
         shared = fixture_map(document, base)
         shared["features"][1]["hidden_checks"] = ["hidden.f1.marker"]
         self.assertTrue(any("also named by F1" in f for f in featuremap.mapcheck(shared, document)))
+        # Scope entries are compared normalised: case, leading "./" segments, backslashes and a trailing slash.
+        cased = fixture_map(document, base)
+        cased["features"][2]["scope"]["paths"] = ["./FXAPP/Rules.py"]
+        self.assertTrue(any(f.startswith("scope conflict: F1 and F3") for f in featuremap.mapcheck(cased, document)),
+                        "FXAPP/Rules.py is fxapp/rules.py on a case-insensitive filesystem")
+        self.assertTrue(featuremap.path_intersects("./fxapp\\rules.py", "FXAPP/"))
+        self.assertFalse(featuremap.path_intersects(".github/x", "github/x"), "a leading dot is part of a name, not a './' prefix")
+        self.assertFalse(featuremap.path_intersects("fxapp/rules.py", "fxapp/rules"))
 
     def test_risk_plan_keeps_the_floor_and_allocates_softmax_units(self):
         project, base = self.project()
-        document = promoted_spec(project)
+        document = promoted_spec(project, self.home())
         mapping = fixture_map(document, base)
         plan = featuremap.risk_plan(mapping, budget=4, tau=1.0)
         self.assertEqual(sum(plan["units"].values()), 4)
@@ -168,6 +225,13 @@ class SpecAndMap(Scratch):
         self.assertGreaterEqual(max(sharp["share"].values()), max(plan["share"].values()), "a lower tau concentrates")
         with self.assertRaises(Rejected):
             featuremap.risk_plan(mapping, tau=0.01)
+        # Weights are validated: exactly the known inputs, each in [0, 1], summing to 1, so r stays in [0, 1].
+        for bad in ({**featuremap.WEIGHTS, "scope": 0.5}, {k: v for k, v in featuremap.WEIGHTS.items() if k != "scope"},
+                    {**featuremap.WEIGHTS, "extra": 0.0}, {**featuremap.WEIGHTS, "scope": -0.15, "act_class": 0.45},
+                    {**featuremap.WEIGHTS, "scope": float("nan")}):
+            with self.assertRaises(Rejected, msg=str(bad)) as refused:
+                featuremap.risk_plan(mapping, weights=bad)
+            self.assertEqual(refused.exception.code, "risk_weights")
         flat = fixture_map(document, base)
         for item in flat["features"]:
             item["depends_on"], item["size"], item["criteria"] = [], "S", [{"id": f"{item['id']}.c1", "text": "x", "kind": "test"}]
@@ -178,7 +242,7 @@ class SpecAndMap(Scratch):
 
     def test_a_feature_compiles_to_one_ticket_in_the_spec_ticket_shape(self):
         project, base = self.project()
-        document = promoted_spec(project)
+        document = promoted_spec(project, self.home())
         mapping = fixture_map(document, base)
         featuremap.approve(mapping, OWNER)
         graph = space.index(project, revision="base")
@@ -266,24 +330,96 @@ class Policies(unittest.TestCase):
         self.assertEqual(shadow.disagreements, 2)
 
 
+class Envelope(unittest.TestCase):
+    def setUp(self):
+        self.scratch = Path(tempfile.mkdtemp(prefix="envelope-"))
+        self.addCleanup(shutil.rmtree, self.scratch, True)
+        self.envelope = loop.new_envelope("m" * 64, dollars_total=1.0, calls_total=3, seconds_total=10.0)
+        self.spend = loop.EnvelopeLedger(loop.envelope_path(self.scratch, self.envelope), self.envelope)
+
+    def raw(self, **fields) -> None:
+        line = {"schema": loop.ENVELOPE_LINE_SCHEMA, "envelope_digest": self.spend.digest, **fields}
+        with self.spend.path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(canonical(line) + "\n")
+
+    def refuses(self, code, call, *args, **kwargs):
+        with self.assertRaises(Rejected, msg=f"{args} {kwargs}") as refused:
+            call(*args, **kwargs)
+        self.assertEqual(refused.exception.code, code, refused.exception.detail)
+
+    def test_the_kill_switch_path_stays_out_of_the_digest_and_the_file_is_keyed_by_it(self):
+        with_switch = loop.new_envelope("m" * 64, dollars_total=1.0, calls_total=3, seconds_total=10.0, kill_switch=str(self.scratch / "stop"))
+        self.assertEqual(loop.envelope_digest(with_switch), self.spend.digest, "a host path is not a term of the grant")
+        self.assertEqual(self.spend.path, self.scratch / loop.ENVELOPE_DIR / f"{self.spend.digest}.jsonl")
+        other = loop.new_envelope("m" * 64, dollars_total=1.0, calls_total=4, seconds_total=10.0)
+        self.assertNotEqual(loop.envelope_path(self.scratch, other), self.spend.path, "another grant, another file")
+
+    def test_reserve_and_settle_are_strict(self):
+        self.refuses("envelope_conflict", self.spend.settle, "F1", 1, dollars=0.0, calls=1, seconds=1.0, unknown_models=[])
+        self.spend.reserve("F1", 1, "S", "standin")
+        self.refuses("envelope_conflict", self.spend.reserve, "F1", 1, "S", "standin")
+        for bad in ({"calls": -1}, {"calls": 1.0}, {"seconds": -0.5}, {"seconds": float("nan")}, {"dollars": float("inf")},
+                    {"dollars": -0.01}, {"calls": True}):
+            fields = {"dollars": 0.0, "calls": 1, "seconds": 1.0, **bad}
+            self.refuses("envelope_unpriced", self.spend.settle, "F1", 1, unknown_models=[], **fields)
+        self.assertEqual([line["kind"] for line in self.spend.lines()], ["reserve"], "a refused settle wrote nothing")
+        self.spend.settle("F1", 1, dollars=0.25, calls=1, seconds=2.0, unknown_models=[])
+        self.refuses("envelope_conflict", self.spend.settle, "F1", 1, dollars=0.0, calls=1, seconds=1.0, unknown_models=[])
+        totals = self.spend.totals()
+        self.assertEqual((totals["calls"], totals["dollars"], totals["seconds"], totals["unsettled"]), (1, 0.25, 2.0, 0))
+        self.assertEqual((totals["calls_left"], totals["dollars_left"]), (2, 0.75))
+
+    def test_a_file_line_that_is_not_a_priced_envelope_line_refuses_the_file(self):
+        self.spend.reserve("F1", 1, "S", "standin")
+        cases = [
+            ("envelope_unreadable", {"feature": "F1", "attempt": 1, "dollars": 0.0, "calls": 1, "seconds": 0.0}),  # no kind: not a KeyError
+            ("envelope_unreadable", {"kind": "refund", "feature": "F1", "attempt": 1, "dollars": 0.0, "calls": 1, "seconds": 0.0}),
+            ("envelope_unpriced", {"kind": "settle", "feature": "F1", "attempt": 1, "dollars": -1.0, "calls": 1, "seconds": 0.0}),
+            ("envelope_unpriced", {"kind": "settle", "feature": "F1", "attempt": 1, "dollars": 0.0, "calls": -2, "seconds": 0.0}),
+            ("envelope_unpriced", {"kind": "settle", "feature": "F1", "attempt": 1, "dollars": 0.0, "calls": 1, "seconds": -3.0}),
+            ("envelope_unpriced", {"kind": "reserve", "feature": "F1", "attempt": 2, "dollars": 0.0, "calls": "1", "seconds": 0.0}),
+            ("envelope_unreadable", {"kind": "reserve", "attempt": 2, "dollars": 0.0, "calls": 1, "seconds": 0.0}),  # no feature
+            ("envelope_unreadable", {"kind": "stop"}),  # no reason
+            ("envelope_conflict", {"kind": "reserve", "feature": "F1", "attempt": 1, "dollars": 0.0, "calls": 1, "seconds": 0.0}),
+            ("envelope_conflict", {"kind": "settle", "feature": "F2", "attempt": 1, "dollars": 0.0, "calls": 1, "seconds": 0.0}),
+        ]
+        good = self.spend.path.read_text(encoding="utf-8")
+        for code, fields in cases:
+            self.raw(**fields)
+            self.refuses(code, self.spend.totals)
+            self.refuses(code, self.spend.room, "S")
+            self.spend.path.write_text(good, encoding="utf-8")
+        self.raw(kind="stop", reason="x", envelope_digest="0" * 64)
+        self.refuses("envelope_unreadable", self.spend.totals)
+        self.spend.path.write_text(good, encoding="utf-8")
+        self.raw(kind="settle", feature="F1", attempt=1, dollars=0.0, calls=1, seconds=0.0)
+        self.raw(kind="settle", feature="F1", attempt=1, dollars=0.0, calls=1, seconds=0.0)
+        self.refuses("envelope_conflict", self.spend.totals)
+        self.spend.path.write_text(good, encoding="utf-8")
+        self.assertEqual(self.spend.totals()["calls"], 1, "the hold counts until it settles")
+
+
 class EndToEnd(Scratch):
     def test_the_thin_slice_builds_three_features_to_ready_for_owner_merge(self):
         project, base = self.project()
-        document = promoted_spec(project)
+        home = self.home()
+        document = promoted_spec(project, home)
         mapping = fixture_map(document, base)
         featuremap.approve(mapping, OWNER)
         recorded = policymod.recorded_answers({"next_feature": "F3", "budget_tier": "S", "proposer_arm": "standin"})
         shadow = policymod.ShadowPolicy(policymod.OfflinePolicy(), recorded, shadow_name="recorded-jev")
-        run = self.make_loop(project, mapping, document, policy=shadow)
+        run = self.make_loop(project, mapping, document, home, policy=shadow, owner_public=OWNER_PUBLIC)
         tickets = run.compile()
-        home = run.ledger
         self.assertEqual([t["map_ref"]["feature_id"] for t in tickets], ["F1", "F2", "F3"])
+        self.assertTrue(run.promotion["verified"], "the owner's approval was re-verified under the owner's key")
         opened = [e for e in home.events() if e["kind"] == "ticket_opened"]
         self.assertEqual([(e["body"]["feature_id"], e["body"]["source"], e["body"]["human_owner"]) for e in opened],
                          [("F1", "map", "tester"), ("F2", "map", "tester"), ("F3", "map", "tester")])
-        frozen = [e for e in home.events() if e["kind"] == "note" and e["body"]["note"] == "map_frozen"]
+        frozen = notes(home.events(), "map_frozen")
         self.assertEqual(len(frozen), 1)
         self.assertEqual(frozen[0]["body"]["approved_by"], OWNER)
+        self.assertEqual(frozen[0]["body"]["promoted_by"], OWNER)
+        self.assertEqual(frozen[0]["body"]["refs"]["promotion"]["approval_digest"], run.promotion["approval_digest"])
         self.assertEqual(frozen[0]["body"]["critical_path"], ["F1", "F2"])
         contracts = sorted(p.name for p in (project / ".syberlabs" / "contracts").glob("*.json"))
         self.assertEqual(contracts, sorted(f"syberfactory-{t['ticket_id']}.v1.json" for t in tickets))
@@ -299,14 +435,12 @@ class EndToEnd(Scratch):
         self.assertEqual(summary["envelope"]["unsettled"], 0)
         events = loop.autonomy_events(home)
         kinds = [(e["kind"] if e["kind"] != "note" else e["body"]["note"]) for e in events]
-        picks = [e["body"]["answer"]["value"] for e in events if e["kind"] == "note" and e["body"]["note"] == "policy_proposal"
-                 and e["body"]["question"] == "next_feature"]
+        picks = [e["body"]["answer"]["value"] for e in notes(events, "policy_proposal") if e["body"]["question"] == "next_feature"]
         self.assertEqual(picks, ["F1", "F3", "F2"], "critical path first: F1 (bottom level 2, a dependent), then F3 (M), then F2")
-        shadows = [e["body"]["answer"]["shadow"] for e in events if e["kind"] == "note" and e["body"]["note"] == "policy_proposal"
-                   and e["body"]["question"] == "next_feature"]
+        shadows = [e["body"]["answer"]["shadow"] for e in notes(events, "policy_proposal") if e["body"]["question"] == "next_feature"]
         self.assertEqual([s["agrees"] for s in shadows], [False, True, None], "the shadow disagreed on the first pick and was out of options on the last")
         self.assertEqual(shadows[2]["reason"], "policy_invalid")
-        steps = [(e["body"]["feature"], e["body"]["step"], e["body"]["outcome"]) for e in events if e["kind"] == "note" and e["body"]["note"] == "thread_step"]
+        steps = [(e["body"]["feature"], e["body"]["step"], e["body"]["outcome"]) for e in notes(events, "thread_step")]
         self.assertEqual(steps, [("F1", "check", "acceptable"), ("F1", "accept", "succeeded"),
                                  ("F3", "check", "acceptable"), ("F3", "accept", "succeeded"),
                                  ("F2", "check", "acceptable"), ("F2", "accept", "succeeded")])
@@ -315,90 +449,158 @@ class EndToEnd(Scratch):
         self.assertEqual(kinds.count("feature_ready"), 3)
         self.assertEqual(kinds.count("feature_failed"), 0)
         self.assertTrue(home.verify())
-        ready = [e for e in events if e["kind"] == "note" and e["body"]["note"] == "feature_ready"]
-        for event in ready:
+        for event in notes(events, "feature_ready"):
             self.assertTrue(event["body"]["refs"]["target_ref"].startswith("refs/heads/syberlabs/"))
             self.assertEqual(event["body"]["next"], "owner merges; nothing here merges")
-        main = subprocess.run(["git", "-C", str(project), "rev-parse", "main"], capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(main, base, "main never moved")
+        self.assertEqual(git(project, "rev-parse", "main"), base, "main never moved")
+        # The owner's checkout is as it was: HEAD on main at the base commit, a clean tree, no scratch branch left.
+        self.assertEqual(git(project, "symbolic-ref", "HEAD"), "refs/heads/main")
+        self.assertEqual(git(project, "rev-parse", "HEAD"), base)
+        self.assertEqual(git(project, "status", "--porcelain"), "")
+        self.assertEqual([b for b in git(project, "branch", "--list", "syberfactory/*").split() if b], [])
         f2 = summary["features"]["F2"]["commit"]
-        shown = subprocess.run(["git", "-C", str(project), "show", f"{f2}:fxapp/rules.py"], capture_output=True, text=True, check=True).stdout
+        shown = git(project, "show", f"{f2}:fxapp/rules.py")
         self.assertIn("# F1 delivered", shown, "F2 stacked on F1's accepted commit")
         walk = loop.why(home, tickets[1]["ticket_id"])
         self.assertEqual((walk["feature"], walk["requirements"], walk["map"]["approved_by"]), ("F2", ["R2"], OWNER))
         self.assertEqual(walk["spec"]["digest"], specmod.spec_digest(document))
+        self.assertEqual(walk["spec"]["promoted_by"], OWNER)
+        self.assertEqual(walk["spec"]["promotion"]["seq"], run.promotion["seq"])
         self.assertEqual(walk["ready_for_owner_merge"]["commit"], f2)
         self.assertEqual(run.spend.totals()["stopped"], "nothing_eligible")
+        self.assertEqual(run.spend.path.parent.name, loop.ENVELOPE_DIR)
         # The same list, for the report: every autonomy event in order.
         print("\nledger events:", " ".join(kinds))
 
     def test_same_fixture_gives_the_same_event_digests(self):
         digests = []
         for name in ("one", "two"):
-            project, base = self.project(name)
-            document = promoted_spec(project)
-            mapping = fixture_map(document, base)
-            featuremap.approve(mapping, OWNER)
-            run = self.make_loop(project, mapping, document, ledger_name=f"ledger-{name}")
+            run, _, _, _ = self.ready_loop(name, f"ledger-{name}")
             run.run()
             digests.append(loop.event_digests(run.ledger))
         self.assertEqual(len(digests[0]), len(digests[1]))
-        self.assertEqual(digests[0], digests[1], "no timestamp, thread id or commit enters an event digest")
+        self.assertEqual(digests[0], digests[1], "no timestamp, thread id, commit or approval digest enters an event digest")
         self.assertGreater(len(digests[0]), 20)
+
+    def test_compile_needs_the_ledgers_promotion_record_not_the_files_state(self):
+        """The file's ``state`` decides nothing: the ledger must hold a promote of exactly this spec, citing a
+        recorded approval by a human, whose envelope is stored; with the owner's key it must verify."""
+        project, base = self.project()
+        home = self.home()
+        in_memory = candidate_spec(project)
+        payload = specmod.approval_payload(in_memory, "promote", OWNER, verdict_ids=[VERDICT])
+        approval = specmod.verify_approval(specmod.sign_approval(payload, OWNER_SEED), OWNER_PUBLIC, in_memory, "promote", verdict_ids=[VERDICT])
+        specmod.transition(in_memory, "promote", OWNER, verdict_ids=[VERDICT], approval=approval)
+        self.assertEqual(in_memory["state"], "promoted", "the file says promoted")
+        mapping = fixture_map(in_memory, base)
+        featuremap.approve(mapping, OWNER)
+        run = self.make_loop(project, mapping, in_memory, home)
+        with self.assertRaises(Rejected) as refused:
+            run.compile()
+        self.assertEqual(refused.exception.code, "spec_unpromoted", "promoted in memory, never on the ledger")
+        self.assertEqual(loop.autonomy_events(home), [], "nothing was logged")
+
+        document = promoted_spec(project, home)
+        edited = json.loads(json.dumps(document))
+        edited["capability"] = "edited after promotion"
+        mapping = fixture_map(edited, base)
+        featuremap.approve(mapping, OWNER)
+        with self.assertRaises(Rejected) as refused:
+            self.make_loop(project, mapping, edited, home).compile()
+        self.assertEqual(refused.exception.code, "spec_unpromoted", "the file is not the spec the ledger promoted")
+
+        mapping = fixture_map(document, base)
+        featuremap.approve(mapping, OWNER)
+        with self.assertRaises(Rejected) as refused:
+            self.make_loop(project, mapping, document, home, owner_public=generate()[1]).compile()
+        self.assertEqual(refused.exception.code, "approval_unverified", "another owner's key: the stored approval is no approval")
+
+        approvals = next(p for p in (home.home / "approvals").glob("*.json"))
+        kept = approvals.read_text(encoding="utf-8")
+        approvals.write_text(kept.replace('"', "'", 1), encoding="utf-8")
+        with self.assertRaises(Rejected) as refused:
+            self.make_loop(project, mapping, document, home).compile()
+        self.assertEqual(refused.exception.code, "spec_unpromoted", "a damaged approval envelope refuses even without a key")
+        approvals.write_text(kept, encoding="utf-8")
+
+        run = self.make_loop(project, mapping, document, home, owner_public=OWNER_PUBLIC)
+        run.compile()
+        self.assertEqual(run.promotion["approver"], OWNER)
+        self.assertEqual(run.promotion["verdict_ids"], [VERDICT])
+        self.assertTrue(run.promotion["verified"])
+        self.assertEqual(loop.promotion_record(home, document)["verified"], False, "without a key the record is checked, not the signature")
 
     def test_a_map_without_owner_approval_is_refused(self):
         project, base = self.project()
-        document = promoted_spec(project)
+        home = self.home()
+        document = promoted_spec(project, home)
         mapping = fixture_map(document, base)
-        run = self.make_loop(project, mapping, document)
+        run = self.make_loop(project, mapping, document, home)
         with self.assertRaises(Rejected) as refused:
             run.compile()
         self.assertEqual(refused.exception.code, "map_unapproved")
-        self.assertEqual(run.ledger.events(), [], "nothing was logged")
+        self.assertEqual(loop.autonomy_events(home), [], "nothing was logged")
         featuremap.approve(mapping, OWNER)
         mapping["features"][0]["depends_on"] = ["F2"]
-        run = self.make_loop(project, mapping, document, ledger_name="ledger2")
+        run = self.make_loop(project, mapping, document, home)
         with self.assertRaises(Rejected) as refused:
             run.compile()
         self.assertEqual(refused.exception.code, "map_unapproved", "an edit after approval leaves the approval stale")
         featuremap.approve(mapping, OWNER)
-        run = self.make_loop(project, mapping, document, ledger_name="ledger3")
+        run = self.make_loop(project, mapping, document, home)
         with self.assertRaises(Rejected) as refused:
             run.compile()
         self.assertEqual(refused.exception.code, "map_invalid")
         self.assertIn("cycle", refused.exception.detail)
 
     def test_the_envelope_stops_the_loop(self):
-        project, base = self.project()
-        document = promoted_spec(project)
-        mapping = fixture_map(document, base)
-        featuremap.approve(mapping, OWNER)
-        run = self.make_loop(project, mapping, document, calls_total=2)
+        run, _, _, _ = self.ready_loop(calls_total=2)
         summary = run.run()
         self.assertEqual(summary["stopped"], "envelope_exhausted")
         self.assertEqual(summary["ready_for_owner_merge"], ["F1", "F3"])
         self.assertEqual(summary["features"]["F2"]["state"], "open", "F2 was eligible and waits for a new envelope")
         self.assertEqual(summary["envelope"]["calls_left"], 0)
         self.assertEqual(run.spend.totals()["stopped"], "envelope_exhausted")
-        lines = run.spend.lines()
-        self.assertEqual([line["kind"] for line in lines], ["reserve", "settle", "reserve", "settle", "stop"])
+        self.assertEqual([line["kind"] for line in run.spend.lines()], ["reserve", "settle", "reserve", "settle", "stop"])
+
+    def test_two_maps_in_one_home_keep_their_own_envelopes(self):
+        """One file per envelope digest: a second map (or a second grant) in the same factory home starts
+        with its own spend and no inherited stop; the same spent grant is refused, not silently re-run."""
+        project_a, base = self.project("a")
+        home = self.home()
+        document = promoted_spec(project_a, home)
+        first = fixture_map(document, base)
+        featuremap.approve(first, OWNER)
+        run_a = self.make_loop(project_a, first, document, home)
+        self.assertEqual(run_a.run()["stopped"], "nothing_eligible")
+        project_b, base_b = self.project("b")
+        self.assertEqual(base_b, base, "the fixture's base commit is deterministic")
+        second = fixture_map(document, base, id="order-markers.m2")
+        featuremap.approve(second, OWNER)
+        run_b = self.make_loop(project_b, second, document, home)
+        self.assertNotEqual(run_b.spend.path, run_a.spend.path)
+        summary = run_b.run()
+        self.assertEqual(summary["stopped"], "nothing_eligible")
+        self.assertEqual(summary["ready_for_owner_merge"], ["F1", "F2", "F3"], "the second map built; it inherited no stop and no spend")
+        self.assertEqual(summary["envelope"]["calls"], 3)
+        self.assertEqual([line["kind"] for line in run_b.spend.lines()], ["reserve", "settle"] * 3 + ["stop"])
+        self.assertEqual(len(notes(home.events(), "loop_stopped")), 2)
+        again = self.make_loop(project_a, first, document, home)
+        with self.assertRaises(Rejected) as refused:
+            again.run()
+        self.assertEqual(refused.exception.code, "envelope_stopped", "the first grant is spent; a new run needs a new envelope")
+        self.assertEqual(len(notes(home.events(), "loop_stopped")), 2, "a refused re-run writes nothing")
+        self.assertEqual([line["kind"] for line in run_a.spend.lines()].count("stop"), 1)
 
     def test_await_merge_leaves_a_dependent_waiting_for_the_owner(self):
-        project, base = self.project()
-        document = promoted_spec(project)
-        mapping = fixture_map(document, base, integration="await_merge")
-        featuremap.approve(mapping, OWNER)
-        summary = self.make_loop(project, mapping, document).run()
+        run, _, _, _ = self.ready_loop(map={"integration": "await_merge"})
+        summary = run.run()
         self.assertEqual(summary["ready_for_owner_merge"], ["F1", "F3"])
         self.assertEqual(summary["features"]["F2"]["state"], "waiting_owner_merge")
         self.assertEqual(summary["stopped"], "nothing_eligible")
 
     def test_a_failing_candidate_is_refused_by_the_kernel_and_the_feature_is_parked(self):
-        project, base = self.project()
-        document = promoted_spec(project)
-        mapping = fixture_map(document, base)
-        featuremap.approve(mapping, OWNER)
-        run = self.make_loop(project, mapping, document, attempts=1, mode="--break")
+        run, _, _, _ = self.ready_loop(attempts=1, mode="--break")
         summary = run.run()
         self.assertEqual(summary["ready_for_owner_merge"], [])
         self.assertEqual({row["state"] for row in summary["features"].values()} - {"open"}, {"parked"})
@@ -406,17 +608,33 @@ class EndToEnd(Scratch):
         self.assertIn(summary["features"]["F1"]["last_reason"].split(":")[1], ("tests", "hidden.f1.marker"), "both checks fail; one is named")
         self.assertEqual(summary["features"]["F2"]["state"], "open", "F2 waits on F1 and never started")
         events = loop.autonomy_events(run.ledger)
-        questions = [(e["body"]["question"], e["body"]["answer"]["value"]) for e in events
-                     if e["kind"] == "note" and e["body"]["note"] == "policy_proposal" and e["body"]["feature"] == "F1"]
+        questions = [(e["body"]["question"], e["body"]["answer"]["value"]) for e in notes(events, "policy_proposal") if e["body"]["feature"] == "F1"]
         self.assertEqual(questions[-2:], [("worth_continuing", "stop"), ("after_failure", "park")])
         self.assertEqual(summary["envelope"]["calls"], 2, "one call per parked feature; the envelope counted both")
 
+    def test_retry_escalate_arm_runs_the_stronger_arm_on_the_next_attempt(self):
+        """The recorded decision is the one that happens: after ``retry_escalate_arm`` the next ``proposer_arm``
+        offers only the arms ranked above the one that failed, and the attempt runs on that arm."""
+        arms = [{"id": "cheap", "tier_rank": 0, "revision": "1"}, {"id": "strong", "tier_rank": 1, "revision": "1"}]
+        run, _, _, _ = self.ready_loop(attempts=3, mode="--break", arms=arms)
+        summary = run.run()
+        self.assertEqual(summary["features"]["F1"]["state"], "parked")
+        self.assertEqual(summary["features"]["F1"]["attempts"], 3)
+        events = loop.autonomy_events(run.ledger)
+        f1 = lambda note: [e["body"] for e in notes(events, note) if e["body"].get("feature") == "F1"]
+        self.assertEqual([b["arm"] for b in f1("attempt_started")], ["cheap", "cheap", "strong"])
+        self.assertEqual([b["arm"] for b in f1("envelope_reserved")], ["cheap", "cheap", "strong"])
+        self.assertEqual([b["answer"]["value"] for b in f1("policy_proposal") if b["question"] == "after_failure"],
+                         ["retry_same", "retry_escalate_arm", "park"])
+        offered = [b["options"] for b in f1("policy_proposal") if b["question"] == "proposer_arm"]
+        self.assertEqual(offered, [["cheap", "strong"], ["cheap", "strong"], ["strong"]], "after the escalation only the stronger arm is an option")
+        choices = [b["options"] for b in f1("policy_proposal") if b["question"] == "after_failure"]
+        self.assertNotIn("retry_escalate_arm", choices[2], "on the strongest arm there is nothing to escalate to")
+        self.assertEqual([line["arm"] for line in run.spend.lines() if line["kind"] == "reserve" and line["feature"] == "F1"],
+                         ["cheap", "cheap", "strong"])
+
     def test_a_candidate_outside_its_scope_never_reaches_accept(self):
-        project, base = self.project()
-        document = promoted_spec(project)
-        mapping = fixture_map(document, base)
-        featuremap.approve(mapping, OWNER)
-        run = self.make_loop(project, mapping, document, attempts=2, mode="--outside")
+        run, _, _, _ = self.ready_loop(attempts=2, mode="--outside")
         summary = run.run()
         self.assertEqual(summary["ready_for_owner_merge"], [])
         self.assertEqual(summary["features"]["F1"]["last_reason"], "candidate_out_of_scope")
@@ -424,17 +642,55 @@ class EndToEnd(Scratch):
         self.assertEqual(summary["features"]["F1"]["state"], "parked")
 
     def test_the_kill_switch_stops_before_the_next_decision(self):
-        project, base = self.project()
-        document = promoted_spec(project)
-        mapping = fixture_map(document, base)
-        featuremap.approve(mapping, OWNER)
         switch = self.scratch / "stop-now"
         switch.write_text("")
-        run = self.make_loop(project, mapping, document, kill_switch=str(switch))
+        run, _, _, _ = self.ready_loop(kill_switch=str(switch))
         summary = run.run()
         self.assertEqual(summary["stopped"], "kill_switch")
         self.assertEqual(summary["ready_for_owner_merge"], [])
         self.assertEqual(summary["envelope"]["calls"], 0)
+
+    def test_a_rejection_inside_run_still_ends_the_record(self):
+        """A ``Rejected`` while running (here an answer outside the options) propagates, but not before the
+        envelope has its ``stop`` line and the ledger its ``loop_stopped`` with the refusal's code."""
+        class Rogue:
+            name = "rogue"
+
+            def decide(self, state, question):
+                return policymod.Answer(question.key, "F9", self.name, "off the menu")
+
+        run, _, _, _ = self.ready_loop(policy=Rogue())
+        with self.assertRaises(Rejected) as refused:
+            run.run()
+        self.assertEqual(refused.exception.code, "policy_invalid")
+        events = loop.autonomy_events(run.ledger)
+        last = events[-1]["body"]
+        self.assertEqual((last["note"], last["reason"]), ("loop_stopped", "policy_invalid"))
+        self.assertIn("rogue answered 'F9'", last["refs"]["detail"])
+        self.assertEqual([(line["kind"], line["reason"]) for line in run.spend.lines()], [("stop", "policy_invalid")])
+        self.assertEqual(run.spend.totals()["stopped"], "policy_invalid")
+        self.assertTrue(run.ledger.verify())
+
+    def test_a_dirty_tree_refuses_the_stacked_start_and_leaves_the_owners_checkout_alone(self):
+        """Stacking moves HEAD only for the kernel's start and puts it back; a tree with uncommitted tracked
+        changes is refused before any checkout (``repository_dirty``), the hold stays counted, the record ends."""
+        run, project, base, _ = self.ready_loop()
+        (project / "fxapp" / "main.py").write_text((project / "fxapp" / "main.py").read_text(encoding="utf-8") + "# owner's unsaved work\n",
+                                                   encoding="utf-8")
+        with self.assertRaises(Rejected) as refused:
+            run.run()
+        self.assertEqual(refused.exception.code, "repository_dirty")
+        self.assertEqual([fid for fid, row in run.state.items() if row["state"] == "ready_for_owner_merge"], ["F1", "F3"],
+                         "the two unstacked features built; F2's stacked start was refused")
+        self.assertEqual(git(project, "symbolic-ref", "HEAD"), "refs/heads/main")
+        self.assertEqual(git(project, "rev-parse", "HEAD"), base)
+        self.assertIn("# owner's unsaved work", (project / "fxapp" / "main.py").read_text(encoding="utf-8"), "nothing was lost")
+        self.assertEqual(git(project, "status", "--porcelain", "--untracked-files=no").split(), ["M", "fxapp/main.py"])
+        totals = run.spend.totals()
+        self.assertEqual((totals["stopped"], totals["attempts"], totals["unsettled"]), ("repository_dirty", 3, 1), "the refused attempt's hold counts")
+        last = loop.autonomy_events(run.ledger)[-1]["body"]
+        self.assertEqual((last["note"], last["reason"], last["states"]["F2"]), ("loop_stopped", "repository_dirty", "open"),
+                         "refused before its thread started, F2 is still open for a clean tree and a new envelope")
 
     def test_the_slice_holds_no_merge_and_no_network(self):
         for name in ("featuremap", "policy", "loop", "autonomy_cli"):

@@ -165,12 +165,21 @@ def approved(document: dict) -> bool:
 
 # -- mapcheck ------------------------------------------------------------------------------------------------------
 
+def normalize_path(path: str) -> str:
+    """A scope entry as compared: backslashes as slashes, leading ``./`` segments and the trailing slash
+    removed, case folded (the kernel's scope check runs on case-insensitive filesystems too)."""
+    text = path.strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text.rstrip("/").casefold()
+
+
 def path_intersects(a: str, b: str) -> bool:
-    """Prefix intersection of two scope entries at directory boundaries. ``"."`` or empty is the whole tree."""
-    a, b = a.strip().lstrip("./"), b.strip().lstrip("./")
-    if a in ("", ".") or b in ("", "."):
+    """Prefix intersection of two scope entries at directory boundaries, after :func:`normalize_path`.
+    ``"."`` or empty is the whole tree."""
+    ad, bd = normalize_path(a), normalize_path(b)
+    if ad in ("", ".") or bd in ("", "."):
         return True
-    ad, bd = a.rstrip("/"), b.rstrip("/")
     return ad == bd or bd.startswith(ad + "/") or ad.startswith(bd + "/")
 
 
@@ -571,6 +580,12 @@ def risk_plan(document: dict, graph: dict | None = None, *, budget: int | None =
     graph = graph or taskgraph(document)
     if tau < TAU_MIN:
         raise Rejected("risk_tau", f"tau must be at least {TAU_MIN} so every feature keeps a positive propensity")
+    if not isinstance(weights, dict) or set(weights) != set(WEIGHTS):
+        raise Rejected("risk_weights", f"weights must name exactly the inputs {sorted(WEIGHTS)}")
+    if any(isinstance(w, bool) or not isinstance(w, (int, float)) or not math.isfinite(w) or not 0 <= w <= 1 for w in weights.values()):
+        raise Rejected("risk_weights", "each weight is a finite number in [0, 1]")
+    if abs(sum(weights.values()) - 1.0) > 1e-6:
+        raise Rejected("risk_weights", f"weights sum to {sum(weights.values()):.4f}, not 1, so r would leave [0, 1]")
     features = document["features"]
     ids = [f["id"] for f in features]
     budget = len(ids) if budget is None else budget
