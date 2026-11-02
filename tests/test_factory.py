@@ -53,7 +53,7 @@ class SpaceTests(unittest.TestCase):
     def test_index_finds_files_symbols_and_edges(self):
         graph = indexed()
         self.assertEqual(sorted(graph["files"]), ["fxapp/__init__.py", "fxapp/effects.py", "fxapp/ingest.py",
-                                                  "fxapp/main.py", "fxapp/rules.py", "fxapp/variants.py"])
+                                                  "fxapp/main.py", "fxapp/rules.py", "fxapp/variants.py", "proposers.py"])
         self.assertIn("s:fxapp/rules.py::decide", graph["symbols"])
         self.assertEqual(graph["symbols"]["s:fxapp/rules.py::decide"]["kind"], "function")
         kinds = {(e["from"], e["to"], e["kind"]) for e in graph["edges"]}
@@ -94,7 +94,7 @@ class SpaceTests(unittest.TestCase):
         self.assertEqual(graph["files"]["fxapp/main.py"]["component"], "all")
         graph = space.index(FIXTURE, revision="fixture")
         space.map_components(graph, {"nodes": [{"id": "rules", "label": "Rules", "paths": ["fxapp/rules.py"]}], "edges": []})
-        self.assertEqual(len(graph["unmapped"]), 5)
+        self.assertEqual(len(graph["unmapped"]), 6)
 
     def test_repository_layering_has_no_drift(self):
         """The repository's own declaration (docs/architecture.declared.json) says syberwork depends on syberlabs
