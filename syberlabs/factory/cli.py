@@ -36,7 +36,7 @@ from syberlabs import certificate
 from syberlabs.canonical import digest
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
-from syberlabs.factory import attest, harness, ledger, space
+from syberlabs.factory import attest, features, harness, ledger, space
 from syberlabs.factory import spec as specmod
 
 
@@ -174,6 +174,27 @@ def populate(factory) -> None:
     boot.add_argument("--contract", default="repo-change", help="the contract id to extend (default repo-change)")
     boot.add_argument("--python", default=None, help="the interpreter the check argv names (default: this one)")
     boot.add_argument("--no-contract", action="store_true", help="golden and baseline only; print the argv instead")
+
+    fmap = steps.add_parser("map", help="feature maps: a vector per symbol and component from code, docs and trace statistics")
+    fsteps = fmap.add_subparsers(dest="map_command", required=True)
+    fb = fsteps.add_parser("build", help="vectorize the ledger's latest Space graph (or --declared re-indexed now) at its revision")
+    fb.add_argument("--declared")
+    fb.add_argument("--paths", nargs="*")
+    fb.add_argument("--revision")
+    fn = fsteps.add_parser("nearest", help="the symbols nearest to a text, such as a spec clause")
+    fn.add_argument("text")
+    fn.add_argument("--revision", help="default: the newest map")
+    fn.add_argument("-k", type=int, default=10)
+    fn.add_argument("--components", action="store_true", help="rank components instead of symbols")
+    fm = fsteps.add_parser("moved", help="what moved between two revisions' maps; --ticket opens tickets for unclaimed regions")
+    fm.add_argument("--before", required=True)
+    fm.add_argument("--after", required=True)
+    fm.add_argument("-k", type=int, default=20)
+    fm.add_argument("--ticket", metavar="DIR")
+    fm.add_argument("--threshold", type=float, default=0.05, help="minimum cosine distance to count as moved (default 0.05)")
+    fm.add_argument("--owner")
+    fi = fsteps.add_parser("impact", help="what depends on these components, from the Space graph")
+    fi.add_argument("components", nargs="+")
 
     ver = steps.add_parser("verify", help="check a signed attestation with its public key")
     ver.add_argument("attestation")
@@ -321,6 +342,9 @@ def _run(args) -> int:
 
     if command == "variants":
         return _variants(args, home)
+
+    if command == "map":
+        return _map(args, home)
 
     if command == "ticket":
         document = _read_json(args.spec, "spec")
@@ -589,6 +613,65 @@ def _run_tests(root: Path, argv_json: str, timeout: int) -> dict:
             "output_tail": output[-2000:].decode(errors="replace")}
 
 
+def _map(args, home: ledger.Ledger) -> int:
+    sub = args.map_command
+    if sub == "build":
+        declared = _declared(args.declared)
+        graph = _indexed(args, declared, args.revision) if declared is not None else home.latest_space()
+        if graph is None:
+            raise Rejected("space_missing", "index the repository first, or pass --declared")
+        if declared is not None:
+            home.record_space(graph, digest(declared))
+        counts = features.build(home, graph, args.root)
+        home.append("note", {"text": "feature map built", **counts, "vectorizer": features.VECTORIZER})
+        print(f"map at {str(counts['revision'])[:10]}: {counts['symbols']} symbols, {counts['components']} components, "
+              f"{counts['with_trace']} symbols with trace statistics ({features.VECTORIZER})")
+        return 0
+    if sub == "nearest":
+        revision = args.revision or (features.revisions(home) or [None])[-1]
+        if revision is None:
+            raise Rejected("features_missing", "no feature map yet; run `factory map build`")
+        for sid, score in features.nearest(home, revision, args.text, args.k, "component" if args.components else "symbol"):
+            print(f"{score:.4f}  {sid}")
+        return 0
+    if sub == "moved":
+        entries = features.moved(home, args.before, args.after, args.k)
+        for entry in entries:
+            print(f"{entry['distance']:.4f}  {entry['change']:8} {entry['id']}")
+        if args.ticket:
+            graph = home.latest_space(args.after) or home.latest_space()
+            claimed = set()
+            for event in home.events():
+                if event["kind"] == "ticket_opened":
+                    claimed.update(event["body"].get("footprint") or [])
+                if event["kind"] == "spec_changed" and event["body"].get("to") in ("promoted", "canonical"):
+                    claimed.update(event["body"].get("footprint") or [])
+            opened = specmod.tickets_from_moved(entries, graph, claimed, threshold=args.threshold, before=args.before,
+                                                after=args.after, human_owner=args.owner)
+            folder = Path(args.ticket)
+            folder.mkdir(parents=True, exist_ok=True)
+            for ticket in opened:
+                (folder / f"{ticket['ticket_id']}.json").write_text(json.dumps(ticket, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                home.append("ticket_opened", {"ticket_id": ticket["ticket_id"], "spec_id": None, "version": None, "req_id": None,
+                                              "source": "feature_map", "footprint": ticket["footprint"]["components"],
+                                              "revision": args.after})
+                print(f"ticket     {ticket['ticket_id']}  {ticket['title']}")
+            if not opened:
+                print("no ticket: every moved region is claimed, or nothing moved past the threshold")
+        return 0
+    if sub == "impact":
+        graph = home.latest_space()
+        if graph is None:
+            raise Rejected("space_missing", "index the repository first")
+        report = features.impact(graph, args.components)
+        print(f"dependents of {report['components']}: {report['dependents'] or 'none'}")
+        print(f"referencing symbols outside: {report['referencing_count']}")
+        for sid in report["referencing_symbols"][:20]:
+            print(f"  {sid}")
+        return 0
+    raise Rejected("factory_command", f"unknown map command {sub!r}")
+
+
 def _variants(args, home: ledger.Ledger) -> int:
     """The variant loop: each proposer command mutates the parent, every variant is validated and logged, the
     reviewer command judges them all at once, and the accepted one becomes the spec's next version file."""
@@ -752,7 +835,7 @@ def viewer_page(records: list[dict], graph: dict | None) -> str:
     """A self-contained HTML page: the Space graph with components lit as a slider scrubs the run."""
     template = Path(__file__).resolve().parents[1] / "static" / "factory.html"
     data = {"run": records[0] if records else {}, "spans": harness.spans(records),
-            "effects": [r for r in records if r.get("t") in ("effect", "marker")],
+            "effects": [r for r in records if r.get("t") in ("effect", "marker", "io")],
             "end": records[-1] if records and records[-1].get("t") == "end" else None,
             "components": [{"id": c["id"], "label": c["label"], "files": len(c["files"])}
                            for c in (graph or {}).get("components", {}).values()],

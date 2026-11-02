@@ -287,3 +287,36 @@ def judge(variants: list[dict], verdicts: list[dict], reviewer: dict) -> dict:
     if missing:
         raise Rejected("verdict_incomplete", f"no verdict for variants {missing}")
     return {"accepted": accepted, "verdicts": stamped}
+
+
+def tickets_from_moved(moved: list[dict], graph: dict, claimed: set, *, threshold: float, before: str, after: str,
+                       human_owner: str | None = None) -> list[dict]:
+    """The third automatic source: regions whose feature vectors moved more than ``threshold`` between two
+    revisions, grouped by component, where no open ticket or promoted spec claims the component. One ticket
+    per unclaimed component, asking for a spec or a revert."""
+    by_component: dict[str, list[dict]] = {}
+    for entry in moved:
+        if entry["distance"] < threshold:
+            continue
+        sid = entry["id"]
+        symbol = graph["symbols"].get(sid)
+        component = graph["files"].get(symbol["path"], {}).get("component") if symbol else None
+        if component is None or component in claimed:
+            continue
+        by_component.setdefault(component, []).append(entry)
+    tickets = []
+    for component, entries in sorted(by_component.items()):
+        tickets.append({
+            "protocol": PROTOCOL, "kind": "ticket",
+            "ticket_id": digest({"moved": component, "before": before, "after": after, "ids": sorted(e["id"] for e in entries)})[:16],
+            "title": f"{component} changed between {str(before)[:10]} and {str(after)[:10]} with no spec claiming it",
+            "spec_ref": {"spec_id": None, "version": None, "req_ids": []},
+            "acceptance_criteria": [{"given": f"the feature map at {str(after)[:10]}", "when": "a spec claims the component or the change is reverted",
+                                     "then": "the region is claimed or unmoved"}],
+            "footprint": {"components": [component], "files": sorted({graph["symbols"][e["id"]]["path"] for e in entries if e["id"] in graph["symbols"]}),
+                          "revision": after, "space_digest": None},
+            "repro": {"baseline_run": None, "moved": entries[:20]},
+            "exit_criteria": ["spec:claims-footprint"], "delegate": None, "human_owner": human_owner,
+            "state": "open", "candidates": [], "verdicts": [], "evidence_links": [],
+        })
+    return tickets

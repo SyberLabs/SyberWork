@@ -57,7 +57,7 @@
     <div id="stepinfo"></div>
     <h2>Active spans, outermost first</h2>
     <ol id="stack"></ol>
-    <h2>Effects and markers so far</h2>
+    <h2>Effects, markers and io so far</h2>
     <ul id="effects"></ul>
   </aside>
 </main>
@@ -74,15 +74,22 @@ const DATA = /*__FACTORY_DATA__*/null;
   const spans = DATA.spans || [], effects = DATA.effects || [], comps = DATA.components || [], edges = DATA.edges || [];
   const maxSeq = DATA.end ? DATA.end.seq : spans.reduce((m, s) => Math.max(m, s.end || s.start), 0);
   const run = DATA.run || {};
-  document.getElementById('meta').textContent = `run ${run.run_id || '?'} · revision ${(run.revision || '?').slice(0, 10)} · ${run.entrypoint || ''} · ${DATA.end ? DATA.end.status : 'open'} · ${spans.length} spans, ${effects.length} effects`;
+  const nIo = effects.filter(e => e.t === 'io').length;
+  document.getElementById('meta').textContent = `run ${run.run_id || '?'} · revision ${(run.revision || '?').slice(0, 10)} · ${run.entrypoint || ''} · ${DATA.end ? DATA.end.status : 'open'} · ${spans.length} spans, ${effects.length - nIo} effects, ${nIo} io`;
   const slider = document.getElementById('seq'); slider.max = String(maxSeq);
   const byId = new Map(spans.map(s => [s.span, s]));
 
-  // Layout: components on a ring, unmapped calls in a corner. Edges: straight lines between centres.
+  // Layout: a ring up to eight components, a grid beyond that (a ring of twelve collides). Edges: straight lines.
   const W = 760, H = 520, cx = W / 2, cy = H / 2 - 10, r = Math.min(W, H) / 2 - 90;
   const ids = comps.map(c => c.id); if (spans.some(s => s.component === null)) { ids.push(null); }
   const pos = {};
-  ids.forEach((id, i) => { const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(ids.length, 1); pos[id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }; });
+  if (ids.length <= 8) {
+    ids.forEach((id, i) => { const a = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(ids.length, 1); pos[id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }; });
+  } else {
+    const cols = Math.ceil(Math.sqrt(ids.length)), rows = Math.ceil(ids.length / cols);
+    const dx = (W - 40) / cols, dy = (H - 60) / rows;
+    ids.forEach((id, i) => { pos[id] = { x: 20 + dx * (i % cols) + dx / 2, y: 30 + dy * Math.floor(i / cols) + dy / 2 }; });
+  }
   const svg = document.getElementById('graph'); const NS = 'http://www.w3.org/2000/svg';
   const el = (name, attrs, parent) => { const e = document.createElementNS(NS, name); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; };
   const defs = el('defs', {});
@@ -90,7 +97,7 @@ const DATA = /*__FACTORY_DATA__*/null;
     const m = el('marker', { id, viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse' }, defs);
     el('path', { d: 'M0 0L10 5L0 10z', fill: color }, m);
   }
-  const BW = 150, BH = 46;
+  const BW = ids.length <= 8 ? 150 : Math.min(150, (W - 40) / Math.ceil(Math.sqrt(ids.length)) - 16), BH = 46;
   const edgeEls = [];
   const allEdges = edges.map(e => ({ ...e, kind: e.declared ? 'declared' : 'divergent' })).concat((DATA.absent || []).map(e => ({ ...e, kind: 'absent', count: 0 })));
   for (const e of allEdges) {
@@ -106,7 +113,7 @@ const DATA = /*__FACTORY_DATA__*/null;
     const p = pos[id], label = id === null ? '(unmapped)' : (comps.find(c => c.id === id) || {}).label || id;
     const g = el('g', { class: 'node', transform: `translate(${p.x - BW / 2}, ${p.y - BH / 2})` });
     el('rect', { width: BW, height: BH, rx: 8 }, g);
-    const t = el('text', { x: BW / 2, y: 20, 'text-anchor': 'middle' }, g); t.textContent = label;
+    const t = el('text', { x: BW / 2, y: 20, 'text-anchor': 'middle' }, g); t.textContent = label.length > 22 ? label.slice(0, 21) + '…' : label;
     const f = el('text', { x: BW / 2, y: 36, 'text-anchor': 'middle', class: 'files' }, g);
     const c = comps.find(c => c.id === id); f.textContent = c ? `${c.files} file${c.files === 1 ? '' : 's'}` : 'no component';
     nodeEls[id] = g;
@@ -126,7 +133,9 @@ const DATA = /*__FACTORY_DATA__*/null;
     const stack = document.getElementById('stack'); stack.innerHTML = '';
     for (const s of active) { const li = document.createElement('li'); li.className = 'active'; li.innerHTML = `${s.component || '(unmapped)'} <code>${s.fn}</code> <span style="color:var(--quiet)">${s.start}..${s.end === null ? '' : s.end}</span>`; stack.appendChild(li); }
     const list = document.getElementById('effects'); list.innerHTML = '';
-    for (const e of effects.filter(e => e.seq <= seq)) { const li = document.createElement('li'); li.innerHTML = `<code>${e.seq}</code> ${e.t} <b>${e.name}</b> <code>${(e.digest || '').slice(0, 10)}</code>${e.replayed ? ' (replayed)' : ''}`; list.appendChild(li); }
+    const shown = effects.filter(e => e.seq <= seq); const tail = shown.slice(-40);
+    if (shown.length > tail.length) { const li = document.createElement('li'); li.style.color = 'var(--quiet)'; li.textContent = `${shown.length - tail.length} earlier`; list.appendChild(li); }
+    for (const e of tail) { const li = document.createElement('li'); const what = e.t === 'io' && e.payload && e.payload.argv ? e.payload.argv.filter(a => !a.startsWith('-') && !a.includes('/') && !/^[0-9a-f]{7,}/.test(a)).slice(0, 3).join(' ') : (e.digest || '').slice(0, 10); li.innerHTML = `<code>${e.seq}</code> ${e.t} <b>${e.name}</b> <code>${what}</code>${e.replayed ? ' (replayed)' : ''}`; list.appendChild(li); }
   }
   slider.addEventListener('input', () => render(Number(slider.value)));
   let timer = null;

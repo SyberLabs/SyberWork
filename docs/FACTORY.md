@@ -24,6 +24,7 @@ CLI run below). Nothing here is measured, deployed or externally validated.
 | Ledger | `ledger.py` | An append-only JSONL event log with a `previous`/`hash` chain (`verify` walks it; `append` refuses an edited log), content-addressed artifacts (Space graphs, run journals, blobs, attestations), and a rebuildable SQLite projection with `components`, `edges`, `runs`, `steps`, `effects` and `cells`. Queries: `worldline(run)`, `active_at(run, seq)`, `cells_for(component)` across revisions, `components_at(revision)`. |
 | Spec | `spec.py` | A spec is one capability's requirements, each with a clause id, text, scenarios and evidence kinds, plus a footprint hint. Operations (revise, mutate, validate, promote, canonize, retire) are checked against a state table and recorded on the spec's history with actor and input digest. `resolve_footprint` pins the hint to a Space graph's revision and lists the files it owns. `ticket_from_spec` opens one ticket per requirement with the resolved footprint, the scenarios as acceptance criteria, and one exit criterion per evidence kind. |
 | Attestation | `attest.py` | `trace_diff` compares two runs over a footprint's components, projecting each to (component, fn) per call and (effect, result digest) per effect, and reports whether they are equal and where they first part. `statement` wraps the evidence, spec reference, footprint, builder and verdicts in an in-toto Statement v1 with predicate type `https://syberlabs.space/attestation/spec-satisfied/v1`; `policy` is the gate (empty diff, or a non-empty diff with the behavior-change label, then optional full-suite tests and a mutation threshold); `sign` and `verify` are DSSE over the canonical statement. |
+| Feature maps | `features.py` | A vector per symbol and per component: feature hashing over identifier subwords, keywords, strings, docstrings and subword bigrams (512 dimensions, TF-weighted, unit length) with six scaled trace scalars from the ledger (runs, calls, effects, io, callers, callees) appended, so symbols that read alike but behave differently sit apart. Component vectors are the caller-weighted mean of their symbols. `nearest` answers a spec clause with symbols or components; `moved` lists what changed between two revisions' maps and is the third ticket source (`map moved --ticket`: a moved region no ticket or promoted spec claims gets a ticket asking for a spec or a revert); `impact` reports transitive dependents and referencing symbols. No learned model and no vector store: `vectorize` is the one function a model replaces, and the vectors live in the SQLite projection. On this repository (1,568 symbols) a build takes under two seconds and free-text queries land the right symbol in the top two for the cases tried (`update_ref`, `sign_chain_head`, `post_order`); one observation, not a benchmark. |
 | CLI | `cli.py` | `syberlabs factory ...` or `python -m syberlabs.factory ...`; every command reads the ledger fresh. |
 | Viewer | `static/factory.html` | A self-contained page `export --view` fills with one run: the component graph with declared, divergent and absent edges, a slider over `seq` that lights the active components and edges, the active span stack, and the effects so far. Play at 0.2x to 5x paces `seq`, not wall time. |
 
@@ -172,13 +173,14 @@ diff empty, drift within bound, suite green.
 
 ## Tickets open without a person
 
-Two of the plan's three automatic ticket sources are live. `factory drift --max 0 --ticket DIR` writes one
+All three of the plan's automatic ticket sources are live. `factory drift --max 0 --ticket DIR` writes one
 ticket per component over the threshold (footprint: the component and the targets of its undeclared edges;
 acceptance: a clean reflexion report; exit criterion: drift evidence; `repro` lists the symbol-level edges)
 and one for unmapped files. `factory spec promote spec.json --tickets DIR --baseline golden` resolves the
 spec's footprint against the latest Space graph and opens one ticket per requirement with the scenarios as
-acceptance criteria and the golden run as the baseline. Both log `ticket_opened` with a `source`. Feature-map
-drift is the third source and is v1.
+acceptance criteria and the golden run as the baseline. `factory map moved --before A --after B --ticket DIR`
+is the third: a component whose symbols' vectors moved past the threshold, with no open ticket or promoted
+spec claiming it, gets a ticket asking for a spec or a revert. All three log `ticket_opened` with a `source`.
 
 `factory drift --declared arch.json --max 0 --ticket tickets/` writes one ticket per component over the
 threshold (footprint: the component and the targets of its undeclared edges; acceptance: a clean reflexion
@@ -215,10 +217,13 @@ breaks. Nothing here imports a model SDK; the adapter for a real model is the co
   replay needs a journal. The hook lives in the child the harness starts, never in the test process, which
   is what the integrity rule requires. The cost is that the hook sees one thread and nothing from threads the
   program starts, and that every recording is a process start.
-- **SQLite and JSONL, not Neo4j, Parquet and LanceDB.** The plan's storage table stands; v0 ships the
-  event log and the one projection the queries need. The log is the system of record and the projection is
-  rebuilt from it, so a later Neo4j or DuckDB projection is an addition. Feature maps (v1) are the first
-  thing that would need a vector store.
+- **SQLite and JSONL, not Neo4j, Parquet and LanceDB.** The plan's storage table stands; the event log is the
+  system of record and the projection is rebuilt from it, so a later Neo4j or DuckDB projection is an
+  addition. Feature vectors are 518 floats per symbol in a SQLite table and are scanned linearly; at this
+  repository's size that is milliseconds, and a vector store is the change to make when it is not.
+- **Hashed features, not a learned embedding.** The plan named jina-code-embeddings or voyage-code-3. Neither
+  can enter a dependency-free core, so the map is feature hashing with trace scalars, which is enough for
+  the three queries and keeps `vectorize` as the single seam a model replaces.
 - **Declared architecture in the builder's shape.** The plan proposed Structurizr DSL. The repository
   already has an `ArchitectureSnapshot` schema (`spec/builder/architecture-snapshot.schema.json`: nodes
   with `paths`, edges with `from` and `to`), so the declaration is that JSON, and a Structurizr export can
@@ -258,8 +263,9 @@ component nothing called at a revision has no cells there, and that absence is i
 ## Next work package
 
 What remains of v1: this repository's own contract naming `factory check` (the bootstrap command exists; the
-contract lives in the operator's `.syberlabs/`, which is not tracked); real model
-adapters behind the proposer and reviewer commands (a Class X act when they spend money); and feature maps
-once the ledger has volume. The open decision upstream of all of it is
+contract lives in the operator's `.syberlabs/`, which is not tracked), and real model adapters behind the
+proposer and reviewer commands (a Class X act when they spend money). v2 as planned: forking a journal at a
+step, mutation score in the gate, change coupling from git history in `impact`, a learned vectorizer, and
+Barn reading attestations. The open decision upstream of all of it is
 whether a host-run trace diff over a declared footprint counts as independent review for MasterMind's auto
 class; if it does, the loop closes without changing who promotes.

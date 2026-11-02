@@ -11,7 +11,7 @@ from pathlib import Path
 
 from syberlabs.ed25519 import generate
 from syberlabs.errors import Rejected
-from syberlabs.factory import attest, harness, ledger, space
+from syberlabs.factory import attest, features, harness, ledger, space
 from syberlabs.factory import cli as factory_cli
 from syberlabs.factory import spec as specmod
 
@@ -924,3 +924,90 @@ class Variants(Scratch):
         self.assertEqual(code, 2)
         self.assertIn("at most one variant", err)
         self.assertFalse((self.tree / "order-path.v2.json").exists())
+
+
+class FeatureMaps(Scratch):
+    """Vectors per symbol and component from code, docs and trace statistics; nearest, moved, impact; the third
+    ticket source."""
+
+    def test_tokens_and_vectors(self):
+        toks = features.tokens("def post_order(record, decision):\n    '''Stands in for an HTTP call.'''\n    return rules.label(decision)\n")
+        self.assertIn("post", toks)
+        self.assertIn("order", toks)
+        self.assertIn("kw:def", toks)
+        self.assertIn("http", toks)
+        self.assertIn("post_order", toks, "subword bigrams keep the identifier together")
+        a = features.vectorize("def post_order(record): return http.post(record)")
+        b = features.vectorize("def post_order(record): return http.post(record)", {"runs": 3, "calls": 9, "io": 2})
+        c = features.vectorize("def normalize(record): record['part'] = record['part'].upper()")
+        self.assertEqual(len(a), features.DIM + features.TRACE_DIM)
+        self.assertAlmostEqual(features.cosine(a[:features.DIM], a[:features.DIM]), 1.0, places=6)
+        self.assertEqual(a[:features.DIM], b[:features.DIM], "text features do not depend on the trace")
+        self.assertGreater(features.cosine(a, b), features.cosine(a, c), "trace statistics move a symbol a little, text moves it a lot")
+        self.assertGreater(features.cosine(a, b), 0.85)
+
+    def test_build_nearest_moved_impact_and_tickets(self):
+        home = ledger.Ledger(self.scratch / "ledger")
+        graph = indexed()
+        home.record_space(graph)
+        run_id, _, _ = self.record(home, graph=graph)
+        counts = features.build(home, graph, FIXTURE)
+        self.assertEqual((counts["revision"], counts["components"]), ("fixture", 4))
+        self.assertGreaterEqual(counts["with_trace"], 5, "symbols the recorded run touched carry trace statistics")
+        hits = features.nearest(home, "fixture", "post an order over http and return its id", 3)
+        self.assertEqual({h[0] for h in hits[:2]}, {"s:fxapp/effects.py::post_order", "s:fxapp/effects.py::submit"}, hits)
+        comps = features.nearest(home, "fixture", "decide normalize label quantity", 2, kind="component")
+        self.assertEqual(comps[0][0], "rules", comps)
+        tree = self.scratch / "changed"
+        shutil.copytree(FIXTURE, tree)
+        rules = tree / "fxapp" / "rules.py"
+        rules.write_text(rules.read_text(encoding="utf-8").replace(
+            'def decide(record):\n    if record["quantity"] <= 0:',
+            'def decide(record):\n    """Route a record: reject, review or order, by quantity and a fraud flag."""\n'
+            '    if record.get("fraud") or record["quantity"] <= 0:'), encoding="utf-8")
+        after = indexed(tree, "changed")
+        home.record_space(after)
+        features.build(home, after, tree)
+        self.assertEqual(features.revisions(home), ["fixture", "changed"])
+        moved = features.moved(home, "fixture", "changed")
+        self.assertEqual(moved[0]["id"], "s:fxapp/rules.py::decide", moved)
+        self.assertTrue(all(e["id"] == "s:fxapp/rules.py::decide" for e in moved if e["distance"] > 0.001), moved)
+        tickets = specmod.tickets_from_moved(moved, after, set(), threshold=0.05, before="fixture", after="changed")
+        self.assertEqual([t["footprint"]["components"] for t in tickets], [["rules"]])
+        self.assertEqual(tickets[0]["footprint"]["files"], ["fxapp/rules.py"])
+        self.assertEqual(specmod.tickets_from_moved(moved, after, {"rules"}, threshold=0.05, before="fixture", after="changed"), [],
+                         "a claimed component opens nothing")
+        report = features.impact(graph, ["rules"])
+        self.assertEqual(report["dependents"], ["effects", "ingest", "main"])
+        self.assertIn("s:fxapp/main.py::run", report["referencing_symbols"])
+        with self.assertRaises(Rejected):
+            features.impact(graph, ["ghost"])
+        with self.assertRaises(Rejected):
+            features.nearest(home, "nowhere", "x")
+
+    def test_map_cli(self):
+        home = ledger.Ledger(self.scratch / "ledger")
+        tree = self.scratch / "tree"
+        shutil.copytree(FIXTURE, tree)
+        out, err = io.StringIO(), io.StringIO()
+        here = os.getcwd()
+        os.chdir(tree)
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                codes = [factory_cli.main(["--home", str(home.home), "map", "build", "--declared", "architecture.json", "--revision", "a"])]
+                (tree / "fxapp" / "rules.py").write_text((tree / "fxapp" / "rules.py").read_text(encoding="utf-8") +
+                                                         "\n\ndef audit(record):\n    return {'audited': record['part']}\n", encoding="utf-8")
+                codes.append(factory_cli.main(["--home", str(home.home), "map", "build", "--declared", "architecture.json", "--revision", "b"]))
+                codes.append(factory_cli.main(["--home", str(home.home), "map", "nearest", "audit a record", "-k", "2"]))
+                codes.append(factory_cli.main(["--home", str(home.home), "map", "moved", "--before", "a", "--after", "b",
+                                               "--ticket", str(self.scratch / "tickets")]))
+                codes.append(factory_cli.main(["--home", str(home.home), "map", "impact", "rules"]))
+        finally:
+            os.chdir(here)
+        self.assertEqual(codes, [0, 0, 0, 0, 0], err.getvalue())
+        text = out.getvalue()
+        self.assertIn("s:fxapp/rules.py::audit", text.split("audit a record")[0] if "audit a record" in text else text)
+        self.assertIn("added    s:fxapp/rules.py::audit", text)
+        self.assertIn("ticket     ", text)
+        self.assertEqual([e["body"]["source"] for e in home.events() if e["kind"] == "ticket_opened"], ["feature_map"])
+        self.assertIn("dependents of ['rules']: ['effects', 'ingest', 'main']", text)
