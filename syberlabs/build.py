@@ -1382,7 +1382,7 @@ class Thread:
                 promotion = proposal["action"] == self.config["promotion"]["action"]
                 proof = found["event"]["body"].get("proof", {}) if status == "succeeded" else {}
                 receipts.append(Receipt(status, proposal["args"].get("candidate"), body["proposal_id"], found["reason"],
-                                        self.target_ref if promotion else proposal["action"],
+                                        self.target_ref if promotion else proof.get("destination") or proposal["action"],
                                         proposal["args"].get("commit") if status == "succeeded" else None,
                                         found["event"]["hash"], external_id=proof.get("external_id")))
         return receipts

@@ -95,9 +95,10 @@ if __package__ in (None, ""):  # run by absolute path (``-I``): the hook process
         return module
 
     canonical = _beside("canonical").canonical
-    CREDENTIAL = _beside("_patterns").SECRET
+    _patterns = _beside("_patterns")
+    CREDENTIAL, credential_prefixes = _patterns.SECRET, _patterns.credential_prefixes
 else:
-    from syberlabs._patterns import SECRET as CREDENTIAL  # the one credential pattern set, shared, not copied
+    from syberlabs._patterns import SECRET as CREDENTIAL, credential_prefixes  # one credential pattern set, shared
     from syberlabs.canonical import canonical
 
 VERSION = "2"
@@ -311,12 +312,10 @@ def tree_digests(root: Path, paths) -> set[str]:
 
 
 def _credential(text: str) -> bool:
-    """The shared credential shapes (``_patterns.SECRET``) at the start of a word (so ``risk-assessment`` is not
-    an ``sk-`` key), or a private-key header or bearer token."""
-    if _EXTRA_SECRET.search(text):
-        return True
-    return any(m.start() == 0 or not (text[m.start() - 1].isalnum() or text[m.start() - 1] == "_")
-               for m in CREDENTIAL.finditer(text))
+    """A shared credential shape (``_patterns.credential_prefixes``: a prefix not glued to a preceding letter or digit,
+    at any position, so ``risk-assessment`` is not an ``sk-`` key but ``task-ghp_...`` holds one), or a private-key
+    header or bearer token."""
+    return bool(_EXTRA_SECRET.search(text)) or bool(credential_prefixes(text))
 
 
 def judge(text: str, *, max_lines: int = DEFAULT_MAX_LINES, max_chars: int = DEFAULT_MAX_CHARS,

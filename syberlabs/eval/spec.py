@@ -45,6 +45,7 @@ from typing import Any
 from syberlabs.canonical import canonical, digest
 from syberlabs.economic import check_prices
 from syberlabs.errors import Rejected
+from syberlabs.metrics import METRICS
 
 SPEC_SCHEMA_ID = "syberlabs.eval/spec.v1"
 REGISTRATION_SCHEMA_ID = "syberlabs.eval/registration.v1"
@@ -55,6 +56,9 @@ ARM_KINDS = ("single", "repair", "evolve", "evolve_jev", "claude-code")
 HIDDEN_FEEDBACK = ("tails", "status", "none")  # what of a hidden check's result reaches the proposer (module docstring)
 LANES = ("api", "api-hooked", "subscription_local", "seat_team_enterprise", "provider_3p")  # claude_code.LANES
 MAX_TOTAL_DOLLARS = 1000.0
+RUN_METRICS = ("hidden_pass_rate", "hidden_parts_passed", "calls", "host_dollars", "evaluations", "refused_proposals",
+               "safety_gate")  # what score.run_metrics computes for one run, beside the nine of syberlabs.metrics
+METRIC_NAMES = RUN_METRICS + METRICS  # every name a primary_metric, secondary_metrics entry or decision_rule may use
 
 _TEXT = {"type": "string", "minLength": 1, "maxLength": 4000}
 _ARGV = {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 4096}}
@@ -222,6 +226,16 @@ def check(doc: Any) -> list[str]:
         errors.append("$.decision_rule: treatment and baseline must be different arms")
     if rule["metric"] != doc["primary_metric"]["name"]:
         errors.append("$.decision_rule.metric: the decision is taken on the primary metric")
+    named = [("$.primary_metric.name", doc["primary_metric"]["name"]), ("$.decision_rule.metric", rule["metric"])]
+    named += [(f"$.secondary_metrics[{i}].name", item["name"]) for i, item in enumerate(doc["secondary_metrics"])]
+    errors += [f"{where}: {name!r} is not a metric the scorer computes (known: {', '.join(METRIC_NAMES)})"
+               for where, name in named if name not in METRIC_NAMES]
+    try:
+        finite = math.isfinite(float(rule["threshold"]))
+    except OverflowError:
+        finite = False  # an integer beyond the largest float, such as 10**400
+    if not finite:
+        errors.append("$.decision_rule.threshold: must be a number a finite float can hold")
     from syberlabs.eval.runner import run_id
 
     shared = sorted(found for found, count in Counter(run_id(task, arm, seed) for task in doc["tasks"]["ids"]

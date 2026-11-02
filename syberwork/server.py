@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from syberlabs.evolution import AUTOMATION_ROLES
 from syberlabs.planner import HttpPlanner
 
-from .builder_http import dispatch_get, dispatch_post
+from .builder_http import actor_of, dispatch_get, dispatch_post
 from .certificates import not_configured as certificates_not_configured
 from .core import Rejected, Work, digest
 
@@ -307,7 +307,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
         def do_POST(self):
             try:
                 user, parts, data = self._user(), self._parts(), self._body()
-                name, roles = user["name"], user.get("roles", [])
+                actor, roles = actor_of(user), user.get("roles", [])  # the principal id, never the display name
                 if parts == ["api", "contracts"] and "admin" in roles:
                     work.install_contract(data); result = {"installed": True}
                 elif parts == ["api", "policies"] and "admin" in roles:
@@ -319,49 +319,49 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 elif parts == ["api", "cases"]:
                     if "operator" not in roles:
                         raise Rejected("forbidden", "operator role required")
-                    result = {"id": work.create_case(data["contract_id"], data["version"], data["inputs"], name)}
+                    result = {"id": work.create_case(data["contract_id"], data["version"], data["inputs"], actor)}
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"]:
                     case_id, operation = parts[2:]
                     if operation == "facts":
                         if data["source"] not in user.get("sources", []):
                             raise Rejected("source_denied", "actor cannot attest this source")
-                        result = work.observe(case_id, data["key"], data["value"], data["source"], data["version"], name)
+                        result = work.observe(case_id, data["key"], data["value"], data["source"], data["version"], actor)
                     elif operation == "refresh":
-                        result = work.refresh_fact(case_id, data["source"], data["key"], data["record_key"], name, roles)
+                        result = work.refresh_fact(case_id, data["source"], data["key"], data["record_key"], actor, roles)
                     elif operation == "resolution-request":
-                        result = work.request_resolution(case_id, data["key"], name, roles)
+                        result = work.request_resolution(case_id, data["key"], actor, roles)
                     elif operation == "resolution-resolve":
-                        result = work.resolve_resolution(case_id, data["task_id"], name, roles)
+                        result = work.resolve_resolution(case_id, data["task_id"], actor, roles)
                     elif operation == "resolution-escalate":
-                        result = work.escalate_resolution(case_id, data["task_id"], name, roles)
+                        result = work.escalate_resolution(case_id, data["task_id"], actor, roles)
                     elif operation == "cancel":
-                        result = work.cancel_case(case_id, data["reason"], name, roles)
+                        result = work.cancel_case(case_id, data["reason"], actor, roles)
                     elif operation == "proposals":
-                        result = work.propose(case_id, data["action"], data["args"], name, roles, data.get("origin", "human"))
+                        result = work.propose(case_id, data["action"], data["args"], actor, roles, data.get("origin", "human"))
                     elif operation == "compiled":
-                        result = work.compiled_propose(case_id, name, roles)
+                        result = work.compiled_propose(case_id, actor, roles)
                     elif operation == "suggest":
-                        result = work.model_propose(case_id, name, roles)
+                        result = work.model_propose(case_id, actor, roles)
                     elif operation == "approve":
-                        result = work.approve(case_id, data["proposal_id"], name, roles)
+                        result = work.approve(case_id, data["proposal_id"], actor, roles)
                     elif operation == "commit":
-                        result = work.commit(case_id, data["proposal_id"], name)
+                        result = work.commit(case_id, data["proposal_id"], actor)
                     elif operation == "signoff":
-                        result = work.signoff(case_id, name, roles, data["role"])
+                        result = work.signoff(case_id, actor, roles, data["role"])
                     elif operation == "reconcile":
                         # Only the proposal is named. Any outcome-shaped field (success, evidence,
                         # proof, an Attest receipt, ...) is refused rather than ignored.
                         if set(data) != {"proposal_id"}:
                             raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")
-                        result = work.reconcile(case_id, data["proposal_id"], name, roles)
+                        result = work.reconcile(case_id, data["proposal_id"], actor, roles)
                     elif operation == "candidates":
-                        result = work.record_candidate(case_id, data, name, roles)
+                        result = work.record_candidate(case_id, data, actor, roles)
                     elif operation == "evaluations":
-                        result = work.record_evaluation(case_id, data, name, roles)
+                        result = work.record_evaluation(case_id, data, actor, roles)
                     elif operation == "searches":
-                        result = work.record_search(case_id, data["phase"], data["search"], name, roles)
+                        result = work.record_search(case_id, data["phase"], data["search"], actor, roles)
                     elif operation == "preview":
-                        result = _preview(work, case_id, data, name, roles)
+                        result = _preview(work, case_id, data, actor, roles)
                     elif operation == "witness":
                         # Ask the witness to sign this head. It appends to its own log; the case gets nothing.
                         if witness_client is None:
@@ -369,7 +369,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                         # An automation credential never asks, as it never reads policies: a leaf cannot be removed.
                         if witness_role not in roles or AUTOMATION_ROLES.intersection(roles):
                             raise Rejected("forbidden", f"{witness_role} role required to ask the witness, without an automation role")
-                        result = work.request_witness(unquote(case_id), witness_client, witness_log, name, user.get("principal_id"))
+                        result = work.request_witness(unquote(case_id), witness_client, witness_log, user["name"], user.get("principal_id"))  # a trace label beside the principal id, not a compared identity
                     elif operation == "replay":
                         result = work.replay(case_id, data["contract_version"], data["policy_version"])
                     else:

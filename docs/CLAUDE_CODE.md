@@ -111,7 +111,7 @@ What can read the key: the Claude Code process, the hook, and every other proces
 
 | Rule | Blocks |
 |---|---|
-| `secret` | A credential shape: the pattern set `syberlabs.metrics` refuses in a note, one object defined in `syberlabs/_patterns.py` (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `sk-ant-`, `sk-`, `xox?-`, `AKIA`, followed by 8 or more key characters; the guard requires a word start, so `risk-assessment` is not an `sk-` key), a PEM private-key header, or a bearer token. |
+| `secret` | A credential shape: the pattern set `syberlabs.metrics` refuses in a note, one object defined in `syberlabs/_patterns.py` (`ghp_`, `gho_`, `ghs_`, `github_pat_`, `sk-ant-`, `sk-`, `xox?-`, `AKIA`, followed by 8 or more key characters; a prefix counts wherever it is not glued to a preceding letter or digit and a rejected start never hides a later prefix in the same token, so `risk-assessment` is not an `sk-` key but `task-ghp_…` holds one), a PEM private-key header, or a bearer token. |
 | `url_credentials` | A URL with a user name or password before the host (`scheme://user:pass@host`). |
 | `email` | An email address. |
 | `too_long` | More than `max_chars` characters (default 400). |
