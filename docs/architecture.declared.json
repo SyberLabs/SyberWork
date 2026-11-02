@@ -44,6 +44,7 @@
     {"from": "syberlabs-eval", "to": "syberlabs-git"},
     {"from": "syberlabs-eval", "to": "syberlabs-primitives"},
     {"from": "syberlabs-eval", "to": "syberlabs-signing"},
+    {"from": "syberlabs-factory", "to": "syberlabs-build-thread"},
     {"from": "syberlabs-factory", "to": "syberlabs-primitives"},
     {"from": "syberlabs-factory", "to": "syberlabs-signing"},
     {"from": "syberlabs-git", "to": "syberlabs-admission"},

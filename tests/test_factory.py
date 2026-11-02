@@ -755,6 +755,34 @@ class SelfHosting(Scratch):
         self.assertEqual(harness.mask("--format=%(refname)"), "--format=%(refname)")
         self.assertEqual(harness.mask("c1"), "c1")
 
+    def test_the_self_check_program_sees_a_rerun_policy_change(self):
+        """examples/factory_self_check.py checks a candidate three times (plain, plain again, rerun). Making
+        Thread.check rerun by default adds check processes on the second call, which io observation sees."""
+        home = ledger.Ledger(self.scratch / "ledger")
+        declared = json.loads((ROOT / "docs" / "architecture.declared.json").read_text(encoding="utf-8"))
+        graph = space.index(ROOT, paths=["syberlabs", "syberwork"], revision="checkout")
+        space.map_components(graph, declared)
+        golden = harness.new_run_id()
+        report = harness.record(ROOT, home.run_path(golden), str(ROOT / "examples" / "factory_self_check.py"),
+                                file_components=file_components(graph), run_id=golden, revision="checkout", blobs=home.home / "blobs")
+        self.assertEqual(report["status"], "ok", report.get("error"))
+        tree = self.scratch / "rerun"
+        shutil.copytree(ROOT, tree, ignore=shutil.ignore_patterns(".git", "__pycache__", ".syberlabs", "*.sqlite3"))
+        build = tree / "syberlabs" / "build.py"
+        text = build.read_text(encoding="utf-8")
+        changed = text.replace("def check(self, candidate: str, *, rerun: bool = False, run: bool = True,",
+                               "def check(self, candidate: str, *, rerun: bool = True, run: bool = True,")
+        self.assertNotEqual(text, changed)
+        build.write_text(changed, encoding="utf-8")
+        candidate = harness.new_run_id()
+        report = harness.record(tree, home.run_path(candidate), str(tree / "examples" / "factory_self_check.py"),
+                                file_components=file_components(graph), run_id=candidate, revision="rerun", blobs=home.home / "blobs")
+        self.assertEqual(report["status"], "ok", report.get("error"))
+        self.assertGreater(report["counts"]["io"], [r for r in home.load_run(golden) if r["t"] == "io"].__len__(),
+                           "rerunning by default starts more check processes")
+        diff = attest.trace_diff(home.load_run(golden), home.load_run(candidate), None)
+        self.assertFalse(diff["diff_empty"])
+
     def test_build_thread_example_records_and_a_weakened_accept_is_caught(self):
         import subprocess
         home = ledger.Ledger(self.scratch / "ledger")

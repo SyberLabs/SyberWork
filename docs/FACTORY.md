@@ -140,15 +140,20 @@ subprocesses) and `docs/architecture.declared.json` as the declaration, in the c
 | `Thread.check` reruns by default (`build.py`) | equal | differs | promote: the example never re-checks, so nothing observed it |
 | `update_ref` without the expected old value (`gitspace.py`) | differs at the `update-ref` io | differs | refuse: the io lost one argument |
 
-The third row is the honest limit: a gate sees what the recorded program exercises, as a test suite does. The
-fourth is the point: an invariant from `AGENTS.md` (acceptance is a compare-and-swap) is caught from the
+The third row is the honest limit: a gate sees what the recorded program exercises, as a test suite does.
+`examples/factory_self_check.py` closes that gap for this case: it checks one candidate three times (plain,
+plain again, with `rerun`), so a rerun-by-default change starts extra check processes on the second call
+and the io observation refuses it (`SelfHosting::test_the_self_check_program_sees_a_rerun_policy_change`).
+That program is the one to record as this repository's golden. The fourth row is the point: an invariant from `AGENTS.md` (acceptance is a compare-and-swap) is caught from the
 outside, with no edit to the code under test. `tests/test_factory.py::SelfHosting` pins both.
 
 `docs/architecture.declared.json` now declares eleven components (inside `syberlabs`: primitives, signing,
 admission, git, build-thread, agents, cli, builder; plus eval, factory and the `syberwork` app) and the 37
 edges observed between them, so the base tree has zero drift and any new cross-component import is a
-refusal. One declared edge is known debt: `admission -> build-thread`, because `critic.parse` reads
-`providers.model_usage`. The finer declaration raised the component-level projection of the golden run from
+refusal. Two declared edges are worth a note: `admission -> build-thread` is debt (`critic.parse` reads
+`providers.model_usage`), and `factory -> build-thread` is deliberate (the variant loop reuses
+`providers.run_json`, the repository's one process boundary for models) and was caught by the drift check
+the moment it was written, before it was declared. The finer declaration raised the component-level projection of the golden run from
 78 transitions over 2 components to 1,075 over 7; the four candidates above keep their verdicts, which says
 the third row is a coverage limit of the recorded program, not a resolution limit of the diff.
 
@@ -253,8 +258,7 @@ component nothing called at a revision has no cells there, and that absence is i
 ## Next work package
 
 What remains of v1: this repository's own contract naming `factory check` (the bootstrap command exists; the
-contract lives in the operator's `.syberlabs/`, which is not tracked); a second recorded program for the
-self-check that exercises `Thread.check` more than once, so the third row of the table flips; real model
+contract lives in the operator's `.syberlabs/`, which is not tracked); real model
 adapters behind the proposer and reviewer commands (a Class X act when they spend money); and feature maps
 once the ledger has volume. The open decision upstream of all of it is
 whether a host-run trace diff over a declared footprint counts as independent review for MasterMind's auto
