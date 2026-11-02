@@ -23,7 +23,10 @@ it, the first one is the trust root of that ledger (bootstrap, written once), an
 the previous key signed (:func:`verify_rotation`). The pin is read through its lineage, never from the last
 event alone: :func:`owner_key_lineage` walks every ``owner_key_set`` in order and verifies each handover under
 the key pinned before it, so an appended pin, a rotation the pinned key did not sign, a stale ``previous`` or
-a malformed key invalidates the lineage instead of re-rooting the gate (``owner_key_lineage``). :func:`gate`
+a malformed key invalidates the lineage instead of re-rooting the gate (``owner_key_lineage``). A rotation
+envelope is bound to its place on the chain: its payload names the ``seq`` of the pin it replaces and the
+ledger head at signing, the walk checks both against the chain, and a ``rotation_digest`` cited twice is a
+replay, so an honest handover cannot be appended again after the owner rotated that key away. :func:`gate`
 verifies every approval under the lineage's key only; a ledger with no pinned key refuses (``owner_key_unset``),
 an invalid lineage refuses (``owner_key_lineage``, never falling back to an earlier key) and an approval under
 any other key refuses (``owner_key_mismatch``), whoever runs the host command. The signing seed never enters
@@ -61,7 +64,10 @@ GATED = frozenset({"promote", "canonize", "retire"})
 ACTOR_KINDS = ("human", "model", "compiled")
 APPROVAL_PROTOCOL = "syberlabs.space/factory/approval/v0"
 APPROVAL_PAYLOAD_TYPE = "application/vnd.syberlabs.factory-approval+json"
-OWNER_KEY_PROTOCOL = "syberlabs.space/factory/owner-key/v0"
+OWNER_KEY_PROTOCOL = "syberlabs.space/factory/owner-key/v1"
+# v0 envelopes named the two keys only and were bound to nothing on the chain, so one could be replayed (M4 of
+# the #164 delta verification); no production ledger carries one, and the walk refuses them outright.
+_RETIRED_OWNER_KEY_PROTOCOLS = frozenset({"syberlabs.space/factory/owner-key/v0"})
 OWNER_KEY_PAYLOAD_TYPE = "application/vnd.syberlabs.factory-owner-key+json"
 _PRINCIPAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
 _HEX_KEY = re.compile(r"^[0-9a-f]{64}$")
@@ -103,13 +109,17 @@ def owner_key_lineage(events: list[dict], load_rotation=None) -> tuple[str | Non
     is the one unsigned bootstrap: ``previous`` None, no ``rotation_digest``. Every later one is a rotation:
     ``previous`` is the key pinned right before it, ``rotation_digest`` names a stored envelope
     (``load_rotation(digest)``, the ledger's ``approvals/``; None when missing or altered) that
-    :func:`verify_rotation` accepts under that previous key, and every ``keyid`` is a 64-hex public key. A
-    second bare bootstrap, a rotation signed by the new key, a stale ``previous`` and a malformed key are each
-    a violation. With violations the lineage is invalid and the key returned is None: a broken lineage pins
-    nothing rather than its last or an earlier key. Without a ``load_rotation`` no rotation can be checked, so
-    a rotated ledger read that way is invalid, by design."""
-    pinned, violations = None, []
-    for event in events:
+    :func:`verify_rotation` accepts under that previous key for exactly this position (its payload's
+    ``replaces_seq`` is the ``seq`` of the pin it replaces and its ``head`` is the hash of the event right
+    before this one, the ledger head when it was signed), and every ``keyid`` is a 64-hex public key. A second
+    bare bootstrap, a rotation signed by the new key, a stale ``previous``, a malformed key, an envelope signed
+    for another position (or never appended where it was signed) and a ``rotation_digest`` cited a second time
+    (a replay of an honest handover after the owner rotated that key away) are each a violation. With
+    violations the lineage is invalid and the key returned is None: a broken lineage pins nothing rather than
+    its last or an earlier key. Without a ``load_rotation`` no rotation can be checked, so a rotated ledger
+    read that way is invalid, by design."""
+    pinned, pinned_seq, cited, violations = None, None, {}, []
+    for index, event in enumerate(events):
         if not isinstance(event, dict) or event.get("kind") != "owner_key_set":
             continue
         where = f"owner_key_set at seq {event.get('seq', '?')}"
@@ -126,16 +136,22 @@ def owner_key_lineage(events: list[dict], load_rotation=None) -> tuple[str | Non
                 violations.append(f"{where}: previous {str(previous)[:10]!r} is not the key pinned before it ({pinned[:10]})")
             if not (isinstance(rotation, str) and _HEX_KEY.match(rotation)):  # a sha256 digest has the key's shape
                 violations.append(f"{where}: a second pin is a rotation and names a rotation_digest; a bare pin does not re-root the ledger")
+            elif rotation in cited:
+                violations.append(f"{where}: rotation replayed; {rotation[:12]} was already cited at seq {cited[rotation]}")
             else:
+                cited[rotation] = event.get("seq", "?")
+                before = events[index - 1].get("hash") if index and isinstance(events[index - 1], dict) else None
                 envelope = load_rotation(rotation) if load_rotation is not None else None
                 if envelope is None:
                     violations.append(f"{where}: rotation {rotation[:12]} is missing, altered or unavailable")
+                elif not (isinstance(pinned_seq, int) and isinstance(before, str)):
+                    violations.append(f"{where}: the chain gives this rotation no position (seq and hash) to bind to")
                 else:
                     try:
-                        verify_rotation(envelope, bytes.fromhex(pinned), bytes.fromhex(keyid))
+                        verify_rotation(envelope, bytes.fromhex(pinned), bytes.fromhex(keyid), replaces_seq=pinned_seq, head=before)
                     except Rejected as exc:
                         violations.append(f"{where}: {exc.detail}")
-        pinned = keyid
+        pinned, pinned_seq = keyid, event.get("seq")
     return (None if violations else pinned), violations
 
 
@@ -149,19 +165,28 @@ def pinned_owner_key(events: list[dict], load_rotation=None) -> str | None:
     return pinned
 
 
-def rotation_payload(previous: bytes, next_key: bytes) -> dict:
-    """What the current owner signs to hand the ledger to a new key: the key being replaced and the key that
-    replaces it. Signed by ``previous``; nothing else can rotate."""
-    return {"protocol": OWNER_KEY_PROTOCOL, "previous": previous.hex(), "next": next_key.hex(), "at": int(time.time() * 1_000_000)}
+def rotation_payload(previous: bytes, next_key: bytes, *, replaces_seq: int, head: str) -> dict:
+    """What the current owner signs to hand the ledger to a new key: the key being replaced, the key that
+    replaces it, and the place on the chain this handover is for (``replaces_seq``, the ``seq`` of the
+    ``owner_key_set`` that pinned ``previous``, and ``head``, the ledger head hash at signing, which is the
+    ``previous`` of the event the rotation lands as). Signed by ``previous``; nothing else can rotate, and the
+    envelope verifies at that one position only."""
+    if not (isinstance(replaces_seq, int) and not isinstance(replaces_seq, bool) and replaces_seq >= 1):
+        raise Rejected("owner_key_rotation", "a rotation names the seq of the pin it replaces")
+    if not (isinstance(head, str) and _HEX_KEY.match(head)):  # a chain hash has the key's shape
+        raise Rejected("owner_key_rotation", "a rotation names the ledger head it was signed over")
+    return {"protocol": OWNER_KEY_PROTOCOL, "previous": previous.hex(), "next": next_key.hex(),
+            "replaces_seq": replaces_seq, "head": head, "at": int(time.time() * 1_000_000)}
 
 
 def sign_rotation(payload: dict, seed: bytes) -> dict:
     return sign_dsse(OWNER_KEY_PAYLOAD_TYPE, canonical(payload).encode("utf-8"), seed)
 
 
-def verify_rotation(envelope: dict, previous: bytes, next_key: bytes) -> dict:
+def verify_rotation(envelope: dict, previous: bytes, next_key: bytes, *, replaces_seq: int, head: str) -> dict:
     """The rotation payload when ``envelope`` verifies under ``previous`` (the pinned key) and names exactly
-    this handover; refused (``owner_key_rotation``) otherwise."""
+    this handover at exactly this position (``replaces_seq`` and ``head`` as :func:`rotation_payload` binds
+    them); refused (``owner_key_rotation``) otherwise, a retired ``owner-key/v0`` envelope included."""
     payload = verified_payload(envelope, previous, OWNER_KEY_PAYLOAD_TYPE)
     if payload is None:
         raise Rejected("owner_key_rotation", "a rotation is signed by the key the ledger pins now; this one does not verify under it")
@@ -169,9 +194,17 @@ def verify_rotation(envelope: dict, previous: bytes, next_key: bytes) -> dict:
         rotation = json.loads(payload)
     except ValueError:
         raise Rejected("owner_key_rotation", "the rotation payload is not JSON") from None
-    if (not isinstance(rotation, dict) or rotation.get("protocol") != OWNER_KEY_PROTOCOL
+    if not isinstance(rotation, dict):
+        raise Rejected("owner_key_rotation", "the rotation payload is not a factory rotation")
+    if rotation.get("protocol") in _RETIRED_OWNER_KEY_PROTOCOLS:
+        raise Rejected("owner_key_rotation", f"the rotation is {rotation['protocol']}, which binds to nothing on the chain and is refused; "
+                                             f"rotations are {OWNER_KEY_PROTOCOL}")
+    if (rotation.get("protocol") != OWNER_KEY_PROTOCOL
             or rotation.get("previous") != previous.hex() or rotation.get("next") != next_key.hex()):
         raise Rejected("owner_key_rotation", "the rotation does not name this handover (previous and next key)")
+    if rotation.get("replaces_seq") != replaces_seq or rotation.get("head") != head:
+        raise Rejected("owner_key_rotation", f"the rotation was signed for another position (replaces seq {rotation.get('replaces_seq')!r} "
+                                             f"over head {str(rotation.get('head'))[:12]}); here it replaces seq {replaces_seq} over head {head[:12]}")
     return rotation
 
 

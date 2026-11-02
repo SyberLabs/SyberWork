@@ -12,7 +12,7 @@ architecture conformance, spec-driven development, attestation, ledger storage) 
 are in the architecture plan this slice was built from. This page is what the repository does today.
 
 Package: `syberlabs/factory/`. Standard library only. `syberlabs` still does not import `syberwork`.
-Claim ceiling for this page: **implemented** and **tested** (`tests/test_factory.py`, 50 tests, and the
+Claim ceiling for this page: **implemented** and **tested** (`tests/test_factory.py`, 51 tests, and the
 CLI run below). Nothing here is measured, deployed or externally validated.
 
 ## The v0 slice
@@ -100,22 +100,32 @@ pins that.
 `owner_key_set` alone (`spec.owner_key_lineage`, `Ledger.owner_key_lineage`). Walking every `owner_key_set` in
 order: the first is the one bare bootstrap (`previous` null, no `rotation_digest`); every later one is a
 rotation whose `previous` is exactly the key pinned before it, whose `rotation_digest` names a stored envelope
-under `approvals/`, and whose envelope verifies (`verify_rotation`) under that previous key; every keyid is a
-64-hex public key. Any violation is named by `problems` as `owner_key_lineage`, `verify` is false, and the
+under `approvals/` and is cited by no other `owner_key_set`, and whose envelope verifies (`verify_rotation`)
+under that previous key for this very position; every keyid is a 64-hex public key. The envelope
+(`syberlabs.space/factory/owner-key/v1`; a `v0` envelope, bound to nothing, is refused) is signed over
+`previous`, `next`, `replaces_seq` (the `seq` of the `owner_key_set` it replaces) and `head` (the ledger head
+when it was signed, which is the `previous` hash of the event it lands as), and the walk checks the last two
+against the chain, so an honest handover cannot be appended a second time after the owner rotated that key
+away (`rotation replayed`), and an envelope signed for one position, or signed and stored but never appended
+there, fails at any other. Any violation is named by `problems` as `owner_key_lineage`, `verify` is false, and the
 ledger pins nothing: `spec.gate`, `factory owner` and `set_owner_key` refuse with `owner_key_lineage` rather
 than falling back to the last or an earlier key, so a second bare bootstrap is a violation, not a re-pin. The
 delta verification's four shapes (an `owner_key_set` appended through the public `append` with an attacker's
 key; a rotation signed by the new key instead of the pinned one; a rotation whose `previous` is a key rotated
 out earlier; a malformed keyid as the last event) each leave the hash chain intact and each are refused this
-way, in `CliTests::test_the_owner_key_is_the_verified_lineage_not_the_newest_event`. `spec promote|canonize|retire`
+way, in `CliTests::test_the_owner_key_is_the_verified_lineage_not_the_newest_event`; the replay of an honest
+`A -> B` envelope after `B -> A` (the second verification's M4) and an envelope moved to another position are
+refused the same way, in `CliTests::test_a_rotation_binds_to_its_position_and_a_replayed_envelope_is_refused`.
+`spec promote|canonize|retire`
 verify the ledger before the gate reads it (`ledger_corrupt`), and `factory check` verifies it once more after
 the candidate's test suite ran and before anything is attested, against the head its own run record left, so a
 line a candidate manages to append during its suite refuses the check (`ledger_corrupt`;
 `BuildThreadCheck::test_a_ledger_that_changes_under_the_test_suite_refuses_the_check`). `set_owner_key` reads
 the pinned key and appends under one acquisition of the journal lock, so two bootstraps racing on an empty
 ledger cannot both land. What the lineage does not cover is an attacker who rewrites the whole chain
-consistently; that is the unanchored write boundary of `spec/GAPS.md` 65 (3), and anchoring the head in
-`tlog`/`witness` is the deferred fix. `Approved`, the record `transition` takes for a gated operation, is made by `verify_approval` only:
+consistently from the rotation they want undone; an append, with any seed the owner ever held, buys nothing.
+That is the unanchored write boundary of `spec/GAPS.md` 65 (3), and anchoring the head in `tlog`/`witness` is
+the deferred fix. `Approved`, the record `transition` takes for a gated operation, is made by `verify_approval` only:
 its constructor demands a module-private token, and `transition` checks the token, so neither a dictionary nor
 an instance made around the constructor passes the gate.
 

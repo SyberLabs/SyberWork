@@ -1004,8 +1004,12 @@ class CliTests(Scratch):
         (tree / "forged.json").write_text(json.dumps(forged), encoding="utf-8")
 
         def rotation(target, previous, next_key, signer_seed, claimed_previous=None):
-            """An ``owner_key_set`` body with its envelope stored where ``verify`` looks, signed by whoever."""
-            envelope = specmod.sign_rotation(specmod.rotation_payload(previous, next_key), signer_seed)
+            """An ``owner_key_set`` body with its envelope stored where ``verify`` looks, signed by whoever over the
+            position it is appended at (the pin it replaces, the head it lands on), so only the signer is wrong."""
+            events = target.events()
+            replaces_seq = next(e["seq"] for e in reversed(events) if e["kind"] == "owner_key_set")
+            payload = specmod.rotation_payload(previous, next_key, replaces_seq=replaces_seq, head=target.head(events))
+            envelope = specmod.sign_rotation(payload, signer_seed)
             sha = digest(envelope)
             (target.home / "approvals" / f"{sha}.json").write_text(canonical(envelope), encoding="utf-8")
             return {"keyid": next_key.hex(), "previous": (claimed_previous or previous).hex(), "rotation_digest": sha}
@@ -1057,6 +1061,113 @@ class CliTests(Scratch):
         self.assertIn("candidate -> retired", out)
         self.assertTrue(home.verify())
         self.assertEqual(home.describe()["owner_key"], second_public.hex())
+    def test_a_rotation_binds_to_its_position_and_a_replayed_envelope_is_refused(self):
+        """M4 of the #164 delta verification: a rotation envelope verifies at the one position it was signed for.
+        After an honest bootstrap A, rotation A -> B (envelope S1) and rotation back B -> A (the owner taking the
+        ledger back from a leaked key), an ``owner_key_set`` appended through the public ``append`` that cites S1
+        again (``keyid`` B, ``previous`` A) fails ``verify``, is named ``rotation replayed`` by ``problems``, pins
+        nothing, refuses the gate at ``owner_key_lineage`` for an approval B signs (and one A signs) and exits
+        `spec retire` with 2. An envelope the pinned key honestly signed for this position but appended after
+        another event landed, one naming the wrong ``replaces_seq``, and a retired ``owner-key/v0`` envelope are
+        refused the same way. The honest ledger pins A, retires, and rotates to B again under a fresh envelope."""
+        from syberlabs.canonical import canonical, digest
+        mateo = {"kind": "human", "id": "mateo"}
+        tree = self.scratch / "tree"
+        shutil.copytree(FIXTURE, tree)
+        (tree / "spec.json").write_text(json.dumps(specmod.new_spec("order-path", "ordering", [
+            {"req_id": "R1", "text": "When quantity is positive, the system shall post one order."}],
+            ["ingest", "rules", "effects"], author=mateo)), encoding="utf-8")
+        code, _, err = self.run_cli("spec", "validate", "spec.json", "--actor", "human:mateo", cwd=tree)
+        self.assertEqual(code, 0, err)
+        a_seed, a_public = generate()
+        b_seed, b_public = generate()
+        home = ledger.Ledger(tree / ".syberlabs" / "factory")
+        bootstrap = home.set_owner_key(a_public)
+        handover = home.set_owner_key(b_public, seed=a_seed)
+        back = home.set_owner_key(a_public, seed=b_seed)
+        self.assertEqual((home.owner_key(), home.owner_key_lineage()[1], home.verify()), (a_public.hex(), [], True))
+        # The honest envelope names its position: the bootstrap it replaced and the head it was signed over, which
+        # is the hash of the event right before it. At the position of the rotation back it does not verify.
+        s1 = handover["body"]["rotation_digest"]
+        before_handover = home.events()[handover["seq"] - 2]["hash"]
+        payload = specmod.verify_rotation(home.load_rotation(s1), a_public, b_public, replaces_seq=bootstrap["seq"], head=before_handover)
+        self.assertEqual((payload["protocol"], payload["replaces_seq"], payload["head"]),
+                         ("syberlabs.space/factory/owner-key/v1", bootstrap["seq"], before_handover))
+        with self.assertRaises(Rejected) as refused:
+            specmod.verify_rotation(home.load_rotation(s1), a_public, b_public, replaces_seq=back["seq"], head=back["hash"])
+        self.assertEqual(refused.exception.code, "owner_key_rotation")
+        for bad in ({"replaces_seq": 0, "head": back["hash"]}, {"replaces_seq": True, "head": back["hash"]}, {"replaces_seq": 1, "head": "short"}):
+            with self.assertRaises(Rejected, msg=bad):
+                specmod.rotation_payload(a_public, b_public, **bad)
+        document = json.loads((tree / "spec.json").read_text(encoding="utf-8"))
+        under_b = specmod.sign_approval(specmod.approval_payload(document, "retire", mateo), b_seed)
+        under_a = specmod.sign_approval(specmod.approval_payload(document, "retire", mateo), a_seed)
+        (tree / "b.json").write_text(json.dumps(under_b), encoding="utf-8")
+        (tree / "a.json").write_text(json.dumps(under_a), encoding="utf-8")
+
+        def stored(target, payload, signer_seed):
+            envelope = specmod.sign_rotation(payload, signer_seed)
+            sha = digest(envelope)
+            (target.home / "approvals" / f"{sha}.json").write_text(canonical(envelope), encoding="utf-8")
+            return sha
+
+        def moved(target):
+            """Signed by the pinned key for exactly this position, then a line lands before it is appended."""
+            sha = stored(target, specmod.rotation_payload(a_public, b_public, replaces_seq=back["seq"], head=target.head()), a_seed)
+            target.append("note", {"text": "lands between signing and appending"})
+            return sha
+
+        shapes = [
+            ("the honest A -> B envelope replayed after B -> A", lambda t: s1, "rotation replayed"),
+            ("an envelope signed for this position, appended one event later", moved, "signed for another position"),
+            ("an envelope naming the bootstrap as the pin it replaces",
+             lambda t: stored(t, specmod.rotation_payload(a_public, b_public, replaces_seq=bootstrap["seq"], head=t.head()), a_seed),
+             "signed for another position"),
+            ("a retired owner-key/v0 envelope",
+             lambda t: stored(t, {"protocol": "syberlabs.space/factory/owner-key/v0", "previous": a_public.hex(), "next": b_public.hex(), "at": 0}, a_seed),
+             "owner-key/v0"),
+        ]
+        for number, (shape, cite, named) in enumerate(shapes):
+            copy = self.scratch / f"shape{number}"
+            shutil.copytree(tree, copy)
+            target = ledger.Ledger(copy / ".syberlabs" / "factory")
+            appended = target.append("owner_key_set", {"keyid": b_public.hex(), "previous": a_public.hex(), "rotation_digest": cite(target)})
+            events = target.events()
+            self.assertTrue(ledger._verify_chain(events), shape)
+            self.assertFalse(target.verify(), shape)
+            where = f"owner_key_lineage: owner_key_set at seq {appended['seq']}"
+            self.assertTrue(any(p.startswith(where) and named in p for p in target.problems()), (shape, target.problems()))
+            self.assertEqual(target.owner_key_lineage(events)[0], None, shape)
+            with self.assertRaises(Rejected, msg=shape) as refused:
+                target.owner_key()
+            self.assertEqual(refused.exception.code, "owner_key_lineage", shape)
+            for envelope in (under_b, under_a):
+                with self.assertRaises(Rejected, msg=shape) as refused:
+                    specmod.gate(document, "retire", mateo, events, envelope, load_rotation=target.load_rotation)
+                self.assertEqual(refused.exception.code, "owner_key_lineage", shape)
+            with self.assertRaises(Rejected, msg=shape) as refused:
+                target.set_owner_key(b_public, seed=a_seed)
+            self.assertEqual(refused.exception.code, "owner_key_lineage", shape)
+            for approval in ("b.json", "a.json"):
+                code, _, err = self.run_cli("spec", "retire", "spec.json", "--actor", "human:mateo", "--approval", approval, cwd=copy)
+                self.assertEqual((code, "owner_key_lineage" in err), (2, True), (shape, err))
+            self.assertEqual(json.loads((copy / "spec.json").read_text(encoding="utf-8"))["state"], "candidate", shape)
+        # In memory, events with no seq or hash give a rotation nothing to bind to, so it is a violation, not a pin.
+        bare = [{"kind": "owner_key_set", "body": bootstrap["body"]}, {"kind": "owner_key_set", "body": handover["body"]}]
+        pinned, violations = specmod.owner_key_lineage(bare, home.load_rotation)
+        self.assertEqual(pinned, None)
+        self.assertTrue(any("no position" in v for v in violations), violations)
+        # The honest ledger: B's approval is a mismatch (B was rotated away), A's retires, and a fresh rotation to B
+        # is a new envelope at its own position, not S1 again.
+        code, _, err = self.run_cli("spec", "retire", "spec.json", "--actor", "human:mateo", "--approval", "b.json", cwd=tree)
+        self.assertEqual((code, "owner_key_mismatch" in err), (2, True), err)
+        code, out, err = self.run_cli("spec", "retire", "spec.json", "--actor", "human:mateo", "--approval", "a.json", cwd=tree)
+        self.assertEqual(code, 0, err)
+        self.assertIn("candidate -> retired", out)
+        again = home.set_owner_key(b_public, seed=a_seed)
+        self.assertNotEqual(again["body"]["rotation_digest"], s1)
+        self.assertEqual((home.owner_key(), home.owner_key_lineage()[1], home.verify()), (b_public.hex(), [], True))
+        self.assertEqual(home.describe()["owner_key"], b_public.hex())
 
 
 if __name__ == "__main__":

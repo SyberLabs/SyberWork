@@ -23,8 +23,10 @@ every later one is a rotation signed by the key it replaces (``set_owner_key``),
 approvals under a key the ledger names rather than one the caller passes. The pin is read through its lineage
 (``owner_key_lineage``, ``spec.owner_key_lineage``), not from the newest event: ``problems`` walks every
 ``owner_key_set`` in order, demands one bare bootstrap and then rotations whose ``previous`` is the key pinned
-before them and whose stored envelope verifies under that key, so an ``owner_key_set`` appended around
-``set_owner_key`` makes the ledger fail ``verify`` and pins nothing rather than re-rooting the gate.
+before them and whose stored envelope verifies under that key for that very position (the envelope names
+the ``seq`` of the pin it replaces and the head it was signed over, and a ``rotation_digest`` is cited once),
+so an ``owner_key_set`` appended around ``set_owner_key``, a replayed handover included, makes the ledger
+fail ``verify`` and pins nothing rather than re-rooting the gate.
 
 Appends go through the kernel journal's writer (``syberlabs.journal.Journal``): a cross-process lock (``flock``
 or ``msvcrt.locking``), flush and fsync per record, and truncation of a torn final line before the next read.
@@ -325,9 +327,10 @@ class Ledger:
     def owner_key_lineage(self, events: list[dict] | None = None) -> tuple[str | None, list[str]]:
         """``(pinned key, violations)`` from :func:`spec.owner_key_lineage` over this ledger's events, its stored
         rotations supplying the envelopes: the first ``owner_key_set`` is the one bare bootstrap, every later one
-        carries ``previous`` equal to the key pinned before it and a ``rotation_digest`` whose envelope verifies
-        under that previous key, and every keyid is well-formed hex. Any violation names the event and leaves
-        the ledger pinning nothing; ``problems`` reports each one as ``owner_key_lineage``."""
+        carries ``previous`` equal to the key pinned before it and a ``rotation_digest``, cited nowhere else,
+        whose envelope verifies under that previous key for this position (the seq it replaces, the head before
+        it), and every keyid is well-formed hex. Any violation names the event and leaves the ledger pinning
+        nothing; ``problems`` reports each one as ``owner_key_lineage``."""
         return specmod.owner_key_lineage(self.events() if events is None else events, self.load_rotation)
 
     def owner_key(self, events: list[dict] | None = None) -> str | None:
@@ -339,7 +342,8 @@ class Ledger:
         """Pin ``public`` as the owner key. On a ledger that pins none this is the bootstrap: one event, no
         signature, and from then on the goal gate trusts this key and no other. On a ledger that pins a key
         it is a rotation and needs ``seed``, the seed of the key pinned now: the handover is signed by that
-        key (``spec.sign_rotation``), verified, stored under ``approvals/`` and cited by the event. Refused
+        key (``spec.sign_rotation``) over the seq of the pin it replaces and the ledger head it lands on, so it
+        verifies at this position only, then verified, stored under ``approvals/`` and cited by the event. Refused
         when the seed is not the pinned key's (``owner_key_rotation``), the key is already pinned
         (``owner_key_pinned``) or the lineage so far does not verify (``owner_key_lineage``). The read of the
         pinned key and the append are one lock acquisition, so two bootstraps racing on an empty ledger
@@ -358,8 +362,11 @@ class Ledger:
                 raise Rejected("owner_key_rotation", f"the ledger pins {current[:10]}; rotating to {keyid[:10]} needs that key's seed (--seed-env)")
             if public_from_seed(seed).hex() != current:
                 raise Rejected("owner_key_rotation", f"the seed given is not the pinned owner key's ({current[:10]}); only the pinned key rotates")
-            envelope = specmod.sign_rotation(specmod.rotation_payload(bytes.fromhex(current), public), seed)
-            specmod.verify_rotation(envelope, bytes.fromhex(current), public)
+            # The lineage verified, so the last owner_key_set is the pin of ``current``; the head is what the new
+            # event's ``previous`` will be, and the lock holds both still until the append.
+            replaces_seq, head = next(e["seq"] for e in reversed(events) if e["kind"] == "owner_key_set"), events[-1]["hash"]
+            envelope = specmod.sign_rotation(specmod.rotation_payload(bytes.fromhex(current), public, replaces_seq=replaces_seq, head=head), seed)
+            specmod.verify_rotation(envelope, bytes.fromhex(current), public, replaces_seq=replaces_seq, head=head)
             sha = digest(envelope)
             (self.home / "approvals" / f"{sha}.json").write_text(canonical(envelope), encoding="utf-8")
             return self._append(writer, events, "owner_key_set", {"keyid": keyid, "previous": current, "rotation_digest": sha})
