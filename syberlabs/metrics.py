@@ -7,7 +7,7 @@ A work item is one Build Thread, from ``case_created`` to the merge of the pull 
 events into one ``WorkItemMetrics`` per thread with nine metrics, each a ``Metric`` whose ``basis`` names the
 event hashes it came from. A fact the journal does not carry is ``unknown`` (``value`` None), never 0: a
 reader can tell "not recorded" from "none". ``summary`` aggregates over known values only and counts the
-unknowns beside them; ``provenance`` lists the events behind one number so a certificate can cite them.
+unknowns beside them.
 
 Derivations (``docs/METRICS.md`` has the full table):
 

@@ -1,5 +1,6 @@
 {
  "test_access_review.AccessReviewProject.test_new_project_development_paths": 0.01,
+ "test_access_review.AccessReviewProject.test_short_benchmark_stays_under_a_dev_ceiling": 0.71,
  "test_admission.AdmissionRegistry.test_each_reason_code_has_one_rule": 0.0,
  "test_admission.AdmissionRegistry.test_provenance_is_inspection_not_a_stored_path": 0.01,
  "test_admission.AdmissionRegistry.test_public_decision_omits_rule": 0.05,
