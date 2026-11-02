@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v1alpha1/evidence.schema.json",
+  "title": "Evidence",
+  "description": "One graded claim attached to a case. Protocol sdk.syberlabs.space/v1alpha1. grade is the charter's five evidence states (MasterMind CHARTER.md section 5), never promoted by wording. verified is true only when a configured source or host checker produced it, never a model or a caller. A grade above tested needs at least one source. sealed follows sectors' scar pattern: canonical JSON, a content hash, reopened offline, refused on mismatch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["claim", "grade", "verified", "sources"],
+  "properties": {
+    "claim": {"type": "string", "minLength": 1},
+    "grade": {"enum": ["implemented", "tested", "measured", "deployed", "externally_validated"]},
+    "verified": {"type": "boolean"},
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": {"enum": ["commit", "observation", "evaluation", "receipt", "file", "url", "outside_record"]},
+          "ref": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "sealed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "content_hash", "reopen"],
+      "properties": {
+        "schema": {"type": "string", "minLength": 1},
+        "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reopen": {"const": "offline"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["grade"], "properties": {"grade": {"enum": ["measured", "deployed", "externally_validated"]}}},
+      "then": {"properties": {"sources": {"minItems": 1}}}
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v1alpha1/decision-call.schema.json",
+  "title": "DecisionCall",
+  "description": "One bounded decision call on the Decision Port. Protocol sdk.syberlabs.space/v1alpha1. request is the TypeSafe System One wire body that RISE (src/core/decision/recommend.js), Flyspace (src/app/api/jev-persona/route.ts) and the Kev local server (RISE deploy/kev/local_app.py) already send: model, state, and named questions of type noul, choice or score. The host builds every choice menu; the provider only picks. connection records who owns the credential and is never chosen by the port. One call, one deadline, no retry and no fallback.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["provider", "connection", "deadline_ms", "request"],
+  "properties": {
+    "provider": {"$ref": "#/$defs/provider"},
+    "connection": {"enum": ["reader_owned", "server_held", "local"]},
+    "deadline_ms": {"type": "integer", "minimum": 1, "maximum": 60000},
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "state", "questions"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1},
+        "state": {
+          "anyOf": [
+            {"type": "object"},
+            {"type": "string"}
+          ]
+        },
+        "questions": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/question"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "model"],
+      "properties": {
+        "name": {"enum": ["Kev", "TypeSafe", "rules"]},
+        "model": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["name"], "properties": {"name": {"const": "Kev"}}},
+          "then": {"required": ["revision"], "properties": {"revision": {"pattern": "^[0-9a-f]{40}$"}}}
+        }
+      ]
+    },
+    "question": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {"const": "noul"},
+            "instructions": true,
+            "criteria": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {"false": true, "true": true}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "criteria"],
+          "properties": {
+            "type": {"const": "choice"},
+            "instructions": true,
+            "criteria": {"type": "object"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "criteria"],
+          "properties": {
+            "type": {"const": "score"},
+            "instructions": true,
+            "criteria": {"type": "array", "minItems": 2}
+          }
+        }
+      ]
+    }
+  }
+}

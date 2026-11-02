@@ -1,0 +1,23 @@
+{
+  "schema": "grant-ref.schema.json",
+  "valid": [
+    {
+      "name": "outermost layer pinned by digest",
+      "instance": {"api_version": "turtle.syberlabs.space/v0alpha1", "name": "syberlabs-org", "policy_digest": "4b7e1d0c9a8f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c4b3a2918f7e6d5c", "layer": 0}
+    },
+    {
+      "name": "narrower child layer (turtle-shells tests/fixtures/valid/attenuated-child.yaml)",
+      "instance": {"api_version": "turtle.syberlabs.space/v0alpha1", "name": "rise-child", "policy_digest": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90", "layer": 1}
+    }
+  ],
+  "invalid": [
+    {
+      "name": "grant semantics belong to the Turtle schema version that defines them",
+      "instance": {"api_version": "sdk.syberlabs.space/v1alpha1", "name": "syberlabs-org", "policy_digest": "4b7e1d0c9a8f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c4b3a2918f7e6d5c", "layer": 0}
+    },
+    {
+      "name": "an unpinned policy is not a grant",
+      "instance": {"api_version": "turtle.syberlabs.space/v0alpha1", "name": "syberlabs-org", "layer": 0}
+    }
+  ]
+}

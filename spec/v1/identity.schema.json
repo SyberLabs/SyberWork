@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v1alpha1/identity.schema.json",
+  "title": "AgentIdentity",
+  "description": "Who an Agent is. Protocol sdk.syberlabs.space/v1alpha1. Same tuple as Turtle's TurtleIdentity (turtle-shells, crates/turtle-policy): id, root_id, parent_id, subject_binding. A root Agent has parent_id null and root_id equal to id. subject_binding names the principal the Agent acts for, never a credential. platform uses the Agent-platform convention from SyberWork AGENTS.md section 2, optionally name@revision.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "root_id", "parent_id", "subject_binding", "platform"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"},
+    "root_id": {"type": "string", "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"},
+    "parent_id": {
+      "anyOf": [
+        {"type": "string", "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"},
+        {"type": "null"}
+      ]
+    },
+    "subject_binding": {"type": "string", "pattern": "^(github|google|service):[A-Za-z0-9._-]{1,100}$"},
+    "platform": {"type": "string", "pattern": "^(claude|codex|cursor|grok|human|host)(@[A-Za-z0-9._/-]{1,100})?$"}
+  }
+}

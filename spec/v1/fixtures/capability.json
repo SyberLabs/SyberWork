@@ -1,0 +1,188 @@
+{
+  "schema": "capability.schema.json",
+  "valid": [
+    {
+      "name": "one-shot-factory video render, local compute",
+      "instance": {
+        "id": "video.render",
+        "version": 1,
+        "digest": "af98b2675dcb02f4036fa864adff32fd242fdb3ec5cd8049770bf4ed0e0abce2",
+        "label": "Render a beat-reactive video",
+        "inputs": [{"name": "recipe", "type": "video.recipe.v1", "required": true}],
+        "outputs": [
+          {"name": "video", "type": "video.mp4.v1", "required": true},
+          {"name": "manifest", "type": "video.manifest.v1", "required": true}
+        ],
+        "effect": "compute",
+        "transport": {"kind": "local", "command": ["python", "-m", "video_factory", "render"]},
+        "auth": {"slot": null},
+        "connection": "none",
+        "may_refuse": true,
+        "execution": "sync",
+        "provenance": {"source_kind": "manual", "source_ref": "SyberLabs/one-shot-factory"}
+      }
+    },
+    {
+      "name": "RISE rise_present MCP tool, read effect",
+      "instance": {
+        "id": "rise.present",
+        "version": 1,
+        "digest": "88ec1e75043040d530355f224a2c2c5d9512762bab038929eb4fa14ca49d484a",
+        "label": "Present a Current in RISE",
+        "inputs": [{"name": "current", "type": "rise.current.v2", "required": true}],
+        "outputs": [{"name": "receipt", "type": "rise.present-receipt.v1", "required": true}],
+        "effect": "read",
+        "transport": {"kind": "mcp", "server_id": "rise", "origin": "https://rise.syberlabs.io/api/mcp", "tool": "rise_present"},
+        "auth": {"slot": null},
+        "connection": "none",
+        "may_refuse": true,
+        "execution": "sync",
+        "provenance": {"source_kind": "mcp", "source_ref": "https://rise.syberlabs.io/api/mcp#rise_present"}
+      }
+    },
+    {
+      "name": "cyber-insectly FlyVerse job, host-bound, server-held credential",
+      "instance": {
+        "id": "flyverse.job",
+        "version": 1,
+        "digest": "6c1c52b92985fd96d69e04de03bfdb22c141fbbb98eafd8a29628c579db8882a",
+        "label": "Run one FlyVerse causal-lab job",
+        "inputs": [{"name": "job", "type": "flyverse.job-request.v1", "required": true}],
+        "outputs": [{"name": "results", "type": "flyverse.results.v1", "required": true}],
+        "effect": "compute",
+        "transport": {"kind": "job", "queue": "causal_lab", "host_bound": true},
+        "auth": {"slot": "CYBER_INSECTLY_TOKEN"},
+        "connection": "server_held",
+        "may_refuse": true,
+        "execution": "async_poll",
+        "provenance": {"source_kind": "manual", "source_ref": "SyberLabs/cyber-insectly"}
+      }
+    },
+    {
+      "name": "omni-agent tab.click, write effect, approval pending",
+      "instance": {
+        "id": "omni.tab.click",
+        "version": 1,
+        "digest": "fe0f14429e63065fc648fd2ae91e9a4072c4ae510b3680543a4008884212cd87",
+        "label": "Click an element in a bound browser tab",
+        "inputs": [{"name": "target", "type": "omni.actionable-ref.v1", "required": true}],
+        "outputs": [{"name": "snapshot", "type": "omni.tab-snapshot.v1", "required": true}],
+        "effect": "write",
+        "transport": {"kind": "browser", "affordance": "tab.click"},
+        "auth": {"slot": null},
+        "connection": "none",
+        "may_refuse": true,
+        "execution": "sync",
+        "approval": "pending",
+        "provenance": {"source_kind": "affordance", "source_ref": "SyberLabs/omni-agent#tab.click"}
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a write capability cannot approve itself",
+      "instance": {
+        "id": "omni.tab.click",
+        "version": 1,
+        "digest": "fe0f14429e63065fc648fd2ae91e9a4072c4ae510b3680543a4008884212cd87",
+        "label": "Click an element in a bound browser tab",
+        "inputs": [{"name": "target", "type": "omni.actionable-ref.v1", "required": true}],
+        "outputs": [{"name": "snapshot", "type": "omni.tab-snapshot.v1", "required": true}],
+        "effect": "write",
+        "transport": {"kind": "browser", "affordance": "tab.click"},
+        "auth": {"slot": null},
+        "connection": "none",
+        "may_refuse": true,
+        "approval": "auto"
+      }
+    },
+    {
+      "name": "a keyless capability names no credential slot",
+      "instance": {
+        "id": "video.render",
+        "version": 1,
+        "digest": "af98b2675dcb02f4036fa864adff32fd242fdb3ec5cd8049770bf4ed0e0abce2",
+        "label": "Render a beat-reactive video",
+        "inputs": [],
+        "outputs": [],
+        "effect": "compute",
+        "transport": {"kind": "local", "command": ["python", "-m", "video_factory", "render"]},
+        "auth": {"slot": "OPENAI_API_KEY"},
+        "connection": "none",
+        "may_refuse": true
+      }
+    },
+    {
+      "name": "a credential slot is a name, never a secret value",
+      "instance": {
+        "id": "flyverse.job",
+        "version": 1,
+        "digest": "6c1c52b92985fd96d69e04de03bfdb22c141fbbb98eafd8a29628c579db8882a",
+        "label": "Run one FlyVerse causal-lab job",
+        "inputs": [],
+        "outputs": [],
+        "effect": "compute",
+        "transport": {"kind": "job", "queue": "causal_lab", "host_bound": true},
+        "auth": {"slot": "sk-live-1234567890abcdef"},
+        "connection": "server_held",
+        "may_refuse": true
+      }
+    },
+    {
+      "name": "effect classes are closed",
+      "instance": {
+        "id": "rise.present",
+        "version": 1,
+        "digest": "88ec1e75043040d530355f224a2c2c5d9512762bab038929eb4fa14ca49d484a",
+        "label": "Present a Current in RISE",
+        "inputs": [],
+        "outputs": [],
+        "effect": "admin",
+        "transport": {"kind": "mcp", "server_id": "rise", "origin": "https://rise.syberlabs.io/api/mcp", "tool": "rise_present"},
+        "auth": {"slot": null},
+        "connection": "none",
+        "may_refuse": true
+      }
+    },
+    {
+      "name": "port types carry a version",
+      "instance": {
+        "id": "video.render",
+        "version": 1,
+        "digest": "af98b2675dcb02f4036fa864adff32fd242fdb3ec5cd8049770bf4ed0e0abce2",
+        "label": "Render a beat-reactive video",
+        "inputs": [{"name": "recipe", "type": "json", "required": true}],
+        "outputs": [],
+        "effect": "compute",
+        "transport": {"kind": "local", "command": ["python", "-m", "video_factory", "render"]},
+        "auth": {"slot": null},
+        "connection": "none",
+        "may_refuse": true
+      }
+    }
+  ],
+  "digest_mismatch": [
+    {
+      "name": "the manifest changed after its digest was taken",
+      "instance": {
+        "id": "video.render",
+        "version": 1,
+        "digest": "af98b2675dcb02f4036fa864adff32fd242fdb3ec5cd8049770bf4ed0e0abce2",
+        "label": "Render a beat-reactive video",
+        "inputs": [{"name": "recipe", "type": "video.recipe.v1", "required": true}],
+        "outputs": [
+          {"name": "video", "type": "video.mp4.v1", "required": true},
+          {"name": "manifest", "type": "video.manifest.v1", "required": true}
+        ],
+        "effect": "write",
+        "transport": {"kind": "local", "command": ["python", "-m", "video_factory", "render"]},
+        "auth": {"slot": null},
+        "connection": "none",
+        "may_refuse": true,
+        "execution": "sync",
+        "approval": "pending",
+        "provenance": {"source_kind": "manual", "source_ref": "SyberLabs/one-shot-factory"}
+      }
+    }
+  ]
+}

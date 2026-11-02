@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v1alpha1/port.schema.json",
+  "title": "Port",
+  "description": "One typed input or output of a Capability. Protocol sdk.syberlabs.space/v1alpha1. Taken from cross-platform's Solution Builder Port. type is a versioned value-type name such as relay.packet.v1. Two ports connect only when their types are equal; there is no implicit conversion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "type", "required"],
+  "properties": {
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "type": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)*\\.v[0-9]+$"},
+    "required": {"type": "boolean"}
+  }
+}
