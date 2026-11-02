@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import operator as op
 import random
 import statistics
@@ -126,6 +127,20 @@ def _describe(values: list) -> dict:
             "total": round(sum(known), 6) if known else None}
 
 
+def _threshold(rule: dict) -> Fraction:
+    """The decision rule's threshold as the exact fraction of its float. A value no finite float holds (``10**400``,
+    NaN, infinity: ``spec.check`` refuses them, but a report fails closed on its own) is ``Rejected`` with
+    ``threshold_invalid`` instead of raising through the report."""
+    value = rule.get("threshold")
+    try:
+        as_float = float(value)
+    except (OverflowError, TypeError, ValueError):
+        as_float = float("nan")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(as_float):
+        raise Rejected("threshold_invalid", f"$.decision_rule.threshold: {value!r} is not a number a finite float can hold")
+    return Fraction(repr(as_float))
+
+
 def decide(doc: dict, values: dict, *, partial: bool = False) -> dict:
     """Steps 2 and 3 of the module docstring. ``values`` maps ``(task, arm, seed)`` to ``(run_id, metric value)`` for
     every run that has a score; a value of None is unknown."""
@@ -155,7 +170,7 @@ def decide(doc: dict, values: dict, *, partial: bool = False) -> dict:
         differences[task] = means[treatment] - means[baseline]
         per_task.append({**row, "difference": _exact(differences[task]), "excluded": False})
     diffs = [differences[t] for t in doc["tasks"]["ids"] if t in differences]
-    threshold = Fraction(repr(float(rule["threshold"])))
+    threshold = _threshold(rule)
     mean = sum(diffs, Fraction(0)) / len(diffs) if diffs else None
     holds = OPERATORS[rule["operator"]](mean, threshold) if mean is not None else None
     label = "PARTIAL " if partial else ""

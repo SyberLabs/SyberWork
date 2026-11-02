@@ -133,8 +133,8 @@ class G6StaticLint(unittest.TestCase):
          "def reconcile(self, case_id: str, proposal_id: str, actor: str, roles: list[str], *, success=None) -> dict:",
          "must first refuse any non-None success"),
         ("server forwards caller evidence", "syberwork/server.py",
-         'result = work.reconcile(case_id, data["proposal_id"], name, roles)',
-         'result = work.reconcile(case_id, data["proposal_id"], name, roles, evidence=data.get("evidence"))',
+         'result = work.reconcile(case_id, data["proposal_id"], actor, roles)',
+         'result = work.reconcile(case_id, data["proposal_id"], actor, roles, evidence=data.get("evidence"))',
          "forwards keyword evidence"),
         ("server guard removed", "syberwork/server.py",
          '                        if set(data) != {"proposal_id"}:\n'

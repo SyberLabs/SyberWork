@@ -29,7 +29,7 @@ The section is optional and is versioned with the contract like everything else.
 
 | Field | Meaning | Enforced by |
 | --- | --- | --- |
-| `scope.paths`, `scope.exclude` | Mutable scope, as path prefixes. `.git` and `.syberlabs` are always excluded. | `record_candidate` recomputes `scope_violations` from the changed paths. The provider cannot supply them. |
+| `scope.paths`, `scope.exclude` | Mutable scope, as path prefixes. `.git` and `.syberlabs` are always excluded. Prefixes compare case-insensitively where the host filesystem does (Windows, macOS by default: `Tests/` cannot escape an exclusion of `tests`, since both are checked out onto one file) and as written elsewhere. | `record_candidate` recomputes `scope_violations` from the changed paths. The provider cannot supply them. |
 | `scope.max_files`, `scope.max_diff_bytes` | Size limits on one candidate | `limit_violations`, recomputed at registration |
 | `operators` | Operator names a provider may use | Registration refuses others (`operator_not_permitted`) |
 | `budget` | Candidates and evaluations per thread; seconds per search. Optionally `prices` (dollars per million tokens by model), `max_dollars` per thread and `strict`; see [BUILD_THREAD.md](BUILD_THREAD.md#spend-and-the-dollar-budget). | `budget_exhausted` at registration or evaluation, and before a model command starts once the host-observed dollars are spent. The host enforces the deadline. |

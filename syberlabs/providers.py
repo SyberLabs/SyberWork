@@ -36,6 +36,7 @@ import random
 import shlex
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -209,11 +210,29 @@ def with_usage(signal, usage: dict | None, tools: dict | None) -> dict | None:
     return found or (None if not isinstance(signal, dict) else found)
 
 
+def feed_stdin(proc: subprocess.Popen, data: bytes) -> threading.Thread:
+    """Write ``data`` to ``proc``'s stdin and close it, on a daemon thread, so the caller's deadline loop starts at
+    once: a child that does not read its input leaves the write blocked once the pipe is full, and a blocked host
+    would miss its own timeout. The thread ends when the child has read everything or has gone."""
+    def write() -> None:
+        try:
+            proc.stdin.write(data)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    thread = threading.Thread(target=write, daemon=True, name="syberlabs-provider-stdin")
+    thread.start()
+    return thread
+
+
 def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Path | None = None):
     """Run a command with ``payload`` as JSON on stdin; return its stdout parsed as JSON.
 
-    Bounded by ``timeout`` seconds and 4 MB of output. The command inherits the
-    caller's environment. Failures are ``Rejected`` with a ``provider_*`` code.
+    Bounded by ``timeout`` seconds and 4 MB of output; the payload is written under the same deadline
+    (``feed_stdin``), and a timeout ends the command with everything it started (``checks._stop``: the session on
+    POSIX, the process tree on Windows). The command inherits the caller's environment. Failures are ``Rejected``
+    with a ``provider_*`` code.
     """
     meter = _METER.get()
     if meter is not None:
@@ -225,18 +244,17 @@ def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Pat
                                     env=dict(os.environ), start_new_session=hasattr(os, "setsid"))
         except OSError as exc:
             raise Rejected("provider_unavailable", f"could not start {argv[0]!r}: {exc.strerror}") from None
-        try:
-            proc.stdin.write(request)
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
+        writer = feed_stdin(proc, request)
         deadline = time.monotonic() + timeout
         while proc.poll() is None:
             if time.monotonic() > deadline or os.fstat(out.fileno()).st_size > MAX_RESPONSE_BYTES:
-                proc.kill()
-                proc.wait()
+                from syberlabs.checks import _stop  # here, not at the top: checks imports critic, which imports this module
+
+                _stop(proc)
+                writer.join(5)
                 raise Rejected("provider_timeout", "the provider command exceeded its time or output limit")
             time.sleep(0.02)
+        writer.join(5)
         if proc.returncode != 0:
             err.seek(0)
             raise Rejected("provider_failed", f"exit {proc.returncode}: {err.read(400).decode(errors='replace')}")
