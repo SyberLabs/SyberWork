@@ -75,7 +75,12 @@ V0_LOCK = V1 / "v0alpha1.lock.json"
 
 
 def v0alpha1_digests() -> dict[str, str]:
-    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+    """SHA-256 of each v0alpha1 schema's parsed content in canonical JSON.
+
+    Content, not bytes: a Windows checkout converts line endings, and a whitespace-only
+    reformat is not a protocol change. Any change to a key, value or order of a list is.
+    """
+    return {path.name: hashlib.sha256(canonical(json.loads(path.read_text(encoding="utf-8"))).encode("utf-8")).hexdigest()
             for path in sorted((V1.parent).glob("*.schema.json"))}
 
 
