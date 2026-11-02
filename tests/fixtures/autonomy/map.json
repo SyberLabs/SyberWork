@@ -1,0 +1,40 @@
+{
+  "schema": "syberfactory/feature-map.v1",
+  "id": "order-markers.m1",
+  "spec_ref": {"spec_id": "order-markers", "version": 1, "spec_digest": "<filled by the test from the spec>"},
+  "base": null,
+  "author": {"kind": "human", "id": "fixture"},
+  "features": [
+    {
+      "id": "F1", "title": "Rules reviewed", "objective": "Append the F1 delivery marker to fxapp/rules.py",
+      "req_ids": ["R1"], "depends_on": [],
+      "scope": {"paths": ["fxapp/rules.py"], "exclude": [], "max_files": 1, "max_diff_bytes": 2000},
+      "overlaps": [], "act_class": "R",
+      "criteria": [{"id": "F1.c1", "text": "fxapp/rules.py ends with the line '# F1 delivered'", "kind": "test"}],
+      "hidden_checks": ["hidden.f1.marker"], "size": "S",
+      "risk_inputs": {"new_dependencies": 0, "needs_lookup": false, "disagreement": 0.1}
+    },
+    {
+      "id": "F2", "title": "Ingest reviewed after rules", "objective": "Append the F2 delivery marker to fxapp/ingest.py",
+      "req_ids": ["R2"], "depends_on": ["F1"],
+      "scope": {"paths": ["fxapp/ingest.py"], "exclude": [], "max_files": 1, "max_diff_bytes": 2000},
+      "overlaps": [], "act_class": "R",
+      "criteria": [{"id": "F2.c1", "text": "fxapp/ingest.py ends with the line '# F2 delivered'", "kind": "test"}],
+      "hidden_checks": ["hidden.f2.marker"], "size": "S",
+      "risk_inputs": {"new_dependencies": 0, "needs_lookup": false, "disagreement": 0.0}
+    },
+    {
+      "id": "F3", "title": "Variants reviewed", "objective": "Append the F3 delivery marker to fxapp/variants.py",
+      "req_ids": ["R3"], "depends_on": [],
+      "scope": {"paths": ["fxapp/variants.py"], "exclude": [], "max_files": 1, "max_diff_bytes": 2000},
+      "overlaps": [], "act_class": "R",
+      "criteria": [{"id": "F3.c1", "text": "fxapp/variants.py ends with the line '# F3 delivered'", "kind": "test"},
+                   {"id": "F3.c2", "text": "the entrypoints keep their names", "kind": "judgment"}],
+      "hidden_checks": ["hidden.f3.marker"], "size": "M",
+      "risk_inputs": {"new_dependencies": 0, "needs_lookup": false, "disagreement": 0.0}
+    }
+  ],
+  "uncovered": [],
+  "integration": "stack",
+  "approval": null
+}
