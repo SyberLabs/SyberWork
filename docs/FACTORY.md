@@ -181,6 +181,22 @@ report; exit criterion: drift evidence; `repro` lists the symbol-level edges) an
 and logs each as `ticket_opened` with `source: drift`. This is the first of the plan's three automatic
 ticket sources; spec promotion and feature-map drift are v1.
 
+## The variant loop
+
+`factory spec variants parent.json --proposer claude=CMD --proposer grok=CMD --proposer cursor=CMD --reviewer gpt=CMD`
+is SyberWork's provider arrangement applied to specs. Each proposer is a command that reads the parent spec,
+the components it may claim and the objective as JSON on stdin and answers one delta (added, modified,
+removed, footprint hint, rationale). Each delta becomes a variant through `mutate`, is validated against
+the latest Space graph (findings stay on the variant rather than hiding it), and is logged as
+`spec_changed` with the proposer as actor; a proposer that returns no JSON is logged as a failed mutate
+and the loop continues. The reviewer is one command that sees every variant with its findings and answers
+a verdict per variant. `judge` enforces three rules: the reviewer did not propose any variant (the critic
+rule's independence), a variant with findings cannot be accepted, and at most one variant is accepted. The
+accepted variant is validated to candidate and written as the spec's next version; `spec promote` with the
+verdict id then opens its tickets. `tests/fixtures/factory_app/proposers.py` stands in for the models, and
+`tests/test_factory.py::Variants` runs the loop with one sound proposer, one that overreaches, and one that
+breaks. Nothing here imports a model SDK; the adapter for a real model is the command.
+
 ## Where this departs from the plan, and why
 
 - **`ast`, not tree-sitter and SCIP.** The plan chose tree-sitter for structure and SCIP for precise
@@ -202,9 +218,9 @@ ticket sources; spec promotion and feature-map drift are v1.
   already has an `ArchitectureSnapshot` schema (`spec/builder/architecture-snapshot.schema.json`: nodes
   with `paths`, edges with `from` and `to`), so the declaration is that JSON, and a Structurizr export can
   be converted to it later.
-- **Spec mutation is a state, not a loop.** `mutate` is a legal transition with the delta semantics the
-  plan describes, but nothing in v0 fans one parent out to several models and reviews the variants; that
-  is SyberWork's provider loop and the v1 work.
+- **Spec variants are commands.** The plan had Claude, Grok and Cursor propose and GPT review. They do, as
+  commands at a process boundary, which is how this repository treats every model; the `--proposer` and
+  `--reviewer` names are what the ledger records as actors.
 
 ## What a cell is, exactly
 
@@ -236,9 +252,10 @@ component nothing called at a revision has no cells there, and that absence is i
 
 ## Next work package
 
-v1 closes the rest of the loop: three providers propose variants from one parent spec and one reviews; this
-repository's own contract names `factory check` (the bootstrap command exists, the contract lives in the
-operator's `.syberlabs/`, which is not tracked); a second recorded program for the self-check (one that exercises
-`Thread.check` more than once, so the third row flips); and feature maps once the ledger has volume. The open decision upstream of all of it is
+What remains of v1: this repository's own contract naming `factory check` (the bootstrap command exists; the
+contract lives in the operator's `.syberlabs/`, which is not tracked); a second recorded program for the
+self-check that exercises `Thread.check` more than once, so the third row of the table flips; real model
+adapters behind the proposer and reviewer commands (a Class X act when they spend money); and feature maps
+once the ledger has volume. The open decision upstream of all of it is
 whether a host-run trace diff over a declared footprint counts as independent review for MasterMind's auto
 class; if it does, the loop closes without changing who promotes.

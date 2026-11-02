@@ -800,3 +800,99 @@ class SelfHosting(Scratch):
         statement = attest.statement(subject_commit="weakened", repository="syberwork", spec_ref={"spec_id": None},
                                      footprint=None, evidence={"trace_diff": changed}, builder={"agent": "test"})
         self.assertFalse(statement["predicate"]["policy"]["promote"])
+
+
+class Variants(Scratch):
+    """Several proposers mutate one parent spec, one reviewer judges, the accepted variant becomes the next version.
+    Proposers and reviewer are commands; the one that is not independent is refused."""
+
+    def setUp(self):
+        super().setUp()
+        import sys as _sys
+        self.py = _sys.executable
+        self.tree = self.scratch / "tree"
+        shutil.copytree(FIXTURE, self.tree)
+        self.proposers = str(self.tree / "proposers.py")
+        self.home = ledger.Ledger(self.scratch / "ledger")
+        graph = indexed(self.tree, "base")
+        self.home.record_space(graph)
+        spec = specmod.new_spec("order-path", "ordering", [
+            {"req_id": "R1", "text": "When quantity is positive, the system shall post one order.",
+             "scenarios": [{"given": "quantity 2", "when": "run", "then": "one http.post_order effect"}]}],
+            ["ingest", "rules", "effects"], author=ACTOR)
+        specmod.transition(spec, "validate", ACTOR, space=graph)
+        self.spec_path = self.tree / "order-path.v1.json"
+        self.spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    def cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = factory_cli.main(["--home", str(self.home.home), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_primitives(self):
+        parent = json.loads(self.spec_path.read_text(encoding="utf-8"))
+        graph = self.home.latest_space()
+        good = specmod.make_variant(parent, {"modified": [{"req_id": "R1", "text": "tighter"}], "rationale": "r"},
+                                    {"kind": "model", "id": "a"}, graph)
+        bad = specmod.make_variant(parent, {"footprint_hint": ["ghost"]}, {"kind": "model", "id": "b"}, graph)
+        self.assertEqual((good["state"], good["version"], good["findings"]), ("mutated", 2, []))
+        self.assertTrue(bad["findings"])
+        self.assertNotEqual(good["variant_id"], bad["variant_id"])
+        self.assertEqual(parent["version"], 1, "the parent is untouched")
+        with self.assertRaises(Rejected):
+            specmod.make_variant(parent, {"rationale": "nothing"}, {"kind": "model", "id": "a"}, graph)
+        reviewer = {"kind": "model", "id": "r"}
+        review = specmod.judge([good, bad], [{"variant_id": good["variant_id"], "decision": "accept"},
+                                             {"variant_id": bad["variant_id"], "decision": "reject"}], reviewer)
+        self.assertEqual(review["accepted"], good["variant_id"])
+        with self.assertRaises(Rejected):
+            specmod.judge([good, bad], [{"variant_id": bad["variant_id"], "decision": "accept"},
+                                        {"variant_id": good["variant_id"], "decision": "reject"}], reviewer)
+        with self.assertRaises(Rejected):
+            specmod.judge([good, bad], [{"variant_id": good["variant_id"], "decision": "accept"}], reviewer)
+        with self.assertRaises(Rejected):
+            specmod.judge([good], [{"variant_id": good["variant_id"], "decision": "accept"}], {"kind": "model", "id": "a"})
+
+    def test_loop_through_the_cli(self):
+        run = lambda role: f"{self.py} {self.proposers} {role}"
+        code, out, err = self.cli("variants", str(self.spec_path), "--proposer", f"claude={run('tighten')}",
+                                  "--proposer", f"grok={run('overreach')}", "--proposer", f"cursor={run('broken')}",
+                                  "--reviewer", f"gpt={run('review')}", "--objective", "make R1 testable")
+        self.assertEqual(code, 0, err + out)
+        self.assertIn("proposer cursor: provider_", err, "a proposer that returns no JSON is reported, not fatal")
+        self.assertIn("variant ", out)
+        self.assertIn("accept ", out)
+        self.assertIn("reject ", out)
+        target = self.tree / "order-path.v2.json"
+        self.assertTrue(target.exists(), out)
+        accepted = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(accepted["state"], "candidate")
+        self.assertIn("exactly one order", accepted["requirements"][0]["text"])
+        self.assertEqual([h["operation"] for h in accepted["history"]], ["validate", "mutate", "validate"])
+        self.assertEqual(accepted["history"][1]["actor"], {"kind": "model", "id": "claude"})
+        review = json.loads((self.tree / "order-path.variants" / "review.json").read_text(encoding="utf-8"))
+        self.assertEqual({v["decision"] for v in review["verdicts"]}, {"accept", "reject"})
+        kinds = [(e["body"]["operation"], e["body"].get("to"), e["body"]["actor"]["id"]) for e in self.home.events() if e["kind"] == "spec_changed"]
+        self.assertIn(("mutate", "mutated", "claude"), kinds)
+        self.assertIn(("mutate", "mutated", "grok"), kinds)
+        self.assertIn(("mutate", None, "cursor"), kinds, "the failed proposer is on the record")
+        self.assertIn(("review", None, "gpt"), kinds)
+        self.assertEqual(kinds[-1][:2], ("validate", "candidate"))
+        verdict_id = out.split("--verdict ")[1].split()[0]
+        code, out, err = self.cli("spec", "promote", str(target), "--verdict", verdict_id, "--actor", "model:gpt",
+                                  "--tickets", str(self.tree / "tickets"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(list((self.tree / "tickets").glob("*.json"))), 1)
+
+    def test_a_reviewer_who_proposed_is_refused_and_a_review_accepting_two_is_refused(self):
+        run = lambda role: f"{self.py} {self.proposers} {role}"
+        code, out, err = self.cli("variants", str(self.spec_path), "--proposer", f"gpt={run('tighten')}",
+                                  "--reviewer", f"gpt={run('review')}")
+        self.assertEqual(code, 2)
+        self.assertIn("reviewer_not_independent", err)
+        code, out, err = self.cli("variants", str(self.spec_path), "--proposer", f"a={run('tighten')}",
+                                  "--proposer", f"b={run('tighten')}", "--reviewer", f"r={run('review-all')}")
+        self.assertEqual(code, 2)
+        self.assertIn("at most one variant", err)
+        self.assertFalse((self.tree / "order-path.v2.json").exists())

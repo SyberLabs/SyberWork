@@ -129,6 +129,17 @@ def populate(factory) -> None:
     sp.add_argument("--baseline", default="golden", help="the golden run or label the tickets diff against (default golden)")
     sp.add_argument("--owner", help="the accountable human on the tickets")
 
+    var = steps.add_parser("variants", help="several proposers each mutate a parent spec; one reviewer judges; the accepted "
+                                            "variant is written as the spec's next version. Proposers and the reviewer are "
+                                            "commands reading JSON on stdin and writing JSON on stdout (process boundary, no SDK)")
+    var.add_argument("spec", help="the parent spec JSON file (state candidate or canonical)")
+    var.add_argument("--proposer", action="append", default=[], metavar="NAME=COMMAND",
+                     help="a proposer: its name and the command that returns a delta; repeatable")
+    var.add_argument("--reviewer", metavar="NAME=COMMAND", help="the reviewer command; omit to write the variants and stop")
+    var.add_argument("--objective", default="")
+    var.add_argument("--out", default=None, help="directory for the variants and the review (default: beside the spec)")
+    var.add_argument("--timeout", type=int, default=600)
+
     ticket = steps.add_parser("ticket", help="open a ticket for one requirement of a promoted spec")
     ticket.add_argument("spec")
     ticket.add_argument("--req", required=True)
@@ -307,6 +318,9 @@ def _run(args) -> int:
 
     if command == "spec":
         return _spec(args, home)
+
+    if command == "variants":
+        return _variants(args, home)
 
     if command == "ticket":
         document = _read_json(args.spec, "spec")
@@ -573,6 +587,81 @@ def _run_tests(root: Path, argv_json: str, timeout: int) -> dict:
             "fail": 0 if exit_code == 0 else 1, "timed_out": exit_code is None,
             "seconds": round(time.monotonic() - started, 1), "output_digest": hashlib.sha256(output).hexdigest(),
             "output_tail": output[-2000:].decode(errors="replace")}
+
+
+def _variants(args, home: ledger.Ledger) -> int:
+    """The variant loop: each proposer command mutates the parent, every variant is validated and logged, the
+    reviewer command judges them all at once, and the accepted one becomes the spec's next version file."""
+    from syberlabs.providers import run_json, split_command
+
+    parent = _read_json(args.spec, "spec")
+    if parent["state"] not in ("candidate", "canonical"):
+        raise Rejected("spec_state", f"variants fork from a candidate or canonical spec, not state {parent['state']!r}")
+    if not args.proposer:
+        raise Rejected("variants_proposers", "name at least one --proposer NAME=COMMAND")
+    graph = home.latest_space()
+    out = Path(args.out) if args.out else Path(args.spec).resolve().parent / f"{parent['spec_id']}.variants"
+    out.mkdir(parents=True, exist_ok=True)
+    request = specmod.variant_request(parent, graph, args.objective)
+    variants = []
+    for entry in args.proposer:
+        name, _, command = entry.partition("=")
+        if not name or not command:
+            raise Rejected("variants_proposers", f"a proposer is NAME=COMMAND, not {entry!r}")
+        proposer = {"kind": "model", "id": name}
+        try:
+            delta = run_json(split_command(command), request, timeout=args.timeout)
+        except Rejected as exc:
+            print(f"proposer {name}: {exc.code}: {exc.detail}", file=sys.stderr)
+            home.append("spec_changed", {"spec_id": parent["spec_id"], "version": parent["version"], "operation": "mutate",
+                                         "actor": proposer, "from": parent["state"], "to": None, "failed": exc.code})
+            continue
+        try:
+            variant = specmod.make_variant(parent, delta, proposer, graph)
+        except Rejected as exc:
+            print(f"proposer {name}: {exc.code}: {exc.detail}", file=sys.stderr)
+            continue
+        path = out / f"{parent['spec_id']}.v{variant['version']}.{name}.json"
+        path.write_text(json.dumps(variant, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        home.append("spec_changed", {"spec_id": parent["spec_id"], "version": variant["version"], "operation": "mutate",
+                                     "actor": proposer, "from": parent["state"], "to": "mutated", "variant_id": variant["variant_id"],
+                                     "spec_digest": specmod.spec_digest(variant), "findings": len(variant["findings"])})
+        variants.append(variant)
+        print(f"variant {variant['variant_id']} by {name}: {len(variant['requirements'])} requirements, "
+              f"{'valid' if not variant['findings'] else str(len(variant['findings'])) + ' finding(s)'}  -> {path.name}")
+    if not variants:
+        raise Rejected("variants_none", "no proposer returned a usable delta")
+    if not args.reviewer:
+        print(f"{len(variants)} variant(s) written to {out}; review with --reviewer, or pick one and `spec validate` it")
+        return 0
+    name, _, command = args.reviewer.partition("=")
+    reviewer = {"kind": "model", "id": name}
+    answer = run_json(split_command(command), specmod.review_request(parent, variants, args.objective), timeout=args.timeout)
+    if not isinstance(answer, dict) or not isinstance(answer.get("verdicts"), list):
+        raise Rejected("review_invalid", "the reviewer answers {\"verdicts\": [...]}")
+    review = specmod.judge(variants, answer["verdicts"], reviewer)
+    (out / "review.json").write_text(json.dumps(review, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    for verdict in review["verdicts"]:
+        home.append("spec_changed", {"spec_id": parent["spec_id"], "version": parent["version"], "operation": "review",
+                                     "actor": reviewer, "variant_id": verdict["variant_id"], "decision": verdict["decision"],
+                                     "verdict_id": verdict["verdict_id"]})
+        print(f"verdict {verdict['verdict_id']} {verdict['decision']:7} {verdict['variant_id']}  {(verdict.get('rationale') or '')[:80]}")
+    if review["accepted"] is None:
+        print("no variant accepted; the parent stands")
+        return 1
+    chosen = next(v for v in variants if v["variant_id"] == review["accepted"])
+    verdict_id = next(v["verdict_id"] for v in review["verdicts"] if v["variant_id"] == review["accepted"])
+    specmod.transition(chosen, "validate", reviewer, space=graph)
+    for key in ("proposer", "rationale", "findings", "variant_id"):
+        chosen.pop(key, None)
+    target = Path(args.spec).resolve().parent / f"{parent['spec_id']}.v{chosen['version']}.json"
+    target.write_text(json.dumps(chosen, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    home.append("spec_changed", {"spec_id": chosen["spec_id"], "version": chosen["version"], "operation": "validate",
+                                 "actor": reviewer, "from": "mutated", "to": "candidate", "spec_digest": specmod.spec_digest(chosen),
+                                 "accepted_variant": review["accepted"], "verdict_id": verdict_id})
+    print(f"accepted {review['accepted']} -> {target.name} (candidate); promote with: "
+          f"factory spec promote {target.name} --verdict {verdict_id} --actor model:{name} --tickets DIR")
+    return 0
 
 
 def _describe_side(entry: dict | None) -> str:

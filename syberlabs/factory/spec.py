@@ -16,6 +16,8 @@ retire. Mutation (several models proposing variants of one parent) is the v1 add
 
 from __future__ import annotations
 
+import json
+
 from syberlabs.canonical import digest
 from syberlabs.errors import Rejected
 from syberlabs.factory import PROTOCOL
@@ -219,3 +221,69 @@ def tickets_from_drift(report: dict, revision: str | None, *, threshold: float, 
             "human_owner": human_owner, "state": "open", "candidates": [], "verdicts": [], "evidence_links": [],
         })
     return tickets
+
+
+# -- variants: several proposers, one reviewer, at a process boundary ---------------------------------------
+
+VARIANT_PROTOCOL = "syberlabs.space/factory/spec-variant/v0"
+
+
+def variant_request(parent: dict, space: dict | None, objective: str | None) -> dict:
+    """What a proposer reads on stdin: the parent spec, the components it may claim, and the objective. It
+    answers with one JSON delta (``added``, ``modified``, ``removed``, optional ``footprint_hint`` and
+    ``rationale``), the shape :func:`_apply_delta` takes."""
+    return {"protocol": VARIANT_PROTOCOL, "role": "proposer", "parent": {k: v for k, v in parent.items() if k != "history"},
+            "components": sorted((space or {}).get("components", {})), "objective": objective or ""}
+
+
+def make_variant(parent: dict, delta: dict, proposer: dict, space: dict | None) -> dict:
+    """A variant: the parent with ``delta`` applied through ``mutate``, validated, and marked with its
+    proposer. Validation findings stay on the variant (``findings``) rather than refusing it, so a reviewer
+    sees an invalid proposal as invalid instead of never seeing it."""
+    if not isinstance(delta, dict) or not any(k in delta for k in ("added", "modified", "removed", "footprint_hint")):
+        raise Rejected("variant_delta", f"a variant is a delta with added, modified, removed or footprint_hint, not {type(delta).__name__}")
+    variant = json.loads(json.dumps(parent))
+    transition(variant, "mutate", proposer, delta={k: v for k, v in delta.items() if k != "rationale"},
+               reason=delta.get("rationale"))
+    variant["proposer"] = proposer
+    variant["rationale"] = delta.get("rationale")
+    variant["findings"] = validate(variant, space)
+    variant["variant_id"] = spec_digest({k: v for k, v in variant.items() if k not in ("findings", "proposer", "rationale")})[:16]
+    return variant
+
+
+def review_request(parent: dict, variants: list[dict], objective: str | None) -> dict:
+    """What a reviewer reads on stdin: the parent, every variant with its findings, the objective. It answers
+    ``{"verdicts": [{"variant_id", "decision": accept|reject|revise, "rationale"}]}``."""
+    return {"protocol": VARIANT_PROTOCOL, "role": "reviewer", "objective": objective or "",
+            "parent": {k: v for k, v in parent.items() if k != "history"},
+            "variants": [{k: v for k, v in variant.items() if k != "history"} for variant in variants]}
+
+
+def judge(variants: list[dict], verdicts: list[dict], reviewer: dict) -> dict:
+    """Apply a reviewer's verdicts. The reviewer may not have proposed any of the variants (independence, as
+    the critic rule has it), a variant with findings cannot be accepted, and at most one variant is accepted.
+    Returns ``{"accepted": variant_id or None, "verdicts": [...]}`` with each verdict stamped by the reviewer."""
+    by_id = {v["variant_id"]: v for v in variants}
+    for variant in variants:
+        if variant.get("proposer", {}).get("id") == reviewer.get("id") and variant.get("proposer", {}).get("kind") == reviewer.get("kind"):
+            raise Rejected("reviewer_not_independent", f"{reviewer.get('id')} proposed variant {variant['variant_id']} and cannot review it")
+    accepted = None
+    stamped = []
+    for verdict in verdicts:
+        variant_id = verdict.get("variant_id")
+        decision = verdict.get("decision")
+        if variant_id not in by_id or decision not in ("accept", "reject", "revise"):
+            raise Rejected("verdict_invalid", f"a verdict names a variant and decides accept, reject or revise: {verdict!r}")
+        if decision == "accept":
+            if by_id[variant_id]["findings"]:
+                raise Rejected("verdict_invalid", f"variant {variant_id} has validation findings and cannot be accepted: {by_id[variant_id]['findings']}")
+            if accepted is not None:
+                raise Rejected("verdict_invalid", "a review accepts at most one variant")
+            accepted = variant_id
+        stamped.append({"verdict_id": digest({"variant": variant_id, "reviewer": reviewer, "decision": decision})[:16],
+                        "variant_id": variant_id, "decision": decision, "rationale": verdict.get("rationale"), "reviewer": reviewer})
+    missing = sorted(set(by_id) - {v["variant_id"] for v in stamped})
+    if missing:
+        raise Rejected("verdict_incomplete", f"no verdict for variants {missing}")
+    return {"accepted": accepted, "verdicts": stamped}
