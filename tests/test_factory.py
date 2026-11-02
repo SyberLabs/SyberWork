@@ -952,16 +952,111 @@ class CliTests(Scratch):
         pins = [e["body"] for e in home.events() if e["kind"] == "owner_key_set"]
         self.assertEqual([(p["keyid"], p["previous"]) for p in pins], [(owner_public.hex(), None), (mine_public.hex(), owner_public.hex())])
         self.assertTrue(home.verify())
-        rotation = home.home / "approvals" / f"{pins[1]['rotation_digest']}.json"
-        rotation.write_text(rotation.read_text(encoding="utf-8").replace(owner_public.hex(), mine_public.hex()), encoding="utf-8")
-        self.assertTrue(any("approvals/" in problem for problem in home.problems()), "an edited rotation is named by verify")
-        # In process, the same: ``set_owner_key`` is the only writer and refuses a seed that is not the pinned key's.
+        # In process, the same: ``set_owner_key`` refuses a seed that is not the pinned key's and a re-pin of the same key.
         with self.assertRaises(Rejected) as refused:
             home.set_owner_key(owner_public, seed=owner_seed)
         self.assertEqual(refused.exception.code, "owner_key_rotation")
         with self.assertRaises(Rejected) as refused:
             home.set_owner_key(mine_public, seed=mine_seed)
         self.assertEqual(refused.exception.code, "owner_key_pinned")
+        # An edited rotation is named by verify as the artifact it is and as a break in the lineage; from then on
+        # the ledger pins nothing, so neither key approves and no rotation is accepted (M3 of the delta verification).
+        rotation = home.home / "approvals" / f"{pins[1]['rotation_digest']}.json"
+        rotation.write_text(rotation.read_text(encoding="utf-8").replace(owner_public.hex(), mine_public.hex()), encoding="utf-8")
+        problems = home.problems()
+        self.assertTrue(any("approvals/" in problem for problem in problems), problems)
+        self.assertTrue(any(problem.startswith("owner_key_lineage:") for problem in problems), problems)
+        for public, seed in ((owner_public, owner_seed), (mine_public, mine_seed)):
+            with self.assertRaises(Rejected) as refused:
+                home.set_owner_key(public, seed=seed)
+            self.assertEqual(refused.exception.code, "owner_key_lineage")
+
+    def test_the_owner_key_is_the_verified_lineage_not_the_newest_event(self):
+        """M3 of the #164 delta verification: the pin is the ledger's verified lineage, not its newest
+        ``owner_key_set``. After an honest bootstrap and rotation, each of the verifier's four shapes, appended
+        through the public ``append`` with the chain intact (a bare attacker pin, a rotation signed by the new key,
+        a rotation with a stale ``previous``, a malformed keyid last), fails ``verify``, is named
+        ``owner_key_lineage`` by ``problems``, refuses the gate at ``owner_key_lineage`` for the attacker's and
+        the honest approval alike (no ``owner_key_unset``, no fallback to an earlier key), refuses a further
+        rotation, and exits `spec retire` with 2. The honest ledger still retires."""
+        from syberlabs.canonical import canonical, digest
+        mateo = {"kind": "human", "id": "mateo"}
+        tree = self.scratch / "tree"
+        shutil.copytree(FIXTURE, tree)
+        (tree / "spec.json").write_text(json.dumps(specmod.new_spec("order-path", "ordering", [
+            {"req_id": "R1", "text": "When quantity is positive, the system shall post one order."}],
+            ["ingest", "rules", "effects"], author=mateo)), encoding="utf-8")
+        code, _, err = self.run_cli("spec", "validate", "spec.json", "--actor", "human:mateo", cwd=tree)
+        self.assertEqual(code, 0, err)
+        first_seed, first_public = generate()
+        second_seed, second_public = generate()
+        attacker_seed, attacker_public = generate()
+        home = ledger.Ledger(tree / ".syberlabs" / "factory")
+        home.set_owner_key(first_public)
+        home.set_owner_key(second_public, seed=first_seed)
+        self.assertEqual(home.owner_key(), second_public.hex())
+        self.assertEqual(home.owner_key_lineage()[1], [])
+        self.assertTrue(home.verify())
+        document = json.loads((tree / "spec.json").read_text(encoding="utf-8"))
+        honest = specmod.sign_approval(specmod.approval_payload(document, "retire", mateo), second_seed)
+        forged = specmod.sign_approval(specmod.approval_payload(document, "retire", mateo), attacker_seed)
+        (tree / "honest.json").write_text(json.dumps(honest), encoding="utf-8")
+        (tree / "forged.json").write_text(json.dumps(forged), encoding="utf-8")
+
+        def rotation(target, previous, next_key, signer_seed, claimed_previous=None):
+            """An ``owner_key_set`` body with its envelope stored where ``verify`` looks, signed by whoever."""
+            envelope = specmod.sign_rotation(specmod.rotation_payload(previous, next_key), signer_seed)
+            sha = digest(envelope)
+            (target.home / "approvals" / f"{sha}.json").write_text(canonical(envelope), encoding="utf-8")
+            return {"keyid": next_key.hex(), "previous": (claimed_previous or previous).hex(), "rotation_digest": sha}
+
+        shapes = [
+            ("a bare appended pin", lambda t: {"keyid": attacker_public.hex(), "previous": None, "rotation_digest": None}),
+            ("a rotation signed by the new key", lambda t: rotation(t, second_public, attacker_public, attacker_seed)),
+            ("a rotation with a stale previous", lambda t: rotation(t, first_public, attacker_public, first_seed)),
+            ("a malformed keyid last", lambda t: {"keyid": "not-a-key", "previous": second_public.hex(), "rotation_digest": None}),
+        ]
+        for number, (shape, body) in enumerate(shapes):
+            copy = self.scratch / f"shape{number}"
+            shutil.copytree(tree, copy)
+            target = ledger.Ledger(copy / ".syberlabs" / "factory")
+            target.append("owner_key_set", body(target))
+            events = target.events()
+            self.assertTrue(ledger._verify_chain(events), shape)
+            self.assertFalse(target.verify(), shape)
+            self.assertTrue(any(p.startswith("owner_key_lineage: owner_key_set at seq 4") for p in target.problems()), (shape, target.problems()))
+            self.assertEqual(target.owner_key_lineage(events)[0], None, shape)
+            with self.assertRaises(Rejected, msg=shape) as refused:
+                target.owner_key()
+            self.assertEqual(refused.exception.code, "owner_key_lineage", shape)
+            for envelope in (forged, honest):
+                with self.assertRaises(Rejected, msg=shape) as refused:
+                    specmod.gate(document, "retire", mateo, events, envelope, load_rotation=target.load_rotation)
+                self.assertEqual(refused.exception.code, "owner_key_lineage", shape)
+            with self.assertRaises(Rejected, msg=shape) as refused:
+                target.set_owner_key(attacker_public, seed=second_seed)
+            self.assertEqual(refused.exception.code, "owner_key_lineage", shape)
+            for approval in ("forged.json", "honest.json"):
+                code, _, err = self.run_cli("spec", "retire", "spec.json", "--actor", "human:mateo", "--approval", approval, cwd=copy)
+                self.assertEqual(code, 2, (shape, err))
+                self.assertIn("owner_key_lineage", err, shape)
+            code, _, err = self.run_cli("owner", cwd=copy)
+            self.assertEqual((code, "owner_key_lineage" in err), (2, True), shape)
+            self.assertEqual(json.loads((copy / "spec.json").read_text(encoding="utf-8"))["state"], "candidate", shape)
+            self.assertEqual([e for e in target.events() if e["kind"] == "spec_changed" and e["body"].get("operation") == "retire"], [], shape)
+        # In-memory events without a loader: a bootstrap alone pins; a rotation cannot be checked, so it is invalid.
+        self.assertEqual(specmod.pinned_owner_key(home.events()[:2]), first_public.hex())
+        with self.assertRaises(Rejected) as refused:
+            specmod.pinned_owner_key(home.events())
+        self.assertEqual(refused.exception.code, "owner_key_lineage")
+        # The honest ledger: the forged approval is a mismatch, the honest one retires, and the lineage still verifies.
+        code, _, err = self.run_cli("spec", "retire", "spec.json", "--actor", "human:mateo", "--approval", "forged.json", cwd=tree)
+        self.assertEqual((code, "owner_key_mismatch" in err), (2, True), err)
+        code, out, err = self.run_cli("spec", "retire", "spec.json", "--actor", "human:mateo", "--approval", "honest.json", cwd=tree)
+        self.assertEqual(code, 0, err)
+        self.assertIn("candidate -> retired", out)
+        self.assertTrue(home.verify())
+        self.assertEqual(home.describe()["owner_key"], second_public.hex())
 
 
 if __name__ == "__main__":
@@ -1078,6 +1173,28 @@ class BuildThreadCheck(Scratch):
         self.assertIn("ledger_corrupt", verdict.checks[0].output_tail)
         self.assertIn(f"runs/{golden}", verdict.checks[0].output_tail)
         self.assertEqual([e for e in home.events() if e["kind"] == "attested"], [], "nothing was attested over an edited baseline")
+
+    def test_a_ledger_that_changes_under_the_test_suite_refuses_the_check(self):
+        """M3's window: a candidate that learned the ledger's path appends a line while its test suite runs, after
+        the check's post-run verification. The check verifies the ledger again after the suite and before anything
+        is attested, and refuses; the line is on the ledger, nothing is attested over it."""
+        import sys as _sys
+        home, _ = self.golden()
+        reaching = json.dumps([_sys.executable, "-c",
+                               f"import sys; sys.path.insert(0, {str(ROOT)!r}); from syberlabs.factory import ledger; "
+                               f"ledger.Ledger({str(self.ledger_home)!r}).append('note', {{'text': 'from the suite'}})"])
+        kit = self.kit(extra_argv=["--tests-argv", reaching])
+        thread = kit.start("Reach", paths=["fxapp/"])
+        rules = (self.project / "fxapp" / "rules.py").read_text(encoding="utf-8")
+        [candidate] = thread.propose(changes={"fxapp/rules.py": rules + "\n"})
+        verdict = thread.check(candidate.id)
+        self.assertFalse(verdict.acceptable, verdict.summary())
+        self.assertEqual(verdict.reason, "candidate_check_failed:factory")
+        self.assertIn("ledger_corrupt", verdict.checks[0].output_tail)
+        events = home.events()
+        self.assertEqual(events[-1]["kind"], "note", "the suite's line did land, which is what the check saw")
+        self.assertEqual([e for e in events if e["kind"] == "attested"], [], "nothing was attested over it")
+        self.assertTrue(home.verify())
 
     def test_a_candidate_that_forges_its_report_is_refused(self):
         """S2 through the seam: the candidate rewrites the recorded entrypoint to print a clean report and exit. The

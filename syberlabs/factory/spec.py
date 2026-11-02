@@ -19,11 +19,15 @@ The approver may not be a proposer or the reviewer of that variant. ``transition
 caller cannot hand it a dictionary of its own.
 
 The owner's public key is pinned on the ledger, not supplied by the caller: an ``owner_key_set`` event names
-it (:func:`pinned_owner_key`), the first one is the trust root of that ledger (bootstrap, written once), and
-a later one is a rotation the previous key signed (:func:`verify_rotation`). :func:`gate` verifies every
-approval under the pinned key only; a ledger with no pinned key refuses (``owner_key_unset``) and an approval
-under any other key refuses (``owner_key_mismatch``), whoever runs the host command. The signing seed never
-enters this module. A kernel ``approved`` event on a goal case is the intended source of this approval once
+it, the first one is the trust root of that ledger (bootstrap, written once), and a later one is a rotation
+the previous key signed (:func:`verify_rotation`). The pin is read through its lineage, never from the last
+event alone: :func:`owner_key_lineage` walks every ``owner_key_set`` in order and verifies each handover under
+the key pinned before it, so an appended pin, a rotation the pinned key did not sign, a stale ``previous`` or
+a malformed key invalidates the lineage instead of re-rooting the gate (``owner_key_lineage``). :func:`gate`
+verifies every approval under the lineage's key only; a ledger with no pinned key refuses (``owner_key_unset``),
+an invalid lineage refuses (``owner_key_lineage``, never falling back to an earlier key) and an approval under
+any other key refuses (``owner_key_mismatch``), whoever runs the host command. The signing seed never enters
+this module. A kernel ``approved`` event on a goal case is the intended source of this approval once
 the factory has a case to hang it on; until then the signature stands in, and ``spec/GAPS.md`` records the
 gap.
 
@@ -93,15 +97,56 @@ def _is_issued(approval: object) -> bool:
     return isinstance(approval, Approved) and getattr(approval, "_issued", None) is _ISSUED
 
 
-def pinned_owner_key(events: list[dict]) -> str | None:
-    """The owner's public key (hex) the ledger pins: the newest ``owner_key_set`` event's ``keyid``, or None
-    when the ledger has pinned none. The first such event is the ledger's trust root; every later one is a
-    rotation the previous key signed (``previous`` and ``rotation_digest`` on the event)."""
-    for event in reversed(events):
-        if event.get("kind") == "owner_key_set":
-            keyid = (event.get("body") or {}).get("keyid")
-            return keyid if isinstance(keyid, str) and _HEX_KEY.match(keyid) else None
-    return None
+def owner_key_lineage(events: list[dict], load_rotation=None) -> tuple[str | None, list[str]]:
+    """Walk every ``owner_key_set`` in ``events`` in order and return ``(pinned key, violations)``: the key the
+    verified lineage ends on (None when the ledger pins none) and every way the lineage fails. The first event
+    is the one unsigned bootstrap: ``previous`` None, no ``rotation_digest``. Every later one is a rotation:
+    ``previous`` is the key pinned right before it, ``rotation_digest`` names a stored envelope
+    (``load_rotation(digest)``, the ledger's ``approvals/``; None when missing or altered) that
+    :func:`verify_rotation` accepts under that previous key, and every ``keyid`` is a 64-hex public key. A
+    second bare bootstrap, a rotation signed by the new key, a stale ``previous`` and a malformed key are each
+    a violation. With violations the lineage is invalid and the key returned is None: a broken lineage pins
+    nothing rather than its last or an earlier key. Without a ``load_rotation`` no rotation can be checked, so
+    a rotated ledger read that way is invalid, by design."""
+    pinned, violations = None, []
+    for event in events:
+        if not isinstance(event, dict) or event.get("kind") != "owner_key_set":
+            continue
+        where = f"owner_key_set at seq {event.get('seq', '?')}"
+        body = event.get("body") if isinstance(event.get("body"), dict) else {}
+        keyid, previous, rotation = body.get("keyid"), body.get("previous"), body.get("rotation_digest")
+        if not (isinstance(keyid, str) and _HEX_KEY.match(keyid)):
+            violations.append(f"{where}: keyid is not a 64-hex public key")
+            continue
+        if pinned is None:
+            if previous is not None or rotation is not None:
+                violations.append(f"{where}: the first pin is the bootstrap and carries no previous key or rotation")
+        else:
+            if previous != pinned:
+                violations.append(f"{where}: previous {str(previous)[:10]!r} is not the key pinned before it ({pinned[:10]})")
+            if not (isinstance(rotation, str) and _HEX_KEY.match(rotation)):  # a sha256 digest has the key's shape
+                violations.append(f"{where}: a second pin is a rotation and names a rotation_digest; a bare pin does not re-root the ledger")
+            else:
+                envelope = load_rotation(rotation) if load_rotation is not None else None
+                if envelope is None:
+                    violations.append(f"{where}: rotation {rotation[:12]} is missing, altered or unavailable")
+                else:
+                    try:
+                        verify_rotation(envelope, bytes.fromhex(pinned), bytes.fromhex(keyid))
+                    except Rejected as exc:
+                        violations.append(f"{where}: {exc.detail}")
+        pinned = keyid
+    return (None if violations else pinned), violations
+
+
+def pinned_owner_key(events: list[dict], load_rotation=None) -> str | None:
+    """The owner's public key (hex) the ledger pins, read through its verified lineage
+    (:func:`owner_key_lineage`): None when the ledger has pinned none, refused (``owner_key_lineage``) when the
+    lineage does not verify. Never the last event's key on its own, and never an earlier key as a fallback."""
+    pinned, violations = owner_key_lineage(events, load_rotation)
+    if violations:
+        raise Rejected("owner_key_lineage", "the ledger's owner-key lineage does not verify: " + "; ".join(violations))
+    return pinned
 
 
 def rotation_payload(previous: bytes, next_key: bytes) -> dict:
@@ -204,15 +249,17 @@ def resolve_verdicts(events: list[dict], spec: dict, verdict_ids: list[str], spe
 
 
 def gate(spec: dict, operation: str, actor: dict, events: list[dict], envelope: dict, *,
-         verdict_ids: list[str] | None = None, spec_digest_value: str | None = None) -> tuple[Approved, list[dict]]:
-    """The goal gate in one call: the actor is human and is the approver, the ledger pins an owner key and the
-    approval verifies under that key (no other) and covers this spec and operation, and (on promote) every
-    verdict resolves to an accepting review of this variant whose proposers and reviewer are not the
-    approver. The key is read from ``events`` (:func:`pinned_owner_key`), never taken from the caller.
-    Returns the approval and the resolved verdicts."""
+         verdict_ids: list[str] | None = None, spec_digest_value: str | None = None, load_rotation=None) -> tuple[Approved, list[dict]]:
+    """The goal gate in one call: the actor is human and is the approver, the ledger pins an owner key whose
+    lineage verifies and the approval verifies under that key (no other) and covers this spec and operation,
+    and (on promote) every verdict resolves to an accepting review of this variant whose proposers and
+    reviewer are not the approver. The key is read from ``events`` through :func:`pinned_owner_key`, never
+    taken from the caller; ``load_rotation`` (the ledger's ``approvals/`` reader) only supplies the stored
+    rotation envelopes, each of which must still verify under the key the chain pinned before it. An invalid
+    lineage refuses (``owner_key_lineage``). Returns the approval and the resolved verdicts."""
     if actor.get("kind") != "human":
         raise Rejected("spec_actor", f"{operation} is an owner act: the actor's kind is human, not {actor.get('kind')!r}")
-    pinned = pinned_owner_key(events)
+    pinned = pinned_owner_key(events, load_rotation)
     if pinned is None:
         raise Rejected("owner_key_unset", "the ledger pins no owner key; `factory owner --public KEY` (or the first `--owner-public`) sets it")
     declared = [s.get("keyid") for s in (envelope.get("signatures") or []) if isinstance(s, dict)] if isinstance(envelope, dict) else []

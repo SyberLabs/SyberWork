@@ -20,7 +20,11 @@ become a gate's baseline.
 
 The owner's public key is pinned here (``owner_key_set``): the first such event is the ledger's trust root and
 every later one is a rotation signed by the key it replaces (``set_owner_key``), so the goal gate verifies
-approvals under a key the ledger names rather than one the caller passes.
+approvals under a key the ledger names rather than one the caller passes. The pin is read through its lineage
+(``owner_key_lineage``, ``spec.owner_key_lineage``), not from the newest event: ``problems`` walks every
+``owner_key_set`` in order, demands one bare bootstrap and then rotations whose ``previous`` is the key pinned
+before them and whose stored envelope verifies under that key, so an ``owner_key_set`` appended around
+``set_owner_key`` makes the ledger fail ``verify`` and pins nothing rather than re-rooting the gate.
 
 Appends go through the kernel journal's writer (``syberlabs.journal.Journal``): a cross-process lock (``flock``
 or ``msvcrt.locking``), flush and fsync per record, and truncation of a torn final line before the next read.
@@ -119,7 +123,7 @@ class Ledger:
         events = self.events() if events is None else events
         if not _verify_chain(events):
             return ["the event chain does not verify"]
-        found = []
+        found = [f"owner_key_lineage: {violation}" for violation in self.owner_key_lineage(events)[1]]
         for event in events:
             body, kind = event["body"], event["kind"]
             try:
@@ -157,17 +161,21 @@ class Ledger:
         return not self.problems(events)
 
     def append(self, kind: str, body: dict) -> dict:
+        with self._locked() as writer:
+            return self._append(writer, self._read(writer), kind, body)
+
+    def _append(self, writer: kernel_journal.Journal, events: list[dict], kind: str, body: dict) -> dict:
+        """Append under a lock the caller holds, over the ``events`` it read under that same lock, so a
+        read-then-append (``set_owner_key``) is one acquisition and nothing slips in between."""
         if kind not in KINDS:
             raise Rejected("ledger_kind", f"unknown event kind {kind!r}")
-        with self._locked() as writer:
-            events = self._read(writer)
-            if not _verify_chain(events):
-                raise Rejected("ledger_corrupt", "the hash chain does not verify; refusing to append to an edited ledger")
-            event = {"seq": len(events) + 1, "kind": kind, "body": body, "at": int(time.time() * 1_000_000),
-                     "previous": events[-1]["hash"] if events else GENESIS}
-            event["hash"] = event_digest(event)
-            # The kernel journal's append: flushed, fsynced, and refused if another writer slipped in between.
-            writer._write(self.log, event)
+        if not _verify_chain(events):
+            raise Rejected("ledger_corrupt", "the hash chain does not verify; refusing to append to an edited ledger")
+        event = {"seq": len(events) + 1, "kind": kind, "body": body, "at": int(time.time() * 1_000_000),
+                 "previous": events[-1]["hash"] if events else GENESIS}
+        event["hash"] = event_digest(event)
+        # The kernel journal's append: flushed, fsynced, and refused if another writer slipped in between.
+        writer._write(self.log, event)
         return event
 
     # -- artifacts -----------------------------------------------------------------------------------------------
@@ -302,34 +310,59 @@ class Ledger:
 
     # -- the owner key -------------------------------------------------------------------------------------------
 
+    def load_rotation(self, sha: str) -> dict | None:
+        """The stored rotation envelope ``approvals/<sha>.json`` when it is there and digests to its name;
+        None when it is missing, unreadable or altered. The lineage walk decides what that means."""
+        if not isinstance(sha, str) or not sha or any(c not in "0123456789abcdef" for c in sha):
+            return None
+        path = self.home / "approvals" / f"{sha}.json"
+        try:
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return envelope if isinstance(envelope, dict) and digest(envelope) == sha else None
+
+    def owner_key_lineage(self, events: list[dict] | None = None) -> tuple[str | None, list[str]]:
+        """``(pinned key, violations)`` from :func:`spec.owner_key_lineage` over this ledger's events, its stored
+        rotations supplying the envelopes: the first ``owner_key_set`` is the one bare bootstrap, every later one
+        carries ``previous`` equal to the key pinned before it and a ``rotation_digest`` whose envelope verifies
+        under that previous key, and every keyid is well-formed hex. Any violation names the event and leaves
+        the ledger pinning nothing; ``problems`` reports each one as ``owner_key_lineage``."""
+        return specmod.owner_key_lineage(self.events() if events is None else events, self.load_rotation)
+
     def owner_key(self, events: list[dict] | None = None) -> str | None:
-        """The owner's public key (hex) this ledger pins, or None before the first ``owner_key_set``."""
-        return specmod.pinned_owner_key(self.events() if events is None else events)
+        """The owner's public key (hex) this ledger pins through a verified lineage, None before the first
+        ``owner_key_set``; refused (``owner_key_lineage``) when the lineage does not verify."""
+        return specmod.pinned_owner_key(self.events() if events is None else events, self.load_rotation)
 
     def set_owner_key(self, public: bytes, *, seed: bytes | None = None) -> dict:
         """Pin ``public`` as the owner key. On a ledger that pins none this is the bootstrap: one event, no
         signature, and from then on the goal gate trusts this key and no other. On a ledger that pins a key
         it is a rotation and needs ``seed``, the seed of the key pinned now: the handover is signed by that
         key (``spec.sign_rotation``), verified, stored under ``approvals/`` and cited by the event. Refused
-        when the seed is not the pinned key's (``owner_key_rotation``) or the key is already pinned
-        (``owner_key_pinned``). Returns the event."""
+        when the seed is not the pinned key's (``owner_key_rotation``), the key is already pinned
+        (``owner_key_pinned``) or the lineage so far does not verify (``owner_key_lineage``). The read of the
+        pinned key and the append are one lock acquisition, so two bootstraps racing on an empty ledger
+        cannot both land. Returns the event."""
         from syberlabs.ed25519 import public_from_seed
 
         keyid = public.hex()
-        current = self.owner_key()
-        if current is None:
-            return self.append("owner_key_set", {"keyid": keyid, "previous": None, "rotation_digest": None})
-        if current == keyid:
-            raise Rejected("owner_key_pinned", f"the ledger already pins {keyid[:10]}")
-        if seed is None:
-            raise Rejected("owner_key_rotation", f"the ledger pins {current[:10]}; rotating to {keyid[:10]} needs that key's seed (--seed-env)")
-        if public_from_seed(seed).hex() != current:
-            raise Rejected("owner_key_rotation", f"the seed given is not the pinned owner key's ({current[:10]}); only the pinned key rotates")
-        envelope = specmod.sign_rotation(specmod.rotation_payload(bytes.fromhex(current), public), seed)
-        specmod.verify_rotation(envelope, bytes.fromhex(current), public)
-        sha = digest(envelope)
-        (self.home / "approvals" / f"{sha}.json").write_text(canonical(envelope), encoding="utf-8")
-        return self.append("owner_key_set", {"keyid": keyid, "previous": current, "rotation_digest": sha})
+        with self._locked() as writer:
+            events = self._read(writer)
+            current = specmod.pinned_owner_key(events, self.load_rotation)
+            if current is None:
+                return self._append(writer, events, "owner_key_set", {"keyid": keyid, "previous": None, "rotation_digest": None})
+            if current == keyid:
+                raise Rejected("owner_key_pinned", f"the ledger already pins {keyid[:10]}")
+            if seed is None:
+                raise Rejected("owner_key_rotation", f"the ledger pins {current[:10]}; rotating to {keyid[:10]} needs that key's seed (--seed-env)")
+            if public_from_seed(seed).hex() != current:
+                raise Rejected("owner_key_rotation", f"the seed given is not the pinned owner key's ({current[:10]}); only the pinned key rotates")
+            envelope = specmod.sign_rotation(specmod.rotation_payload(bytes.fromhex(current), public), seed)
+            specmod.verify_rotation(envelope, bytes.fromhex(current), public)
+            sha = digest(envelope)
+            (self.home / "approvals" / f"{sha}.json").write_text(canonical(envelope), encoding="utf-8")
+            return self._append(writer, events, "owner_key_set", {"keyid": keyid, "previous": current, "rotation_digest": sha})
 
     # -- the projection -----------------------------------------------------------------------------------------
 
@@ -455,4 +488,4 @@ class Ledger:
                 "runs": sum(1 for e in events if e["kind"] in RUN_KINDS),
                 "attestations": sum(1 for e in events if e["kind"] == "attested"),
                 "approvals": sum(1 for e in events if e["kind"] == "approval_recorded"),
-                "owner_key": self.owner_key(events), "head": self.head(events)}
+                "owner_key": self.owner_key_lineage(events)[0], "head": self.head(events)}

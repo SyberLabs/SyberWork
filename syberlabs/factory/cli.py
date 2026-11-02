@@ -527,6 +527,12 @@ def _check(args, home: ledger.Ledger) -> int:
         evidence["tests"] = _run_tests(root, args.tests_argv, args.tests_timeout, strip_env=strip_env)
         print(f"tests: {' '.join(harness.mask(a) for a in evidence['tests']['argv'])} -> exit {evidence['tests']['exit_code']}"
               f" in {evidence['tests']['seconds']}s")
+    # The test suite ran in the worktree too, so the ledger is verified once more, against the head the run's
+    # own record left it at, before anything is attested over it; a line that reached the log in the meantime
+    # (an owner_key_set, a note, anything) refuses the check instead of being attested around.
+    final = home.events()
+    if home.head(final) != run_event["hash"] or len(final) != len(before) + 1 or home.problems(final):
+        raise Rejected("ledger_corrupt", "the ledger changed or stopped verifying while the candidate's checks ran; refusing to attest")
     builder_text = args.builder or os.environ.get("SYBERLABS_CANDIDATE") or "operator"
     parts = builder_text.split(":")
     builder = {"agent": parts[0], "model": parts[1] if len(parts) > 1 else None, "session": parts[2] if len(parts) > 2 else None,
@@ -905,6 +911,10 @@ def _spec(args, home: ledger.Ledger) -> int:
         if not args.approval:
             raise Rejected("spec_approval", f"{args.operation} is an owner act: pass --approval FILE (from `factory approve`)")
         envelope = _read_json(args.approval, "approval")
+        problems = home.problems()
+        if problems:
+            more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
+            raise Rejected("ledger_corrupt", f"the ledger does not verify, so no key on it is trusted: {problems[0]}{more}")
         if args.owner_public:
             # Bootstrap only: the first key a ledger sees is pinned. A pinned ledger takes the same key as a no-op
             # and refuses any other here; rotation is `factory owner --public NEW --seed-env OLD`, never this flag.
@@ -917,7 +927,7 @@ def _spec(args, home: ledger.Ledger) -> int:
                 raise Rejected("owner_key_mismatch", f"the ledger pins owner key {pinned[:10]}, not {public.hex()[:10]}; "
                                                      "rotate with `factory owner --public NEW --seed-env OLD`")
         approval, resolved = specmod.gate(document, args.operation, actor, home.events(), envelope,
-                                          verdict_ids=args.verdict, spec_digest_value=before_digest)
+                                          verdict_ids=args.verdict, spec_digest_value=before_digest, load_rotation=home.load_rotation)
         detail["approval"] = approval
         detail["spec_digest"] = before_digest
         detail["resolved_verdicts"] = resolved
