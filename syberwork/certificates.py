@@ -4,8 +4,9 @@
 ``<home>/certificates`` (docs/CERTIFICATE.md). A SyberWork case is not a Build Thread and has none. ``syberwork
 serve`` lists that folder when ``SYBERWORK_CERTIFICATE_HOME`` and ``SYBERWORK_CERTIFICATE_PUBLIC`` name a home and the
 keys to trust (one, or a few during a rotation), and runs ``verify_certificate`` on each file: the signature layer
-always, and the journal layer when the thread's journal is under the same home. The repository layer needs Git and is
-not run here. The ``.pub`` file beside each certificate is never read: whoever can write the folder can write that file
+always, and the journal layer when the thread's journal is under the same home. With ``SYBERWORK_CERTIFICATE_REPOSITORY``
+naming a Git working tree, it also runs the repository layer on every signed file (both commits present, their trees,
+the changed paths and the diff as certified), and a signed file that layer fails is never a pass. The ``.pub`` file beside each certificate is never read: whoever can write the folder can write that file
 too. A key is trusted until the deployment removes it. A certificate is revoked by listing its digest
 (``certificate_digest``) in ``SYBERWORK_CERTIFICATE_REVOKED``: it then fails as ``revoked`` under every key. With
 ``SYBERWORK_CERTIFICATE_MAX_AGE`` (seconds), a signed certificate issued longer ago than that fails as ``expired``, and
@@ -25,10 +26,11 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from syberlabs.certificate import (MAX_CERTIFICATE_BYTES, PAYLOAD_TYPE, STATEMENT_PAYLOAD_TYPE, Report,
-                                   verify_certificate)
+from syberlabs.certificate import (MAX_CERTIFICATE_BYTES, PAYLOAD_TYPE, STATEMENT_PAYLOAD_TYPE, Report, _Fail,
+                                   _layer_repository, verify_certificate)
 from syberlabs.ed25519 import _L, _Point, _decode, _mul
 from syberlabs.errors import Rejected
+from syberlabs.gitspace import Repo
 from syberlabs.clock import stamp
 from syberlabs.jcs import jcs_bytes
 from syberlabs.journal import CASE_ID
@@ -51,12 +53,42 @@ MAX_AGE_LIMIT = 10 * 366 * 24 * 3600
 SKEW = 300
 # Verdicts kept per process. A verdict depends only on the bytes it was computed from, so it is never stale.
 CACHE = 256
+# The reasons the repository layer fails a signed file with: ``syberlabs.certificate._layer_repository``'s, and
+# ``repository_unreadable`` when Git could not answer at all (the folder went away, git failed or timed out).
+REPOSITORY_FAILURES = ("commit_missing:base", "commit_missing:result", "tree_mismatch:base", "tree_mismatch:result",
+                       "changed_paths_mismatch", "diff_mismatch:digest", "diff_mismatch:bytes", "repository_unreadable")
 # The largest journal or registry file serve hashes and lets the verifier read. A larger one, or one that is not a
 # regular file (a FIFO, a device), is refused rather than read, so one file under the home cannot hang the route.
 MAX_JOURNAL_BYTES = 64 * 1024 * 1024
 NOTE = ("Verified by serve under a configured key: signature and shape, then the thread's journal under the same home "
         "when it is there. The repository layer is not run; syberlabs verify FILE --public KEY --repo PATH runs it. "
         "The .pub file beside each certificate is not read.")
+REPOSITORY_NOTE = ("Verified by serve under a configured key: signature and shape, then the commits, trees, changed paths "
+                   "and diff in the configured repository, then the thread's journal under the same home when it is there. "
+                   "The target ref's current state is not judged. The .pub file beside each certificate is not read.")
+
+
+class CertificateRepository(Repo):
+    """The Git working tree serve re-derives each signed certificate's commits, trees and diff from.
+
+    It is ``syberlabs.gitspace.Repo``, the class ``syberlabs verify --repo`` reads with, with two differences in what git
+    is told. It reads the objects themselves, never a replacement (``GIT_NO_REPLACE_OBJECTS``): a ``refs/replace`` entry
+    would otherwise let whoever can write the repository answer for one commit with another. And it never fetches a
+    missing object from a promisor remote (``GIT_NO_LAZY_FETCH``, git 2.44 and later): a partial clone's missing blob
+    fails the row as unreadable instead of making serve reach the network. It is read only, as ``Repo``'s reads are.
+    """
+
+    @staticmethod
+    def _env(extra: dict | None = None) -> dict:
+        env = Repo._env(extra)
+        env.update({"GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1"})
+        return env
+
+    def present(self, *commits: str) -> bool:
+        """Whether each of ``commits`` (full object names) is a commit object here, in one ``git cat-file`` call."""
+        found = self.git("cat-file", "--batch-check=%(objectname) %(objecttype)", timeout=30,
+                         input="".join(commit + "\n" for commit in commits).encode())
+        return found.decode().splitlines() == [f"{commit} commit" for commit in commits]
 
 
 def not_configured() -> dict:
@@ -177,11 +209,13 @@ class CertificateShelf:
     digests, at most ``MAX_REVOKED``: a signed file whose digest is listed fails as ``revoked``, whatever its other layers
     say. ``max_age``, when given, is the validity window in whole seconds, at most ``MAX_AGE_LIMIT``: a signed file
     issued longer ago than that, by ``clock``, fails as ``expired``, and one dated more than ``SKEW`` seconds after it
-    as ``not_yet_valid``. Revocation names the failure first.
+    as ``not_yet_valid``. ``repository``, when given, is a ``CertificateRepository``: every signed file is checked
+    against it as ``syberlabs verify --repo`` checks, and fails with that layer's reason unless it holds. Revocation names
+    the failure first, then the window, then the repository, then the journal.
     """
 
     def __init__(self, home: str | Path, keys: bytes | tuple[bytes, ...] | list[bytes], revoked: tuple[str, ...] | list[str] = (),
-                 max_age: int | None = None, clock=time.time):
+                 max_age: int | None = None, clock=time.time, repository: CertificateRepository | None = None):
         home = Path(home)
         if not home.is_dir():
             raise Rejected("invalid_runtime", "the certificate home must be a directory (a Build Thread home such as .syberlabs)")
@@ -204,8 +238,15 @@ class CertificateShelf:
             raise Rejected("invalid_runtime", "a revoked certificate digest is listed twice")
         if max_age is not None and (type(max_age) is not int or not 1 <= max_age <= MAX_AGE_LIMIT):
             raise Rejected("invalid_runtime", f"a certificate validity window is a whole number of seconds from 1 to {MAX_AGE_LIMIT}")
+        if repository is not None and not isinstance(repository, CertificateRepository):
+            # A plain Repo would follow replace refs and fetch from a promisor remote.
+            raise Rejected("invalid_runtime", "the certificate repository must be a CertificateRepository")
         self.home, self.keys, self.revoked, self.max_age, self._clock = home, keys, revoked, max_age, clock
-        self._cache: OrderedDict[tuple, dict] = OrderedDict()
+        self.repository = repository
+        self._cache: OrderedDict[tuple, tuple[dict, dict | None]] = OrderedDict()
+        # What the repository layer found to hold, by what it compared. Only a hold is kept: a missing commit may be
+        # fetched later, and a hold is confirmed on every read by both commits still being there.
+        self._held: OrderedDict[tuple, None] = OrderedDict()
         self._lock = threading.Lock()
 
     def listing(self) -> dict:
@@ -219,9 +260,11 @@ class CertificateShelf:
             seen: dict[Path, tuple] = {}
             rows = [self._row(path, seen, now) for path in files[:LIMIT]]
         validity = None if self.max_age is None else {"max_age": self.max_age, "skew": SKEW, "checked_at": now}
+        layers = ((["signature", "journal"], ["repository"], NOTE) if self.repository is None
+                  else (["signature", "repository", "journal"], [], REPOSITORY_NOTE))
         return {"configured": True, "public_keys": [key.hex() for key in self.keys], "revoked": list(self.revoked),
                 "validity": validity, "total": len(files), "shown": len(rows),
-                "checked": ["signature", "journal"], "not_checked": ["repository"], "certificates": rows, "note": NOTE}
+                "checked": layers[0], "not_checked": layers[1], "certificates": rows, "note": layers[2]}
 
     def _inputs(self, journal: Path | None, seen: dict | None = None) -> tuple:
         """The state of the registry and the thread's journal, which with the file and the key decide a verdict."""
@@ -249,7 +292,7 @@ class CertificateShelf:
         key = (hashlib.sha256(data).hexdigest(), *inputs)
         if key in self._cache:
             self._cache.move_to_end(key)
-            return {"file": path.name, **self._judge(self._cache[key], now)}
+            return {"file": path.name, **self._judge(*self._cache[key], now)}
         verdict = self._verdict(data, inputs)
         # Kept only when nothing was refused and the inputs read the same after verifying: an append in between would
         # otherwise file the new content's verdict under the old content's key.
@@ -257,15 +300,47 @@ class CertificateShelf:
             self._cache[key] = verdict
             while len(self._cache) > CACHE:
                 self._cache.popitem(last=False)
-        return {"file": path.name, **self._judge(verdict, now)}
+        return {"file": path.name, **self._judge(*verdict, now)}
 
-    def _judge(self, verdict: dict, now: int) -> dict:
+    def _repository_state(self, payload: dict) -> str:
+        """``"ok"`` when the configured repository holds what a signed payload states, else the reason it does not.
+
+        The check is ``syberlabs verify --repo``'s own (``_layer_repository``). A hold is kept, and confirmed on a later
+        read only by both commits still being commit objects here: an object's name is the hash of its content, so the
+        same two commits have the same trees and the same diff. Anything git could not answer is
+        ``repository_unreadable``, never a hold.
+        """
+        base, result = payload["base"], payload["result"]
+        compared = (base["commit"], base["tree"], result["commit"], result["tree"], tuple(result["changed_paths"]),
+                    result["diff_digest"], result["diff_bytes"])
+        try:
+            if compared in self._held:
+                if self.repository.present(base["commit"], result["commit"]):
+                    self._held.move_to_end(compared)
+                    return "ok"
+                del self._held[compared]
+            _layer_repository(self.repository, payload)
+        except _Fail as failure:
+            return failure.reason
+        except Exception:  # git missing, gone, failed or timed out: unreadable, and never a hold
+            return "repository_unreadable"
+        self._held[compared] = None
+        while len(self._held) > CACHE:
+            self._held.popitem(last=False)
+        return "ok"
+
+    def _judge(self, verdict: dict, payload: dict | None, now: int) -> dict:
         """A verdict as of ``now`` (microseconds): failed as ``revoked`` when its digest is listed, else as ``expired`` or
         ``not_yet_valid`` when its ``issued_at`` is outside the validity window. Applied after the cache, which keeps what
         the bytes say: the list and the window are fixed for the life of the process, the clock is not. Only a signed file
         has a digest and an ``issued_at``, so only one can be revoked or expire. What it states and its other layers are
-        kept, so the console can show what failed. ``expires_at`` is ``issued_at`` plus the window, or None."""
+        kept, so the console can show what failed. ``expires_at`` is ``issued_at`` plus the window, or None. With a
+        repository, every signed file is checked against it here, after the cache too, since the repository can change
+        while the file does not; ``repository`` is ``"ok"`` or the reason, and a signed file it fails is never a pass.
+        Revocation and the window name the failure before it, and it names the failure before the journal."""
         statement = verdict["statement"]
+        if self.repository is not None and payload is not None:
+            verdict = {**verdict, "repository": self._repository_state(payload)}
         issued = None if statement is None else statement["issued_at"]
         expires = None if self.max_age is None or issued is None else issued + self.max_age * 1_000_000
         verdict = {**verdict, "expires_at": expires}
@@ -275,16 +350,19 @@ class CertificateShelf:
             return {**verdict, "verdict": "fail", "reason": "expired"}
         if expires is not None and issued > now + SKEW * 1_000_000:
             return {**verdict, "verdict": "fail", "reason": "not_yet_valid"}
+        if verdict["repository"] not in (None, "ok"):
+            return {**verdict, "verdict": "fail", "reason": verdict["repository"]}
         return verdict
 
-    def _verdict(self, data: bytes, inputs: tuple) -> dict:
+    def _verdict(self, data: bytes, inputs: tuple) -> tuple[dict, dict | None]:
+        """The verdict the bytes and inputs give, and the payload a configured key verified (None otherwise)."""
         registry, journal = inputs
         # The journal layer reads the registry only when the thread's journal is there.
         blocked = None if journal[0] == "absent" else next((part[1] for part in (journal, registry) if part[0] == "refused"), None)
         candidates = _candidates(data, self.keys)
         if candidates is None:
             return {"verdict": "fail", "reason": "too_many_signatures", "signature": None, "journal": None,
-                    "journal_present": None, "repository": None, "statement": None, "digest": None}
+                    "journal_present": None, "repository": None, "statement": None, "digest": None}, None
         try:
             # The first key a signature verifies under decides. Every other failure (too large, unreadable, a wrong type)
             # comes before the signature and reads the same under every key.
@@ -294,16 +372,17 @@ class CertificateShelf:
                     break
         except Exception:  # an envelope verify_certificate cannot read is refused, never drawn
             return {"verdict": "fail", "reason": "unverifiable", "signature": None, "journal": None,
-                    "journal_present": None, "repository": None, "statement": None, "digest": None}
-        statement = digest = None
+                    "journal_present": None, "repository": None, "statement": None, "digest": None}, None
+        statement = digest = payload = None
         if report.signature == "ok" and report.payload is not None:
+            payload = report.payload
             payload_type = json.loads(data).get("payloadType", PAYLOAD_TYPE)
             statement, digest = _statement(report.payload, payload_type, report.keyid), certificate_digest(report.payload)
         if blocked and statement is not None:
             # Signed, but the journal could not be read safely: never a pass, and named as unreadable, not as changed.
             reason = f"journal_unreadable:{blocked}"
             return {"verdict": "fail", "reason": reason, "signature": "ok", "journal": reason, "journal_present": True,
-                    "repository": None, "statement": statement, "digest": digest}
+                    "repository": None, "statement": statement, "digest": digest}, payload
         return {"verdict": "pass" if report.passed else "fail", "reason": report.reason, "signature": report.signature,
                 "journal": report.journal, "journal_present": None if statement is None else journal[0] != "absent",
-                "repository": None, "statement": statement, "digest": digest}
+                "repository": None, "statement": statement, "digest": digest}, payload

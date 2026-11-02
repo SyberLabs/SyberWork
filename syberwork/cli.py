@@ -14,7 +14,7 @@ from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import WitnessClient
 
 from .backup import export_cell, restore_cell
-from .certificates import MAX_AGE_LIMIT, MAX_KEYS, MAX_REVOKED, CertificateShelf
+from .certificates import MAX_AGE_LIMIT, MAX_KEYS, MAX_REVOKED, CertificateRepository, CertificateShelf
 from .core import Work
 from .server import serve
 from .trace import TraceLog
@@ -79,15 +79,24 @@ def _certificates(parser):
     SYBERWORK_CERTIFICATE_MAX_AGE is the validity window: a whole number of seconds, from 1 to ``MAX_AGE_LIMIT``. Unlike
     the revocation list, setting it empty stops serve rather than meaning no window: an unset shell variable expanded
     into it would otherwise turn the window off without a word. It too is read only beside the other two.
+
+    SYBERWORK_CERTIFICATE_REPOSITORY names the Git working tree the certified commits live in (the project
+    ``syberlabs certify`` ran in, or a clone of it). Every signed certificate is then checked against it as
+    ``syberlabs verify --repo`` checks, and one it does not hold fails. Like the window, setting it empty stops serve
+    rather than meaning no repository, and so does a path that is not inside a Git working tree, or git missing. It too
+    is read only beside the other two.
     """
     home, public = os.getenv("SYBERWORK_CERTIFICATE_HOME"), os.getenv("SYBERWORK_CERTIFICATE_PUBLIC")
     listed = os.getenv("SYBERWORK_CERTIFICATE_REVOKED")
     age = os.getenv("SYBERWORK_CERTIFICATE_MAX_AGE")
+    repository_path = os.getenv("SYBERWORK_CERTIFICATE_REPOSITORY")
     if not home and not public:
         if listed:
             parser.error("SYBERWORK_CERTIFICATE_REVOKED needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
         if age is not None:
             parser.error("SYBERWORK_CERTIFICATE_MAX_AGE needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
+        if repository_path is not None:
+            parser.error("SYBERWORK_CERTIFICATE_REPOSITORY needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
         return None
     if not home or not public:
         parser.error("set both SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC, or neither")
@@ -118,8 +127,17 @@ def _certificates(parser):
         if not re.fullmatch(r"[0-9]{1,10}", age.strip()) or not 1 <= int(age) <= MAX_AGE_LIMIT:
             parser.error(f"SYBERWORK_CERTIFICATE_MAX_AGE must be a whole number of seconds from 1 to {MAX_AGE_LIMIT}")
         max_age = int(age)
+    repository = None
+    if repository_path is not None:
+        # Empty is refused, not read as no repository: an unset shell variable expanded into it would turn the layer off.
+        if not repository_path.strip():
+            parser.error("SYBERWORK_CERTIFICATE_REPOSITORY must name a Git working tree")
+        try:
+            repository = CertificateRepository(repository_path)
+        except Rejected as exc:
+            parser.error(f"SYBERWORK_CERTIFICATE_REPOSITORY: {exc.code}: {exc.detail}")
     try:
-        return CertificateShelf(home, tuple(keys), tuple(revoked), max_age)
+        return CertificateShelf(home, tuple(keys), tuple(revoked), max_age, repository=repository)
     except Rejected as exc:
         parser.error(f"certificates: {exc.code}: {exc.detail}")
 
