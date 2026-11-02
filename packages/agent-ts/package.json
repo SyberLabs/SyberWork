@@ -1,0 +1,19 @@
+{
+  "name": "@syberlabs/agent",
+  "version": "0.0.0",
+  "private": true,
+  "description": "S0 Agent protocol (sdk.syberlabs.space/v1alpha1) host-side helpers for TypeScript and JavaScript hosts. Draft; not published.",
+  "type": "module",
+  "exports": {
+    "./decision": {
+      "types": "./src/decision.d.ts",
+      "default": "./src/decision.js"
+    }
+  },
+  "files": ["src"],
+  "engines": {"node": ">=20"},
+  "scripts": {
+    "test": "node --test test/decision.test.js",
+    "parity": "node --experimental-strip-types --test parity/parity.test.mjs"
+  }
+}
