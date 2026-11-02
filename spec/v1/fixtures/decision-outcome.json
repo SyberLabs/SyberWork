@@ -21,6 +21,27 @@
       }
     },
     {
+      "name": "admitted dated Jev build, served model recorded beside the pin",
+      "instance": {
+        "status": "admitted",
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
+        "connection": "reader_owned",
+        "elapsed_ms": 640,
+        "request_digest": "5d41402abc4b2a76b9719d911017c592ae2f1f5e4b3c6d7e8f9a0b1c2d3e4f50",
+        "served_model": "typesafe/jev-1.13-20260901",
+        "answers": {
+          "book": {
+            "type": "choice",
+            "choice": "moby-dick",
+            "confidence": 0.81
+          }
+        }
+      }
+    },
+    {
       "name": "admitted Kev answers with a choice and a noul probability (RISE deploy/kev/local_app.py questions)",
       "instance": {
         "status": "admitted",
@@ -161,6 +182,25 @@
           "escalate": {
             "type": "noul",
             "noul": 1.5
+          }
+        }
+      }
+    },
+    {
+      "name": "a served model label is never empty",
+      "instance": {
+        "status": "admitted",
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
+        "connection": "reader_owned",
+        "elapsed_ms": 640,
+        "served_model": "",
+        "answers": {
+          "book": {
+            "type": "choice",
+            "choice": "moby-dick"
           }
         }
       }
