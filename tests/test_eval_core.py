@@ -374,6 +374,44 @@ class Arms(unittest.TestCase):
         self.assertTrue(arms.check(dict(arm, adapter=SIM), self.BUDGET))
         self.assertTrue(arms.check(dict(arm, bare=True), self.BUDGET), "--bare with a login lane")
 
+    def test_claude_code_lane_refusals_are_the_providers_at_spec_validation(self):
+        """guard-lane-2, L2 of #155's verification: a spec whose claude-code arm the provider would refuse when
+        built (githits with bare, bare with api-hooked, api without bare; and M1's unscreened lookups on bare) is
+        refused by ``arms.check``, before any run starts. On f466967 each passed validation."""
+        from unittest import mock
+
+        from syberlabs import githits
+        from syberlabs.claude_code import THIRD_PARTY_SWITCHES
+
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        git(repo, "init", "-q")
+        config = repo.parent / f"{repo.name}-githits.json"
+        config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
+        self.addCleanup(config.unlink)
+        base = {"name": "cc", "kind": "claude-code", "model": "claude-sonnet-5-5", "effort": "medium",
+                "executable": ["{python}", "-c", "print('2.1.309 (Claude Code)')"]}
+        env = {k: v for k, v in os.environ.items() if k not in THIRD_PARTY_SWITCHES}
+        env.update({githits.TOKEN_ENV: "test-not-a-token", "ANTHROPIC_API_KEY": "test-placeholder"})
+        for extra, key in (({"bare": True, "lane": "api", "githits": True}, "githits"),
+                           ({"bare": True, "lane": "api-hooked"}, "lane"),
+                           ({"lane": "api", "trusted_tree": True}, "lane"),
+                           ({"bare": True, "tools": ["Read", "WebSearch"]}, "tools"),
+                           ({"bare": True, "lane": "api", "tools": ["Read", "WebFetch"]}, "tools"),
+                           ({"bare": True, "mcp_config": str(config)}, "mcp_config")):
+            arm = {**base, **extra}
+            with self.subTest(arm=extra):
+                errors = arms.check(arm, self.BUDGET)
+                self.assertTrue(errors and all(e.startswith(key + ":") for e in errors), errors)
+                with mock.patch.dict(os.environ, env, clear=True), self.assertRaises(Rejected) as caught:
+                    arms.build(arm, repo=repo, budget=self.BUDGET, prices=PRICES)
+                self.assertEqual(caught.exception.code, "invalid_provider", "the provider refuses it too")
+        for extra in ({"bare": True, "lane": "api", "tools": ["Read", "Edit"]},
+                      {"lane": "api-hooked", "trusted_tree": True, "githits": True, "tools": ["Read", "WebSearch"]},
+                      {"lane": "subscription_local", "trusted_tree": True, "mcp_config": str(config)}):
+            with self.subTest(allowed=extra):
+                self.assertEqual(arms.check({**base, **extra}, self.BUDGET), [])
+
     def test_the_environment_names_the_model_and_withholds_the_seed_and_tokens(self):
         arm = {"name": "single", "kind": "single", "model": "simulated", "effort": "low", "adapter": SIM}
         task = {"source": "fixture:pricing"}
