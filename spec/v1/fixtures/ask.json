@@ -4,13 +4,17 @@
     {
       "name": "MasterMind-style direction ask with a default on silence",
       "instance": {
-        "id": "ASK-010",
+        "id": "ASK-900",
         "key": "direction",
         "owner": "sykosyber",
         "opened": "2026-11-02",
         "expires": "2026-11-09",
         "question": "Adopt the Agent protocol as seam S0, with SyberWork as its home?",
-        "options": ["adopt", "revise", "reject"],
+        "options": [
+          "adopt",
+          "revise",
+          "reject"
+        ],
         "default_on_silence": "revise",
         "context": "SyberLabs Consolidation: One Agent Abstraction"
       }
@@ -24,7 +28,10 @@
         "opened": "2026-11-02T09:00:00Z",
         "expires": "2026-11-03T09:00:00Z",
         "question": "Submit application job-17 to the employer form as staged?",
-        "options": ["accept", "decline"],
+        "options": [
+          "accept",
+          "decline"
+        ],
         "binds_to": "3f1c0de2a7b54e6f9c0d8e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
       }
     },
@@ -37,7 +44,10 @@
         "opened": "2026-10-17",
         "expires": "2026-10-31",
         "question": "Contact: send the Composer release to the five experts who replied in September (the only external evidence on record), with one question each. Agents prepare; you send.",
-        "options": ["send this week", "hold Contact parked"],
+        "options": [
+          "send this week",
+          "hold Contact parked"
+        ],
         "default_on_silence": "Contact stays parked (owner decision 2026-10-01); the company keeps zero external loop",
         "context": "docs/evidence/2026-09-expert-review-round.md; LEARNING failures 9 and 10. This is the highest-leverage keyed act on the board: one send yields more strategic information than the next 500 commits."
       }
@@ -45,13 +55,16 @@
     {
       "name": "tiebreak with a default",
       "instance": {
-        "id": "ASK-011",
+        "id": "ASK-901",
         "key": "tiebreak",
         "owner": "sdcarlson",
         "opened": "2026-11-02",
         "expires": "2026-11-06",
         "question": "May Phase 1 change RISE and Flyspace decision clients to the shared package?",
-        "options": ["yes", "no"],
+        "options": [
+          "yes",
+          "no"
+        ],
         "default_on_silence": "no"
       }
     }
@@ -66,7 +79,10 @@
         "opened": "2026-11-02",
         "expires": "2026-11-03",
         "question": "Submit as staged?",
-        "options": ["accept", "decline"],
+        "options": [
+          "accept",
+          "decline"
+        ],
         "binds_to": "3f1c0de2a7b54e6f9c0d8e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d",
         "default_on_silence": "accept"
       }
@@ -80,19 +96,24 @@
         "opened": "2026-11-02",
         "expires": "2026-11-03",
         "question": "Submit as staged?",
-        "options": ["accept", "decline"]
+        "options": [
+          "accept",
+          "decline"
+        ]
       }
     },
     {
       "name": "the key set is closed",
       "instance": {
-        "id": "ASK-013",
+        "id": "ASK-903",
         "key": "auto",
         "owner": "sykosyber",
         "opened": "2026-11-02",
         "expires": "2026-11-03",
         "question": "Merge?",
-        "options": ["yes"]
+        "options": [
+          "yes"
+        ]
       }
     }
   ]

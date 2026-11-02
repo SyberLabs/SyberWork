@@ -5,19 +5,42 @@
   "description": "The one Agent type. Protocol sdk.syberlabs.space/v1alpha1. An Agent is the host loop, not a model: models are ports that propose or choose, and nothing a port returns is admission, authority, or proof that an effect occurred. identity says who it is; contract pins the v0alpha1 Contract it works under; grants pin its Turtle authority layers; ports name its generator and decision providers; capabilities pin the typed tools it may propose; history is the one case whose hash-chained events record everything it did.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["identity", "contract", "grants", "ports", "capabilities", "history"],
+  "required": [
+    "identity",
+    "contract",
+    "grants",
+    "ports",
+    "capabilities",
+    "history"
+  ],
   "properties": {
-    "identity": {"$ref": "identity.schema.json"},
+    "identity": {
+      "$ref": "identity.schema.json"
+    },
     "contract": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "version"],
+      "required": [
+        "id",
+        "version"
+      ],
       "properties": {
-        "id": {"type": "string", "minLength": 1},
-        "version": {"type": "integer", "minimum": 1}
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
-    "grants": {"type": "array", "items": {"$ref": "grant-ref.schema.json"}},
+    "grants": {
+      "type": "array",
+      "items": {
+        "$ref": "grant-ref.schema.json"
+      }
+    },
     "ports": {
       "type": "object",
       "additionalProperties": false,
@@ -25,19 +48,38 @@
         "generate": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["adapter", "protocol"],
+          "required": [
+            "adapter",
+            "protocol"
+          ],
           "properties": {
-            "adapter": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
-            "protocol": {"const": "syberlabs.search/v0alpha1"}
+            "adapter": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            },
+            "protocol": {
+              "const": "syberlabs.search/v0alpha1"
+            }
           }
         },
         "decide": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["provider", "connection"],
+          "required": [
+            "provider",
+            "connection"
+          ],
           "properties": {
-            "provider": {"$ref": "decision-call.schema.json#/$defs/provider"},
-            "connection": {"enum": ["reader_owned", "server_held", "local"]}
+            "provider": {
+              "$ref": "decision-call.schema.json#/$defs/provider"
+            },
+            "connection": {
+              "enum": [
+                "reader_owned",
+                "server_held",
+                "local"
+              ]
+            }
           }
         }
       }
@@ -47,20 +89,38 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "version", "digest"],
+        "required": [
+          "id",
+          "version",
+          "digest"
+        ],
         "properties": {
-          "id": {"type": "string", "pattern": "^([a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+|cap_[0-9a-f]{8,64})$"},
-          "version": {"type": "integer", "minimum": 1},
-          "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          "id": {
+            "type": "string",
+            "pattern": "^([a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+|cap_[a-z0-9_]{3,64})$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
         }
       }
     },
     "history": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["case_id"],
+      "required": [
+        "case_id"
+      ],
       "properties": {
-        "case_id": {"type": "string", "minLength": 1}
+        "case_id": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     }
   }

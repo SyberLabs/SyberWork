@@ -8,18 +8,45 @@
         "version": 1,
         "digest": "af98b2675dcb02f4036fa864adff32fd242fdb3ec5cd8049770bf4ed0e0abce2",
         "label": "Render a beat-reactive video",
-        "inputs": [{"name": "recipe", "type": "video.recipe.v1", "required": true}],
+        "inputs": [
+          {
+            "name": "recipe",
+            "type": "video.recipe.v1",
+            "required": true
+          }
+        ],
         "outputs": [
-          {"name": "video", "type": "video.mp4.v1", "required": true},
-          {"name": "manifest", "type": "video.manifest.v1", "required": true}
+          {
+            "name": "video",
+            "type": "video.mp4.v1",
+            "required": true
+          },
+          {
+            "name": "manifest",
+            "type": "video.manifest.v1",
+            "required": true
+          }
         ],
         "effect": "compute",
-        "transport": {"kind": "local", "command": ["python", "-m", "video_factory", "render"]},
-        "auth": {"slot": null},
+        "transport": {
+          "kind": "local",
+          "command": [
+            "python",
+            "-m",
+            "video_factory",
+            "render"
+          ]
+        },
+        "auth": {
+          "slot": null
+        },
         "connection": "none",
         "may_refuse": true,
         "execution": "sync",
-        "provenance": {"source_kind": "manual", "source_ref": "SyberLabs/one-shot-factory"}
+        "provenance": {
+          "source_kind": "manual",
+          "source_ref": "SyberLabs/one-shot-factory"
+        }
       }
     },
     {
@@ -29,33 +56,76 @@
         "version": 1,
         "digest": "88ec1e75043040d530355f224a2c2c5d9512762bab038929eb4fa14ca49d484a",
         "label": "Present a Current in RISE",
-        "inputs": [{"name": "current", "type": "rise.current.v2", "required": true}],
-        "outputs": [{"name": "receipt", "type": "rise.present-receipt.v1", "required": true}],
+        "inputs": [
+          {
+            "name": "current",
+            "type": "rise.current.v2",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "receipt",
+            "type": "rise.present-receipt.v1",
+            "required": true
+          }
+        ],
         "effect": "read",
-        "transport": {"kind": "mcp", "server_id": "rise", "origin": "https://rise.syberlabs.io/api/mcp", "tool": "rise_present"},
-        "auth": {"slot": null},
+        "transport": {
+          "kind": "mcp",
+          "server_id": "rise",
+          "origin": "https://rise.syberlabs.io/api/mcp",
+          "tool": "rise_present"
+        },
+        "auth": {
+          "slot": null
+        },
         "connection": "none",
         "may_refuse": true,
         "execution": "sync",
-        "provenance": {"source_kind": "mcp", "source_ref": "https://rise.syberlabs.io/api/mcp#rise_present"}
+        "provenance": {
+          "source_kind": "mcp",
+          "source_ref": "https://rise.syberlabs.io/api/mcp#rise_present"
+        }
       }
     },
     {
-      "name": "cyber-insectly FlyVerse job, host-bound, server-held credential",
+      "name": "cyber-insectly FlyVerse job, host-bound (Seth's GPU host), no credential slot in the agent's hands",
       "instance": {
         "id": "flyverse.job",
         "version": 1,
-        "digest": "6c1c52b92985fd96d69e04de03bfdb22c141fbbb98eafd8a29628c579db8882a",
+        "digest": "a49dfd919bced748844b007f647e3ccc726b4b5f848fc323c75756ecc811b41a",
         "label": "Run one FlyVerse causal-lab job",
-        "inputs": [{"name": "job", "type": "flyverse.job-request.v1", "required": true}],
-        "outputs": [{"name": "results", "type": "flyverse.results.v1", "required": true}],
+        "inputs": [
+          {
+            "name": "job",
+            "type": "flyverse.job-request.v1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "results",
+            "type": "flyverse.results.v1",
+            "required": true
+          }
+        ],
         "effect": "compute",
-        "transport": {"kind": "job", "queue": "causal_lab", "host_bound": true},
-        "auth": {"slot": "CYBER_INSECTLY_TOKEN"},
-        "connection": "server_held",
+        "transport": {
+          "kind": "job",
+          "queue": "causal_lab",
+          "host_bound": true
+        },
+        "auth": {
+          "slot": null
+        },
+        "connection": "none",
         "may_refuse": true,
         "execution": "async_poll",
-        "provenance": {"source_kind": "manual", "source_ref": "SyberLabs/cyber-insectly"}
+        "provenance": {
+          "source_kind": "manual",
+          "source_ref": "SyberLabs/cyber-insectly"
+        }
       }
     },
     {
@@ -65,16 +135,77 @@
         "version": 1,
         "digest": "fe0f14429e63065fc648fd2ae91e9a4072c4ae510b3680543a4008884212cd87",
         "label": "Click an element in a bound browser tab",
-        "inputs": [{"name": "target", "type": "omni.actionable-ref.v1", "required": true}],
-        "outputs": [{"name": "snapshot", "type": "omni.tab-snapshot.v1", "required": true}],
+        "inputs": [
+          {
+            "name": "target",
+            "type": "omni.actionable-ref.v1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "snapshot",
+            "type": "omni.tab-snapshot.v1",
+            "required": true
+          }
+        ],
         "effect": "write",
-        "transport": {"kind": "browser", "affordance": "tab.click"},
-        "auth": {"slot": null},
+        "transport": {
+          "kind": "browser",
+          "affordance": "tab.click"
+        },
+        "auth": {
+          "slot": null
+        },
         "connection": "none",
         "may_refuse": true,
         "execution": "sync",
         "approval": "pending",
-        "provenance": {"source_kind": "affordance", "source_ref": "SyberLabs/omni-agent#tab.click"}
+        "provenance": {
+          "source_kind": "affordance",
+          "source_ref": "SyberLabs/omni-agent#tab.click"
+        }
+      }
+    },
+    {
+      "name": "Flyspace-shaped compiled capability: pinned cap_ id, cred_ slot, POST is write, approved",
+      "instance": {
+        "id": "cap_speech_speak",
+        "version": 1,
+        "digest": "60f1da74bd3fb0119dfc657ebe623ee5697100cf9fb778d74317127ac15ee069",
+        "label": "Speak text through a compiled speech API",
+        "inputs": [
+          {
+            "name": "text",
+            "type": "flyspace.text.v1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "audio",
+            "type": "flyspace.media.v1",
+            "required": true
+          }
+        ],
+        "effect": "write",
+        "transport": {
+          "kind": "http",
+          "mode": "server_broker",
+          "method": "POST",
+          "origin": "https://api.example-speech.test"
+        },
+        "auth": {
+          "slot": "cred_0123456789abcdef0123"
+        },
+        "connection": "server_held",
+        "may_refuse": true,
+        "execution": "sync",
+        "approval": "approved",
+        "provenance": {
+          "source_kind": "openapi",
+          "source_ref": "flyspace-curated/speech.yaml#/paths/~1speak/post"
+        }
       }
     }
   ],
@@ -86,11 +217,28 @@
         "version": 1,
         "digest": "fe0f14429e63065fc648fd2ae91e9a4072c4ae510b3680543a4008884212cd87",
         "label": "Click an element in a bound browser tab",
-        "inputs": [{"name": "target", "type": "omni.actionable-ref.v1", "required": true}],
-        "outputs": [{"name": "snapshot", "type": "omni.tab-snapshot.v1", "required": true}],
+        "inputs": [
+          {
+            "name": "target",
+            "type": "omni.actionable-ref.v1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "snapshot",
+            "type": "omni.tab-snapshot.v1",
+            "required": true
+          }
+        ],
         "effect": "write",
-        "transport": {"kind": "browser", "affordance": "tab.click"},
-        "auth": {"slot": null},
+        "transport": {
+          "kind": "browser",
+          "affordance": "tab.click"
+        },
+        "auth": {
+          "slot": null
+        },
         "connection": "none",
         "may_refuse": true,
         "approval": "auto"
@@ -106,8 +254,18 @@
         "inputs": [],
         "outputs": [],
         "effect": "compute",
-        "transport": {"kind": "local", "command": ["python", "-m", "video_factory", "render"]},
-        "auth": {"slot": "OPENAI_API_KEY"},
+        "transport": {
+          "kind": "local",
+          "command": [
+            "python",
+            "-m",
+            "video_factory",
+            "render"
+          ]
+        },
+        "auth": {
+          "slot": "OPENAI_API_KEY"
+        },
         "connection": "none",
         "may_refuse": true
       }
@@ -122,8 +280,14 @@
         "inputs": [],
         "outputs": [],
         "effect": "compute",
-        "transport": {"kind": "job", "queue": "causal_lab", "host_bound": true},
-        "auth": {"slot": "sk-live-1234567890abcdef"},
+        "transport": {
+          "kind": "job",
+          "queue": "causal_lab",
+          "host_bound": true
+        },
+        "auth": {
+          "slot": "sk-live-1234567890abcdef"
+        },
         "connection": "server_held",
         "may_refuse": true
       }
@@ -138,8 +302,15 @@
         "inputs": [],
         "outputs": [],
         "effect": "admin",
-        "transport": {"kind": "mcp", "server_id": "rise", "origin": "https://rise.syberlabs.io/api/mcp", "tool": "rise_present"},
-        "auth": {"slot": null},
+        "transport": {
+          "kind": "mcp",
+          "server_id": "rise",
+          "origin": "https://rise.syberlabs.io/api/mcp",
+          "tool": "rise_present"
+        },
+        "auth": {
+          "slot": null
+        },
         "connection": "none",
         "may_refuse": true
       }
@@ -151,13 +322,192 @@
         "version": 1,
         "digest": "af98b2675dcb02f4036fa864adff32fd242fdb3ec5cd8049770bf4ed0e0abce2",
         "label": "Render a beat-reactive video",
-        "inputs": [{"name": "recipe", "type": "json", "required": true}],
+        "inputs": [
+          {
+            "name": "recipe",
+            "type": "json",
+            "required": true
+          }
+        ],
         "outputs": [],
         "effect": "compute",
-        "transport": {"kind": "local", "command": ["python", "-m", "video_factory", "render"]},
-        "auth": {"slot": null},
+        "transport": {
+          "kind": "local",
+          "command": [
+            "python",
+            "-m",
+            "video_factory",
+            "render"
+          ]
+        },
+        "auth": {
+          "slot": null
+        },
         "connection": "none",
         "may_refuse": true
+      }
+    },
+    {
+      "name": "an HTTP DELETE cannot declare itself compute and auto-approve",
+      "instance": {
+        "id": "cap_speech_speak",
+        "version": 1,
+        "label": "Speak text through a compiled speech API",
+        "inputs": [
+          {
+            "name": "text",
+            "type": "flyspace.text.v1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "audio",
+            "type": "flyspace.media.v1",
+            "required": true
+          }
+        ],
+        "effect": "compute",
+        "transport": {
+          "kind": "http",
+          "mode": "server_broker",
+          "method": "DELETE",
+          "origin": "https://api.example-speech.test"
+        },
+        "auth": {
+          "slot": "cred_0123456789abcdef0123"
+        },
+        "connection": "server_held",
+        "may_refuse": true,
+        "execution": "sync",
+        "approval": "auto",
+        "provenance": {
+          "source_kind": "openapi",
+          "source_ref": "flyspace-curated/speech.yaml#/paths/~1speak/post"
+        },
+        "digest": "60f1da74bd3fb0119dfc657ebe623ee5697100cf9fb778d74317127ac15ee069"
+      }
+    },
+    {
+      "name": "an HTTP POST is at least a write",
+      "instance": {
+        "id": "cap_speech_speak",
+        "version": 1,
+        "label": "Speak text through a compiled speech API",
+        "inputs": [
+          {
+            "name": "text",
+            "type": "flyspace.text.v1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "audio",
+            "type": "flyspace.media.v1",
+            "required": true
+          }
+        ],
+        "effect": "read",
+        "transport": {
+          "kind": "http",
+          "mode": "server_broker",
+          "method": "POST",
+          "origin": "https://api.example-speech.test"
+        },
+        "auth": {
+          "slot": "cred_0123456789abcdef0123"
+        },
+        "connection": "server_held",
+        "may_refuse": true,
+        "execution": "sync",
+        "approval": "auto",
+        "provenance": {
+          "source_kind": "openapi",
+          "source_ref": "flyspace-curated/speech.yaml#/paths/~1speak/post"
+        },
+        "digest": "60f1da74bd3fb0119dfc657ebe623ee5697100cf9fb778d74317127ac15ee069"
+      }
+    },
+    {
+      "name": "a write capability states its approval; silence is not auto",
+      "instance": {
+        "id": "cap_speech_speak",
+        "version": 1,
+        "label": "Speak text through a compiled speech API",
+        "inputs": [
+          {
+            "name": "text",
+            "type": "flyspace.text.v1",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "audio",
+            "type": "flyspace.media.v1",
+            "required": true
+          }
+        ],
+        "effect": "write",
+        "transport": {
+          "kind": "http",
+          "mode": "server_broker",
+          "method": "POST",
+          "origin": "https://api.example-speech.test"
+        },
+        "auth": {
+          "slot": "cred_0123456789abcdef0123"
+        },
+        "connection": "server_held",
+        "may_refuse": true,
+        "execution": "sync",
+        "provenance": {
+          "source_kind": "openapi",
+          "source_ref": "flyspace-curated/speech.yaml#/paths/~1speak/post"
+        },
+        "digest": "60f1da74bd3fb0119dfc657ebe623ee5697100cf9fb778d74317127ac15ee069"
+      }
+    },
+    {
+      "name": "a read capability is auto-approved, never pending",
+      "instance": {
+        "id": "rise.present",
+        "version": 1,
+        "digest": "88ec1e75043040d530355f224a2c2c5d9512762bab038929eb4fa14ca49d484a",
+        "label": "Present a Current in RISE",
+        "inputs": [
+          {
+            "name": "current",
+            "type": "rise.current.v2",
+            "required": true
+          }
+        ],
+        "outputs": [
+          {
+            "name": "receipt",
+            "type": "rise.present-receipt.v1",
+            "required": true
+          }
+        ],
+        "effect": "read",
+        "transport": {
+          "kind": "mcp",
+          "server_id": "rise",
+          "origin": "https://rise.syberlabs.io/api/mcp",
+          "tool": "rise_present"
+        },
+        "auth": {
+          "slot": null
+        },
+        "connection": "none",
+        "may_refuse": true,
+        "execution": "sync",
+        "provenance": {
+          "source_kind": "mcp",
+          "source_ref": "https://rise.syberlabs.io/api/mcp#rise_present"
+        },
+        "approval": "pending"
       }
     }
   ],
@@ -169,19 +519,46 @@
         "version": 1,
         "digest": "af98b2675dcb02f4036fa864adff32fd242fdb3ec5cd8049770bf4ed0e0abce2",
         "label": "Render a beat-reactive video",
-        "inputs": [{"name": "recipe", "type": "video.recipe.v1", "required": true}],
+        "inputs": [
+          {
+            "name": "recipe",
+            "type": "video.recipe.v1",
+            "required": true
+          }
+        ],
         "outputs": [
-          {"name": "video", "type": "video.mp4.v1", "required": true},
-          {"name": "manifest", "type": "video.manifest.v1", "required": true}
+          {
+            "name": "video",
+            "type": "video.mp4.v1",
+            "required": true
+          },
+          {
+            "name": "manifest",
+            "type": "video.manifest.v1",
+            "required": true
+          }
         ],
         "effect": "write",
-        "transport": {"kind": "local", "command": ["python", "-m", "video_factory", "render"]},
-        "auth": {"slot": null},
+        "transport": {
+          "kind": "local",
+          "command": [
+            "python",
+            "-m",
+            "video_factory",
+            "render"
+          ]
+        },
+        "auth": {
+          "slot": null
+        },
         "connection": "none",
         "may_refuse": true,
         "execution": "sync",
         "approval": "pending",
-        "provenance": {"source_kind": "manual", "source_ref": "SyberLabs/one-shot-factory"}
+        "provenance": {
+          "source_kind": "manual",
+          "source_ref": "SyberLabs/one-shot-factory"
+        }
       }
     }
   ]

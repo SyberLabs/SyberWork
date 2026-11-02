@@ -5,11 +5,27 @@
   "description": "A pinned reference to one Turtle policy layer. Protocol sdk.syberlabs.space/v1alpha1. Grant semantics (correlated clauses, deny wins, attenuation, budgets) belong to turtle-shells and its turtle.syberlabs.space/v0alpha1 schema; this protocol only pins which policy, at which digest, sits at which layer. Layer 0 is outermost. Effective authority is the intersection of all layers. A child Agent's layers are its parent's layers plus at least one narrower layer, checked by turtle policy diff.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["api_version", "name", "policy_digest", "layer"],
+  "required": [
+    "api_version",
+    "name",
+    "policy_digest",
+    "layer"
+  ],
   "properties": {
-    "api_version": {"const": "turtle.syberlabs.space/v0alpha1"},
-    "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
-    "policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "layer": {"type": "integer", "minimum": 0}
+    "api_version": {
+      "const": "turtle.syberlabs.space/v0alpha1"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,62}$"
+    },
+    "policy_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "layer": {
+      "type": "integer",
+      "minimum": 0
+    }
   }
 }

@@ -2,20 +2,43 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/v1alpha1/identity.schema.json",
   "title": "AgentIdentity",
-  "description": "Who an Agent is. Protocol sdk.syberlabs.space/v1alpha1. Same tuple as Turtle's TurtleIdentity (turtle-shells, crates/turtle-policy): id, root_id, parent_id, subject_binding. A root Agent has parent_id null and root_id equal to id. subject_binding names the principal the Agent acts for, never a credential. platform uses the Agent-platform convention from SyberWork AGENTS.md section 2, optionally name@revision.",
+  "description": "Who an Agent is. Protocol sdk.syberlabs.space/v1alpha1. Built on the core tuple of Turtle's TurtleIdentity (turtle-shells, crates/turtle-policy/src/grant.rs): id, root_id, parent_id, subject_binding, and adds platform, the Agent-platform convention from SyberWork AGENTS.md section 2, optionally name@revision. It is stricter than Turtle: ids carry an agt_ prefix and subject_binding names a principal (github:, google: or service:), where Turtle's root identity sets subject_binding to its own id. GAPS.md item 13 records the mapping. A root Agent has parent_id null and root_id equal to id.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "root_id", "parent_id", "subject_binding", "platform"],
+  "required": [
+    "id",
+    "root_id",
+    "parent_id",
+    "subject_binding",
+    "platform"
+  ],
   "properties": {
-    "id": {"type": "string", "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"},
-    "root_id": {"type": "string", "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"},
+    "id": {
+      "type": "string",
+      "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"
+    },
+    "root_id": {
+      "type": "string",
+      "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"
+    },
     "parent_id": {
       "anyOf": [
-        {"type": "string", "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"},
-        {"type": "null"}
+        {
+          "type": "string",
+          "pattern": "^agt_[A-Za-z0-9._-]{1,120}$"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
-    "subject_binding": {"type": "string", "pattern": "^(github|google|service):[A-Za-z0-9._-]{1,100}$"},
-    "platform": {"type": "string", "pattern": "^(claude|codex|cursor|grok|human|host)(@[A-Za-z0-9._/-]{1,100})?$"}
+    "subject_binding": {
+      "type": "string",
+      "pattern": "^(github|google|service):[A-Za-z0-9._-]{1,100}$"
+    },
+    "platform": {
+      "type": "string",
+      "pattern": "^(claude|codex|cursor|grok|human|host)(@[A-Za-z0-9._/-]{1,100})?$"
+    }
   }
 }

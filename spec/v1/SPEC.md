@@ -1,8 +1,10 @@
 # SyberLabs Agent protocol v1alpha1 (seam S0)
 
-Protocol identity: `sdk.syberlabs.space/v1alpha1`. **Draft.** This directory specifies the one Agent type that the SyberLabs repositories converge on. It is additive to the frozen `sdk.syberlabs.space/v0alpha1` protocol in the parent directory: it reuses every v0alpha1 object by reference, adds no event kind, and changes the shape of nothing v0alpha1 records. All 23 golden traces, and every raw event behind them, validate under v1alpha1 unchanged (`tests/test_spec_v1.py`).
+Protocol identity: `sdk.syberlabs.space/v1alpha1`. **Draft.** This directory specifies the one Agent type that the SyberLabs repositories converge on. It is additive to the frozen `sdk.syberlabs.space/v0alpha1` protocol in the parent directory: it keeps every v0alpha1 object as the authority for its shape (the Event envelope by `$ref`, Contracts by an `{id, version}` pin), adds no event kind, and changes the shape of nothing v0alpha1 records. All 228 raw events behind the 23 golden traces validate under v1alpha1 unchanged, and `v0alpha1.lock.json` pins the SHA-256 of every v0alpha1 schema file (`tests/test_spec_v1.py`).
 
-The design and the repository review behind it are in the SyberLabs consolidation proposal (2026-11-01). The seam itself is S0 in MasterMind.
+**Claim ceiling:** implemented and tested as a specification. No runtime implements it. Not measured, not deployed.
+
+The design and the 2026-11-01 review of all 34 SyberLabs repositories behind it are in the consolidation proposal linked from this pull request. The seam itself is S0, `docs/contracts/S0-agent-protocol.md` in SyberLabs/MasterMind.
 
 ## The law it encodes
 
@@ -49,11 +51,11 @@ Observe, propose, admit, ask, commit, effect, settle, reconcile, accept, as v0al
 9. A Capability never grants itself authority: `write` and `destructive` cannot be `auto`-approved, and approval is outside its digest.
 10. The Decision Port never chooses who owns a credential: `connection` is recorded, not decided.
 
-Schema-checkable invariants are enforced by the schemas and exercised by `fixtures/`. The rest are runtime rules, listed with their owners in `GAPS.md`.
+Invariants 6, 8, 9 and 10 are enforced by the schemas (plus `check_decision_call` for counts) and exercised by `fixtures/`. The others are runtime rules, listed with where each is enforced today and its owner in `GAPS.md` item 7.
 
 ## Fixtures and checks
 
-`fixtures/<object>.json` holds `valid` and `invalid` instances, each named for the rule it shows; `capability.json` also holds a `digest_mismatch` case. Instances are drawn from real systems where one exists: Flyspace's Kev persona call, RISE's Jev recommendation, the Kev local warmup, one-shot-factory, cyber-insectly, `rise_present`, omni-agent's `tab.click`, MasterMind asks.
+`fixtures/<object>.json` holds `valid` and `invalid` instances, each named for the rule it shows; `decision-call.json` also holds `procedural_invalid` cases (schema-valid, refused by a count rule) and `capability.json` a `digest_mismatch` case. Instances are drawn from real systems where one exists: Flyspace's Kev persona call, RISE's Jev recommendation, the Kev local warmup and its noul answer, one-shot-factory, cyber-insectly, `rise_present`, omni-agent's `tab.click`, a Flyspace-shaped compiled capability, and MasterMind's ASK-009 verbatim. Synthetic ask ids use ASK-9xx so they never collide with live asks.
 
 ```sh
 PYTHONPATH=. python3 -m spec.v1.check --golden     # fixtures, digests, and v0alpha1 golden events
@@ -64,4 +66,4 @@ PYTHONPATH=. python3 -m unittest tests.test_spec_v1
 
 It adds no runtime code. `syberlabs` and `syberwork` neither import nor enforce v1alpha1 yet. Shared code is earned only when two systems pass the same fixtures (charter section 5, Seams); the first such step is the Decision Port, consumed by RISE and Flyspace as separate packets after S0 is admitted.
 
-Editing these files floors at direction under SyberWork's path policy; the owner's merge is the admission.
+This is Class C under SyberWork `AGENTS.md` section 1 (an architectural seam and a new protocol identity), so it is drafted, and the owner's merge is the admission. SyberWork's `policy.json` does not list `spec/v1/**`; the class comes from the act, not the path.

@@ -1,0 +1,22 @@
+{
+  "description": "SHA-256 of each frozen v0alpha1 schema file as of origin/main 8a5e21f, when v1alpha1 was drafted. A change to any of them is deliberate: update this lock in the same pull request and say why.",
+  "files": {
+    "acceptance-clause.schema.json": "5582ec256025aa6e7fba4ed1a5e114ba9e16f26fde11c204955226b4f0a50c8f",
+    "action-definition.schema.json": "83e4921369d70346a230b444da3ad9e2546a5896ca4570c32712e1db94a214ef",
+    "admission-decision.schema.json": "fbf946c06bef22a989edc19750b87f8d028e7cdda602b860fb7a4c1c33084eed",
+    "candidate.schema.json": "48fc0119be45780fd19115e8798ba3eef5d65fcf64ab697b8aa5053cd2f0d565",
+    "certificate.schema.json": "2def32cc56eb6ebbe0ea974762340a1e064d80d98071ff86bc9137a45d22a747",
+    "contract.schema.json": "95438ee4fd8276f2f377f43f392cb165dcc8546e1262be3d3c1b876872cad537",
+    "effect-outcome.schema.json": "fb93cf6f5239aaa61e65a9661c8fcb09b5bdfb194e5b3db595434b95e456694c",
+    "event-body.schema.json": "43ca93a873c341405e6d735bcc6f12f9959294d1c649e8c530ad5bd701f25e01",
+    "event.schema.json": "0b72820b93b828bed120c826a5dff23e452c032c429d83a2b18414c9a4292dee",
+    "evolution.schema.json": "e984775e33f13f5bbda9fee591add95565f21c64e2acdb72ca703df227cf9d92",
+    "finding.schema.json": "2e4914b31cc4e5149c6382df4aebede413d022e1c2ed498dd7508fac476d3c13",
+    "observation.schema.json": "7f3ba47b8c7afe1e18b5a96af4f7d6c7494462e870dd3fda01b0e64f7494a4e1",
+    "policy.schema.json": "01549026decdc958419aa6434da78429d4759ae24f790dcb456763b5a4963227",
+    "proposal.schema.json": "8563a8afd89f3afd14e57d1bcb711534cf4852e05935c2e71bacf7d4ae45c598",
+    "reconciliation.schema.json": "26b5f54850f3f2189e08c1a16e20a54327e3b1a6c6cb21e40f84253458fd7ed9",
+    "resolution-task.schema.json": "3ee1e2b92041ecc415f040ae0b604f1819f578dda2f2a6fa5aeb5dc5a7a4b30f",
+    "source-definition.schema.json": "6f12af14caedbd02da8d9c3706ab03a1de3cc8286c70f1599dbd1d44c136764b"
+  }
+}

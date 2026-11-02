@@ -11,8 +11,10 @@ from spec.v1.check import (
     V1,
     canonical,
     capability_digest,
+    check_decision_call,
     check_fixtures,
     check_golden,
+    check_v0alpha1_lock,
     check_v1,
 )
 from spec.validate import SchemaError
@@ -91,6 +93,18 @@ class RuleTests(unittest.TestCase):
         with self.assertRaises(SchemaError):
             check_v1(kev, "decision-call.schema.json")
 
+    def test_http_method_fixes_the_lowest_effect(self):
+        manifest = self._capability()
+        manifest.update(transport={"kind": "http", "mode": "server_broker", "method": "DELETE", "origin": "https://x.test"},
+                        effect="write", approval="pending")
+        with self.assertRaises(SchemaError):
+            check_v1(manifest, "capability.schema.json")
+        check_v1(dict(manifest, effect="destructive"), "capability.schema.json")
+
+    def test_every_valid_decision_call_passes_the_count_rules(self):
+        for case in json.loads((FIXTURES / "decision-call.json").read_text(encoding="utf-8"))["valid"]:
+            check_decision_call(case["instance"])
+
 
 class CompatibilityTests(unittest.TestCase):
     def test_v0alpha1_golden_events_validate_under_v1(self):
@@ -103,7 +117,10 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(v1["$ref"], "../event.schema.json")
         self.assertNotIn("properties", v1)
 
-    def test_frozen_v0alpha1_files_are_untouched_by_v1(self):
+    def test_v0alpha1_schema_files_match_their_lock(self):
+        self.assertEqual(check_v0alpha1_lock(), [])
+
+    def test_every_v1_schema_has_a_v1alpha1_id(self):
         for path in V1.glob("*.schema.json"):
             schema = json.loads(path.read_text(encoding="utf-8"))
             self.assertTrue(schema["$id"].startswith("https://sdk.syberlabs.space/v1alpha1/"), path.name)

@@ -5,17 +5,52 @@
       "name": "admitted persona choice from pinned Kev",
       "instance": {
         "status": "admitted",
-        "provider": {"name": "Kev", "model": "kev-latest", "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"},
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
         "connection": "server_held",
         "elapsed_ms": 412,
-        "answers": {"persona": {"type": "choice", "choice": "strategist"}}
+        "answers": {
+          "persona": {
+            "type": "choice",
+            "choice": "strategist"
+          }
+        }
+      }
+    },
+    {
+      "name": "admitted Kev answers with a choice and a noul probability (RISE deploy/kev/local_app.py questions)",
+      "instance": {
+        "status": "admitted",
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
+        "connection": "local",
+        "elapsed_ms": 360,
+        "answers": {
+          "department": {
+            "type": "choice",
+            "choice": "billing"
+          },
+          "escalate": {
+            "type": "noul",
+            "noul": 0.9
+          }
+        }
       }
     },
     {
       "name": "refused: the provider answered outside the menu",
       "instance": {
         "status": "refused",
-        "provider": {"name": "TypeSafe", "model": "typesafe/jev-1.13"},
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
         "connection": "reader_owned",
         "elapsed_ms": 903,
         "code": "OUT_OF_MENU"
@@ -25,7 +60,11 @@
       "name": "refused: local response without the pinned x-kev-revision",
       "instance": {
         "status": "refused",
-        "provider": {"name": "Kev", "model": "kev-latest", "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"},
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
         "connection": "local",
         "elapsed_ms": 37,
         "code": "UNATTESTED"
@@ -35,7 +74,10 @@
       "name": "refused: deadline passed, nothing changed",
       "instance": {
         "status": "refused",
-        "provider": {"name": "TypeSafe", "model": "typesafe/jev-1.13"},
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
         "connection": "reader_owned",
         "elapsed_ms": 8000,
         "code": "TIMEOUT"
@@ -47,7 +89,10 @@
       "name": "an admitted outcome has answers",
       "instance": {
         "status": "admitted",
-        "provider": {"name": "TypeSafe", "model": "typesafe/jev-1.13"},
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
         "connection": "reader_owned",
         "elapsed_ms": 500
       }
@@ -56,31 +101,68 @@
       "name": "a refusal carries no answers",
       "instance": {
         "status": "refused",
-        "provider": {"name": "TypeSafe", "model": "typesafe/jev-1.13"},
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
         "connection": "reader_owned",
         "elapsed_ms": 500,
         "code": "OUT_OF_MENU",
-        "answers": {"book": {"type": "choice", "choice": "not-offered"}}
+        "answers": {
+          "book": {
+            "type": "choice",
+            "choice": "not-offered"
+          }
+        }
       }
     },
     {
       "name": "a choice answer names the option chosen",
       "instance": {
         "status": "admitted",
-        "provider": {"name": "TypeSafe", "model": "typesafe/jev-1.13"},
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
         "connection": "reader_owned",
         "elapsed_ms": 500,
-        "answers": {"book": {"type": "choice"}}
+        "answers": {
+          "book": {
+            "type": "choice"
+          }
+        }
       }
     },
     {
       "name": "refusal codes are closed; a retry is not an outcome",
       "instance": {
         "status": "refused",
-        "provider": {"name": "TypeSafe", "model": "typesafe/jev-1.13"},
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
         "connection": "reader_owned",
         "elapsed_ms": 500,
         "code": "RETRIED"
+      }
+    },
+    {
+      "name": "a noul answer carries p(yes) between 0 and 1",
+      "instance": {
+        "status": "admitted",
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
+        "connection": "local",
+        "elapsed_ms": 360,
+        "answers": {
+          "escalate": {
+            "type": "noul",
+            "noul": 1.5
+          }
+        }
       }
     }
   ]

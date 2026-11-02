@@ -2,28 +2,103 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/v1alpha1/decision-outcome.schema.json",
   "title": "DecisionOutcome",
-  "description": "What the host recorded after one DecisionCall. Protocol sdk.syberlabs.space/v1alpha1. admitted means every answer was checked against the menu the host offered and the provider identity matched the pin; it is a proposal for the Agent loop, never authority or evidence. refused carries one code. OUT_OF_MENU is an answer the host did not offer; UNATTESTED is a Kev response without the pinned x-kev-revision. The other codes are RISE's DecisionError codes (src/core/decision/call.js). This is the record sybershoke invariants I1, I2, I3 and I5 are checked against.",
+  "description": "What the host recorded after one DecisionCall. Protocol sdk.syberlabs.space/v1alpha1. admitted means every answer was checked against the menu the host offered and the provider identity matched the pin; it is a proposal for the Agent loop, never authority or evidence. refused carries one code. OUT_OF_MENU is an answer the host did not offer (RISE reports this today as INVALID_RESPONSE; GAPS.md item 14); UNATTESTED is a Kev response without the pinned x-kev-revision. The other codes are RISE's DecisionError call codes (src/core/decision/call.js). A noul answer carries noul, p(yes), as RISE and COMMONS read it. This record is the intended input for sybershoke invariants I1 (answers on the menu) and I2 (an answer or a visible error); I3 and I5 need fields it does not carry yet (GAPS.md item 15).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "provider", "connection", "elapsed_ms"],
+  "required": [
+    "status",
+    "provider",
+    "connection",
+    "elapsed_ms"
+  ],
   "properties": {
-    "status": {"enum": ["admitted", "refused"]},
-    "provider": {"$ref": "decision-call.schema.json#/$defs/provider"},
-    "connection": {"enum": ["reader_owned", "server_held", "local"]},
-    "elapsed_ms": {"type": "integer", "minimum": 0},
-    "request_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {
+      "enum": [
+        "admitted",
+        "refused"
+      ]
+    },
+    "provider": {
+      "$ref": "decision-call.schema.json#/$defs/provider"
+    },
+    "connection": {
+      "enum": [
+        "reader_owned",
+        "server_held",
+        "local"
+      ]
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "answers": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["type"],
+        "required": [
+          "type"
+        ],
         "properties": {
-          "type": {"enum": ["noul", "choice", "score"]}
+          "type": {
+            "enum": [
+              "noul",
+              "choice",
+              "score"
+            ]
+          }
         },
         "allOf": [
           {
-            "if": {"required": ["type"], "properties": {"type": {"const": "choice"}}},
-            "then": {"required": ["choice"], "properties": {"choice": {"type": "string", "minLength": 1}}}
+            "if": {
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "const": "choice"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "choice"
+              ],
+              "properties": {
+                "choice": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "const": "noul"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "noul"
+              ],
+              "properties": {
+                "noul": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            }
           }
         ]
       }
@@ -47,12 +122,44 @@
   },
   "allOf": [
     {
-      "if": {"required": ["status"], "properties": {"status": {"const": "admitted"}}},
-      "then": {"required": ["answers"], "properties": {"code": false}}
+      "if": {
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "const": "admitted"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "answers"
+        ],
+        "properties": {
+          "code": false
+        }
+      }
     },
     {
-      "if": {"required": ["status"], "properties": {"status": {"const": "refused"}}},
-      "then": {"required": ["code"], "properties": {"answers": false}}
+      "if": {
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "const": "refused"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "answers": false
+        }
+      }
     }
   ]
 }

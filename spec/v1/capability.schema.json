@@ -2,68 +2,179 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdk.syberlabs.space/v1alpha1/capability.schema.json",
   "title": "Capability",
-  "description": "A typed tool an Agent may propose to use. Protocol sdk.syberlabs.space/v1alpha1. Merges Flyspace's CapabilityManifest (effect class, transport, credential slot, digest, approval excluded from the digest) with cross-platform's typed ports. digest is SHA-256 of canonical JSON of the manifest with digest and approval removed. A manifest never grants itself authority: write and destructive capabilities cannot be auto-approved, and authority to invoke any capability comes from the Agent's grants.",
+  "description": "A typed tool an Agent may propose to use. Protocol sdk.syberlabs.space/v1alpha1. Derived from Flyspace's CapabilityManifest (effect class, transport, credential slot, digest, approval excluded from the digest, HTTP method bound to effect) and cross-platform's typed ports; GAPS.md maps the fields that differ. digest is SHA-256 of canonical JSON of the manifest with digest and approval removed. A manifest never grants itself authority: a write or destructive capability must carry an approval that is not auto, an HTTP method fixes the lowest effect it may declare, and authority to invoke any capability comes from the Agent's grants.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "version", "digest", "label", "inputs", "outputs", "effect", "transport", "auth", "connection", "may_refuse"],
+  "required": [
+    "id",
+    "version",
+    "digest",
+    "label",
+    "inputs",
+    "outputs",
+    "effect",
+    "transport",
+    "auth",
+    "connection",
+    "may_refuse"
+  ],
   "properties": {
-    "id": {"type": "string", "pattern": "^([a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+|cap_[0-9a-f]{8,64})$"},
-    "version": {"type": "integer", "minimum": 1},
-    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "label": {"type": "string", "minLength": 1},
-    "inputs": {"type": "array", "items": {"$ref": "port.schema.json"}},
-    "outputs": {"type": "array", "items": {"$ref": "port.schema.json"}},
-    "effect": {"enum": ["read", "compute", "write", "destructive"]},
+    "id": {
+      "type": "string",
+      "pattern": "^([a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+|cap_[a-z0-9_]{3,64})$"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "port.schema.json"
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "port.schema.json"
+      }
+    },
+    "effect": {
+      "enum": [
+        "read",
+        "compute",
+        "write",
+        "destructive"
+      ]
+    },
     "transport": {
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "command"],
+          "required": [
+            "kind",
+            "command"
+          ],
           "properties": {
-            "kind": {"const": "local"},
-            "command": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+            "kind": {
+              "const": "local"
+            },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "mode", "method", "origin"],
+          "required": [
+            "kind",
+            "mode",
+            "method",
+            "origin"
+          ],
           "properties": {
-            "kind": {"const": "http"},
-            "mode": {"enum": ["browser_direct", "server_broker"]},
-            "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
-            "origin": {"type": "string", "pattern": "^https://[^/?#]+$"}
+            "kind": {
+              "const": "http"
+            },
+            "mode": {
+              "enum": [
+                "browser_direct",
+                "server_broker"
+              ]
+            },
+            "method": {
+              "enum": [
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE"
+              ]
+            },
+            "origin": {
+              "type": "string",
+              "pattern": "^https://[^/?#]+$"
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "server_id", "origin", "tool"],
+          "required": [
+            "kind",
+            "server_id",
+            "origin",
+            "tool"
+          ],
           "properties": {
-            "kind": {"const": "mcp"},
-            "server_id": {"type": "string", "minLength": 1},
-            "origin": {"type": "string", "pattern": "^https://[^/?#]+(/[^?#]*)?$"},
-            "tool": {"type": "string", "minLength": 1}
+            "kind": {
+              "const": "mcp"
+            },
+            "server_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "origin": {
+              "type": "string",
+              "pattern": "^https://[^/?#]+(/[^?#]*)?$"
+            },
+            "tool": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "affordance"],
+          "required": [
+            "kind",
+            "affordance"
+          ],
           "properties": {
-            "kind": {"const": "browser"},
-            "affordance": {"type": "string", "pattern": "^[a-z]+(\\.[a-z]+)+$"}
+            "kind": {
+              "const": "browser"
+            },
+            "affordance": {
+              "type": "string",
+              "pattern": "^[a-z]+(\\.[a-z]+)+$"
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "queue", "host_bound"],
+          "required": [
+            "kind",
+            "queue",
+            "host_bound"
+          ],
           "properties": {
-            "kind": {"const": "job"},
-            "queue": {"type": "string", "minLength": 1},
-            "host_bound": {"type": "boolean"}
+            "kind": {
+              "const": "job"
+            },
+            "queue": {
+              "type": "string",
+              "minLength": 1
+            },
+            "host_bound": {
+              "type": "boolean"
+            }
           }
         }
       ]
@@ -71,38 +182,212 @@
     "auth": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slot"],
+      "required": [
+        "slot"
+      ],
       "properties": {
         "slot": {
           "anyOf": [
-            {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,63}$"},
-            {"type": "null"}
+            {
+              "type": "string",
+              "pattern": "^([A-Z][A-Z0-9_]{1,63}|cred_[0-9a-f]{20})$"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       }
     },
-    "connection": {"enum": ["reader_owned", "server_held", "none"]},
-    "may_refuse": {"type": "boolean"},
-    "execution": {"enum": ["sync", "async_poll"]},
-    "approval": {"enum": ["auto", "pending", "approved", "denied"]},
+    "connection": {
+      "enum": [
+        "reader_owned",
+        "server_held",
+        "none"
+      ]
+    },
+    "may_refuse": {
+      "type": "boolean"
+    },
+    "execution": {
+      "enum": [
+        "sync",
+        "async_poll"
+      ]
+    },
+    "approval": {
+      "enum": [
+        "auto",
+        "pending",
+        "approved",
+        "denied"
+      ]
+    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_kind", "source_ref"],
+      "required": [
+        "source_kind",
+        "source_ref"
+      ],
       "properties": {
-        "source_kind": {"enum": ["openapi", "mcp", "affordance", "registry", "manual"]},
-        "source_ref": {"type": "string", "minLength": 1}
+        "source_kind": {
+          "enum": [
+            "openapi",
+            "mcp",
+            "affordance",
+            "registry",
+            "manual"
+          ]
+        },
+        "source_ref": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     }
   },
   "allOf": [
     {
-      "if": {"required": ["effect"], "properties": {"effect": {"enum": ["write", "destructive"]}}},
-      "then": {"properties": {"approval": {"enum": ["pending", "approved", "denied"]}}}
+      "if": {
+        "required": [
+          "effect"
+        ],
+        "properties": {
+          "effect": {
+            "enum": [
+              "write",
+              "destructive"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "approval"
+        ],
+        "properties": {
+          "approval": {
+            "enum": [
+              "pending",
+              "approved",
+              "denied"
+            ]
+          }
+        }
+      }
     },
     {
-      "if": {"required": ["connection"], "properties": {"connection": {"const": "none"}}},
-      "then": {"properties": {"auth": {"properties": {"slot": {"type": "null"}}}}}
+      "if": {
+        "required": [
+          "effect"
+        ],
+        "properties": {
+          "effect": {
+            "enum": [
+              "read",
+              "compute"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "approval": {
+            "const": "auto"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "connection"
+        ],
+        "properties": {
+          "connection": {
+            "const": "none"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "auth": {
+            "properties": {
+              "slot": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "transport"
+        ],
+        "properties": {
+          "transport": {
+            "required": [
+              "kind",
+              "method"
+            ],
+            "properties": {
+              "kind": {
+                "const": "http"
+              },
+              "method": {
+                "const": "DELETE"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect": {
+            "const": "destructive"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "transport"
+        ],
+        "properties": {
+          "transport": {
+            "required": [
+              "kind",
+              "method"
+            ],
+            "properties": {
+              "kind": {
+                "const": "http"
+              },
+              "method": {
+                "enum": [
+                  "POST",
+                  "PUT",
+                  "PATCH"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "effect": {
+            "enum": [
+              "write",
+              "destructive"
+            ]
+          }
+        }
+      }
     }
   ]
 }
