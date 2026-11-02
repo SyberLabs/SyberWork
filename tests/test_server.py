@@ -146,6 +146,35 @@ class Metrics(ServiceCase):
             "effects_pending": 0, "effects_settled_applied_total": 1, "effects_settled_not_applied_total": 0, "queue_depth": 0})
 
 
+class Principals(ServiceCase):
+    def test_two_principals_with_one_display_name_are_two_actors(self):
+        """hunt-fixes-1, INT-3: on dc69499491 the server passed ``user["name"]`` as the actor, so two principals named
+        ``bot`` were one actor to the kernel: the second could commit the first's proposal (``commit`` compares
+        actors) and could not give an independent approval. The actor is the principal id now (``actor_of``);
+        ``/api/me`` keeps the display name."""
+        self.service.install()
+        for number in ("1", "2"):
+            self.service.work.register_principal(f"bot-{number}", "agent", "bot", "acme", ["operator"],
+                                                 token=f"bot-token-{number}")
+        status, _, me = self.service.call("/api/me", token="bot-token-2")
+        self.assertEqual((status, me["name"], me["principal_id"]), (200, "bot", "bot-2"))
+        status, _, created = self.service.call("/api/cases", {"contract_id": "note", "version": 1, "inputs": {"name": "n"}},
+                                               token="bot-token-1")
+        self.assertEqual(status, 200, created)
+        case = created["id"]
+        status, _, proposed = self.service.call(f"/api/cases/{case}/proposals", {"action": "note", "args": {}},
+                                                token="bot-token-1")
+        self.assertEqual((status, proposed["decision"]["status"]), (200, "allowed"), proposed)
+        self.assertEqual(proposed["proposal"]["actor"], "bot-1", "the recorded actor is the principal id, not the name")
+        proposal = proposed["proposal"]["id"]
+        status, _, refused = self.service.call(f"/api/cases/{case}/commit", {"proposal_id": proposal}, token="bot-token-2")
+        self.assertEqual((status, refused["error"]), (409, "actor_mismatch"), refused)
+        status, _, committed = self.service.call(f"/api/cases/{case}/commit", {"proposal_id": proposal}, token="bot-token-1")
+        self.assertEqual((status, committed["status"]), (200, "succeeded"), committed)
+        actors = {e["body"]["actor"] for e in self.service.work.inspect(case)["events"] if "actor" in e["body"]}
+        self.assertEqual(actors, {"bot-1"}, "no event records the display name as its actor")
+
+
 class WorkerMetrics(ServiceCase):
     effects = "worker"
 
