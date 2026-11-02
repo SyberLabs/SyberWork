@@ -107,8 +107,11 @@ class SpaceTests(unittest.TestCase):
         self.assertEqual(report["unmapped"], [])
         self.assertEqual(report["max_drift"], 0.0)
         observed = {(e["from"], e["to"]) for e in graph["depends_on"]}
-        self.assertIn(("syberwork", "syberlabs"), observed)
-        self.assertNotIn(("syberlabs", "syberwork"), observed)
+        self.assertIn(("syberwork", "syberlabs-admission"), observed)
+        self.assertFalse([e for e in observed if e[0].startswith("syberlabs") and e[1] == "syberwork"],
+                         "nothing in syberlabs depends on syberwork")
+        self.assertGreaterEqual(len(graph["components"]), 11)
+        self.assertNotIn(("syberlabs-primitives", "syberlabs-admission"), observed, "primitives stay at the bottom")
 
     def test_diff_between_revisions(self):
         before = indexed()

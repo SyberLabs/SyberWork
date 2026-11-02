@@ -119,4 +119,5 @@ A coordination record is not a case event. A displayed comment, diversity score,
 | Component-level structural diff (refactors pass) with function level recorded beside it | Implemented and tested | `harness.project`, `attest.trace_diff`, `test_a_refactor_inside_a_component_is_not_a_change_at_component_level` |
 | Io observation (subprocess, socket) with masked keys; a weakened compare-and-swap in `gitspace.py` caught on this repository's own Build Thread example | Implemented and tested; one measured run per candidate | `harness.OBSERVERS`, `harness.mask`, `tests/test_factory.py::SelfHosting`, the table in [docs/FACTORY.md](FACTORY.md) |
 | Tests as evidence inside the attestation (`--tests-argv`, gate requires green); promoted specs open tickets (`spec promote --tickets`) | Implemented and tested | `syberlabs/factory/cli.py`, `tests/test_factory.py` |
-| Multi-model spec variants; feature maps; a finer declaration for this repository | Proposed (v1) | [docs/FACTORY.md](FACTORY.md) |
+| Eleven-component declaration of this repository with zero drift; component-level resolution 78 to 1,075 transitions on the golden run | Implemented, one measured run | `docs/architecture.declared.json`, `test_repository_layering_has_no_drift` |
+| Multi-model spec variants; feature maps | Proposed (v1) | [docs/FACTORY.md](FACTORY.md) |

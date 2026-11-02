@@ -144,6 +144,14 @@ The third row is the honest limit: a gate sees what the recorded program exercis
 fourth is the point: an invariant from `AGENTS.md` (acceptance is a compare-and-swap) is caught from the
 outside, with no edit to the code under test. `tests/test_factory.py::SelfHosting` pins both.
 
+`docs/architecture.declared.json` now declares eleven components (inside `syberlabs`: primitives, signing,
+admission, git, build-thread, agents, cli, builder; plus eval, factory and the `syberwork` app) and the 37
+edges observed between them, so the base tree has zero drift and any new cross-component import is a
+refusal. One declared edge is known debt: `admission -> build-thread`, because `critic.parse` reads
+`providers.model_usage`. The finer declaration raised the component-level projection of the golden run from
+78 transitions over 2 components to 1,075 over 7; the four candidates above keep their verdicts, which says
+the third row is a coverage limit of the recorded program, not a resolution limit of the diff.
+
 On this repository the check runs the host's factory, never the candidate's: the published argv carries
 `-P` so the worktree is not on `sys.path`, and the child loads the host's harness by file under a private
 module name before the program under test imports its own `syberlabs`. A candidate therefore cannot edit the
@@ -230,7 +238,7 @@ component nothing called at a revision has no cells there, and that absence is i
 
 v1 closes the rest of the loop: three providers propose variants from one parent spec and one reviews; this
 repository's own contract names `factory check` (the bootstrap command exists, the contract lives in the
-operator's `.syberlabs/`, which is not tracked); a finer `docs/architecture.declared.json` so the component
-level sees more; and feature maps once the ledger has volume. The open decision upstream of all of it is
+operator's `.syberlabs/`, which is not tracked); a second recorded program for the self-check (one that exercises
+`Thread.check` more than once, so the third row flips); and feature maps once the ledger has volume. The open decision upstream of all of it is
 whether a host-run trace diff over a declared footprint counts as independent review for MasterMind's auto
 class; if it does, the loop closes without changing who promotes.
