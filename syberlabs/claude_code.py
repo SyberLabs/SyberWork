@@ -2,8 +2,8 @@
 
     syberlabs propose --claude-code --trusted-tree                      # the operator's login (subscription_local)
     syberlabs propose --claude-code --bare                              # an API key in the environment (api)
-    syberlabs propose --claude-code --bare --mcp-config githits.json    # the same, with one more MCP server
     syberlabs propose --claude-code --lane api-hooked --trusted-tree    # an API key, without --bare: hooks run
+    syberlabs propose --claude-code --lane api-hooked --trusted-tree --mcp-config githits.json   # one more MCP server
     syberlabs propose --claude-code --lane api-hooked --trusted-tree --githits   # the same, with the GitHits launcher
 
 ``ClaudeCodeProvider`` is ``providers.RepairProvider`` with one call replaced: instead of a JSON adapter, each call
@@ -78,6 +78,14 @@ operator allows it by name. When ``--mcp-config`` names any MCP server, an allow
 is built (``invalid_provider``): a shell beside a server that already holds the key leaves the MAC nothing to
 prove. ``allow_code_tools_with_mcp`` (``--allow-code-tools-with-mcp``) overrides, and is recorded as
 ``signal.guard.allow_code_tools_with_mcp``.
+
+Unscreened lookups. Under ``--bare`` no ``--settings`` hook runs (``BARE_HOOKS``), so no lookup is screened before
+it leaves: a ``WebSearch`` or ``WebFetch`` call, or a call to a server ``--mcp-config`` names (``mcp__githits__*``),
+is sent and flagged ``unguarded`` only afterwards. A ``--bare`` provider whose allowed tools include ``WebSearch`` or
+``WebFetch`` (``web_tools``), or whose ``--mcp-config`` names an MCP server (``names_mcp_server``), is therefore
+refused when it is built (``invalid_provider``), pointing to ``--lane api-hooked``, where the hook runs.
+``allow_unscreened_bare`` (``--allow-unscreened-bare``) overrides, and is recorded as
+``signal.guard.allow_unscreened_bare``.
 
 Credential lanes (bring your own credential: SyberLabs never stores, pools or forwards a credential; the operator's
 own Claude Code runs under their own login, or with their API key). ``api`` (``--bare``, the default
@@ -271,6 +279,13 @@ def code_tools(tools: Sequence[str]) -> list[str]:
     return [name for name in built_in_tools(tools) if name.lower() in named]
 
 
+def web_tools(tools: Sequence[str]) -> list[str]:
+    """The web lookup tools (``WEB_TOOLS``: ``WebSearch``, ``WebFetch`` and the server tools' names) among
+    ``--allowedTools`` entries, a specifier dropped, compared ignoring case."""
+    named = {name.lower() for name in WEB_TOOLS}
+    return [name for name in built_in_tools(tools) if name.lower() in named]
+
+
 def names_mcp_server(path: Path) -> bool:
     """False only for a JSON object whose ``mcpServers`` is absent or an empty object; a file that cannot be read
     or parsed, or any other shape, counts as naming a server (fail closed)."""
@@ -311,7 +326,12 @@ def githits_skill() -> tuple[str, str]:
 
 def launcher_text(python: str, entry: Path) -> str:
     """The launcher: a POSIX shell script (Claude Code's Bash tool runs bash, Git Bash on Windows) that replaces
-    itself with the host's Python running the host checkout's entry under ``-I``, with the call's arguments."""
+    itself with the host's Python running the host checkout's entry under ``-I``, with the call's arguments. It
+    first turns off Git Bash's (MSYS2's) argument conversion: handing a word that starts with ``/`` to a Windows
+    program, MSYS2 rewrites it as a Windows path (``/api/v1`` becomes ``C:/Program Files/Git/api/v1``), so the
+    launcher's argv would differ from the words the query guard's hook digested, and an honest lookup would be
+    refused. ``MSYS_NO_PATHCONV`` (Git for Windows) and ``MSYS2_ARG_CONV_EXCL='*'`` (MSYS2) both mean "convert
+    nothing"; any other shell ignores them."""
     def quoted(path) -> str:
         text = Path(path).as_posix()
         if "'" in text or "\n" in text:
@@ -319,6 +339,8 @@ def launcher_text(python: str, entry: Path) -> str:
         return "'" + text + "'"
     return ("#!/bin/sh\n# SyberLabs GitHits launcher for one Claude Code call: written by the host, read-only, removed "
             "after the call.\n# It runs the host checkout's GitHits client, never the candidate worktree's.\n"
+            "# Git Bash would rewrite an argument starting with / for a Windows program; pass every word as typed.\n"
+            "export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'\n"
             f"exec {quoted(python)} -I {quoted(entry)} \"$@\"\n")
 
 
@@ -653,7 +675,7 @@ class ClaudeCodeProvider(RepairProvider):
                  name: str = "claude-code", revision: str = "1", timeout: int = 1800, max_calls: int | None = None,
                  guard_max_lines: int | None = None, guard_max_chars: int | None = None,
                  allow_code_tools_with_mcp: bool = False, githits: bool = False, arm: str = "b",
-                 thread_label: str | None = None):
+                 thread_label: str | None = None, allow_unscreened_bare: bool = False):
         lane = lane or ("api" if bare else "subscription_local")
         if lane not in LANES:
             raise Rejected("invalid_provider", "lane must be one of " + ", ".join(LANES))
@@ -727,6 +749,16 @@ class ClaudeCodeProvider(RepairProvider):
                                "inherits (the MCP server holds it already), and a code-running tool can read it and "
                                "sign a forged decision. Drop the tool, or pass --allow-code-tools-with-mcp to "
                                "accept that (recorded in signal.guard)")
+        if bare and not allow_unscreened_bare:
+            unscreened = web_tools(tools) + (["--mcp-config naming an MCP server"]
+                                             if mcp_config is not None and names_mcp_server(mcp_config) else [])
+            if unscreened:
+                raise Rejected("invalid_provider",
+                               f"refusing {', '.join(unscreened)} with --bare: {BARE_HOOKS}. Under --bare the query "
+                               "guard screens no lookup before it leaves; it is flagged unguarded only afterwards. "
+                               f"Run these lookups where the guard's hook runs: --lane {HOOKED} --trusted-tree (the "
+                               "API key), or a login lane. Or pass --allow-unscreened-bare to accept unscreened "
+                               "lookups (recorded in signal.guard)")
         try:
             guard = query_guard.policy(guard_max_lines, guard_max_chars)
         except ValueError as exc:
@@ -738,6 +770,7 @@ class ClaudeCodeProvider(RepairProvider):
         self.mcp_config, self.allowed_tools, self.max_turns = mcp_config, tools, max_turns
         self.guard = guard  # host policy: {version, max_lines, max_chars}
         self.allow_code_tools_with_mcp = bool(allow_code_tools_with_mcp)  # the operator's override, on the signal
+        self.allow_unscreened_bare = bool(allow_unscreened_bare)  # the operator's override, on the signal
         self.lookups: list[dict] = []  # every lookup of every call, as recorded (digests, never query text)
         self.version = self._installed_version()
 
@@ -830,7 +863,8 @@ class ClaudeCodeProvider(RepairProvider):
         (fresh per call), the host's example pacing directory (``SYBERLABS_GITHITS_PACE_DIR``: the operator's,
         else the host's temporary-directory default, resolved here, so a launcher whose ``TMPDIR`` or home differs
         still shares one pacing slot), the session and agent headers, and the license and exclusion policy as
-        explicit lists (the operator's, else the defaults; ``SYBERLABS_GITHITS_EXCLUDE`` only adds to ``SyberLabs``).
+        explicit lists (the operator's, else the defaults; ``SYBERLABS_GITHITS_EXCLUDE`` adds to the default
+        deny-list, ``githits.DEFAULT_EXCLUDE``, and never replaces it here).
         The token is the operator's own ``GITHITS_API_TOKEN``, inherited, never written."""
         licenses = githits_client.LicensePolicy.from_env(os.environ)
         exclude = githits_client.Exclusions.from_env(
@@ -984,7 +1018,8 @@ class ClaudeCodeProvider(RepairProvider):
         signal = {"lane": self.lane, "cost_basis": self.cost_basis,
                   "harness": {**transcript.harness(), "installed_version": self.version, "lane": self.lane},
                   "guard": {**self.guard, "policy_digest": hook_env[query_guard.POLICY_DIGEST_ENV],
-                            **({"allow_code_tools_with_mcp": True} if self.allow_code_tools_with_mcp else {})}}
+                            **({"allow_code_tools_with_mcp": True} if self.allow_code_tools_with_mcp else {}),
+                            **({"allow_unscreened_bare": True} if self.allow_unscreened_bare else {})}}
         if githits_signal is not None:
             signal["harness"]["skill"] = {"path": SKILL_NAME, "sha256": self.skill[1]}
             signal["githits"] = githits_signal

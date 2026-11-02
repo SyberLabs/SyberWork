@@ -130,10 +130,12 @@ class CrossProcess(FakeCase):
         self.assertGreaterEqual(held_second, 1000, "the second was held, its lock wait included")
 
     def test_two_concurrent_launcher_examples_are_spaced_recorded_and_other_ops_unpaced(self):
-        arrivals = []
+        arrivals, slots = [], []
+        stamp_file = Path(self.pace.name) / "pace" / githits_pace.STAMP_FILE
 
         def example(request):
             arrivals.append(time.time())
+            slots.append(githits_pace._last(stamp_file))  # the slot the arriving request took (the latest stamp)
             body = {"result": "No suitable example was found.\n", "search_status": "complete",
                     "solution_id": "12345678-1234-4234-8234-123456789abc"}
             return 200, {"Content-Type": "application/json", "X-Request-ID": f"req-ex{len(arrivals)}"}, \
@@ -153,9 +155,17 @@ class CrossProcess(FakeCase):
                 _, err = process.communicate(timeout=120)
                 self.assertEqual(process.returncode, 0, err.decode("utf-8", "replace"))
         self.assertEqual(len(arrivals), 2)
-        # Each slot is stamped just before its request leaves, so arrivals sit a whole interval apart less the first
-        # request's own few milliseconds of transit.
-        self.assertGreaterEqual(abs(arrivals[1] - arrivals[0]), self.INTERVAL - 0.25)
+        # guard-lane-2: what pacing guarantees is the slots, not the arrivals. Each slot is stamped before its request
+        # leaves, and the client's own setup and transit between stamp and arrival vary per process (a slow runner
+        # once saw arrivals 1.56 s apart on a 2 s interval), so the arrivals' spacing is not asserted. Each request
+        # reads, on arrival, the stamp of the slot it took: the second slot cannot be taken until the first is a
+        # whole interval old, so a request can see the other's slot only if its own transit outlasted the interval.
+        self.assertTrue(all(slot is not None for slot in slots), "both examples took a slot in the shared directory")
+        first, second = sorted(slots)
+        self.assertGreaterEqual(second - first, self.INTERVAL, "the second slot is a whole interval after the first")
+        for arrived, slot in zip(arrivals, slots):
+            self.assertGreaterEqual(arrived, slot, "a request leaves only after its slot is stamped")
+        self.assertEqual(githits_pace._last(stamp_file), second, "the last slot taken is the second")
         records = self.records().records
         self.assertEqual([r["op"] for r in records], ["example", "example"])
         held = sorted(r["paced_ms"] for r in records)
