@@ -16,7 +16,11 @@ task_digests, task_set_digest, arm_digests, registered_at, git_commit, git_dirty
 does. A registration is written once: registering the same spec again returns it, and registering a changed spec
 over it is refused (``already_registered``); a changed question is a new eval id. ``registered(spec_path)`` is
 what ``run`` asks first: ``spec_unregistered``, ``spec_modified`` (the spec's digest is not the registered one) and
-``task_modified`` (a task's ``task.json`` or hidden file moved) are refusals, never warnings.
+``task_modified`` (a task's ``task.json`` or hidden file moved) are refusals, never warnings. ``clean_registration``
+is what a real run asks next: a registration whose ``git_dirty`` is not ``false`` or whose ``git_commit`` is not a
+commit id was written from a checkout that differed from its commit (or from no checkout git could read), so its
+digests were computed by code no commit holds, and ``run`` refuses it (``registration_dirty``). ``registered`` itself
+does not ask, so ``score`` and ``report`` still read such an eval's runs.
 
 The schema is JSON Schema (draft 2020-12 vocabulary) held here as a Python value; ``validate`` implements the
 subset it uses (``type``, ``const``, ``enum``, ``properties``, ``required``, ``additionalProperties: false``,
@@ -51,6 +55,7 @@ REGISTRATION_SCHEMA_ID = "syberlabs.eval/registration.v1"
 HARNESS = Path(__file__).resolve().parents[2]  # the SyberWork checkout this package runs from
 NAME = r"^[a-z0-9][a-z0-9_.-]{0,63}$"
 HEX64 = r"^[0-9a-f]{64}$"
+COMMIT = r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"  # a git object id, SHA-1 or SHA-256
 ARM_KINDS = ("single", "repair", "evolve", "evolve_jev", "claude-code")
 HIDDEN_FEEDBACK = ("tails", "status", "none")  # what of a hidden check's result reaches the proposer (module docstring)
 LANES = ("api", "api-hooked", "subscription_local", "seat_team_enterprise", "provider_3p")  # claude_code.LANES
@@ -363,3 +368,13 @@ def registered(spec_path: str | Path) -> tuple[dict, dict]:
     if arm_digests != registration.get("arm_digests"):
         raise Rejected("spec_modified", "an arm's digest differs from its registration")
     return doc, registration
+
+
+def clean_registration(registration: dict) -> dict:
+    """``registration`` when it was written from a clean checkout of a known commit; else ``registration_dirty``."""
+    commit, dirty = registration.get("git_commit"), registration.get("git_dirty")
+    if dirty is not False or not (isinstance(commit, str) and re.fullmatch(COMMIT, commit)):
+        raise Rejected("registration_dirty", f"{registration.get('eval')} was registered on {str(commit)[:10]} with "
+                       f"git_dirty {json.dumps(dirty)}: its digests were computed by code no commit holds. Before any "
+                       "run, delete its registration.json and register it again from a clean checkout")
+    return registration

@@ -409,7 +409,8 @@ class Preflight(Workspace):
         (self.harness / "README").write_text("harness\n", encoding="utf-8")
         git(self.harness, "add", "README")
         git(self.harness, "commit", "-qm", "one")
-        spec.register(self.write_spec(tiny_spec(self.ids, self.digests)))
+        # registered against the clean harness, so the run gate reads a clean registration whatever this checkout is
+        spec.register(self.write_spec(tiny_spec(self.ids, self.digests)), harness=self.harness)
 
     def gate(self):
         with self.assertRaises(Rejected) as caught:
@@ -449,6 +450,24 @@ class Preflight(Workspace):
         (self.root / "tiny" / "runs").mkdir(parents=True)
         (self.root / "tiny" / "runs" / "note.txt").write_text("evals/ is where runs write\n", encoding="utf-8")
         runner.preflight_gate(self.root, "tiny", self.harness)  # untracked files under evals/ are not dirt
+
+    def test_a_registration_written_from_a_dirty_tree_refuses_to_run(self):
+        runner.preflight(self.root, "tiny", harness=self.harness, commands=self.PASS)
+        self.assertEqual(runner.run_eval(self.root, "tiny", harness=self.harness, dry=True)["preflight"], "passed")
+        path = self.root / "tiny" / "registration.json"
+        clean = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIs(spec.clean_registration(clean), clean)
+        for change in ({"git_dirty": True}, {"git_dirty": None}, {"git_commit": None}, {"git_commit": "abc123"}):
+            spec.write_json(path, dict(clean, **change))
+            spec.registered(self.root / "tiny" / "spec.json")  # the digests still hold: only the origin is refused
+            with self.assertRaises(Rejected) as caught:
+                runner.run_eval(self.root, "tiny", harness=self.harness, only="v1-pricing,single,1")
+            self.assertEqual(caught.exception.code, "registration_dirty", change)
+            self.assertFalse((self.root / "tiny" / "runs").exists(), "nothing ran")
+            dry = runner.run_eval(self.root, "tiny", harness=self.harness, dry=True)
+            self.assertEqual((dry["preflight"], len(dry["runs"])), ("registration_dirty", 8), change)
+        self.assertEqual(len(runner.run_eval(self.root, "tiny", require_preflight=False, dry=True)["runs"]), 8,
+                         "a run told no gate applies does not ask")
 
     def test_the_default_preflight_names_the_four_suites(self):
         argv = {name: " ".join(argv) for name, argv in runner.PREFLIGHT}
@@ -509,10 +528,13 @@ class Terminal(unittest.TestCase):
         self.assertEqual(found["set_digest"], doc["tasks"]["set_digest"])
         with tempfile.TemporaryDirectory() as folder:  # the committed registration, on a copy: nothing written here
             evals = Path(folder) / "evals"
-            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns("runs", "spend.jsonl", "index.json"))
+            artifacts = ("runs", "spend.jsonl", "index.json", "preflight.json", "report*")  # as the score test
+            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns(*artifacts))
             code, out = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry", "--json")
             found = json.loads(out)
             self.assertEqual((code, found["planned"], found["dry"]), (0, 48, True))
+            # a local preflight.json is not copied, and the committed registration passes the clean-origin check
+            self.assertEqual(found["preflight"], "preflight_missing")
             self.assertEqual([row["order_index"] for row in found["runs"]], list(range(48)))
             self.assertEqual([row["run_id"] for row in found["runs"]], [p.run_id for p in runner.plan(doc)])
             code, _ = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry", "--only",
