@@ -1,7 +1,16 @@
 /** Types for the S0 Decision Port, sdk.syberlabs.space/v1alpha1. See decision.js. */
 
 export declare const PROTOCOL: 'sdk.syberlabs.space/v1alpha1';
-export declare const MAX_RESPONSE_BYTES: number;
+/** UTF-16 code units of the decoded body, as RISE counts them; not bytes. */
+export declare const MAX_RESPONSE_CHARS: number;
+
+/** Relax only to keep a product's current behavior while MasterMind ASK-011 is open. */
+export interface Compat {
+  errorField?: 'refuse' | 'ignore';
+  kevProviderLabel?: 'strict' | 'any';
+  maxResponseChars?: number;
+}
+export declare const STRICT: Readonly<Required<Compat>>;
 export declare const MAX_OPTIONS: number;
 export declare const MAX_DEADLINE_MS: number;
 
@@ -46,9 +55,13 @@ export interface Transport {
   request(init: RequestInit): Promise<Response>;
 }
 
+export type DecisionPhase = 'request' | 'response' | 'admission';
+
 export declare class DecisionError extends Error {
-  constructor(code: DecisionCode, message?: string);
+  constructor(code: DecisionCode, message?: string, phase?: DecisionPhase);
   readonly code: DecisionCode;
+  /** request: before or while the transport answered; response: reading or checking the body. */
+  readonly phase: DecisionPhase;
 }
 
 export declare class DecisionCallError extends TypeError {
@@ -58,8 +71,8 @@ export declare class DecisionCallError extends TypeError {
 
 export declare function validateCall(call: unknown): DecisionCall;
 export declare function attestedResponse(response: Response, provider: Provider): boolean;
-export declare function acceptedResult(value: unknown, provider: Provider): boolean;
-export declare function callDecision(transport: Transport, call: DecisionCall, options?: { signal?: AbortSignal }): Promise<{ model: string; answers: Record<string, unknown>; [key: string]: unknown }>;
+export declare function acceptedResult(value: unknown, provider: Provider, compat?: Compat): boolean;
+export declare function callDecision(transport: Transport, call: DecisionCall, options?: { signal?: AbortSignal; compat?: Compat }): Promise<{ model: string; answers: Record<string, unknown>; [key: string]: unknown }>;
 export declare function admitMenu(call: DecisionCall, value: { answers: Record<string, unknown> }): { ok: true; answers: Record<string, Answer> } | { ok: false; code: 'OUT_OF_MENU' | 'INVALID_RESPONSE' };
 export declare function canonical(value: unknown): string;
 export declare function requestDigest(request: DecisionCall['request']): Promise<string>;

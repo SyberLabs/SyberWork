@@ -10,10 +10,15 @@
       "default": "./src/decision.js"
     }
   },
-  "files": ["src"],
-  "engines": {"node": ">=20"},
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test test/decision.test.js",
-    "parity": "node --experimental-strip-types --test parity/parity.test.mjs"
+    "parity": "node --experimental-strip-types --import ./parity/register.mjs --test parity/parity.test.mjs",
+    "typecheck": "npx -y -p typescript@5 tsc --noEmit --strict --skipLibCheck --lib es2022,dom src/decision.d.ts"
   }
 }

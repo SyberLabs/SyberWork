@@ -2,8 +2,8 @@
 
 Runs the client's own Node test suite, then checks across languages that every DecisionOutcome
 the client emits validates against spec/v1/decision-outcome.schema.json and that its request
-digest equals SHA-256 over this repository's canonical JSON. Skips when Node 20+ is not on PATH;
-CI's Linux and Windows images have it.
+digest equals SHA-256 over this repository's canonical JSON. Skips when node is not on PATH
+(the reason G8 allows); CI's Linux and Windows images have it.
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ def node_major() -> int:
         return 0
 
 
-@unittest.skipUnless(node_major() >= 20, "Node 20 or newer is not on PATH")
+# The skip reason is one scripts/g8_existing_suite.py allows. A Node older than 20 is not skipped: the tests run and fail.
+@unittest.skipUnless(NODE, "node is not installed")
 class DecisionPortClientTests(unittest.TestCase):
     def run_node(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run([NODE, *args], cwd=PACKAGE, capture_output=True, text=True, encoding="utf-8", timeout=300, check=False)

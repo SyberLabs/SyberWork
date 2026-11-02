@@ -16,6 +16,13 @@ function tsFile(base) {
 }
 
 export async function resolve(specifier, context, next) {
+  // A RISE module imported with ?shared gets the shared-backed call.js, and passes ?shared on to
+  // its own relative imports so the whole feature runs against the consumer packet.
+  if (context.parentURL?.includes('?shared')) {
+    if (/(^|\/)call\.js$/u.test(specifier) && (specifier.startsWith('./') || specifier.startsWith('../'))) {
+      return { url: new URL('rise-call-shared.mjs', STUBS).href, shortCircuit: true };
+    }
+  }
   if (specifier === 'next/server') return { url: new URL('next-server.mjs', STUBS).href, shortCircuit: true };
   if (specifier === 'server-only') return { url: new URL('empty.mjs', STUBS).href, shortCircuit: true };
   if (specifier.startsWith('@/') && FLYSPACE) {

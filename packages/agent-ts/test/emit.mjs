@@ -17,4 +17,8 @@ const digests = [];
 for (const { name, instance } of fixtures.valid) {
   digests.push({ name, request: instance.request, digest: await requestDigest(instance.request) });
 }
+// Cases the fixtures do not cover: non-integral floats, keys outside the Basic Multilingual Plane,
+// nested arrays. Integral floats (1.0) are the one known difference: JavaScript writes 1.
+const edge = { model: 'kev-latest', state: { p: 0.5, big: 123456789, neg: -2.25, '\u{1F600}': 'smile', '�': 'replacement', list: [[1, 'é'], { z: null, a: false }] }, questions: { q: { type: 'noul' } } };
+digests.push({ name: 'floats, astral keys, nesting', request: edge, digest: await requestDigest(edge) });
 process.stdout.write(JSON.stringify({ outcomes, digests }));

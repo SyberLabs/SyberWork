@@ -24,18 +24,37 @@ export const DECISION_CODES = Object.freeze([
   'UPSTREAM', 'UNREACHABLE', 'UNATTESTED', 'INVALID_RESPONSE', 'OUT_OF_MENU'
 ]);
 
-export const MAX_RESPONSE_BYTES = 256 * 1024;
+/**
+ * Response size cap, counted in UTF-16 code units of the decoded body, exactly as RISE call.js
+ * counts it (text.length). It is not a byte count: 256K units of CJK text is about 768 KB.
+ */
+export const MAX_RESPONSE_CHARS = 256 * 1024;
+
+/**
+ * The strict defaults are S0's rules and RISE's current behavior. A consumer may relax one only to
+ * keep its own product's current behavior while MasterMind ASK-011 decides whether to tighten it.
+ * - errorField 'ignore': accept a body that carries an error field beside valid answers (Flyspace).
+ * - kevProviderLabel 'any': accept a Kev answer whatever its provider field says (Flyspace persona).
+ * - maxResponseChars: Infinity reads a response of any size (Flyspace).
+ */
+export const STRICT = Object.freeze({ errorField: 'refuse', kevProviderLabel: 'strict', maxResponseChars: MAX_RESPONSE_CHARS });
 export const MAX_OPTIONS = 255;
 export const MAX_DEADLINE_MS = 60000;
 const CONNECTIONS = new Set(['reader_owned', 'server_held', 'local']);
 const KEV_REVISION = /^[0-9a-f]{40}$/u;
 
-/** A call outcome that is not an answer. `code` is one of DECISION_CODES. */
+/**
+ * A call outcome that is not an answer. `code` is one of DECISION_CODES. `phase` says where it
+ * happened: 'request' (before or while the transport answered), 'response' (reading or checking
+ * the body), or 'admission' (answers against the menu). A product that reports the two differently
+ * (Flyspace registryIntent: a failed body read is upstream_shape) can keep doing so.
+ */
 export class DecisionError extends Error {
-  constructor(code, message = code) {
+  constructor(code, message = code, phase = 'request') {
     super(message);
     this.name = 'DecisionError';
     this.code = code;
+    this.phase = phase;
   }
 }
 
@@ -49,6 +68,19 @@ export class DecisionCallError extends TypeError {
 }
 
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const QUESTION_KEYS = new Map([['noul', ['type', 'instructions', 'criteria']], ['choice', ['type', 'instructions', 'criteria']], ['score', ['type', 'instructions', 'criteria']]]);
+
+/** True for values JSON round-trips unchanged: no undefined, functions, symbols, bigints or non-finite numbers. */
+function isJson(value, depth = 0) {
+  if (depth > 64) return false;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(item => isJson(item, depth + 1));
+  if (isRecord(value) && Object.getPrototypeOf(value) === Object.prototype || isRecord(value) && Object.getPrototypeOf(value) === null) {
+    return Object.values(value).every(item => isJson(item, depth + 1));
+  }
+  return false;
+}
 
 /**
  * Check a DecisionCall against S0: the schema's rules and the counts check.py adds.
@@ -75,6 +107,7 @@ export function validateCall(call) {
     throw new DecisionCallError('$.request.questions', 'at least one question');
   }
   for (const [name, question] of Object.entries(request.questions)) validateQuestion(question, `$.request.questions.${name}`);
+  if (!isJson(request)) throw new DecisionCallError('$.request', 'only JSON values (no undefined, functions or non-finite numbers)');
   return call;
 }
 
@@ -85,14 +118,17 @@ function validateProvider(provider, path) {
   }
   if (!['Kev', 'TypeSafe', 'rules'].includes(provider.name)) throw new DecisionCallError(`${path}.name`, 'not a known provider');
   if (typeof provider.model !== 'string' || !provider.model) throw new DecisionCallError(`${path}.model`, 'a nonempty string');
-  if (provider.name === 'Kev' && !KEV_REVISION.test(provider.revision ?? '')) {
+  if (provider.revision !== undefined && (typeof provider.revision !== 'string' || !provider.revision)) {
+    throw new DecisionCallError(`${path}.revision`, 'a nonempty string');
+  }
+  if (provider.name === 'Kev' && !(typeof provider.revision === 'string' && KEV_REVISION.test(provider.revision))) {
     throw new DecisionCallError(`${path}.revision`, 'Kev needs a pinned 40-hex revision');
   }
 }
 
 function validateQuestion(question, path) {
   if (!isRecord(question)) throw new DecisionCallError(path, 'expected object');
-  const allowed = { noul: ['type', 'instructions', 'criteria'], choice: ['type', 'instructions', 'criteria'], score: ['type', 'instructions', 'criteria'] }[question.type];
+  const allowed = typeof question.type === 'string' ? QUESTION_KEYS.get(question.type) : undefined;
   if (!allowed) throw new DecisionCallError(`${path}.type`, 'noul, choice or score');
   for (const key of Object.keys(question)) {
     if (!allowed.includes(key)) throw new DecisionCallError(path, `unexpected property ${key}`);
@@ -129,10 +165,13 @@ export function attestedResponse(response, provider) {
  * - TypeSafe direct (model jev-latest): a resolved jev-X.Y[.Z] build (Flyspace registryIntent).
  * - rules: exactly the pinned model.
  */
-export function acceptedResult(value, provider) {
-  if (!isRecord(value) || value.error) return false;
+export function acceptedResult(value, provider, compat = STRICT) {
+  if (!isRecord(value)) return false;
+  if (value.error && compat.errorField !== 'ignore') return false;
   if (!isRecord(value.answers)) return false;
-  if (provider.name === 'Kev') return value.model === provider.model && (value.provider === undefined || value.provider === 'Kev');
+  if (provider.name === 'Kev') {
+    return value.model === provider.model && (compat.kevProviderLabel === 'any' || value.provider === undefined || value.provider === 'Kev');
+  }
   if (provider.name === 'rules') return value.model === provider.model;
   if (typeof value.model !== 'string') return false;
   if (provider.model === 'jev-latest') return /^jev-\d+\.\d+(\.\d+)?$/u.test(value.model);
@@ -147,15 +186,15 @@ function statusCode(status) {
   return 'UPSTREAM';
 }
 
-async function readBounded(response) {
+async function readBounded(response, limit) {
   const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) throw new DecisionError('INVALID_RESPONSE');
+  if (Number.isFinite(declared) && declared > limit) throw new DecisionError('INVALID_RESPONSE', undefined, 'response');
   const text = await response.text();
-  if (text.length > MAX_RESPONSE_BYTES) throw new DecisionError('INVALID_RESPONSE');
+  if (text.length > limit) throw new DecisionError('INVALID_RESPONSE', undefined, 'response');
   try {
     return JSON.parse(text);
   } catch {
-    throw new DecisionError('INVALID_RESPONSE');
+    throw new DecisionError('INVALID_RESPONSE', undefined, 'response');
   }
 }
 
@@ -168,8 +207,10 @@ const discard = response => { void response.body?.cancel?.().catch?.(() => {}); 
  *
  * @param transport {{ request: (init: RequestInit) => Promise<Response> }} owned by the host
  * @param call an S0 DecisionCall
+ * @param options.compat see STRICT; relax only to keep a product's current behavior
  */
-export async function callDecision(transport, call, { signal } = {}) {
+export async function callDecision(transport, call, { signal, compat = STRICT } = {}) {
+  compat = { ...STRICT, ...compat };
   validateCall(call);
   if (typeof transport?.request !== 'function') throw new DecisionError('NOT_CONNECTED');
   if (signal?.aborted) throw new DecisionError('CANCELED');
@@ -201,26 +242,30 @@ export async function callDecision(transport, call, { signal } = {}) {
   }
   let value;
   try {
-    value = await readBounded(response);
+    value = await readBounded(response, compat.maxResponseChars);
   } catch (cause) {
     if (cause instanceof DecisionError) throw cause;
-    if (deadline.aborted) throw new DecisionError('TIMEOUT');
-    if (signal?.aborted) throw new DecisionError('CANCELED');
-    throw new DecisionError('INVALID_RESPONSE');
+    if (deadline.aborted) throw new DecisionError('TIMEOUT', undefined, 'response');
+    if (signal?.aborted) throw new DecisionError('CANCELED', undefined, 'response');
+    throw new DecisionError('INVALID_RESPONSE', undefined, 'response');
   }
-  if (!acceptedResult(value, call.provider)) throw new DecisionError('INVALID_RESPONSE');
+  if (!acceptedResult(value, call.provider, compat)) throw new DecisionError('INVALID_RESPONSE', undefined, 'response');
   return value;
 }
 
 /**
- * Admit answers against the menu the host offered. Every answer must name an asked question
- * and have that question's type; a choice must be an offered option (else OUT_OF_MENU); a noul
- * carries noul, p(yes), in [0, 1]. Completeness (every question answered) is the product's rule.
+ * Admit answers against the menu the host offered, for an S0 DecisionOutcome. At least one answer;
+ * every answer names an asked question and has that question's type; a choice is an offered
+ * option (else OUT_OF_MENU); a noul carries noul, p(yes), in [0, 1]. Stricter than today's
+ * products, which ignore answers to questions they did not ask: a product consumer keeps its own
+ * answer checks and does not call this. Completeness (every question answered) is the product's rule.
  */
 export function admitMenu(call, value) {
   const questions = call.request.questions;
   const answers = {};
-  for (const [name, answer] of Object.entries(value.answers)) {
+  const entries = Object.entries(value.answers);
+  if (entries.length === 0) return { ok: false, code: 'INVALID_RESPONSE' };
+  for (const [name, answer] of entries) {
     const question = Object.hasOwn(questions, name) ? questions[name] : null;
     if (!question) return { ok: false, code: 'OUT_OF_MENU' };
     if (!isRecord(answer) || answer.type !== question.type) return { ok: false, code: 'INVALID_RESPONSE' };
@@ -229,16 +274,32 @@ export function admitMenu(call, value) {
     } else if (question.type === 'noul') {
       if (typeof answer.noul !== 'number' || !Number.isFinite(answer.noul) || answer.noul < 0 || answer.noul > 1) return { ok: false, code: 'INVALID_RESPONSE' };
     }
-    answers[name] = answer;
+    // defineProperty, not assignment: an answer named __proto__ must be kept, not set as a prototype.
+    Object.defineProperty(answers, name, { value: answer, enumerable: true, writable: true, configurable: true });
   }
   return { ok: true, answers };
 }
 
-/** Canonical JSON as the v0alpha1 protocol defines it: sorted keys, compact, non-ASCII preserved. */
+/** Compare strings by Unicode code point, as Python sorts str keys (JS sort uses UTF-16 units). */
+function byCodePoint(a, b) {
+  const x = [...a];
+  const y = [...b];
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const d = x[i].codePointAt(0) - y[i].codePointAt(0);
+    if (d !== 0) return d;
+  }
+  return x.length - y.length;
+}
+
+/**
+ * Canonical JSON as the v0alpha1 protocol defines it: keys sorted by code point, compact
+ * separators, non-ASCII preserved. Matches syberlabs.canonical for JSON values except integral
+ * floats: Python writes 1.0 where JavaScript, which has one number type, writes 1.
+ */
 export function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (isRecord(value)) {
-    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+    return `{${Object.keys(value).sort(byCodePoint).map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
 }
@@ -251,7 +312,9 @@ export async function requestDigest(request) {
 
 /**
  * One call, admitted against the menu, recorded as an S0 DecisionOutcome. Never throws for a
- * provider outcome; throws DecisionCallError for a call that breaks S0.
+ * provider outcome; throws DecisionCallError for a call that breaks S0. Always strict: compat
+ * options exist for product consumers of callDecision, not for S0 records. Needs Web Crypto
+ * (crypto.subtle), which browsers expose only in secure contexts.
  */
 export async function decide(transport, call, { signal, now = () => Date.now() } = {}) {
   validateCall(call);
