@@ -276,7 +276,7 @@ def repair_feedback(space: SearchSpace, candidate: str) -> dict | None:
     """The host's evaluation of ``candidate`` and its current file texts as a search request's ``feedback``, or None.
 
     ``{"candidate": id, "files": {path: text}, "checks": [{name, state, exit_code, duration_ms, output_tail}, ...]}``:
-    the object the repair arm of ``benchmarks/model_vs_patch.py`` (``Patches.search``) puts on its next request after
+    the object a repair loop puts on its next request after
     a failed attempt and ``adapters/anthropic_adapter.py: build_prompt`` reads under the search protocol. ``checks``
     is ``syberlabs.evolve.mutation_feedback``'s: the check results exactly as the host recorded them in
     ``candidate_evaluated``. ``files`` is the text of every path the candidate changed against the base, read from the
@@ -299,7 +299,7 @@ def repair_feedback(space: SearchSpace, candidate: str) -> dict | None:
 class RepairProvider:
     """One proposal, then repairs directed by the host's check results, until one passes or the budget stops it.
 
-    The repair loop of ``benchmarks/model_vs_patch.py`` (``Patches.search``) as a kernel provider, and the factory's
+    A repair loop as a kernel provider, and the factory's
     default proposer path since the owner's decision of 2026-10-23 (E3 v3 and v4, Claude Sonnet 5.5, K = 6 and 12:
     it beat every evolve arm on solves and on parts per dollar at every budget tested, and ``single`` on solves).
 

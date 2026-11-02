@@ -266,7 +266,7 @@ class GitSearchSpace:
         # search; ``_pending`` the part not yet attributed to a candidate; ``dollars`` the priced part that
         # is. ``prior_dollars`` is what the thread's earlier searches cost. All measured here, none declared.
         budget_config = thread.config["budget"]
-        self.prices, self.max_dollars, self.strict = budget_config["prices"], budget_config["max_dollars"], budget_config["strict"]
+        self.prices, self.max_dollars = budget_config["prices"], budget_config["max_dollars"]
         self.prior_dollars = prior_dollars
         self.observed: list[dict] = []
         self._pending: list[dict] = []

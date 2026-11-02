@@ -323,7 +323,9 @@ class Preflight(Case):
         git(harness, "add", "README")
         git(harness, "commit", "-qm", "one")
         self.root = harness / "evals"
-        self.register(self.canary_spec("gate", self.adapter({"changes": {"src/pricing.py": GOOD}}), seeds=[1, 2]))
+        doc = self.canary_spec("gate", self.adapter({"changes": {"src/pricing.py": GOOD}}), seeds=[1, 2])
+        spec.write_json(self.root / "gate" / "spec.json", doc)
+        spec.register(self.root / "gate" / "spec.json", harness=harness)  # a clean registration: the gate under test
         self.assertTrue(runner.preflight(self.root, "gate", harness=harness, commands=self.PASS)["passed"])
 
         def log(line):
