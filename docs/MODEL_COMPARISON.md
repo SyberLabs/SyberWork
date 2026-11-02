@@ -1,5 +1,7 @@
 # Model-backed search versus a single model patch
 
+> The harness this page describes, `benchmarks/model_vs_patch.py`, and `syberlabs/jev_api.py` were removed as dead code: nothing a deployed service or the `syberlabs` CLI runs reaches them. The recorded results stay in `benchmarks/results/`; the code is at commit `8a5e21f`.
+
 The question: at the same model cost, does searching (independent samples, repair with check feedback, or EvoGit-style evolution) produce an acceptable change more often than one model patch? One pilot against a real model exists (2026-10-21, below) and answers nothing about the arms, because its fixtures were too easy. What exists is the apparatus to answer it honestly, run against a simulated model and once against Claude Sonnet 5.5.
 
 ## What is compared

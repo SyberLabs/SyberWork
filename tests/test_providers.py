@@ -245,7 +245,7 @@ class Repair(RepairCase):
             space.evaluate(first.id)
             seen["after"] = repair_feedback(space, first.id)
             view = space.candidate(first.id)
-            seen["harness"] = {"candidate": first.id,  # Patches.search, benchmarks/model_vs_patch.py
+            seen["harness"] = {"candidate": first.id,  # the repair arm's shape
                                "files": {p: space.read(first.id, p) for p in view.changed_paths if space.read(first.id, p) is not None},
                                "checks": [c.__dict__ for c in view.checks]}
             seen["mutation"] = mutation_feedback(space, first.id)

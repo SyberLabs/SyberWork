@@ -121,7 +121,6 @@ class WorkItemMetrics:
     delivered: Metric
     review_rejections: Metric
     human_interventions: Metric
-    index: Mapping[str, tuple[int, str]] = field(default_factory=dict, repr=False, compare=False)
     lane: str | None = None
     lookups_blocked: Metric = field(default_factory=lambda: Metric(None, (), "not computed"))
 
@@ -447,7 +446,7 @@ def _thread(case_id: str, events: list[dict], contracts) -> WorkItemMetrics:
         unattended=runner is not None, cancelled=cancel is not None, pull_request=number, cost_basis=cost_basis, lane=lane,
         opened=opened, cost=cost, turns=turns, agent_time=agent_time, fix_rounds=fix_rounds, web_lookups=web,
         githits_lookups=githits, delivered=delivered, review_rejections=review_rejections,
-        human_interventions=interventions, index={e["hash"]: (e["seq"], e["kind"]) for e in events},
+        human_interventions=interventions,
         lookups_blocked=blocked)
 
 
@@ -463,11 +462,6 @@ def work_items(events: Iterable[dict], contracts: Mapping | None = None) -> list
     return [_thread(case_id, sorted(found, key=lambda e: e["seq"]), contracts) for case_id, found in threads.items()]
 
 
-def provenance(item: WorkItemMetrics, metric: str) -> list[dict]:
-    """The events behind one number: ``[{hash, seq, kind}]`` in journal order."""
-    rows = [{"hash": h, "seq": item.index.get(h, (None, None))[0], "kind": item.index.get(h, (None, None))[1]}
-            for h in dict.fromkeys(item.metric(metric).basis)]
-    return sorted(rows, key=lambda row: (row["seq"] is None, row["seq"] or 0))
 
 
 def since(items: Iterable[WorkItemMetrics], start: str | float | None) -> list[WorkItemMetrics]:
