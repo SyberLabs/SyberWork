@@ -47,9 +47,7 @@ next unit of budget where the expected admission per unit is highest. A policy
 with an ``audit()`` method has its account of each decision merged into that
 decision's trace entry, so a reader can tell from the entry alone why it was
 taken. Neither learning policy draws from the provider's seeded stream beyond
-the one crossover-pairing draw the fixed schedule makes. ``syberlabs.jev_api``
-holds a third, ``TypeSafeJevPolicy``: ``JevPolicy``'s offered actions, chosen by
-TypeSafe's Jev API from ids and numbers, with ``JevPolicy`` as its fallback.
+the one crossover-pairing draw the fixed schedule makes.
 """
 
 from __future__ import annotations
@@ -150,7 +148,7 @@ def mutation_feedback(space: SearchSpace, parent: str) -> dict | None:
     """The host's evaluation of ``parent`` as a mutate request's ``feedback``, or None.
 
     The same object the repair arm puts on a search request after a failed attempt
-    (``benchmarks/model_vs_patch.py``, ``Patches.search``): ``{"candidate": parent,
+    ``{"candidate": parent,
     "checks": [{name, state, exit_code, duration_ms, output_tail}, ...]}``, the check results
     exactly as the host recorded them in ``candidate_evaluated`` (each ``output_tail`` already
     within the record's bound). ``files`` is left out because the mutate request's own
@@ -472,7 +470,7 @@ class JevPolicy:
         """The decision ``decide`` takes, its audit, the options offered and the budget, without taking it.
 
         Pure: it reads the policy's state and changes none of it, so a policy built on this one
-        (``syberlabs.jev_api``) can ask what Jev would do, and take a different offered action.
+        can ask what Jev would do, and take a different offered action.
         """
         g = self._generation
         if self.stop_when_passing and any(p.passed for p in s.population):

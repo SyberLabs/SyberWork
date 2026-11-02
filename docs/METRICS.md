@@ -13,7 +13,7 @@ The service serves the same fold at `GET /metrics/work_items` and `GET /metrics/
 
 ## The rule
 
-Every number is computed from the journal, never counted alongside it. `syberlabs.metrics.work_items(events)` is a pure function of a thread's events: two readers of the same record get the same numbers, and each number carries a `basis`, the hashes of the events it came from (`provenance(item, metric)` lists them with their sequence numbers and kinds), so a certificate can cite them. Anything the journal did not carry becomes a journal record first (section 3) and a metric second. Reading writes nothing.
+Every number is computed from the journal, never counted alongside it. `syberlabs.metrics.work_items(events)` is a pure function of a thread's events: two readers of the same record get the same numbers, and each number carries a `basis`, the hashes of the events it came from, so a certificate can cite them. Anything the journal did not carry becomes a journal record first (section 3) and a metric second. Reading writes nothing.
 
 A **work item** is one Build Thread: from `case_created` to the merge of the pull request its `github_pull_request` effect opened, or to `case_cancelled`. An item that never publishes counts as started and not delivered.
 
