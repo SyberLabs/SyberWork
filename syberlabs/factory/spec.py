@@ -12,13 +12,20 @@ criterion per evidence kind. Agents are delegated to; a human stays the owner.
 
 The goal gate. The factory may propose a spec at any level; it may promote none. ``promote``, ``canonize``
 and ``retire`` (``GATED``) take a human actor and an approval that verifies: a DSSE envelope the owner signed
-over exactly this spec (its digest before the operation), this operation and, for a promotion, the verdict
-ids it rests on, each resolved on the ledger to a ``review`` event that accepted this very variant. The
-approver may not be a proposer or the reviewer of that variant. ``transition`` accepts only the ``Approved``
-record :func:`verify_approval` returns, so a caller cannot hand it a dictionary of its own. The owner's
-public key is the caller's (``--owner-public``); the signing seed never enters this module. A kernel
-``approved`` event on a goal case is the intended source of this approval once the factory has a case to
-hang it on; until then the signature stands in, and ``spec/GAPS.md`` records the gap.
+over exactly this spec (its content digest before the operation), this operation and, for a promotion, the
+verdict ids it rests on, each resolved on the ledger to a ``review`` event that accepted this very variant.
+The approver may not be a proposer or the reviewer of that variant. ``transition`` accepts only the
+``Approved`` record :func:`verify_approval` returns, which nothing outside this module can construct, so a
+caller cannot hand it a dictionary of its own.
+
+The owner's public key is pinned on the ledger, not supplied by the caller: an ``owner_key_set`` event names
+it (:func:`pinned_owner_key`), the first one is the trust root of that ledger (bootstrap, written once), and
+a later one is a rotation the previous key signed (:func:`verify_rotation`). :func:`gate` verifies every
+approval under the pinned key only; a ledger with no pinned key refuses (``owner_key_unset``) and an approval
+under any other key refuses (``owner_key_mismatch``), whoever runs the host command. The signing seed never
+enters this module. A kernel ``approved`` event on a goal case is the intended source of this approval once
+the factory has a case to hang it on; until then the signature stands in, and ``spec/GAPS.md`` records the
+gap.
 
 v0 implements the lifecycle a single spec needs: draft, revise, validate (to candidate), promote, canonize,
 retire, and the variant loop (several models proposing variants of one parent, one independent reviewer).
@@ -50,7 +57,12 @@ GATED = frozenset({"promote", "canonize", "retire"})
 ACTOR_KINDS = ("human", "model", "compiled")
 APPROVAL_PROTOCOL = "syberlabs.space/factory/approval/v0"
 APPROVAL_PAYLOAD_TYPE = "application/vnd.syberlabs.factory-approval+json"
+OWNER_KEY_PROTOCOL = "syberlabs.space/factory/owner-key/v0"
+OWNER_KEY_PAYLOAD_TYPE = "application/vnd.syberlabs.factory-owner-key+json"
 _PRINCIPAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
+_HEX_KEY = re.compile(r"^[0-9a-f]{64}$")
+# The module-private token ``Approved`` demands: only :func:`verify_approval` holds it.
+_ISSUED = object()
 
 
 def principal(text: str) -> dict:
@@ -63,13 +75,67 @@ def principal(text: str) -> dict:
 
 
 class Approved(dict):
-    """A verified approval. Only :func:`verify_approval` makes one; ``transition`` accepts no other."""
+    """A verified approval: what :func:`verify_approval` returns and the only thing ``transition`` takes for a
+    gated operation. The constructor demands a module-private token, so ``Approved({...})`` anywhere else
+    raises ``approval_forged`` instead of producing something the gate would accept; ``transition`` checks
+    the token again, so an instance made around the constructor is refused too."""
+
+    __slots__ = ("_issued",)
+
+    def __init__(self, payload: dict, *, _token: object = None):
+        if _token is not _ISSUED:
+            raise Rejected("approval_forged", "an Approved is made by verify_approval only; a verified approval is not a dictionary a caller writes")
+        super().__init__(payload)
+        self._issued = _ISSUED
+
+
+def _is_issued(approval: object) -> bool:
+    return isinstance(approval, Approved) and getattr(approval, "_issued", None) is _ISSUED
+
+
+def pinned_owner_key(events: list[dict]) -> str | None:
+    """The owner's public key (hex) the ledger pins: the newest ``owner_key_set`` event's ``keyid``, or None
+    when the ledger has pinned none. The first such event is the ledger's trust root; every later one is a
+    rotation the previous key signed (``previous`` and ``rotation_digest`` on the event)."""
+    for event in reversed(events):
+        if event.get("kind") == "owner_key_set":
+            keyid = (event.get("body") or {}).get("keyid")
+            return keyid if isinstance(keyid, str) and _HEX_KEY.match(keyid) else None
+    return None
+
+
+def rotation_payload(previous: bytes, next_key: bytes) -> dict:
+    """What the current owner signs to hand the ledger to a new key: the key being replaced and the key that
+    replaces it. Signed by ``previous``; nothing else can rotate."""
+    return {"protocol": OWNER_KEY_PROTOCOL, "previous": previous.hex(), "next": next_key.hex(), "at": int(time.time() * 1_000_000)}
+
+
+def sign_rotation(payload: dict, seed: bytes) -> dict:
+    return sign_dsse(OWNER_KEY_PAYLOAD_TYPE, canonical(payload).encode("utf-8"), seed)
+
+
+def verify_rotation(envelope: dict, previous: bytes, next_key: bytes) -> dict:
+    """The rotation payload when ``envelope`` verifies under ``previous`` (the pinned key) and names exactly
+    this handover; refused (``owner_key_rotation``) otherwise."""
+    payload = verified_payload(envelope, previous, OWNER_KEY_PAYLOAD_TYPE)
+    if payload is None:
+        raise Rejected("owner_key_rotation", "a rotation is signed by the key the ledger pins now; this one does not verify under it")
+    try:
+        rotation = json.loads(payload)
+    except ValueError:
+        raise Rejected("owner_key_rotation", "the rotation payload is not JSON") from None
+    if (not isinstance(rotation, dict) or rotation.get("protocol") != OWNER_KEY_PROTOCOL
+            or rotation.get("previous") != previous.hex() or rotation.get("next") != next_key.hex()):
+        raise Rejected("owner_key_rotation", "the rotation does not name this handover (previous and next key)")
+    return rotation
 
 
 def approval_payload(spec: dict, operation: str, approver: dict, *, verdict_ids: list[str] | None = None,
                      spec_digest_value: str | None = None) -> dict:
     """What the owner signs: this spec (by id, version and digest), this operation, the verdicts a promotion
-    rests on, and who approves. The digest is the spec's as it is on disk before the operation."""
+    rests on, and who approves. The digest is the spec's content digest (:func:`spec_digest`: the parsed
+    document without ``history``) before the operation, so a re-serialized file is the same spec and an
+    edit to the file's ``history`` is not covered; the ledger's ``spec_changed`` events are the history."""
     if operation not in GATED:
         raise Rejected("spec_operation", f"an approval covers one of {sorted(GATED)}, not {operation!r}")
     if approver.get("kind") != "human":
@@ -105,7 +171,7 @@ def verify_approval(envelope: dict, public: bytes, spec: dict, operation: str, *
     approver = approval.get("approver")
     if not isinstance(approver, dict) or approver.get("kind") != "human" or not _PRINCIPAL_ID.match(str(approver.get("id"))):
         raise Rejected("approval_actor", "the approval names no human approver")
-    return Approved({**approval, "keyid": public.hex()})
+    return Approved({**approval, "keyid": public.hex()}, _token=_ISSUED)
 
 
 def resolve_verdicts(events: list[dict], spec: dict, verdict_ids: list[str], spec_digest_value: str | None = None) -> list[dict]:
@@ -137,15 +203,23 @@ def resolve_verdicts(events: list[dict], spec: dict, verdict_ids: list[str], spe
     return resolved
 
 
-def gate(spec: dict, operation: str, actor: dict, events: list[dict], envelope: dict, owner_public: bytes, *,
+def gate(spec: dict, operation: str, actor: dict, events: list[dict], envelope: dict, *,
          verdict_ids: list[str] | None = None, spec_digest_value: str | None = None) -> tuple[Approved, list[dict]]:
-    """The goal gate in one call: the actor is human and is the approver, the approval verifies and covers this
-    spec and operation, and (on promote) every verdict resolves to an accepting review of this variant whose
-    proposers and reviewer are not the approver. Returns the approval and the resolved verdicts."""
+    """The goal gate in one call: the actor is human and is the approver, the ledger pins an owner key and the
+    approval verifies under that key (no other) and covers this spec and operation, and (on promote) every
+    verdict resolves to an accepting review of this variant whose proposers and reviewer are not the
+    approver. The key is read from ``events`` (:func:`pinned_owner_key`), never taken from the caller.
+    Returns the approval and the resolved verdicts."""
     if actor.get("kind") != "human":
         raise Rejected("spec_actor", f"{operation} is an owner act: the actor's kind is human, not {actor.get('kind')!r}")
+    pinned = pinned_owner_key(events)
+    if pinned is None:
+        raise Rejected("owner_key_unset", "the ledger pins no owner key; `factory owner --public KEY` (or the first `--owner-public`) sets it")
+    declared = [s.get("keyid") for s in (envelope.get("signatures") or []) if isinstance(s, dict)] if isinstance(envelope, dict) else []
+    if declared and pinned not in declared:
+        raise Rejected("owner_key_mismatch", f"the approval is signed under key {str(declared[0])[:10]}, not the owner key the ledger pins ({pinned[:10]})")
     resolved = resolve_verdicts(events, spec, list(verdict_ids or []), spec_digest_value) if operation == "promote" else []
-    approval = verify_approval(envelope, owner_public, spec, operation, verdict_ids=verdict_ids, spec_digest_value=spec_digest_value)
+    approval = verify_approval(envelope, bytes.fromhex(pinned), spec, operation, verdict_ids=verdict_ids, spec_digest_value=spec_digest_value)
     if approval["approver"]["id"] != actor.get("id"):
         raise Rejected("approval_actor", f"the approval was signed for {approval['approver']['id']!r}, not the actor {actor.get('id')!r}")
     for record in resolved:
@@ -181,7 +255,8 @@ def new_spec(spec_id: str, capability: str, requirements: list[dict], footprint_
 
 
 def spec_digest(spec: dict) -> str:
-    """The spec without its history, so two specs with the same content digest alike."""
+    """The content digest: the parsed spec without its ``history``, so two files with the same content digest
+    alike however they are serialized. The ledger's events are the history; the file's copy is not covered."""
     return digest({k: v for k, v in spec.items() if k != "history"})
 
 
@@ -200,7 +275,7 @@ def transition(spec: dict, operation: str, actor: dict, **detail) -> dict:
         if actor.get("kind") != "human":
             raise Rejected("spec_actor", f"{operation} is an owner act: the actor's kind is human, not {actor.get('kind')!r}")
         approval = detail.get("approval")
-        if not isinstance(approval, Approved):
+        if not _is_issued(approval):
             raise Rejected("spec_approval", f"{operation} needs the owner's verified approval (see `factory approve`); none given")
         if approval["operation"] != operation or approval["spec_id"] != spec["spec_id"] or approval["version"] != spec["version"]:
             raise Rejected("approval_mismatch", f"the approval covers {approval['operation']} of {approval['spec_id']} v{approval['version']}")

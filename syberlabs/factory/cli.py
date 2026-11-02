@@ -8,8 +8,9 @@
     syberlabs factory at RUN --seq 12                                # what was active at a logical time
     syberlabs factory export RUN --chrome trace.json | --view run.html
     syberlabs factory spec validate spec.json
+    syberlabs factory owner --public owner.pub                       # pin the owner key (once); --seed-env OLD rotates
     syberlabs factory approve spec.json --verdict V --actor human:mateo --seed-env NAME --out approval.json
-    syberlabs factory spec promote|canonize|retire spec.json --actor human:mateo --approval approval.json --owner-public KEY
+    syberlabs factory spec promote|canonize|retire spec.json --actor human:mateo --approval approval.json
     syberlabs factory ticket spec.json --req R1 --out ticket.json
     syberlabs factory attest --baseline A --candidate B --ticket ticket.json --commit SHA
     syberlabs factory verify attestation.json --public KEY
@@ -120,13 +121,16 @@ def populate(factory) -> None:
     export.add_argument("--view", metavar="FILE", help="write an HTML page that scrubs the run over its Space graph")
 
     sp = steps.add_parser("spec", help="move a spec file through its lifecycle; each step is logged. promote, canonize and "
-                                       "retire are owner acts: a human --actor plus --approval and --owner-public")
+                                       "retire are owner acts: a human --actor plus --approval, verified under the owner key "
+                                       "the ledger pins (see `owner`)")
     sp.add_argument("operation", choices=sorted(specmod.TRANSITIONS))
     sp.add_argument("spec", help="the spec JSON file; rewritten in place")
     sp.add_argument("--actor", default="human:operator", help="kind:id, kind in human|model|compiled (default human:operator)")
     sp.add_argument("--verdict", action="append", default=[], help="a review verdict id promotion rests on; resolved on the ledger")
     sp.add_argument("--approval", metavar="FILE", help="the owner's signed approval from `factory approve` (promote, canonize, retire)")
-    sp.add_argument("--owner-public", metavar="KEY", help="the owner's .pub file the approval must verify under")
+    sp.add_argument("--owner-public", metavar="KEY", help="bootstrap only: pin this .pub as the owner key when the ledger pins "
+                                                           "none (the same as `factory owner --public KEY`); a pinned ledger "
+                                                           "refuses a different key here, rotation goes through `owner`")
     sp.add_argument("--reason")
     sp.add_argument("--superseded-by")
     sp.add_argument("--tickets", metavar="DIR", help="on promote: open one ticket per requirement into DIR, footprint "
@@ -134,8 +138,13 @@ def populate(factory) -> None:
     sp.add_argument("--baseline", default="golden", help="the golden run or label the tickets diff against (default golden)")
     sp.add_argument("--owner", help="the accountable human on the tickets")
 
-    ap = steps.add_parser("approve", help="sign the owner's approval of a promote, canonize or retire of a spec as it is on disk; "
-                                          "the seed is read from an environment variable and never written")
+    own = steps.add_parser("owner", help="the owner key the ledger pins: print it; --public KEY pins it once (bootstrap); "
+                                         "--public NEW --seed-env OLD rotates, signed by the key pinned now")
+    own.add_argument("--public", metavar="KEY", help="the owner's .pub file (64 hex characters)")
+    own.add_argument("--seed-env", metavar="NAME", help="on rotation: the variable holding the seed of the key pinned now")
+
+    ap = steps.add_parser("approve", help="sign the owner's approval of a promote, canonize or retire of a spec by its content "
+                                          "digest; the seed is read from an environment variable and never written")
     ap.add_argument("spec")
     ap.add_argument("--operation", choices=sorted(specmod.GATED), default="promote")
     ap.add_argument("--verdict", action="append", default=[], help="the verdict ids the promotion rests on (must match `spec promote`)")
@@ -356,6 +365,9 @@ def _run(args) -> int:
     if command == "spec":
         return _spec(args, home)
 
+    if command == "owner":
+        return _owner(args, home)
+
     if command == "approve":
         return _approve(args)
 
@@ -490,10 +502,11 @@ def _check(args, home: ledger.Ledger) -> int:
     baseline_records = home.load_run(baseline_id)
     fixture = _read_json(args.fixture, "fixture") if args.fixture else {}
     run_id = harness.new_run_id()
+    strip_env = (args.seed_env,) if args.seed_env else ()  # the check's own seed never reaches the candidate or its suite
     recorded = harness.record(root, home.run_path(run_id), args.entry,
                               file_components={p: r.get("component") for p, r in graph["files"].items()}, fixture=fixture,
                               run_id=run_id, revision=commit, space_digest=space_event["body"]["space_digest"],
-                              blobs=home.home / "blobs")
+                              blobs=home.home / "blobs", strip_env=strip_env)
     if recorded.get("stdout"):
         print(recorded["stdout"])
     after = home.events()
@@ -511,7 +524,7 @@ def _check(args, home: ledger.Ledger) -> int:
     if recorded.get("error"):
         evidence["run"] = {"kind": "run", "status": recorded["status"], "error": recorded["error"]}
     if args.tests_argv:
-        evidence["tests"] = _run_tests(root, args.tests_argv, args.tests_timeout)
+        evidence["tests"] = _run_tests(root, args.tests_argv, args.tests_timeout, strip_env=strip_env)
         print(f"tests: {' '.join(harness.mask(a) for a in evidence['tests']['argv'])} -> exit {evidence['tests']['exit_code']}"
               f" in {evidence['tests']['seconds']}s")
     builder_text = args.builder or os.environ.get("SYBERLABS_CANDIDATE") or "operator"
@@ -633,17 +646,21 @@ def _bootstrap(args, home: ledger.Ledger) -> int:
 TESTS_TAIL_CHARS = 2000
 
 
-def _run_tests(root: Path, argv_json: str, timeout: int) -> dict:
+def _run_tests(root: Path, argv_json: str, timeout: int, strip_env: tuple = ()) -> dict:
     """Run the suite the contract names, in the worktree, and reduce it to a tests evidence entry. The exit code
     is the verdict (a runner's own counts are not parsed); the output digest lets a reviewer find the log, and
     the tail that enters the attestation is capped and scrubbed of credential shapes. ``full_suite`` is true
     only when the suite ran to completion: a timed-out or unstartable run is not a full suite. On timeout the
-    whole process tree is stopped, as the Build Thread's own checks do."""
+    whole process tree is stopped, as the Build Thread's own checks do. The suite runs under the Build
+    Thread's scrubbed environment (``checks.scrubbed_environment``, with ``SYBERLABS_CANDIDATE`` and
+    ``SYBERLABS_BASE`` as the host has them, so a floor runner still sees its base) without the host's signing
+    seed or any variable in ``strip_env``."""
     import hashlib
     import subprocess
     import tempfile
     import time
-    from syberlabs.checks import _stop as stop_tree
+    from syberlabs.certificate import DEFAULT_SEED_ENV
+    from syberlabs.checks import scrubbed_environment, stop_tree
     try:
         argv = json.loads(argv_json)
         if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv) or not argv:
@@ -652,9 +669,12 @@ def _run_tests(root: Path, argv_json: str, timeout: int) -> dict:
         raise Rejected("tests_argv", "--tests-argv is a JSON list of strings") from None
     started = time.monotonic()
     exit_code, timed_out = None, False
-    with tempfile.TemporaryFile() as log:
+    with tempfile.TemporaryDirectory(prefix="syberlabs-factory-tests-") as home, tempfile.TemporaryFile() as log:
+        env = scrubbed_environment(Path(home), os.environ.get("SYBERLABS_CANDIDATE") or "operator", os.environ.get("SYBERLABS_BASE"))
+        for name in (DEFAULT_SEED_ENV, *strip_env):
+            env.pop(name, None)
         try:
-            proc = subprocess.Popen(argv, cwd=str(root), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(argv, cwd=str(root), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=hasattr(os, "setsid"))
         except OSError as exc:
             log.write(f"could not start {argv[0]!r}: {exc.strerror or exc}\n".encode())
@@ -815,7 +835,7 @@ def _variants(args, home: ledger.Ledger) -> int:
     print(f"accepted {review['accepted']} -> {target.name} (candidate); the owner promotes it: "
           f"factory approve {target.name} --verdict {verdict_id} --actor human:OWNER --seed-env NAME --out approval.json, then "
           f"factory spec promote {target.name} --verdict {verdict_id} --actor human:OWNER --approval approval.json "
-          f"--owner-public KEY --tickets DIR")
+          f"--tickets DIR")
     return 0
 
 
@@ -830,9 +850,30 @@ def _describe_side(entry: dict | None) -> str:
     return f"{entry['kind']} {entry['name']}: {json.dumps(payload, sort_keys=True, default=str)[:160]}"
 
 
+def _owner(args, home: ledger.Ledger) -> int:
+    """The owner key the ledger pins. Without ``--public``: print it. With it on a ledger that pins none: the
+    bootstrap, pinned once and from then on the only key the gate trusts (a Class C act: whoever runs this
+    first on an empty ledger is its owner, which is why it is one explicit command). With it on a pinned
+    ledger: a rotation, signed by the seed of the key pinned now (``--seed-env``) or refused."""
+    current = home.owner_key()
+    if not args.public:
+        print(f"owner key: {current or '(unset)'}")
+        return 0 if current else 1
+    public = certificate.read_public(args.public)
+    if current == public.hex():
+        print(f"owner key: {current} (already pinned)")
+        return 0
+    seed = certificate.load_seed(args.seed_env) if args.seed_env else None
+    event = home.set_owner_key(public, seed=seed)
+    body = event["body"]
+    what = f"rotated from {body['previous'][:10]} (rotation {body['rotation_digest'][:12]})" if body["previous"] else "pinned (bootstrap)"
+    print(f"owner key: {body['keyid']} {what} (ledger seq {event['seq']})")
+    return 0
+
+
 def _approve(args) -> int:
-    """The owner signs an approval of one gated operation on a spec as it is on disk. Nothing touches the
-    ledger here; `spec promote` verifies and records the approval."""
+    """The owner signs an approval of one gated operation on a spec by its content digest. Nothing touches the
+    ledger here; `spec promote` verifies it under the key the ledger pins and records it."""
     document = _read_json(args.spec, "spec")
     actor = specmod.principal(args.actor)
     payload = specmod.approval_payload(document, args.operation, actor, verdict_ids=args.verdict)
@@ -861,10 +902,21 @@ def _spec(args, home: ledger.Ledger) -> int:
     if args.operation in specmod.GATED:
         if actor["kind"] != "human":
             raise Rejected("spec_actor", f"{args.operation} is an owner act: the actor's kind is human, not {actor['kind']!r}")
-        if not args.approval or not args.owner_public:
-            raise Rejected("spec_approval", f"{args.operation} is an owner act: pass --approval FILE (from `factory approve`) and --owner-public KEY")
+        if not args.approval:
+            raise Rejected("spec_approval", f"{args.operation} is an owner act: pass --approval FILE (from `factory approve`)")
         envelope = _read_json(args.approval, "approval")
-        approval, resolved = specmod.gate(document, args.operation, actor, home.events(), envelope, certificate.read_public(args.owner_public),
+        if args.owner_public:
+            # Bootstrap only: the first key a ledger sees is pinned. A pinned ledger takes the same key as a no-op
+            # and refuses any other here; rotation is `factory owner --public NEW --seed-env OLD`, never this flag.
+            public = certificate.read_public(args.owner_public)
+            pinned = home.owner_key()
+            if pinned is None:
+                event = home.set_owner_key(public)
+                print(f"owner key {public.hex()[:10]} pinned (bootstrap; ledger seq {event['seq']})")
+            elif pinned != public.hex():
+                raise Rejected("owner_key_mismatch", f"the ledger pins owner key {pinned[:10]}, not {public.hex()[:10]}; "
+                                                     "rotate with `factory owner --public NEW --seed-env OLD`")
+        approval, resolved = specmod.gate(document, args.operation, actor, home.events(), envelope,
                                           verdict_ids=args.verdict, spec_digest_value=before_digest)
         detail["approval"] = approval
         detail["spec_digest"] = before_digest

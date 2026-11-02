@@ -283,6 +283,44 @@ class HarnessTests(Scratch):
         sealed.write_text("\n".join(lines) + "\n" + lines[-1][:20], encoding="utf-8")
         self.assertIn("torn", harness.verify_journal(sealed, "ab" * 32))
 
+    def test_the_child_and_the_tests_runner_run_without_the_hosts_seed(self):
+        """M2 of the #164 verification: the candidate's process and the suite get the Build Thread's scrubbed
+        environment, never the host's whole one; the host's signing seed and a --seed-env variable are absent."""
+        from unittest import mock
+        root = self.scratch / "probe"
+        root.mkdir()
+        (root / "envprobe.py").write_text(
+            "import os\n\ndef run(ctx, fixture):\n"
+            "    return {'seed': len(os.environ.get('SYBERLABS_FACTORY_PROBE_SEED', '')),"
+            " 'default': len(os.environ.get('SYBERLABS_CERTIFICATE_SEED', '')),"
+            " 'path': bool(os.environ.get('PATH')), 'home': os.environ.get('HOME')}\n", encoding="utf-8")
+        home = ledger.Ledger(self.scratch / "ledger")
+        with mock.patch.dict(os.environ, {"SYBERLABS_FACTORY_PROBE_SEED": "a" * 64, "SYBERLABS_CERTIFICATE_SEED": "b" * 64}):
+            run_id = harness.new_run_id()
+            report = harness.record(root, home.run_path(run_id), "envprobe:run", run_id=run_id, revision="probe",
+                                    strip_env=("SYBERLABS_FACTORY_PROBE_SEED",))
+            self.assertEqual(report["status"], "ok", report)
+            self.assertEqual((report["outcome"]["seed"], report["outcome"]["default"], report["outcome"]["path"]), (0, 0, True))
+            self.assertNotEqual(report["outcome"]["home"], os.environ.get("HOME"), "HOME is the scratch home, not the host's")
+            probe = json.dumps([sys.executable, "-c", "import os, sys; sys.exit(len(os.environ.get('SYBERLABS_FACTORY_PROBE_SEED', ''))"
+                                                       " + len(os.environ.get('SYBERLABS_CERTIFICATE_SEED', '')))"])
+            tests = factory_cli._run_tests(root, probe, 60, strip_env=("SYBERLABS_FACTORY_PROBE_SEED",))
+            self.assertEqual((tests["exit_code"], tests["full_suite"]), (0, True), tests["output_tail"])
+
+    def test_a_killed_run_delivers_no_journal(self):
+        """L1 of the #164 verification: a run stopped at its timeout has no end record and its journal does not
+        reach the ledger's runs/."""
+        root = self.scratch / "sleeper"
+        root.mkdir()
+        (root / "sleep.py").write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+        home = ledger.Ledger(self.scratch / "ledger")
+        run_id = harness.new_run_id()
+        report = harness.record(root, home.run_path(run_id), str(root / "sleep.py"), run_id=run_id, revision="sleep", timeout=2)
+        self.assertEqual(report["status"], "killed", report)
+        self.assertIn("no end after", report["error"])
+        self.assertFalse(home.run_path(run_id).exists(), "a killed run's journal is not delivered")
+        self.assertEqual(list((home.home / "runs").iterdir()), [])
+
     def test_scrub(self):
         self.assertEqual(harness.scrub("ghp_abcdefghijklmnopqrstuvwxyz0123456789"), "<redacted>")
         self.assertEqual(harness.scrub("GITHUB_TOKEN=whatever"), "GITHUB_TOKEN=<redacted>")
@@ -535,6 +573,7 @@ class SpecTests(unittest.TestCase):
         current = specmod.spec_digest(document)
         reviewer = {"kind": "model", "id": "gpt", "model": "gpt-5", "family": "openai"}
         events = [
+            {"kind": "owner_key_set", "body": {"keyid": OWNER_PUBLIC.hex(), "previous": None, "rotation_digest": None}},
             {"kind": "spec_changed", "body": {"spec_id": "order-path", "operation": "mutate", "variant_id": "var1",
                                               "actor": {"kind": "model", "id": "claude"}}},
             {"kind": "spec_changed", "body": {"spec_id": "order-path", "operation": "review", "verdict_id": "ok1",
@@ -554,17 +593,42 @@ class SpecTests(unittest.TestCase):
         with self.assertRaises(Rejected):
             specmod.resolve_verdicts(events, edited, ["ok1"])
         envelope = specmod.sign_approval(specmod.approval_payload(document, "promote", ACTOR, verdict_ids=["ok1"]), OWNER_SEED)
-        approval, found = specmod.gate(document, "promote", ACTOR, events, envelope, OWNER_PUBLIC, verdict_ids=["ok1"])
+        approval, found = specmod.gate(document, "promote", ACTOR, events, envelope, verdict_ids=["ok1"])
         self.assertIsInstance(approval, specmod.Approved)
         self.assertEqual(found[0]["verdict_id"], "ok1")
         proposer_as_owner = {"kind": "human", "id": "claude"}
         own = specmod.sign_approval(specmod.approval_payload(document, "promote", proposer_as_owner, verdict_ids=["ok1"]), OWNER_SEED)
         with self.assertRaises(Rejected) as refused:
-            specmod.gate(document, "promote", proposer_as_owner, events, own, OWNER_PUBLIC, verdict_ids=["ok1"])
+            specmod.gate(document, "promote", proposer_as_owner, events, own, verdict_ids=["ok1"])
         self.assertEqual(refused.exception.code, "approval_not_independent")
         with self.assertRaises(Rejected) as refused:
-            specmod.gate(document, "promote", {"kind": "model", "id": "gpt"}, events, envelope, OWNER_PUBLIC, verdict_ids=["ok1"])
+            specmod.gate(document, "promote", {"kind": "model", "id": "gpt"}, events, envelope, verdict_ids=["ok1"])
         self.assertEqual(refused.exception.code, "spec_actor")
+        # The key is the ledger's, not the caller's: an approval under another keypair is refused however the gate
+        # is called, and a ledger that pins no key approves nothing.
+        other_seed, _ = generate()
+        under_another_key = specmod.sign_approval(specmod.approval_payload(document, "promote", ACTOR, verdict_ids=["ok1"]), other_seed)
+        with self.assertRaises(Rejected) as refused:
+            specmod.gate(document, "promote", ACTOR, events, under_another_key, verdict_ids=["ok1"])
+        self.assertEqual(refused.exception.code, "owner_key_mismatch")
+        with self.assertRaises(Rejected) as refused:
+            specmod.gate(document, "promote", ACTOR, events[1:], envelope, verdict_ids=["ok1"])
+        self.assertEqual(refused.exception.code, "owner_key_unset")
+        self.assertEqual(specmod.pinned_owner_key(events[1:]), None)
+        # ``Approved`` is a capability, not a marker: the constructor refuses without the module's token, and
+        # ``transition`` refuses a plain dictionary and an instance made around the constructor alike.
+        with self.assertRaises(Rejected) as refused:
+            specmod.Approved(dict(approval))
+        self.assertEqual(refused.exception.code, "approval_forged")
+        candidate = json.loads(json.dumps(document))
+        specmod.transition(candidate, "validate", ACTOR)
+        counterfeit = specmod.Approved.__new__(specmod.Approved)
+        dict.update(counterfeit, approval)
+        for forged in (dict(approval), counterfeit):
+            with self.assertRaises(Rejected) as refused:
+                specmod.transition(json.loads(json.dumps(candidate)), "promote", ACTOR, approval=forged, verdict_ids=["ok1"])
+            self.assertEqual(refused.exception.code, "spec_approval")
+        self.assertEqual(json.loads(json.dumps(candidate))["state"], "candidate")
 
     def test_independence_is_by_provider_family(self):
         claude = {"kind": "model", "id": "a", "model": "claude-sonnet-4-5"}
@@ -731,8 +795,13 @@ class CliTests(Scratch):
                                       "--seed-env", "SYBERLABS_FACTORY_TEST_SEED", "--out", "approval.json", cwd=tree)
         self.assertEqual(code, 0, err)
         code, out, err = self.run_cli("spec", "promote", "spec.json", "--verdict", "v1", "--actor", "human:tester",
+                                      "--approval", "approval.json", cwd=tree)
+        self.assertEqual(code, 2)
+        self.assertIn("owner_key_unset", err, "a ledger that pins no owner key promotes nothing")
+        code, out, err = self.run_cli("spec", "promote", "spec.json", "--verdict", "v1", "--actor", "human:tester",
                                       "--approval", "approval.json", "--owner-public", "owner.pub", cwd=tree)
         self.assertEqual(code, 2)
+        self.assertIn("pinned (bootstrap", out, "the first --owner-public pins the key")
         self.assertIn("spec_verdict", err, "v1 is a string, not a review on the ledger")
         self.assertEqual(json.loads(spec_path.read_text(encoding="utf-8"))["state"], "candidate")
         run = lambda role: f"{sys.executable} {tree / 'proposers.py'} {role}"
@@ -753,10 +822,9 @@ class CliTests(Scratch):
         code, out, err = self.run_cli("spec", "promote", candidate_spec, "--verdict", verdict_id, "--actor", "human:tester",
                                       "--approval", "approval.json", "--owner-public", "other.pub", cwd=tree)
         self.assertEqual(code, 2)
-        self.assertIn("approval_unverified", err, "an approval under another key is no approval")
+        self.assertIn("owner_key_mismatch", err, "the ledger pins the owner key; the caller cannot name another")
         code, out, err = self.run_cli("spec", "promote", candidate_spec, "--verdict", verdict_id, "--actor", "human:tester",
-                                      "--approval", "approval.json", "--owner-public", "owner.pub",
-                                      "--tickets", "tickets", "--baseline", run_a, "--owner", "tester", cwd=tree)
+                                      "--approval", "approval.json", "--tickets", "tickets", "--baseline", run_a, "--owner", "tester", cwd=tree)
         self.assertEqual(code, 0, err)
         self.assertIn("candidate -> promoted", out)
         self.assertIn("ticket     ", out)
@@ -770,7 +838,7 @@ class CliTests(Scratch):
         self.assertEqual(promotion["body"]["approval"]["event_hash"], approvals[0]["hash"], "the promotion cites the approval event")
         self.assertTrue(home.verify())
         code, out, err = self.run_cli("spec", "promote", candidate_spec, "--verdict", verdict_id, "--actor", "human:tester",
-                                      "--approval", "approval.json", "--owner-public", "owner.pub", cwd=tree)
+                                      "--approval", "approval.json", cwd=tree)
         self.assertEqual(code, 2, "a promoted spec is not promoted twice")
         [auto] = list((tree / "tickets").glob("*.json"))
         auto_ticket = json.loads(auto.read_text(encoding="utf-8"))
@@ -825,6 +893,75 @@ class CliTests(Scratch):
         code, _, err = self.run_cli("show", "../escape", cwd=tree)
         self.assertEqual(code, 2)
         self.assertIn("run_id", err)
+
+    def test_the_owner_key_is_pinned_and_rotates_only_under_the_old_key(self):
+        """M1 of the #164 verification: the gate trusts the key the ledger pins, not the key the caller names. A
+        second keypair's approval is refused with and without --owner-public, a rotation needs the pinned key's
+        seed, and after a rotation the new key approves and the old one does not."""
+        from unittest import mock
+        tree = self.scratch / "tree"
+        shutil.copytree(FIXTURE, tree)
+        (tree / "spec.json").write_text(json.dumps(specmod.new_spec("order-path", "ordering", [
+            {"req_id": "R1", "text": "When quantity is positive, the system shall post one order."}],
+            ["ingest", "rules", "effects"], author=ACTOR)), encoding="utf-8")
+        code, _, err = self.run_cli("spec", "validate", "spec.json", cwd=tree)
+        self.assertEqual(code, 0, err)
+        owner_seed, owner_public = generate()
+        mine_seed, mine_public = generate()
+        (tree / "owner.pub").write_text(owner_public.hex(), encoding="utf-8")
+        (tree / "mine.pub").write_text(mine_public.hex(), encoding="utf-8")
+        with mock.patch.dict(os.environ, {"SYBERLABS_FACTORY_OWNER_SEED": owner_seed.hex(), "SYBERLABS_FACTORY_MINE_SEED": mine_seed.hex()}):
+            retire = lambda *extra: self.run_cli("spec", "retire", "spec.json", "--actor", "human:mateo", *extra, cwd=tree)
+            code, out, _ = self.run_cli("owner", cwd=tree)
+            self.assertEqual((code, "(unset)" in out), (1, True))
+            code, _, err = self.run_cli("approve", "spec.json", "--operation", "retire", "--actor", "human:mateo",
+                                        "--seed-env", "SYBERLABS_FACTORY_OWNER_SEED", "--out", "owner.json", cwd=tree)
+            self.assertEqual(code, 0, err)
+            code, _, err = retire("--approval", "owner.json")
+            self.assertEqual((code, "owner_key_unset" in err), (2, True), err)
+            code, out, err = self.run_cli("owner", "--public", "owner.pub", cwd=tree)
+            self.assertEqual(code, 0, err)
+            self.assertIn("pinned (bootstrap)", out)
+            code, out, _ = self.run_cli("owner", "--public", "owner.pub", cwd=tree)
+            self.assertEqual((code, "already pinned" in out), (0, True))
+            # The verifier's repro: my own keypair signs an approval, and I name my own key on argv.
+            code, _, err = self.run_cli("approve", "spec.json", "--operation", "retire", "--actor", "human:mateo",
+                                        "--seed-env", "SYBERLABS_FACTORY_MINE_SEED", "--out", "mine.json", cwd=tree)
+            self.assertEqual(code, 0, err)
+            for extra in (("--approval", "mine.json", "--owner-public", "mine.pub"), ("--approval", "mine.json")):
+                code, _, err = retire(*extra)
+                self.assertEqual(code, 2, err)
+                self.assertIn("owner_key_mismatch", err)
+            self.assertEqual(json.loads((tree / "spec.json").read_text(encoding="utf-8"))["state"], "candidate")
+            # Rotation without the pinned key's signature is refused; with it, the ledger moves to the new key.
+            code, _, err = self.run_cli("owner", "--public", "mine.pub", cwd=tree)
+            self.assertEqual((code, "owner_key_rotation" in err), (2, True), err)
+            code, _, err = self.run_cli("owner", "--public", "mine.pub", "--seed-env", "SYBERLABS_FACTORY_MINE_SEED", cwd=tree)
+            self.assertEqual((code, "owner_key_rotation" in err), (2, True), err)
+            code, out, err = self.run_cli("owner", "--public", "mine.pub", "--seed-env", "SYBERLABS_FACTORY_OWNER_SEED", cwd=tree)
+            self.assertEqual(code, 0, err)
+            self.assertIn("rotated from " + owner_public.hex()[:10], out)
+            code, out, _ = self.run_cli("owner", cwd=tree)
+            self.assertEqual((code, mine_public.hex() in out), (0, True))
+            code, _, err = retire("--approval", "owner.json")
+            self.assertEqual((code, "owner_key_mismatch" in err), (2, True), "the key that was rotated out no longer approves")
+            code, out, err = retire("--approval", "mine.json")
+            self.assertEqual(code, 0, err)
+            self.assertIn("candidate -> retired", out)
+        home = ledger.Ledger(tree / ".syberlabs" / "factory")
+        pins = [e["body"] for e in home.events() if e["kind"] == "owner_key_set"]
+        self.assertEqual([(p["keyid"], p["previous"]) for p in pins], [(owner_public.hex(), None), (mine_public.hex(), owner_public.hex())])
+        self.assertTrue(home.verify())
+        rotation = home.home / "approvals" / f"{pins[1]['rotation_digest']}.json"
+        rotation.write_text(rotation.read_text(encoding="utf-8").replace(owner_public.hex(), mine_public.hex()), encoding="utf-8")
+        self.assertTrue(any("approvals/" in problem for problem in home.problems()), "an edited rotation is named by verify")
+        # In process, the same: ``set_owner_key`` is the only writer and refuses a seed that is not the pinned key's.
+        with self.assertRaises(Rejected) as refused:
+            home.set_owner_key(owner_public, seed=owner_seed)
+        self.assertEqual(refused.exception.code, "owner_key_rotation")
+        with self.assertRaises(Rejected) as refused:
+            home.set_owner_key(mine_public, seed=mine_seed)
+        self.assertEqual(refused.exception.code, "owner_key_pinned")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ Layout under the ledger home (``.syberlabs/factory`` by default)::
     runs/<run_id>.jsonl     harness journals
     blobs/<sha256>          effect payloads too large to inline
     attestations/<digest>.json
-    approvals/<digest>.json the owner's signed approvals a promotion rests on
+    approvals/<digest>.json the owner's signed approvals a promotion rests on, and signed owner-key rotations
     index.sqlite3           the projection: components, runs, steps, cells, edges; rebuilt from the above
     .journal/               the kernel journal's lock file for this ledger (``syberlabs.journal``)
 
@@ -17,6 +17,10 @@ comparing the file with the digest the event recorded. Bodies hold digests and i
 stays small while artifacts stay content-addressed. An artifact is never read by name alone: ``load_run``
 and ``load_space`` refuse a file whose digest is not the one on the ledger, so an edited golden journal cannot
 become a gate's baseline.
+
+The owner's public key is pinned here (``owner_key_set``): the first such event is the ledger's trust root and
+every later one is a rotation signed by the key it replaces (``set_owner_key``), so the goal gate verifies
+approvals under a key the ledger names rather than one the caller passes.
 
 Appends go through the kernel journal's writer (``syberlabs.journal.Journal``): a cross-process lock (``flock``
 or ``msvcrt.locking``), flush and fsync per record, and truncation of a torn final line before the next read.
@@ -42,12 +46,13 @@ from syberlabs import journal as kernel_journal
 from syberlabs.canonical import canonical, digest
 from syberlabs.errors import Rejected
 from syberlabs.factory import PROTOCOL, attest, harness, space
+from syberlabs.factory import spec as specmod
 
 GENESIS = "0" * 64
 EVENT_FIELDS = ("seq", "kind", "body", "at", "previous")
 RUN_KINDS = frozenset({"run_recorded", "run_replayed"})
 KINDS = frozenset({"space_indexed", "run_recorded", "run_replayed", "spec_changed", "ticket_opened",
-                   "attested", "drift_reported", "baseline_set", "approval_recorded", "note"})
+                   "attested", "drift_reported", "baseline_set", "approval_recorded", "owner_key_set", "note"})
 PROJECTION_TABLES = ("components", "edges", "runs", "steps", "effects", "cells", "meta")
 
 
@@ -135,8 +140,9 @@ class Ledger:
                             blob = record.get("blob")
                             if blob and (not (self.home / "blobs" / blob).exists() or _file_digest(self.home / "blobs" / blob) != blob):
                                 found.append(f"blobs/{blob[:12]} of run {body['run_id']} is missing or does not match")
-                elif kind in ("attested", "approval_recorded"):
-                    folder, key = ("attestations", "attestation_digest") if kind == "attested" else ("approvals", "approval_digest")
+                elif kind in ("attested", "approval_recorded") or (kind == "owner_key_set" and body.get("rotation_digest")):
+                    folder, key = {"attested": ("attestations", "attestation_digest"), "approval_recorded": ("approvals", "approval_digest"),
+                                   "owner_key_set": ("approvals", "rotation_digest")}[kind]
                     path = self.home / folder / f"{body[key]}.json"
                     if not path.exists():
                         found.append(f"{folder}/{body[key][:12]} is missing")
@@ -294,6 +300,37 @@ class Ledger:
                 "spec_digest": approval["spec_digest"], "verdict_ids": list(approval.get("verdict_ids") or [])}
         return self.append("approval_recorded", body)
 
+    # -- the owner key -------------------------------------------------------------------------------------------
+
+    def owner_key(self, events: list[dict] | None = None) -> str | None:
+        """The owner's public key (hex) this ledger pins, or None before the first ``owner_key_set``."""
+        return specmod.pinned_owner_key(self.events() if events is None else events)
+
+    def set_owner_key(self, public: bytes, *, seed: bytes | None = None) -> dict:
+        """Pin ``public`` as the owner key. On a ledger that pins none this is the bootstrap: one event, no
+        signature, and from then on the goal gate trusts this key and no other. On a ledger that pins a key
+        it is a rotation and needs ``seed``, the seed of the key pinned now: the handover is signed by that
+        key (``spec.sign_rotation``), verified, stored under ``approvals/`` and cited by the event. Refused
+        when the seed is not the pinned key's (``owner_key_rotation``) or the key is already pinned
+        (``owner_key_pinned``). Returns the event."""
+        from syberlabs.ed25519 import public_from_seed
+
+        keyid = public.hex()
+        current = self.owner_key()
+        if current is None:
+            return self.append("owner_key_set", {"keyid": keyid, "previous": None, "rotation_digest": None})
+        if current == keyid:
+            raise Rejected("owner_key_pinned", f"the ledger already pins {keyid[:10]}")
+        if seed is None:
+            raise Rejected("owner_key_rotation", f"the ledger pins {current[:10]}; rotating to {keyid[:10]} needs that key's seed (--seed-env)")
+        if public_from_seed(seed).hex() != current:
+            raise Rejected("owner_key_rotation", f"the seed given is not the pinned owner key's ({current[:10]}); only the pinned key rotates")
+        envelope = specmod.sign_rotation(specmod.rotation_payload(bytes.fromhex(current), public), seed)
+        specmod.verify_rotation(envelope, bytes.fromhex(current), public)
+        sha = digest(envelope)
+        (self.home / "approvals" / f"{sha}.json").write_text(canonical(envelope), encoding="utf-8")
+        return self.append("owner_key_set", {"keyid": keyid, "previous": current, "rotation_digest": sha})
+
     # -- the projection -----------------------------------------------------------------------------------------
 
     def project(self, events: list[dict] | None = None) -> dict:
@@ -418,4 +455,4 @@ class Ledger:
                 "runs": sum(1 for e in events if e["kind"] in RUN_KINDS),
                 "attestations": sum(1 for e in events if e["kind"] == "attested"),
                 "approvals": sum(1 for e in events if e["kind"] == "approval_recorded"),
-                "head": self.head(events)}
+                "owner_key": self.owner_key(events), "head": self.head(events)}

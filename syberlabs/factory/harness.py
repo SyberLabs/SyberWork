@@ -599,7 +599,8 @@ def _tail(path: Path) -> str:
 def record(root: str | Path, journal: str | Path, entry: str, *, file_components: dict | None = None,
            fixture: dict | None = None, run_id: str | None = None, revision: str | None = None,
            space_digest: str | None = None, replay_of: str | Path | None = None, blobs: str | Path | None = None,
-           python: str | None = None, timeout: float = 3600.0, observe: tuple = OBSERVERS) -> dict:
+           python: str | None = None, timeout: float = 3600.0, observe: tuple = OBSERVERS,
+           strip_env: tuple = ()) -> dict:
     """Run ``entry`` under the recorder in an isolated child interpreter and return its report.
 
     ``entry`` is ``module:function`` (imported from ``root``, called as ``function(ctx, fixture)``) or a script
@@ -612,10 +613,17 @@ def record(root: str | Path, journal: str | Path, entry: str, *, file_components
     never told where ``journal`` or ``blobs`` are. Afterwards the parent verifies the journal's seal under the
     per-run key, reads the ``end`` record itself, requires the child's report (one message on a private pipe,
     bound by the run's nonce) to agree with it, and only then moves the journal to ``journal`` and the blobs to
-    ``blobs``. A journal that fails its seal is not delivered. On timeout the whole process tree is stopped.
-    The child inherits this process's environment (``-I`` drops the ``PYTHON*`` variables): a program's own
-    secrets stay its own, and nothing here is a sandbox."""
-    from syberlabs.checks import _stop as stop_tree  # the Build Thread's own tree kill; parent side only
+    ``blobs``. A journal that fails its seal is not delivered, and neither is the journal of a run that was
+    killed. On timeout the whole process tree is stopped.
+
+    The child runs under the Build Thread's scrubbed environment (``checks.scrubbed_environment``: ``PATH``,
+    the locale, the package managers' cache variables, a temporary ``HOME`` and ``TMP`` inside the scratch
+    directory, ``SYBERLABS_CANDIDATE`` and ``SYBERLABS_BASE`` as the host has them), never this process's
+    whole environment: the host's signing seed (``certificate.DEFAULT_SEED_ENV``) and every variable named in
+    ``strip_env`` (a ``--seed-env``) are not in it, whatever the host holds. ``-I`` drops the ``PYTHON*``
+    variables besides. This is still not a sandbox."""
+    from syberlabs.certificate import DEFAULT_SEED_ENV
+    from syberlabs.checks import scrubbed_environment, stop_tree  # the Build Thread's own; parent side only
 
     root = Path(root).resolve()
     destination = Path(journal).resolve()
@@ -632,6 +640,11 @@ def record(root: str | Path, journal: str | Path, entry: str, *, file_components
               "stdout": "", "stderr": "", "returncode": None}
     scratch = Path(tempfile.mkdtemp(prefix="syberlabs-factory-"))  # host-owned: outside the worktree and the ledger
     try:
+        child_home = scratch / "home"
+        child_home.mkdir()
+        env = scrubbed_environment(child_home, os.environ.get("SYBERLABS_CANDIDATE") or run_id, os.environ.get("SYBERLABS_BASE"))
+        for name in (DEFAULT_SEED_ENV, *strip_env):
+            env.pop(name, None)
         child_journal = scratch / "journal.jsonl"
         child_blobs = scratch / "blobs" if blobs is not None else None
         child_replay = None
@@ -658,8 +671,8 @@ def record(root: str | Path, journal: str | Path, entry: str, *, file_components
         with (scratch / "stdout").open("wb") as out, (scratch / "stderr").open("wb") as err:
             try:
                 proc = subprocess.Popen([python or sys.executable, "-I", "-c", BOOTSTRAP], stdin=subprocess.PIPE, stdout=out,
-                                        stderr=err, cwd=str(root), close_fds=True, start_new_session=hasattr(os, "setsid"),
-                                        **channel.popen_kwargs)
+                                        stderr=err, cwd=str(root), env=env, close_fds=True,
+                                        start_new_session=hasattr(os, "setsid"), **channel.popen_kwargs)
             finally:
                 channel.started()
             try:
@@ -683,6 +696,7 @@ def record(root: str | Path, journal: str | Path, entry: str, *, file_components
         deliver = child_journal.exists()
         if killed:
             report["status"], report["error"] = "killed", f"no end after {timeout} seconds"
+            deliver = False  # a run that was stopped has no end record; its journal is not evidence and is not delivered
         elif not deliver:
             report["error"] = "the child wrote no journal"
         else:
