@@ -367,35 +367,39 @@ class BindAndUsers(unittest.TestCase):
             work.close()
 
     def test_users_json_changes_apply_without_a_restart(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "users.json"
-            path.write_text(json.dumps({"op": {"hash": _token_hash("one"), "roles": ["operator"], "sources": []}}))
-            work = Work(Path(folder) / "w.sqlite")
-            server = make_server(work, UserFile(path), port=0)
-            server.RequestHandlerClass.log_message = lambda *args: None
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-            self.addCleanup(work.close)
-            self.addCleanup(server.server_close)
-            self.addCleanup(server.shutdown)
+        # Cleanups run last in, first out: the folder is removed after the server and the database close,
+        # which Windows needs before it will delete an open SQLite file.
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        folder = scratch.name
+        path = Path(folder) / "users.json"
+        path.write_text(json.dumps({"op": {"hash": _token_hash("one"), "roles": ["operator"], "sources": []}}))
+        work = Work(Path(folder) / "w.sqlite")
+        server = make_server(work, UserFile(path), port=0)
+        server.RequestHandlerClass.log_message = lambda *args: None
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(work.close)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
 
-            def me(token):
-                request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/api/me",
-                                                 headers={"Authorization": "Bearer " + token})
-                try:
-                    with urllib.request.urlopen(request, timeout=5) as response:
-                        return response.status
-                except urllib.error.HTTPError as exc:
-                    return exc.code
+        def me(token):
+            request = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/api/me",
+                                             headers={"Authorization": "Bearer " + token})
+            try:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return response.status
+            except urllib.error.HTTPError as exc:
+                return exc.code
 
-            self.assertEqual(me("one"), 200)
-            path.write_text(json.dumps({"op": {"hash": _token_hash("two-rotated"), "roles": ["operator"], "sources": []}}))
-            os.utime(path, ns=(time.time_ns(), time.time_ns() + 1_000_000))
-            self.assertEqual((me("one"), me("two-rotated")), (401, 200))
-            path.write_text("not json")
-            os.utime(path, ns=(time.time_ns(), time.time_ns() + 2_000_000))
-            self.assertEqual(me("two-rotated"), 401)
-            path.unlink()
-            self.assertEqual(me("two-rotated"), 401)
+        self.assertEqual(me("one"), 200)
+        path.write_text(json.dumps({"op": {"hash": _token_hash("two-rotated"), "roles": ["operator"], "sources": []}}))
+        os.utime(path, ns=(time.time_ns(), time.time_ns() + 1_000_000))
+        self.assertEqual((me("one"), me("two-rotated")), (401, 200))
+        path.write_text("not json")
+        os.utime(path, ns=(time.time_ns(), time.time_ns() + 2_000_000))
+        self.assertEqual(me("two-rotated"), 401)
+        path.unlink()
+        self.assertEqual(me("two-rotated"), 401)
 
 
 if __name__ == "__main__":
