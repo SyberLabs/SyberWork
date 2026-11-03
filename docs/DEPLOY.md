@@ -65,7 +65,7 @@ X-Record-Version: 6f1c...e2
 | `effects_pending` | Claimed effects not yet settled: queued, running, or `effect_unknown` awaiting reconciliation. |
 | `effects_settled_applied_total` | Claimed effects with `effect_succeeded` or a verified `reconciled`. |
 | `effects_settled_not_applied_total` | Claimed effects with `effect_rejected` (a no-write refusal or `not_applied`). |
-| `queue_depth` | Worker obligations queued or leased. Always 0 when effects settle inline. |
+| `queue_depth` | Worker obligations queued, leased, or being recovered after an expired lease. Always 0 when effects settle inline. |
 | `uptime_seconds` | Seconds since this server process started. |
 
 Every claimed effect is in exactly one of the three effect counters. `observed_at` is the epoch time of the read, the form the effect's `max_age_seconds` rule understands; the version is a digest of key, value and `observed_at`, so a repeated read of an unchanged value is still a fresh, distinct reading. An unknown key is `404 {"error": "unknown_metric"}`. The route needs a bearer token like every other read on the service; there is no anonymous metrics endpoint.

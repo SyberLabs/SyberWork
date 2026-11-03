@@ -4,7 +4,9 @@ Each class names the finding it pins. No test opens a connection beyond loopback
 real service: name resolution is patched, and the servers are SQLite cells on free loopback ports.
 """
 
+import copy
 import hashlib
+import ipaddress
 import json
 import os
 import socket
@@ -29,7 +31,10 @@ from syberwork.backup import export_cell
 from syberwork.core import Work
 from syberwork.server import UserFile, make_server
 from syberwork.storage import ReservationStore
-from tests.test_cell import _drop_postgres, _install, _postgres_database
+from syberlabs.evidence import acceptance_results
+from syberlabs.targets import header_value_ok
+from syberwork.worker import run_once
+from tests.test_cell import NOTE, _drop_postgres, _install, _postgres_database
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "syberwork" / "examples"
 PUBLIC = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
@@ -212,6 +217,9 @@ class ObserverCannotStallOrRead(unittest.TestCase):
                 self.assertEqual(status, 200)
         status, body = self.call("/api/me", "inv")
         self.assertEqual((status, body["name"]), (200, "inventory"))
+        # Builder views keep the builder's own status for a refusal (409), as its writes already did.
+        status, body = self.call(f"/api/builder/work/{self.case}", "inv")
+        self.assertEqual((status, body["error"]), (409, "forbidden"))
 
 
 class BackupDoesNotFollowLinks(unittest.TestCase):
@@ -400,6 +408,220 @@ class BindAndUsers(unittest.TestCase):
         self.assertEqual(me("two-rotated"), 401)
         path.unlink()
         self.assertEqual(me("two-rotated"), 401)
+
+
+class SpecialPurposeAddressesAreNotPublic(unittest.TestCase):
+    """Review F6: ``is_global`` alone let IANA special-purpose addresses through on some interpreters."""
+
+    def test_special_purpose_ranges_are_refused_whatever_ipaddress_says(self):
+        from syberlabs.targets import _public_ip
+        for address in ("192.0.0.9", "192.0.0.10", "2001:1::1", "2001:1::2", "fec0::1", "2001::1", "2002:7f00:1::1",
+                        "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "198.18.0.1", "100.64.0.1", "::ffff:127.0.0.1"):
+            with self.subTest(address=address):
+                self.assertFalse(_public_ip(ipaddress.ip_address(address)))
+        for address in ("93.184.216.34", "1.1.1.1", "2606:4700::1111", "2001:4860:4860::8888", "64:ff9b::808:808"):
+            with self.subTest(address=address):
+                self.assertTrue(_public_ip(ipaddress.ip_address(address)))
+
+    def test_a_name_resolving_to_one_is_refused(self):
+        answer = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:1::1", 443, 0, 0))]
+        with patch("syberlabs.targets.socket.getaddrinfo", return_value=answer):
+            with self.assertRaises(Rejected):
+                guard_request("https://example.com/x")
+
+
+class ConnectionIsPinnedToTheCheckedAddress(unittest.TestCase):
+    """Review F11: the guard resolved once and urllib resolved again, so a rebinding name could reach loopback."""
+
+    def test_the_connection_resolves_checks_and_dials_only_the_accepted_address(self):
+        dialed = []
+
+        class Recorder:
+            def __init__(self, *args):
+                pass
+
+            def settimeout(self, timeout):
+                pass
+
+            def connect(self, sockaddr):
+                dialed.append(sockaddr)
+                raise OSError("stop before TLS")
+
+            def close(self):
+                pass
+
+        opener = credentialed_opener()
+        with patch("syberlabs.targets.socket.getaddrinfo", return_value=PUBLIC), \
+                patch("syberlabs.targets.socket.socket", Recorder):
+            with self.assertRaises(urllib.error.URLError):
+                opener.open(urllib.request.Request("https://example.com/x"), timeout=2)
+        self.assertEqual(dialed, [("93.184.216.34", 443)])
+
+    def test_a_name_that_rebinds_to_loopback_after_the_guard_is_never_dialed(self):
+        loopback = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+        answers = iter([PUBLIC, loopback])
+        opener = credentialed_opener()
+        with patch("syberlabs.targets.socket.getaddrinfo", side_effect=lambda *a, **k: next(answers)), \
+                patch("syberlabs.targets.socket.socket", side_effect=AssertionError("no socket for a refused address")):
+            guard_request("https://example.com/x")
+            with self.assertRaises(urllib.error.URLError) as refused:
+                opener.open(urllib.request.Request("https://example.com/x"), timeout=2)
+        self.assertIn("refused target address", str(refused.exception.reason))
+
+
+class HeaderValuesAreChecked(unittest.TestCase):
+    """Review F14: ``version_arg`` was copied into If-Match with no character check."""
+
+    def test_folded_or_padded_values_are_refused(self):
+        for value in ("v1\r\n X-Injected: 1", "v1\n\tmore", " v1", "v1 ", "v\x00", "", "vé"):
+            with self.subTest(value=value):
+                self.assertFalse(header_value_ok(value))
+        self.assertTrue(header_value_ok('"etag-1" W/x'))
+
+    def test_commit_refuses_before_the_claim_and_execute_refuses_before_a_request(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Work(Path(folder) / "w.sqlite")
+            contract = dict(NOTE, id="versioned")
+            work.install_contract(contract)
+            work.install_policy({"version": 1, "actions": {"note": {"roles": ["operator"]}}})
+            work.install_action("note", {"kind": "http", "url": "http://127.0.0.1:9/notes", "version_arg": "v"})
+            case = work.create_case("versioned", 1, {"name": "a"}, "operator")
+            proposed = work.propose(case, "note", {"v": "q-1\r\n X-Injected: yes"}, "operator", ["operator"])
+            self.assertEqual(proposed["decision"]["status"], "allowed", proposed)
+            with self.assertRaises(Rejected) as refused:
+                work.commit(case, proposed["proposal"]["id"], "operator")
+            self.assertEqual(refused.exception.code, "invalid_argument")
+            self.assertFalse(any(e["kind"] == "effect_started" for e in work.inspect(case)["events"]))
+            work.close()
+        with patch.object(core_module.HTTP, "open", side_effect=AssertionError("no request")):
+            with self.assertRaises(Rejected) as refused:
+                Work._execute({"kind": "http", "url": "http://127.0.0.1:9/x", "version_arg": "v"}, {"v": "a\n b"}, "k")
+        self.assertEqual(refused.exception.code, "invalid_header")
+
+
+class ResolutionNeedsAChangedVersion(unittest.TestCase):
+    """Review F15: a result read under a key other than the trigger counted as a change by itself."""
+
+    def setUp(self):
+        from case_studies.enterprise_procurement import CONTRACT, SimulatedERP, configure
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.erp = SimulatedERP(Path(scratch.name) / "erp.sqlite3")
+        self.addCleanup(self.erp.close)
+        self.work = Work(Path(scratch.name) / "w.sqlite3")
+        self.addCleanup(self.work.close)
+        configure(self.work, self.erp)
+        self.contract = CONTRACT
+
+    def _quote_task(self, version):
+        case = self.work.create_case(self.contract["id"], version, {"request_id": "REQ-4814"}, "analyst")
+        for source, key in (("requisitions", "request"), ("quote_options", "quote_options")):
+            self.work.refresh_fact(case, source, key, "REQ-4814", "analyst", ["operator"])
+        return case, self.work.request_resolution(case, "quote", "analyst", ["operator"])["body"]["id"]
+
+    def test_without_a_confirmation_or_captured_version_the_result_does_not_complete(self):
+        unconfirmed = copy.deepcopy(self.contract)
+        unconfirmed["version"] = 2
+        del unconfirmed["resolutions"]["quote"]["confirmation"]
+        self.work.install_contract(unconfirmed)
+        case, task = self._quote_task(2)
+        self.erp.select_quote("procurement", "REQ-4814", "Q-882A")
+        result = self.work.resolve_resolution(case, task, "p.soto", ["procurement"])
+        self.assertEqual((result["status"], result["reason"]), ("pending", "source_decision_unverified"))
+
+    def test_a_confirmation_that_rereads_the_trigger_still_completes(self):
+        case, task = self._quote_task(1)
+        self.erp.select_quote("procurement", "REQ-4814", "Q-882A")
+        self.assertEqual(self.work.resolve_resolution(case, task, "p.soto", ["procurement"])["status"], "completed")
+
+
+class InterruptedEffectsKeepTheirOutcome(unittest.TestCase):
+    """Review F16: a second worker could relabel a stored ``effect_unknown`` as settled."""
+
+    def test_one_worker_recovers_an_expired_lease_and_unknown_stays_unknown(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Work(Path(folder) / "w.sqlite", effects="worker")
+            case = _install(work)
+            proposal = work.propose(case, "note", {}, "operator", ["operator"])["proposal"]["id"]
+            work.commit(case, proposal, "operator")
+            with work.tx() as db:
+                db.execute("UPDATE effect_obligations SET state='leased', lease_until=? WHERE proposal_id=?", (0, proposal))
+            first = work.lease_obligation(now=10)
+            self.assertEqual(first["state"], "interrupted")
+            self.assertIsNone(work.lease_obligation(now=10), "the expired lease is handed to one worker only")
+            self.assertEqual(work.settle_interrupted(first)["status"], "unknown")
+            # A worker that took the same job before the swap existed sees the stored outcome, not "settled".
+            self.assertEqual(work.settle_interrupted(dict(first))["status"], "unknown")
+            with work.tx() as db:
+                state = db.execute("SELECT state FROM effect_obligations WHERE proposal_id=?", (proposal,)).fetchone()["state"]
+            self.assertEqual(state, "unknown")
+            self.assertEqual(sum(e["kind"] == "effect_unknown" for e in work.inspect(case)["events"]), 1)
+            work.close()
+
+    def test_a_recovery_that_died_is_picked_up_again(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Work(Path(folder) / "w.sqlite", effects="worker")
+            case = _install(work)
+            proposal = work.propose(case, "note", {}, "operator", ["operator"])["proposal"]["id"]
+            work.commit(case, proposal, "operator")
+            with work.tx() as db:
+                db.execute("UPDATE effect_obligations SET state='recovering', lease_until=? WHERE proposal_id=?", (0, proposal))
+            self.assertEqual(work.metric("queue_depth"), 1)
+            self.assertEqual(run_once(work, now=10)["status"], "unknown")
+            work.close()
+
+
+class FactAcceptanceReadsTheNewestObservation(unittest.TestCase):
+    """Review F17: a fact clause passed on any historical observation, verified or not."""
+
+    @staticmethod
+    def _observed(seq, value, verified, source="inventory"):
+        return {"seq": seq, "kind": "observed", "body": {"key": "status", "value": value, "verified": verified, "source": source}}
+
+    def test_an_older_match_does_not_pass_and_verified_is_honored(self):
+        clause = {"id": "ready", "kind": "fact", "key": "status", "equals": "ready"}
+        contract = {"acceptance": [clause]}
+        superseded = [self._observed(1, "ready", True), self._observed(2, "held", True)]
+        self.assertFalse(acceptance_results(contract, superseded)[0]["passed"])
+        current = [self._observed(1, "held", True), self._observed(2, "ready", False)]
+        self.assertTrue(acceptance_results(contract, current)[0]["passed"])
+        self.assertFalse(acceptance_results({"acceptance": [dict(clause, verified=True)]}, current)[0]["passed"])
+        self.assertFalse(acceptance_results({"acceptance": [dict(clause, source="erp")]}, current)[0]["passed"])
+
+    def test_an_acceptance_fact_key_is_not_open_to_manual_attestation(self):
+        contract = {"actions": {}, "acceptance": [{"id": "ready", "kind": "fact", "key": "status", "equals": "ready"}]}
+        self.assertFalse(Work._attestable(contract, "status", "supplier"))
+        self.assertTrue(Work._attestable(contract, "note", "supplier"))
+
+
+class ConsoleCannotBeFramed(unittest.TestCase):
+    """Review F18: the console's policy set default-src, which does not govern framing."""
+
+    def test_the_console_document_refuses_framing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Work(Path(folder) / "w.sqlite")
+            server = make_server(work, {}, port=0)
+            server.RequestHandlerClass.log_message = lambda *args: None
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/", timeout=5) as response:
+                    headers = response.headers
+            finally:
+                server.shutdown()
+                server.server_close()
+                work.close()
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+        self.assertEqual(headers["X-Frame-Options"], "DENY")
+
+
+class PlannerUrlTakesNoQuery(unittest.TestCase):
+    """Review F3, planner half: a credential could ride in the planner URL's query string."""
+
+    def test_a_planner_url_with_a_query_is_unconfigured(self):
+        with patch.dict(os.environ, {"SYBERWORK_PLANNER_URL": "https://planner.example/plan?key=s3cret"}):
+            with self.assertRaises(planner_module.PlannerRefusal) as refused:
+                planner_module.HttpPlanner().ensure_configured()
+        self.assertEqual(refused.exception.code, "planner_unconfigured")
 
 
 if __name__ == "__main__":

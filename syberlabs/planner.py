@@ -59,6 +59,8 @@ class HttpPlanner:
     def ensure_configured(self) -> str:
         target = os.getenv("SYBERWORK_PLANNER_URL", "")
         try:
+            if "?" in target:   # a planner URL names an endpoint; a credential in its query would be logged and sent
+                raise Rejected("invalid_target", "planner URL takes no query string")
             trusted_origin(target)
         except Rejected:
             raise PlannerRefusal("planner_unconfigured", "configure an HTTPS or local planner endpoint") from None

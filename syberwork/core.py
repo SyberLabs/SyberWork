@@ -31,7 +31,7 @@ from syberlabs.evolution import (AUTOMATION_ROLES, candidate_record, candidate_v
 from syberlabs.jcs import envelope_jcs
 from syberlabs import metrics as work_metrics
 from syberlabs.planner import HttpPlanner, planning_context
-from syberlabs.targets import credentialed_opener, guard_request, trusted_origin
+from syberlabs.targets import credentialed_opener, guard_request, header_value_ok, trusted_origin
 from syberlabs.values import at_path
 from syberwork.storage import (
     ActionRegistry,
@@ -351,8 +351,21 @@ class Work:
             identity = at_path(result["body"]["value"], spec["result"]["identity_path"])
             confirmed = (not confirmation or at_path(confirmation["body"]["value"],
                          spec["confirmation"]["value_path"]) == selected)
-            changed = (spec["trigger"]["key"] != spec["result"]["key"] or
-                       result["body"]["version"] != task["trigger_version"])
+            if spec["trigger"]["key"] == spec["result"]["key"]:
+                changed = result["body"]["version"] != task["trigger_version"]
+            else:
+                # A different result key is not itself a change. Either the confirmation re-reads the trigger and
+                # finds the decision at the path that was empty when the task was requested, or the result's own
+                # version moved from the one read before the request. Otherwise the task stays pending.
+                trigger, check = spec["trigger"], spec.get("confirmation") or {}
+                decided_at_trigger = (confirmation is not None and check.get("key") == trigger["key"]
+                                      and check.get("source") == trigger["source"]
+                                      and check.get("value_path") == trigger["missing_path"])
+                requested_at = next(e["seq"] for e in history if e["kind"] == "resolution_requested"
+                                    and e["body"]["id"] == task_id)
+                baseline = self._result_baseline([e for e in history if e["seq"] < requested_at], spec)
+                changed = decided_at_trigger or (baseline is not None
+                                                 and result["body"]["version"] != baseline["body"]["version"])
             if (selected not in task["choices"] or identity != task["record_key"] or
                     not changed or not confirmed):
                 self._append(db, case_id, "resolution_checked", {
@@ -367,6 +380,13 @@ class Work:
                 "confirmation_hash": confirmation["hash"] if confirmation else None,
             })
             return {"status": "completed", "choice": selected, "event": event}
+
+    @staticmethod
+    def _result_baseline(history: list, spec: dict) -> dict | None:
+        """The newest verified observation of a resolution's result key from its result source, if any."""
+        result = spec["result"]
+        return next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == result["key"]
+                     and e["body"]["source"] == result["source"] and e["body"].get("verified")), None)
 
     def escalate_resolution(self, case_id: str, task_id: str, actor: str, roles: list[str]) -> dict:
         with self.tx() as db:
@@ -463,8 +483,8 @@ class Work:
         Admission (``facts.required``, ``resolution.current``) and argument binding read the newest observation
         of a key. An unverified attestation of a key the contract relies on would shadow the verified fact, so
         a case could be stalled, or its compiled arguments chosen, by anyone holding any attesting source. A key
-        the contract names (a required fact, an argument binding, a resolution's evidence) is attestable only
-        where a required fact names this very source and does not ask for verification. A key the contract never
+        the contract names (a required fact, an argument binding, a fact acceptance clause, a resolution's evidence)
+        is attestable only where a required fact names this very source and does not ask for verification. A key the contract never
         reads stays attestable, as before: it is recorded unverified and decides nothing.
         """
         named, allowed = set(), False
@@ -482,6 +502,9 @@ class Work:
                     if (isinstance(binding, str) and
                             binding.removeprefix("version:").removeprefix("fact:").split(".")[0] == key):
                         named.add(key)
+        for clause in contract.get("acceptance") or []:
+            if isinstance(clause, dict) and clause.get("kind") == "fact" and clause.get("key") == key:
+                named.add(key)   # acceptance reads the newest observation of this key
         for resolution in (contract.get("resolutions") or {}).values():
             if isinstance(resolution, dict) and any(
                     isinstance(part, dict) and part.get("key") == key for part in resolution.values()):
@@ -625,6 +648,11 @@ class Work:
                 self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision}, rule=full["rule"])
                 return {"decision": decision}
             action = json.loads(ActionRegistry(db).get(proposal["action"])["body"])
+            version_arg = action.get("version_arg")
+            if (action["kind"] != "local" and version_arg in proposal["args"]
+                    and not header_value_ok(str(proposal["args"][version_arg]))):
+                # Sent as If-Match. Refused before the claim, so no effect is started for a value that cannot be sent.
+                raise Rejected("invalid_argument", f"{version_arg} is not a valid header value")
             extra = {}
             if action["kind"] == "economic_http":
                 rule = policy["actions"][proposal["action"]]["economic"]
@@ -698,13 +726,22 @@ class Work:
         with self.tx() as db:
             row = db.execute(
                 "SELECT proposal_id, case_id, state FROM effect_obligations "
-                "WHERE state='queued' OR (state='leased' AND lease_until IS NOT NULL AND lease_until <= ?) "
+                "WHERE state='queued' OR (state IN ('leased', 'recovering') AND lease_until IS NOT NULL AND lease_until <= ?) "
                 "ORDER BY proposal_id LIMIT 1",
                 (now,),
             ).fetchone()
             if not row:
                 return None
-            if row["state"] == "leased":
+            if row["state"] in ("leased", "recovering"):
+                # Compare-and-swap the expired lease, so only one worker recovers it. The recovery holds a lease
+                # of its own, so a worker that dies while recovering leaves the obligation to the next one.
+                taken = db.execute(
+                    "UPDATE effect_obligations SET state='recovering', lease_until=? "
+                    "WHERE proposal_id=? AND state=? AND lease_until IS NOT NULL AND lease_until <= ?",
+                    (now + 30, row["proposal_id"], row["state"], now),
+                )
+                if getattr(taken, "rowcount", 1) != 1:
+                    return None
                 return {"state": "interrupted", "case_id": row["case_id"], "proposal_id": row["proposal_id"]}
             db.execute(
                 "UPDATE effect_obligations SET state='leased', lease_until=?, attempts=attempts+1 "
@@ -729,9 +766,17 @@ class Work:
         case_id, proposal_id = job["case_id"], job["proposal_id"]
         with self.tx() as db:
             history = self._events(db, case_id)
-            if any(event["kind"] in ("effect_succeeded", "effect_rejected", "effect_unknown") and event["body"]["proposal_id"] == proposal_id for event in history):
-                self._close_obligation(db, proposal_id, "settled")
-                return {"status": "settled", "proposal_id": proposal_id}
+            terminal = next((event for event in reversed(history)
+                             if event["kind"] in ("effect_succeeded", "effect_rejected", "effect_unknown")
+                             and event["body"]["proposal_id"] == proposal_id), None)
+            reconciled = any(verified_reconciliation(event) and event["body"]["proposal_id"] == proposal_id
+                             for event in history)
+            if terminal is not None or reconciled:
+                # Report the outcome already stored. An unknown effect stays unknown (still pending, budget held).
+                outcome = "succeeded" if reconciled else {"effect_succeeded": "succeeded", "effect_rejected": "rejected",
+                                                          "effect_unknown": "unknown"}[terminal["kind"]]
+                self._close_obligation(db, proposal_id, {"succeeded": "settled"}.get(outcome, outcome))
+                return {"status": outcome, "proposal_id": proposal_id}
             action = next(event["body"]["action"] for event in history if event["kind"] == "effect_started" and event["body"]["proposal_id"] == proposal_id)
             self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": action, "error": "worker_interrupted"})
             self._close_obligation(db, proposal_id, "unknown")
@@ -930,7 +975,7 @@ class Work:
             if key == "cases_total":
                 return int(db.execute("SELECT COUNT(*) AS n FROM cases").fetchone()["n"])
             if key == "queue_depth":
-                row = db.execute("SELECT COUNT(*) AS n FROM effect_obligations WHERE state IN ('queued', 'leased')").fetchone()
+                row = db.execute("SELECT COUNT(*) AS n FROM effect_obligations WHERE state IN ('queued', 'leased', 'recovering')").fetchone()
                 return int(row["n"])
             if key == "cases_open":
                 count = 0
@@ -1139,6 +1184,8 @@ class Work:
             headers["Authorization"] = f"Bearer {token}"
         if "version_arg" in action and action["version_arg"] in args:
             headers["If-Match"] = str(args[action["version_arg"]])
+        if not all(header_value_ok(value) for value in headers.values()):
+            raise Rejected("invalid_header", "a request header value has a line break, control character or edge whitespace")
         guard_request(action["url"])
         req = urllib.request.Request(action["url"], data=canonical(args).encode(), headers=headers, method=action.get("method", "POST"))
         with HTTP.open(req, timeout=min(30, action.get("timeout_seconds", 10))) as response:

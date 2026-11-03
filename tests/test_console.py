@@ -263,7 +263,7 @@ class ConsoleRoutes(CellCase):
                 self.assertEqual((status, body["error"]), (401, "unauthorized"))
 
     def test_console_reports_planner_configuration_without_disclosing_it(self):
-        url = "http://127.0.0.1:9/plan?secret=abc"
+        url = "http://127.0.0.1:9/plan/secret-abc"
         previous = os.environ.pop("SYBERWORK_PLANNER_URL", None)
         self.addCleanup(lambda: os.environ.__setitem__("SYBERWORK_PLANNER_URL", previous) if previous is not None else os.environ.pop("SYBERWORK_PLANNER_URL", None))
         status, body = self.cell.json("/api/console")
@@ -274,6 +274,8 @@ class ConsoleRoutes(CellCase):
         self.assertEqual(json.loads(raw)["planner_configured"], True)
         self.assertNotIn(b"127.0.0.1:9", raw)
         self.assertNotIn(b"secret", raw)
+        os.environ["SYBERWORK_PLANNER_URL"] = "http://127.0.0.1:9/plan?secret=abc"
+        self.assertFalse(self.cell.json("/api/console")[1]["planner_configured"], "a planner URL takes no query string")
         os.environ["SYBERWORK_PLANNER_URL"] = "http://planner.example.com/plan"
         self.assertFalse(self.cell.json("/api/console")[1]["planner_configured"], "plain HTTP off loopback is not a usable planner")
 

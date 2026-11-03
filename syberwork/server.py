@@ -31,7 +31,7 @@ POLICY_READERS = frozenset({"admin", "manager"})
 # reads no case, contract, certificate or metric: those name every case's inputs, history and amounts.
 ATTEST_ONLY_ROLES = frozenset({"observer"})
 # The first path segments of the reads ``_case_reader`` guards.
-CASE_READS = (("metrics",), ("api", "cases"), ("api", "contracts"), ("api", "certificates"))
+CASE_READS = (("metrics",), ("api", "cases"), ("api", "contracts"), ("api", "certificates"), ("api", "builder"))
 
 
 def _planner_configured() -> bool:
@@ -234,7 +234,7 @@ def make_server(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *,
                     return
                 user = self._user()
                 if any(tuple(parts[:len(prefix)]) == prefix for prefix in CASE_READS) and not _case_reader(user.get("roles", [])):
-                    raise Rejected("forbidden", "a role beyond observer is required to read cases, contracts, certificates and metrics")
+                    raise Rejected("forbidden", "a role beyond observer is required to read cases, contracts, certificates, metrics and builder views")
                 if len(parts) in (2, 3) and parts[:2] == ["metrics", "work_items"]:
                     # Per-work-item metrics (docs/METRICS.md): every item, or one thread's, with each number's basis.
                     try:
@@ -335,7 +335,9 @@ def make_server(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *,
             self.send_header("Content-Type", mime + "; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'")
+            # default-src does not govern framing: frame-ancestors (and X-Frame-Options for older browsers) does.
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             self.wfile.write(body)
 
