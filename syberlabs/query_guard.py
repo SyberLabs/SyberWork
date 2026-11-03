@@ -96,9 +96,9 @@ if __package__ in (None, ""):  # run by absolute path (``-I``): the hook process
 
     canonical = _beside("canonical").canonical
     _patterns = _beside("_patterns")
-    CREDENTIAL, credential_prefixes = _patterns.SECRET, _patterns.credential_prefixes
+    credential_prefixes = _patterns.credential_prefixes
 else:
-    from syberlabs._patterns import SECRET as CREDENTIAL, credential_prefixes  # one credential pattern set, shared
+    from syberlabs._patterns import credential_prefixes  # one credential pattern set, shared
     from syberlabs.canonical import canonical
 
 VERSION = "2"

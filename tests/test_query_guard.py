@@ -400,7 +400,6 @@ class Process(unittest.TestCase):
         self.assertTrue(guard.authentic(decision, KEY), "the hook's canonical JSON is the host's")
 
     def test_one_credential_pattern_object_and_the_same_policy(self):
-        self.assertIs(guard.CREDENTIAL, _patterns.SECRET)
         self.assertIs(metrics._SECRET, _patterns.SECRET)
         self.assertEqual(_patterns.SECRET.pattern,
                          r"(ghp_|gho_|ghs_|github_pat_|sk-ant-|sk-|xox[abprs]-|AKIA)[A-Za-z0-9_\-]{8,}")

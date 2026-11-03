@@ -1,5 +1,7 @@
 # E3: the comparison benchmark against a real model (plan)
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 Status: **pilot run 2026-10-21, see `docs/MODEL_COMPARISON.md`** (uninformative by the rule below; the full run was not started). **Fixtures v2 added 2026-10-21, unrun** (section below). Budget cap: **$50**, with a 30% margin, so the planned worst case must stay under **$38.46**.
 
 ## What E3 is

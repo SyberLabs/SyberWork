@@ -1,5 +1,7 @@
 # Development feedback and framework comparison
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 This note is from building a second project, `examples/access_review.py`, on `syberlabs.Session` and from the numbers in `benchmarks/results/dev-session.txt`. It is not a market survey. The comparisons are capability comparisons, not speed claims against those projects.
 
 ## What a new project actually does

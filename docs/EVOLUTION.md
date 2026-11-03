@@ -1,5 +1,7 @@
 # Candidates and search providers
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 SyberWork is the authority and evidence layer. A search provider is an artifact-search layer: it proposes changes. The provider can be a person's patch, a model adapter, or an EvoGit-style evolutionary search. Its output is **provisional** until the same contract, evidence, policy, and approval gates that govern every other SyberWork action admit it.
 
 > Lineage is provenance, not evidence of superiority.

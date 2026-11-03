@@ -1,5 +1,7 @@
 # SyberEval: pre-registered evaluations through the real Build Thread
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 SyberEval measures SyberWork's agents as governed workflows. It asks whether a provider configuration, run through the real Build Thread, produces admitted changes that are correct, safe and cheap. This page covers specs, tasks, arms, the runner and its evidence bundles, the preflight gate, how much of a hidden check reaches the proposer (`hidden_feedback`), the spend ledger, the safety gate, the scorer and the report (package `syberlabs/eval/`). The agent-facing safety tasks are not here yet (`spec/GAPS.md`, 62). The E3 harness (`benchmarks/model_vs_patch.py`, [MODEL_COMPARISON.md](MODEL_COMPARISON.md)) is still the tool for quick research. SyberEval is the instrument whose numbers are published.
 
 ## Principles

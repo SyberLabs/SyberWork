@@ -1,5 +1,7 @@
 # Plan: a company pays because SyberWork solved a problem it has
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 Status: **rehearsal implemented**. Gates 0, 2, 3, and 4 are not implemented. They need a real workflow, a price, a license choice, and a pilot cell. This document still names no customer.
 
 **Goal.** A company that is not SyberLabs pays money, and the reason they state is a problem whose failure mode SyberWork's recorded behavior prevented. A payment for a roadmap, a workshop, or "an AI coding platform" does not meet the goal.
