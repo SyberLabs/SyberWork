@@ -1,5 +1,7 @@
 # Experiments: two arms compared from the journal
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 ```bash
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup   # right after start
 syberlabs experiment report --name githits-pilot                    # the arms compared, with every check that applies

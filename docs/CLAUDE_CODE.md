@@ -1,5 +1,7 @@
 # Claude Code as a proposer
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 ```bash
 syberlabs propose --claude-code --trusted-tree                    # your own Claude Code login (subscription_local)
 syberlabs propose --claude-code --bare                            # ANTHROPIC_API_KEY in your environment (api)

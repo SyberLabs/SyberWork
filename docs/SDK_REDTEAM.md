@@ -1,5 +1,7 @@
 # Research and red team: closing the standards gap
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 Date of this pass: 2026-09-27. The question is not "which product should replace this SDK". It is which properties the leading standards already require, where this repository fails them, and which change closes each gap without pretending the SDK is something else.
 
 Standards used, and why:

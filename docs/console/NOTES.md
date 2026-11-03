@@ -1,5 +1,7 @@
 # Operator console: UI walkthrough
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 The browser console served by `syberwork serve` at `http://127.0.0.1:8766/`. It is a client of the
 existing case API in `syberwork/server.py`. Every button calls a route that already existed before
 this change, except for the read-only routes listed under "Routes added". The server stays the
