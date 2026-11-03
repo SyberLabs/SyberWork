@@ -31,7 +31,7 @@ from syberlabs.evolution import (AUTOMATION_ROLES, candidate_record, candidate_v
 from syberlabs.jcs import envelope_jcs
 from syberlabs import metrics as work_metrics
 from syberlabs.planner import HttpPlanner, planning_context
-from syberlabs.targets import guard_request, trusted_origin
+from syberlabs.targets import credentialed_opener, guard_request, trusted_origin
 from syberlabs.values import at_path
 from syberwork.storage import (
     ActionRegistry,
@@ -61,7 +61,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-HTTP = urllib.request.build_opener(NoRedirect)
+HTTP = credentialed_opener(NoRedirect)
 
 
 class StatusNotAuthoritative(Exception):
@@ -203,6 +203,10 @@ class Work:
             raise Rejected("invalid_action", "action kind must be local, http or economic_http")
         if doc["kind"] in ("http", "economic_http"):
             origin = trusted_origin(doc.get("url", ""))
+            # A definition names credential variables and never holds a secret (``registry``). A query string
+            # is where a secret would ride, so neither the write URL nor the status URL may carry one.
+            if urlsplit(doc["url"]).query or "?" in doc["url"] or any(c in doc["url"] for c in "{}"):
+                raise Rejected("invalid_action", "action URL takes no query string or template")
             allowed_methods = ("POST",) if doc["kind"] == "economic_http" else ("POST", "PUT", "PATCH")
             if doc.get("method", "POST") not in allowed_methods:
                 raise Rejected("invalid_action", "HTTP method must write")
@@ -219,6 +223,7 @@ class Work:
             if (doc["kind"] not in ("http", "economic_http") or trusted_origin(status_url) != origin or
                     status_url.count("{key}") != 1 or
                     urlsplit(status_url).path.count("{key}") != 1 or
+                    "?" in status_url or
                     any(c in status_url.replace("{key}", "") for c in "{}")):
                 raise Rejected("invalid_action", "status lookup needs one path key on the action origin")
         no_write = doc.get("no_write_statuses", [])
@@ -238,8 +243,12 @@ class Work:
             trusted = True
         except Rejected:
             trusted = False
-        if doc.get("kind") != "http" or not trusted or "{key}" not in url:
-            raise Rejected("invalid_source", "source needs a fixed HTTPS or local URL with {key}")
+        # The record key is substituted into the path only. A ``{key}`` in the host would let the case input
+        # choose which host receives the source's bearer token; a query would store a secret in the definition.
+        if (doc.get("kind") != "http" or not trusted or url.count("{key}") != 1 or
+                urlsplit(url).path.count("{key}") != 1 or "?" in url or
+                any(c in url.replace("{key}", "") for c in "{}")):
+            raise Rejected("invalid_source", "source needs a fixed HTTPS or local URL with one {key} in its path")
         with self.tx() as db:
             sources = SourceRegistry(db)
             prior = sources.get(name)
@@ -447,6 +456,51 @@ class Work:
             self._case(db, case_id)
             return self._append(db, case_id, "observed", {"key": key, "value": value, "source": source, "version": version, "actor": actor, "verified": verified})
 
+    @staticmethod
+    def _attestable(contract: dict, key: str, source: str) -> bool:
+        """Whether a manual, unverified attestation of ``key`` from ``source`` may enter this contract's case.
+
+        Admission (``facts.required``, ``resolution.current``) and argument binding read the newest observation
+        of a key. An unverified attestation of a key the contract relies on would shadow the verified fact, so
+        a case could be stalled, or its compiled arguments chosen, by anyone holding any attesting source. A key
+        the contract names (a required fact, an argument binding, a resolution's evidence) is attestable only
+        where a required fact names this very source and does not ask for verification. A key the contract never
+        reads stays attestable, as before: it is recorded unverified and decides nothing.
+        """
+        named, allowed = set(), False
+        for action in (contract.get("actions") or {}).values():
+            if not isinstance(action, dict):
+                continue
+            for requirement in action.get("required_facts") or []:
+                if isinstance(requirement, dict) and requirement.get("key") == key:
+                    named.add(key)
+                    if requirement.get("source") == source and not requirement.get("verified"):
+                        allowed = True
+            bindings = action.get("arguments") or {}
+            if isinstance(bindings, dict):
+                for binding in bindings.values():
+                    if (isinstance(binding, str) and
+                            binding.removeprefix("version:").removeprefix("fact:").split(".")[0] == key):
+                        named.add(key)
+        for resolution in (contract.get("resolutions") or {}).values():
+            if isinstance(resolution, dict) and any(
+                    isinstance(part, dict) and part.get("key") == key for part in resolution.values()):
+                return False
+        return allowed or key not in named
+
+    def attest(self, case_id: str, key: str, value: Any, source: str, version: str, actor: str) -> dict:
+        """Record a person's or service's unverified attestation (``POST /api/cases/{id}/facts``).
+
+        Refused for a key the case's contract relies on unless that contract accepts this source's unverified
+        word for it (``_attestable``). ``refresh_fact`` is the route for a verified fact.
+        """
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+        if not isinstance(key, str) or not self._attestable(contract, key, source):
+            raise Rejected("attestation_denied", "this contract reads that key only from its configured source")
+        return self.observe(case_id, key, value, source, version, actor)
+
     def refresh_fact(self, case_id: str, source: str, key: str, record_key: str, actor: str, roles: list[str]) -> dict:
         with self.tx() as db:
             self._case(db, case_id)
@@ -466,7 +520,10 @@ class Work:
                 raise Rejected("missing_credential", "source credential unavailable")
             headers["Authorization"] = "Bearer " + token
         target = config["url"].replace("{key}", quote(record_key, safe=""))
-        guard_request(target)
+        try:
+            guard_request(target)
+        except urllib.error.URLError:   # the guard could not resolve the host; no request was made
+            raise Rejected("source_unavailable", "destination_unreachable") from None
         request = urllib.request.Request(target, headers=headers)
         try:
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
@@ -715,9 +772,15 @@ class Work:
                 raise Rejected("missing_credential", "destination status credential unavailable")
             headers["Authorization"] = "Bearer " + token
         target = status_url.replace("{key}", quote(proposal_id, safe=""))
-        guard_request(target)
+        try:
+            guard_request(target)
+            unresolved = None
+        except urllib.error.URLError as exc:   # the guard could not resolve the host: the lookup is unavailable
+            unresolved = exc
         request = urllib.request.Request(target, headers=headers)
         try:
+            if unresolved is not None:
+                raise unresolved
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
                 if getattr(response, "status", None) != 200:
                     raise StatusNotAuthoritative(getattr(response, "status", None))

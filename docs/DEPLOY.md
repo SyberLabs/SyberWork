@@ -10,17 +10,18 @@ The first deployment of the factory is the SyberWork service, its worker and its
 
 | Service | Image | Role |
 | --- | --- | --- |
-| `db` | `postgres:16` | The cell's database `syberwork`, user `syber`, on volume `syberwork-db`. Health-checked with `pg_isready`. |
-| `syberwork` | built from `Dockerfile` | The operator service, `syberwork serve --port 8766`, published on host port 8766. Binds `0.0.0.0` inside the container because `SYBERWORK_BIND` says so; the container port is reachable only through the published port. |
+| `db` | `postgres:16` | The cell's database `syberwork`, user `syber`, password `SYBERWORK_DB_PASSWORD` (required; no default), on volume `syberwork-db`. Health-checked with `pg_isready`. |
+| `syberwork` | built from `Dockerfile` | The operator service, `syberwork serve --port 8766`, published on the host's loopback, `127.0.0.1:8766`. Binds `0.0.0.0` inside the container because `SYBERWORK_BIND` says so; the container port is reachable only through that published port. |
 | `worker` | the same image | `syberwork worker`: leases queued effect obligations and settles them. Needed because `SYBERWORK_EFFECTS=worker` makes the service claim effects and return. |
 
-Both processes share `SYBERWORK_HOME=/home/syber/cell` on volume `syberwork-home`, which holds `users.json` (credential hashes), `cell.json` and `traces.jsonl`. The environment (`SYBERWORK_DATABASE`, `SYBERWORK_ORGANIZATION=example`, `SYBERWORK_TRACE=1`) is the one in the file; this document changes nothing in it.
+Both processes share `SYBERWORK_HOME=/home/syber/cell` on volume `syberwork-home`, which holds `users.json` (credential hashes), `cell.json` and `traces.jsonl`. The environment (`SYBERWORK_DATABASE`, `SYBERWORK_ORGANIZATION=example`, `SYBERWORK_TRACE=1`) is the one in the file; this document changes nothing in it. `users.json` is read again whenever it changes, so removing or rotating a credential there applies without restarting `serve`.
 
 ## 2. Running it on one host
 
 The host needs Docker with the Compose plugin and a checkout of this repository. The commands are the ones `scripts/compose_cell.sh` runs, in order, without the smoke steps.
 
 ```sh
+export SYBERWORK_DB_PASSWORD="<a long random value you keep>"   # compose refuses to start without it
 docker compose build
 docker compose up -d db --wait
 docker compose run --rm -T syberwork syberwork init
@@ -89,8 +90,8 @@ with `SYBERWORK_METRIC_TOKEN` set in the environment of the process that runs `s
 ## 4. What is not there yet
 
 - **No thread runner service.** Build Threads run from a checkout with `python -m syberlabs`; nothing in the stack starts, schedules or recovers them. That is a later packet.
-- **No public exposure and no TLS.** Docker publishes port 8766 on the host's interfaces as `docker-compose.yml` is written; whether the host firewall closes it, or the mapping is narrowed to `127.0.0.1:8766:8766`, is the operator's decision on the host. The service speaks plain HTTP; the intervention effect will only read it over loopback.
-- **No secrets broker.** The database password is the literal in `docker-compose.yml`, the credentials are what `init` printed, and the thread's metric token lives in an environment variable. Rotation is `down -v` and a new `init`.
+- **No public exposure and no TLS.** Docker publishes port 8766 on the host's loopback only (`127.0.0.1:8766:8766`); widening that mapping, and the firewall that would then guard it, is the operator's decision on the host. The service speaks plain HTTP; the intervention effect will only read it over loopback.
+- **No secrets broker.** The database password is whatever `SYBERWORK_DB_PASSWORD` held when the `syberwork-db` volume was first created (a volume created under the old literal `syber` keeps it until `down -v`), the credentials are what `init` printed, and the thread's metric token lives in an environment variable. Rotation is `down -v` and a new `init`.
 - **No principal management from the command line.** `Work.register_principal` exists for cell principals with a token hash and a delegation; the CLI exposes only the `init` credentials.
 - **Single host, single worker.** One Compose project, one database, one worker process. `syberwork backup` is the only redundancy.
 - **Counters are read on request.** `cases_open` reads every case's history on each call; fine for a cell this size, not a design for thousands of cases.
