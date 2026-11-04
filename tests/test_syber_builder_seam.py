@@ -21,14 +21,20 @@ seam's specification, and no runtime implements it yet.
 import contextlib
 import io
 import json
+import os
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from syberlabs import Rejected
 from syberlabs.cli import main as cli
-from tests.test_build_thread import GOOD, RepoCase, git
+from tests.test_build_thread import GOOD, REPORT, TEST_REPORT, RepoCase, git
+
+CHECKOUT = Path(__file__).resolve().parents[1]
 
 SYBER_OBJECTIVE = "Work order 1: add a CSV export for report rows"
 SYBER_PROPOSE = ["propose", "--claude-code", "--bare", "--lane", "provider_3p", "--max-calls", "2",
@@ -145,6 +151,93 @@ class SyberBuilderSeam(RepoCase):
         self.assertEqual(provider.mcp_config, None)
         self.assertFalse(any(re.match(r"^(Bash|PowerShell|WebSearch|WebFetch)$", t) for t in provider.allowed_tools),
                          "Syber's builder relies on the default tools: no shell, no web lookups")
+
+
+class SyberBuilderDefaults(unittest.TestCase):
+    """The same steps as Syber runs them: a subprocess in the job worktree with no ``--repo``, ``--home`` or
+    ``--actor``, and the environment Syber builds (``syberwork-builder.mjs:350-364``: ``PATH``, a job ``HOME``,
+    ``LANG``, ``TERM``, ``CI``, ``PYTHONDONTWRITEBYTECODE``, ``PYTHONPATH`` at SyberWork). The repository discovery,
+    the default home and the default actor are then this repository's defaults, not a test's options. No git identity
+    is inherited: ``HOME``, ``USERPROFILE`` and the XDG directories are temporary, the global config is an empty
+    file and the system config is off, so the actor falls back as it does on a Syber host with no identity."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        base = Path(folder.name)
+        self.worktree, home = base / "job", base / "home"
+        (self.worktree / "src").mkdir(parents=True)
+        (self.worktree / "tests").mkdir()
+        home.mkdir()
+        (self.worktree / "src" / "report.py").write_text(REPORT)
+        (self.worktree / "tests" / "test_report.py").write_text(TEST_REPORT)
+        empty = base / "gitconfig"
+        empty.write_text("")
+        self.env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(home), "LANG": "C.UTF-8",
+                    "TERM": "dumb", "CI": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(CHECKOUT),
+                    "USERPROFILE": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
+                    "XDG_CACHE_HOME": str(home / ".cache"), "XDG_DATA_HOME": str(home / ".local" / "share"),
+                    "GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1"}
+        if os.name == "nt":  # a Windows interpreter cannot start without these; none carries an identity
+            self.env.update({name: os.environ[name] for name in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
+                             if name in os.environ})
+
+    def step(self, *args, cmd=None):
+        """One step, as ``runStep`` starts it (``syberwork-builder.mjs:370``): argv, ``cwd`` the worktree."""
+        done = subprocess.run([*(cmd or [sys.executable, "-m", "syberlabs"]), *args], cwd=self.worktree, env=self.env,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=240)
+        return done.returncode, done.stdout, done.stderr
+
+    def json_step(self, *args):
+        code, out, err = self.step(*args)
+        try:
+            return code, json.loads(out)
+        except ValueError:
+            self.fail(f"`syberlabs {' '.join(args)}` did not print JSON (exit {code}): {out[-400:]} {err[-400:]}")
+
+    def test_the_steps_run_on_the_defaults_from_the_job_worktree(self):
+        # The disposable repository, exactly as Syber makes it (syberwork-builder.mjs:389-393).
+        for args in (["-c", "init.defaultBranch=job", "init", "-q"], ["add", "-A"],
+                     ["-c", "user.name=Syber", "-c", "user.email=syber@syberlabs.io", "commit", "-q", "--allow-empty",
+                      "-m", "syber: the worktree as this round starts"]):
+            code, out, err = self.step(*args, cmd=["git"])
+            self.assertEqual(code, 0, out + err)
+        code, identity, _ = self.step("config", "user.email", cmd=["git"])
+        self.assertEqual((code, identity.strip()), (1, ""), "no git identity reaches the job's steps")
+
+        self.assertEqual(self.step("init")[0], 0, "syberwork-builder.mjs:399")
+        self.assertTrue((self.worktree / ".syberlabs").is_dir(), "the default home is the worktree's .syberlabs")
+        code, out, err = self.step("start", SYBER_OBJECTIVE, "--class", "R")  # syberwork-builder.mjs:402
+        self.assertEqual(code, 0, out + err)
+        for path, text in GOOD.items():  # the proposer's work; Syber's propose line is pinned in SyberBuilderSeam
+            (self.worktree / path).write_text(text)
+        code, out, err = self.step("propose", "--from-worktree", "--name", "syber-line0", "--revision", "1")
+        self.assertEqual(code, 0, out + err)
+
+        code, status = self.json_step("status", "--json")  # syberwork-builder.mjs:411
+        self.assertEqual(code, 0)
+        thread = status["thread"]
+        self.assertEqual([(c["id"], c["in_scope"]) for c in status["candidates"]], [("c1", True)])
+        code, verdict = self.json_step("check", "c1", "--json")  # syberwork-builder.mjs:435
+        self.assertEqual(code, 0)
+        self.assertIs(verdict["acceptable"], True)
+        code, out, err = self.step("accept", "c1")  # syberwork-builder.mjs:455
+        self.assertEqual(code, 0, out + err)
+        code, after = self.json_step("status", "--json")  # syberwork-builder.mjs:460
+        self.assertEqual((after["thread"], after["accepted"]), (thread, "c1"))
+        tip = self.step("rev-parse", after["target_ref"], cmd=["git"])[1].strip()
+        self.assertRegex(after["target"], r"^[0-9a-f]{40}$")
+        self.assertEqual(after["target"], tip, "the thread branch is in the worktree's own repository")
+
+        code, record = self.json_step("export")  # syberwork-builder.mjs:417
+        self.assertEqual(code, 0)
+        self.assertIs(record["chain_valid"], True)
+        self.assertEqual(record["status"]["thread"], thread)
+        [created] = [e for e in record["events"] if e["kind"] == "case_created"]
+        self.assertEqual(created["body"]["actor"], "developer",
+                         "no git user.email: the default actor (Kit.local), not the commit's inline identity")
+        self.assertEqual(sorted(p.name for p in self.worktree.parent.iterdir() if p.name.startswith(".syberlabs")), [],
+                         "nothing was written beside the worktree")
 
 
 if __name__ == "__main__":
