@@ -7,8 +7,10 @@ test here stayed green. This file runs Syber's exact argv, in Syber's order, fro
 directory with no ``--repo``, ``--home`` or ``--actor`` (Syber passes none), and asserts every field Syber reads.
 
 The one substitution is Claude Code itself: ``SYBERLABS_CLAUDE_BIN`` names the stand-in from
-``tests/test_claude_code.py``, as Syber names the real binary. ``ANTHROPIC_BASE_URL`` is set as Syber's key
-proxy sets it, so the bare run is routed and its lane is ``provider_3p``; the stand-in never calls it.
+``tests/test_claude_code.py``, as Syber names the real binary. The test sets no credential or routing variable:
+Syber's job token and key-proxy URL (``ANTHROPIC_API_KEY``, ``ANTHROPIC_BASE_URL``, runThread :357-358) are its
+environment, not this CLI's contract, and ``--lane provider_3p`` needs neither to start. The lane is pinned by
+Syber's flag alone.
 
 If Syber changes what it sends or reads, update ``SYBER_ARGV`` and the asserted fields here with a citation.
 """
@@ -54,6 +56,10 @@ def passed_candidates(status: dict) -> list[str]:
 
 
 class SyberLine0Contract(cc.ClaudeCodeCase):
+    def setUp(self):
+        super().setUp()  # its hermetic environment patch restores everything removed here
+        os.environ.pop("ANTHROPIC_API_KEY", None)  # whatever the host has, the contract runs with no credential
+
     def syber(self, args, env=None):
         """One step as Syber runs it: the worktree is the current directory, and only Syber's own arguments."""
         out, err = io.StringIO(), io.StringIO()
@@ -62,11 +68,9 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
             code = cli(list(args))
         return code, out.getvalue(), err.getvalue()
 
-    def routed_env(self, name, **stand_in):
-        # As runThread's env: the job token as the API key and the key proxy as the base URL (:357-358).
-        return {BIN_ENV: " ".join(self.stand_in(name, lookups=[], **stand_in)),
-                "ANTHROPIC_API_KEY": "test-placeholder", "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
-                "CI": "1", "TERM": "dumb"}
+    def runner_env(self, name, **stand_in):
+        # runThread's TERM and CI (:354-355), and the stand-in as Syber's SYBERLABS_CLAUDE_BIN (:363).
+        return {BIN_ENV: " ".join(self.stand_in(name, lookups=[], **stand_in)), "CI": "1", "TERM": "dumb"}
 
     def status(self) -> dict:
         code, out, err = self.syber(SYBER_ARGV["status"])
@@ -77,11 +81,11 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         self.assertEqual(self.syber(SYBER_ARGV["init"])[0], 0)
         code, out, err = self.syber(SYBER_ARGV["start"])
         self.assertEqual(code, 0, out + err)
-        code, out, err = self.syber(SYBER_ARGV["propose"], env=self.routed_env("line0"))
+        code, out, err = self.syber(SYBER_ARGV["propose"], env=self.runner_env("line0"))
         self.assertEqual(code, 0, out + err)
         [run] = self.runs("line0")
         self.assertIn("--bare", run["argv"])
-        self.assertTrue(run["api_key"], "the job token reaches the bare run as its API key")
+        self.assertFalse(run["api_key"], "no credential was set, so none reached the run")
 
         status = self.status()
         self.assertIsInstance(status["thread"], str)  # names the exported journal file (:420)
@@ -126,7 +130,7 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         self.assertEqual(self.syber(SYBER_ARGV["init"])[0], 0)
         self.assertEqual(self.syber(SYBER_ARGV["start"])[0], 0)
         broken = {"src/export.py": "def to_csv(:\n", "tests/test_export.py": cc.GOOD["tests/test_export.py"]}
-        code, out, err = self.syber(SYBER_ARGV["propose"], env=self.routed_env("broken", first=broken, repair=broken))
+        code, out, err = self.syber(SYBER_ARGV["propose"], env=self.runner_env("broken", first=broken, repair=broken))
         status = self.status()
         self.assertTrue(status["candidates"], out + err)
         self.assertEqual(passed_candidates(status), [], "Syber then ends the job as no_passing_candidate (:426)")
