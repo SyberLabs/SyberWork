@@ -590,45 +590,120 @@ export function witnessView(body, events) {
 }
 
 // Admission certificates of Build Threads (GET /api/certificates, syberwork/certificates.py), as serve verified each file
-// under the key it was given: signature and shape, then the thread's journal under the same home. serve never runs the
-// repository layer. The console checks no signature. A row reads certified only when the server passed it with a
-// signature of ok, a journal of ok and a statement of the expected shape; a pass without a journal reads as signed only.
-// Any other answer is a failure or unknown, and a row whose signature failed states nothing.
+// under the keys it was given (one, or a few during a rotation): signature and shape, then the thread's journal under the
+// same home, and with SYBERWORK_CERTIFICATE_REPOSITORY the repository layer between them. The console checks no
+// signature. A row reads certified only when the server passed it with a signature of ok, a journal of ok and a statement
+// of the expected shape, signed under a key the same answer lists, with a digest that answer does not revoke; a pass
+// without a journal reads as signed only. When the answer says serve checked the repository, a row reads certified or
+// signed only with a repository of ok, and repository differs or unreadable only when serve failed it with the reason its
+// repository field names; when it says serve did not, a row naming any repository state is unknown. An answer that says
+// neither, exactly, is unknown as a whole. A row
+// serve failed as revoked reads revoked only when its digest is one the same answer lists. With a validity window in the
+// answer, a row reads certified only when its issued_at is inside that window at the answer's checked_at, and expired or
+// not yet valid only when serve failed it so and the console's own reckoning from the same answer agrees. Any other answer
+// is a failure or unknown, and a row whose signature failed states nothing.
 export const CERTIFICATE_STATE = {
-  certified: ['verified', 'certified', 'signed under the configured key, and the thread\'s journal still says what it states'],
-  signed: ['pending', 'signed · journal not checked', 'signed under the configured key; no journal for this thread under the configured home, so only the signature was checked'],
-  journal_differs: ['denied', 'journal differs', 'signed under the configured key, but the journal no longer says what it states: do not treat it as certified'],
-  journal_unreadable: ['unknown', 'journal unreadable', 'signed under the configured key, but serve could not read the thread\'s journal: not certified'],
-  not_signed: ['denied', 'not certified', 'not signed by the configured key, or not a certificate this server reads'],
+  certified: ['verified', 'certified', 'signed under a configured key, and the thread\'s journal still says what it states'],
+  signed: ['pending', 'signed · journal not checked', 'signed under a configured key; no journal for this thread under the configured home, so only the signature was checked'],
+  journal_differs: ['denied', 'journal differs', 'signed under a configured key, but the journal no longer says what it states: do not treat it as certified'],
+  journal_unreadable: ['unknown', 'journal unreadable', 'signed under a configured key, but serve could not read the thread\'s journal: not certified'],
+  revoked: ['denied', 'revoked', 'signed under a configured key, but serve\'s configuration revokes this certificate: do not treat it as certified'],
+  expired: ['denied', 'expired', 'signed under a configured key, but issued longer ago than serve\'s validity window: do not treat it as certified'],
+  not_yet_valid: ['denied', 'not yet valid', 'signed under a configured key, but dated after serve\'s clock: do not treat it as certified'],
+  repository_differs: ['denied', 'repository differs', 'signed under a configured key, but the configured repository does not hold the commits, trees or diff it states: do not treat it as certified'],
+  repository_unreadable: ['unknown', 'repository unreadable', 'signed under a configured key, but serve could not read the configured repository: not certified'],
+  not_signed: ['denied', 'not certified', 'not signed by any configured key, or not a certificate this server reads'],
   unknown: ['unknown', 'unknown', 'an answer this console does not know'],
 };
-function certificateStatement(s) {
-  return !!s && typeof s === 'object' && typeof s.thread === 'string' && typeof s.candidate === 'string' &&
+// keys: the public keys the same answer lists. A statement under any other key is not one this console can read.
+function certificateStatement(s, keys) {
+  return !!s && typeof s === 'object' && typeof s.keyid === 'string' && keys.includes(s.keyid) &&
+    typeof s.thread === 'string' && typeof s.candidate === 'string' &&
     !!s.result && typeof s.result.commit === 'string' && !!s.chain && Number.isInteger(s.chain.count) && typeof s.chain.head === 'string' &&
     !!s.contract && typeof s.contract.id === 'string' && Array.isArray(s.checks) ? s : null;
 }
-function certificateRow(r) {
-  const statement = r.signature === 'ok' ? certificateStatement(r.statement) : null;
+// Where a statement's issued_at falls in the answer's validity window (all in microseconds but the window's seconds):
+// 'current', 'expired' or 'not_yet_valid', as syberwork/certificates.py reckons it; 'unknown' when the row's expires_at is
+// not issued_at plus the window, or either is not a whole number.
+function certificateWindow(statement, r, validity) {
+  const issued = statement.issued_at, expires = issued + validity.max_age * 1e6;
+  if (!Number.isSafeInteger(issued) || issued < 0 || r.expires_at !== expires) return 'unknown';
+  if (validity.checked_at > expires) return 'expired';
+  return issued > validity.checked_at + validity.skew * 1e6 ? 'not_yet_valid' : 'current';
+}
+// revoked: the certificate digests the same answer lists. A row carrying one of them is never certified, whatever else it
+// says, and a pass without a digest is unknown: the console could not tell whether it is revoked.
+// validity: the answer's window, or null without one. With one, a signed row outside it, or whose place in it the console
+// cannot reckon, is never certified.
+// The reasons serve's repository layer fails a signed row with (syberwork/certificates.py REPOSITORY_FAILURES); the last
+// one means git could not answer.
+export const REPOSITORY_FAILURES = ['commit_missing:base', 'commit_missing:result', 'tree_mismatch:base', 'tree_mismatch:result',
+  'changed_paths_mismatch', 'diff_mismatch:digest', 'diff_mismatch:bytes', 'repository_unreadable'];
+const CERTIFIED_IN_REPOSITORY = 'signed under a configured key, the configured repository holds the commits, trees and diff it states, and the thread\'s journal still says what it states';
+const SIGNED_IN_REPOSITORY = 'signed under a configured key, and the configured repository holds the commits, trees and diff it states; no journal for this thread under the configured home, so the journal was not checked';
+// repository: whether the same answer says serve checked the repository layer. With it, a row is certified or signed only
+// with a repository of ok; without it, a row naming any repository state is not one this console can read.
+function certificateRow(r, keys, revoked, validity, repository) {
+  const statement = r.signature === 'ok' ? certificateStatement(r.statement, keys) : null;
+  // What the repository layer found: 'ok', a failure serve names, or null where it did not run (no repository, or no
+  // statement to check); 'bad' for anything else, and for null on a signed row when the answer says serve checked it.
+  let held = r.repository === null ? null : 'bad';
+  if (repository && statement) held = r.repository === 'ok' || REPOSITORY_FAILURES.includes(r.repository) ? r.repository : 'bad';
   const reason = typeof r.reason === 'string' ? r.reason : null;
+  const digest = typeof r.digest === 'string' && /^[0-9a-f]{64}$/.test(r.digest) ? r.digest : null;
+  const listed = digest !== null && revoked.includes(digest);
+  const window = validity && statement ? certificateWindow(statement, r, validity) : null;
   let state = 'unknown';
-  if (r.verdict === 'pass' && reason === null && statement) {
+  if (held === 'bad') {
+    state = 'unknown';
+  } else if (reason === 'revoked' || listed) {
+    if (r.verdict === 'fail' && reason === 'revoked' && listed && statement) state = 'revoked';
+  } else if (reason === 'expired' || reason === 'not_yet_valid' || (window !== null && window !== 'current')) {
+    if (r.verdict === 'fail' && validity && statement && window === reason) state = reason;
+  } else if (REPOSITORY_FAILURES.includes(reason) || (held !== null && held !== 'ok')) {
+    if (r.verdict === 'fail' && statement && held === reason) state = reason === 'repository_unreadable' ? 'repository_unreadable' : 'repository_differs';
+  } else if (r.verdict === 'pass' && reason === null && statement && digest) {
     if (r.journal === 'ok' && r.journal_present === true) state = 'certified';
     else if (r.journal === null && r.journal_present === false) state = 'signed';
   } else if (r.verdict === 'fail' && reason) {
     state = statement && typeof r.journal === 'string' && r.journal !== 'ok' ? (r.journal.startsWith('journal_unreadable:') ? 'journal_unreadable' : 'journal_differs')
       : r.signature !== 'ok' ? 'not_signed' : 'unknown';
   }
-  const [tone, label, text] = CERTIFICATE_STATE[state];
-  return {file: r.file, state, tone, label, text, reason, certified: state === 'certified',
-    statement: state === 'unknown' || state === 'not_signed' ? null : statement};
+  const [tone, label, stateText] = CERTIFICATE_STATE[state];
+  const text = repository && state === 'certified' ? CERTIFIED_IN_REPOSITORY : repository && state === 'signed' ? SIGNED_IN_REPOSITORY : stateText;
+  const shown = state === 'unknown' || state === 'not_signed' ? null : statement;
+  // key: which of the listed keys signed it, counted from 1, so a rotation shows which rows are still under an old key.
+  // digest: what SYBERWORK_CERTIFICATE_REVOKED would list to revoke it. expiresAt: when it leaves the window (microseconds).
+  return {file: r.file, state, tone, label, text, reason, certified: state === 'certified', statement: shown,
+    key: shown ? keys.indexOf(shown.keyid) + 1 : null, digest: shown ? digest : null, expiresAt: shown && window ? r.expires_at : null,
+    repository: shown && repository ? held : null};
+}
+// An answer's validity window: null when serve has none, the window when it is one serve would write, undefined otherwise.
+function certificateValidity(v) {
+  if (v === null) return null;
+  const whole = (n, low) => Number.isSafeInteger(n) && n >= low;
+  return v && typeof v === 'object' && whole(v.max_age, 1) && whole(v.skew, 0) && whole(v.checked_at, 0) ?
+    {max_age: v.max_age, skew: v.skew, checked_at: v.checked_at} : undefined;
+}
+// Whether an answer says serve checked the repository layer: true or false for the two answers serve writes, undefined
+// for any other, which could not tell the console what a row's repository field means.
+function certificateLayers(checked, notChecked) {
+  const same = (list, names) => Array.isArray(list) && list.length === names.length && names.every((n, i) => list[i] === n);
+  if (same(checked, ['signature', 'repository', 'journal']) && same(notChecked, [])) return true;
+  if (same(checked, ['signature', 'journal']) && same(notChecked, ['repository'])) return false;
+  return undefined;
 }
 export function certificateView(body) {
   const unknown = text => ({state: 'unknown', text});
   if (!body || typeof body !== 'object' || typeof body.configured !== 'boolean') return unknown('not returned by the server');
   if (!body.configured) return {state: 'off', text: typeof body.note === 'string' ? body.note : 'serve reads no certificates'};
-  if (!Array.isArray(body.certificates) || !Number.isInteger(body.total) || typeof body.public_key !== 'string') return unknown('not returned by the server');
-  const rows = body.certificates.filter(r => r && typeof r === 'object' && typeof r.file === 'string').map(certificateRow);
+  const keys = body.public_keys, revoked = body.revoked, validity = certificateValidity(body.validity);
+  const repository = certificateLayers(body.checked, body.not_checked);
+  if (!Array.isArray(body.certificates) || !Number.isInteger(body.total) || !Array.isArray(keys) || !keys.length ||
+    !keys.every(k => typeof k === 'string') || !Array.isArray(revoked) || !revoked.every(d => typeof d === 'string' && /^[0-9a-f]{64}$/.test(d)) ||
+    validity === undefined || repository === undefined) return unknown('not returned by the server');
+  const rows = body.certificates.filter(r => r && typeof r === 'object' && typeof r.file === 'string').map(r => certificateRow(r, keys, revoked, validity, repository));
   const names = list => Array.isArray(list) ? list.filter(x => typeof x === 'string') : [];
-  return {state: 'read', rows, total: body.total, shown: rows.length, truncated: body.total > rows.length, publicKey: body.public_key,
+  return {state: 'read', rows, total: body.total, shown: rows.length, truncated: body.total > rows.length, publicKeys: keys, revoked, validity, repository,
     checked: names(body.checked), notChecked: names(body.not_checked), certified: rows.filter(r => r.certified).length};
 }

@@ -1,5 +1,7 @@
 # Operator console: UI walkthrough
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 The browser console served by `syberwork serve` at `http://127.0.0.1:8766/`. It is a client of the
 existing case API in `syberwork/server.py`. Every button calls a route that already existed before
 this change, except for the read-only routes listed under "Routes added". The server stays the
@@ -43,6 +45,44 @@ SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<s
 python -m syberwork.cli --home .syberwork serve
 ```
 
+To rotate the signing key, list the new key and the old ones, separated by commas (at most 8, each once), and restart
+`serve`. Certificates signed under either key are read, and each signed row names the key that verified it. A listed
+key is trusted until it is taken off the list.
+
+```sh
+SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<new key>,<old key> \
+python -m syberwork.cli --home .syberwork serve
+```
+
+To revoke one certificate, copy the `digest` Studio shows under its verdict into `SYBERWORK_CERTIFICATE_REVOKED`
+(digests separated by commas, at most 256, each once) and restart `serve`. That certificate then reads *revoked* under
+every key, whatever file it is written in. The key and other certificates are unaffected.
+
+```sh
+SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<new key>,<old key> \
+SYBERWORK_CERTIFICATE_REVOKED=<digest> python -m syberwork.cli --home .syberwork serve
+```
+
+To stop trusting old certificates, set a validity window in whole seconds (`2592000` is 30 days) and restart `serve`. A
+certificate issued longer ago than that, by `serve`'s clock, then reads *expired*, and one dated more than 5 minutes
+after that clock *not yet valid*. The date is the signer's `issued_at`: the window retires old genuine certificates; it
+does not stop a holder of a listed key from dating a new one. Taking that key off the list does.
+
+```sh
+SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<signer key, 64 hex> \
+SYBERWORK_CERTIFICATE_MAX_AGE=2592000 python -m syberwork.cli --home .syberwork serve
+```
+
+To check each certificate against Git as well, name the working tree the certified commits live in (the project
+`syberlabs certify` ran in, or a clone of it) and restart `serve`. Every signed certificate is then checked as `syberlabs
+verify --repo` checks it: both commits present, their trees, the changed paths and the diff. One the repository does not
+hold reads *repository differs*. Empty, or a path not inside a Git working tree, stops `serve`.
+
+```sh
+SYBERWORK_CERTIFICATE_HOME=../project/.syberlabs SYBERWORK_CERTIFICATE_PUBLIC=<signer key, 64 hex> \
+SYBERWORK_CERTIFICATE_REPOSITORY=../project python -m syberwork.cli --home .syberwork serve
+```
+
 Open the page, press `i`, and paste the `operator`, `scheduler`, `manager`, `planner` and `admin`
 tokens one at a time. They are kept in this tab's `sessionStorage` (as the old console kept one token)
 and are sent only as a bearer header to the loopback service. They never appear in the URL. Leave the
@@ -63,7 +103,7 @@ tab or choose **Forget all** to drop them.
 | 8 | scheduler | **Execute** (press twice) | A real POST to the reference system with `Idempotency-Key` and `If-Match`; *Applied · destination acknowledged HTTP 201*. Only the original proposer can execute; anyone else gets *only the original proposer (scheduler) may execute* with a switch link. |
 | 9 | manager | **Sign off as manager** | The sign-off is offered only after `issue_order` has applied, because the server accepts an earlier signature but it never satisfies the clause. The case becomes *Complete*. |
 | 10 | any | History (`5`), then `v` | The server's `/verify` result is recorded with the head it covered (`intact through #13 …`). It is marked stale when newer events arrive. |
-| 11 | manager | History → Witness → **Ask witness to sign** (press twice) | Before: *not witnessed*. Another credential sees the button disabled with *manager role required to ask the witness* and **⇄ switch to manager** (the role is `SYBERWORK_WITNESS_ROLE`). The armed note says the witness appends a leaf that cannot be removed and nothing is written to the case. After: *Witness signed #1–#13*, the panel reads *witnessed through #13* with the leaf, its signed head and *in the log*, and the button is disabled: *a signed head in the log already covers #1–#13*. An event added later is listed as *not witnessed*, and asking again signs the longer history. Without a configured log, **Witness** reads *not configured* and names the variables; a script can still call `Work.submit_witness`. |
+| 11 | manager | History → Witness → **Ask witness to sign** (press twice) | Before: *not witnessed*. Another credential sees the button disabled with *manager role required to ask the witness* and **⇄ switch to manager** (the role is `SYBERWORK_WITNESS_ROLE`). The armed note says the witness appends a leaf that cannot be removed and nothing is written to the case. After: *Witness signed #1–#13*, the panel reads *witnessed through #13* with the leaf, its signed head and *in the log*, and the button is disabled: *a signed head in the log already covers #1–#13*. An event added later is listed as *not witnessed*, and asking again signs the longer history. Without a configured log, **Witness** reads *not configured* and names the variables. |
 
 If the destination is down at step 8, the effect becomes *Outcome unknown · check destination*, the
 case list shows *effect unknown*, and the next move is a manager's **Check destination status**. A 404
@@ -125,9 +165,10 @@ digest, external id, response digest) is drawn as *Reconciled · destination-ver
   Actions and sources are listed and registered by administrators only. Other credentials see each
   source's read role and whether they hold it, and *admin or manager role required* in place of the policy
   list. Under **Build Threads**, **Certificates** lists the admission certificates `serve` reads
-  (`GET /api/certificates`), each with the verdict `serve` reached under the configured key: *certified*, *signed ·
-  journal not checked*, *journal differs*, *journal unreadable* or *not certified*, with the thread, candidate, result commit, contract,
-  checks and certified chain prefix of each signed one.
+  (`GET /api/certificates`), each with the verdict `serve` reached under the configured keys: *certified*, *signed ·
+  journal not checked*, *journal differs*, *journal unreadable*, *revoked*, *expired*, *not yet valid* or *not certified*,
+  with the thread, candidate, result commit, contract, checks and certified chain prefix of each signed one, the key that
+  verified it (*key 2 · d75a…* when `serve` trusts more than one), its digest, and when it expires under a validity window.
 
 ## Visual system
 
@@ -169,7 +210,7 @@ token (`unauthorized`) and a role the caller lacks (`forbidden`).
 | Route | Who | Returns |
 |---|---|---|
 | `/api/console` | any principal | `{planner_configured, effects, witness: {log, request_role}, certificates: {configured}}`. The planner URL, the witness port and the certificate home are not disclosed; `request_role` is the role `POST …/witness` requires, or `null` when `serve` has no witness to ask. |
-| `/api/certificates` | any principal | Without a configured home: `{configured: false, note}`. With one: `{configured, public_key, total, shown, checked: ["signature", "journal"], not_checked: ["repository"], certificates, note}`, one row per `*.json` under `<home>/certificates`, at most 50 in name order: `{file, verdict, reason, signature, journal, journal_present, repository: null, statement}`. `verdict` and the layer states are `syberlabs.certificate.verify_certificate`'s, run by `serve` under `SYBERWORK_CERTIFICATE_PUBLIC` with the home as the journal home. `statement` (thread, objective, candidate, contract, policy version, base and result commits, target ref, admission actor, approvers and decision, checks, chain prefix, `issued_at`, `signing`, form and key id) is present only when the signature layer passed. A link, a folder or an unreadable file is refused (`not_a_regular_file`, `certificate_unreadable`); a file the verifier raises on (a deeply nested one raises `RecursionError`) is `unverifiable`. A thread journal or `registry.jsonl` that is not a regular file, is over 64 MiB, or cannot be read fails a signed row as `journal_unreadable:not_a_regular_file`, `:too_large` or `:io_error`, and the verifier does not read it. No layer note is returned, so no host path is disclosed. |
+| `/api/certificates` | any principal | Without a configured home: `{configured: false, note}`. With one: `{configured, public_keys, revoked, validity, total, shown, checked, not_checked, certificates, note}`, one row per `*.json` under `<home>/certificates`, at most 50 in name order: `{file, verdict, reason, signature, journal, journal_present, repository, statement, digest, expires_at}`. `checked` and `not_checked` are `["signature", "journal"]` and `["repository"]`, or, with `SYBERWORK_CERTIFICATE_REPOSITORY`, `["signature", "repository", "journal"]` and `[]`; a row's `repository` is then `"ok"` or the layer's failure for a signed row (`commit_missing:base\|result`, `tree_mismatch:base\|result`, `changed_paths_mismatch`, `diff_mismatch:digest\|bytes`, `repository_unreadable`), and `null` otherwise or without one. `revoked` is `SYBERWORK_CERTIFICATE_REVOKED` in configured order; `validity` is `null`, or `{max_age, skew, checked_at}` with `SYBERWORK_CERTIFICATE_MAX_AGE` (seconds, and `checked_at` the instant every row was judged, in microseconds). A signed row's `digest` is `certificate_digest` of its payload and `expires_at` its `issued_at` plus the window (both `null` otherwise); it fails as `revoked`, `expired` or `not_yet_valid`, in that order, then as its repository failure, then as its journal failure. `verdict` and the layer states are `syberlabs.certificate.verify_certificate`'s, run by `serve` with the home as the journal home, under the keys in `SYBERWORK_CERTIFICATE_PUBLIC` (`public_keys`, in that order) that a signature in the file could match. `statement` (thread, objective, candidate, contract, policy version, base and result commits, target ref, admission actor, approvers and decision, checks, chain prefix, `issued_at`, `signing`, form and key id: the configured key that verified it) is present only when the signature layer passed. A link, a folder or an unreadable file is refused (`not_a_regular_file`, `certificate_unreadable`); a file the verifier raises on (a deeply nested one raises `RecursionError`) is `unverifiable`. A thread journal or `registry.jsonl` that is not a regular file, is over 64 MiB, or cannot be read fails a signed row as `journal_unreadable:not_a_regular_file`, `:too_large` or `:io_error`, and the verifier does not read it. No layer note is returned, so no host path is disclosed. |
 | `/api/contracts` | any principal | `[{id, version, title, compiled_path, digest}]` |
 | `/api/contracts/{id}/{version}` | any principal | the stored contract (the same document `GET /api/cases/{id}` already returns for a case) |
 | `/api/policies` | `admin` or `manager`, holding no automation role (`model`, `compiled`, `search`); others `403 forbidden` | `[{version, body, digest}]` |
@@ -215,7 +256,7 @@ Gaps from #95, closed or still open:
 | `/api/policies` read scope | **Closed**: admin or manager, without an automation role; `model`, `compiled`, `operator` and observer credentials get `403` | `POLICY_READERS` in `server.py`; `ConsoleReadScope` |
 | JCS side records (`Work.side_channel`) | **Closed**: a read-only route returns `Work.side_channel` as stored; History shows coverage and each event's digest and rule. The console does not recompute digests | `GET /api/cases/{id}/side`; `M.sideRecords`; `ConsoleSideRecords` |
 | Witness | **Closed for reading** (#115): `serve` opens the witness's log read-only when `SYBERWORK_WITNESS_LOG` and `SYBERWORK_WITNESS_PUBLIC` name it, and History draws what the server judged. **Closed for asking** (this branch): with `SYBERWORK_WITNESS_PORT` and `SYBERWORK_WITNESS_ROLE` also set, **Ask witness to sign** has `serve` send the history to the witness, for that role only (below) | `GET` and `POST /api/cases/{id}/witness` (`Work.witness_status`, `Work.request_witness`); `M.witnessView`, `can(…, 'witness_request')`; `ConsoleWitness`, `ConsoleWitnessRequest`; the browser walkthrough |
-| Certificate | **Closed for reading Build Thread certificates** (this branch): with `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, `serve` verifies each file under `<home>/certificates` (signature, then the journal) and Studio → Certificates draws the verdicts. **A case still has none**: History says so and links to Studio. The repository layer is not run by `serve` | `GET /api/certificates` (`syberwork/certificates.py`); `M.certificateView`; `studioCertificates`, `witnessPanel` in `app.js`; `ConsoleCertificates`, `test_a_case_has_no_certificate_route`, the browser walkthrough |
+| Certificate | **Closed for reading Build Thread certificates** (#121): with `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, `serve` verifies each file under `<home>/certificates` (signature, then the journal) and Studio → Certificates draws the verdicts. **Several keys** (this branch): the variable may list up to 8 keys for a rotation, and each signed row names the key that verified it. **Revocation** (this branch, on #122): `SYBERWORK_CERTIFICATE_REVOKED` lists certificate digests, and a listed one reads *revoked* under every key. **A case still has none**: History says so and links to Studio. **Validity window** (this branch, on #125): with `SYBERWORK_CERTIFICATE_MAX_AGE`, a certificate issued longer ago reads *expired*, one dated ahead of `serve`'s clock *not yet valid*. **Repository layer** (this branch, on #128): with `SYBERWORK_CERTIFICATE_REPOSITORY`, `serve` checks every signed certificate against that Git working tree, and one it does not hold reads *repository differs* | `GET /api/certificates` (`syberwork/certificates.py`); `M.certificateView`; `studioCertificates`, `witnessPanel` in `app.js`; `ConsoleCertificates`, `ConsoleCertificateKeys`, `ConsoleCertificateRevocation`, `ConsoleCertificateValidity`, `ConsoleCertificateRepository`, `test_a_case_has_no_certificate_route`, the browser walkthrough |
 | Admission before proposing | **Closed**: Propose → By hand binds arguments from the contract and asks the server what proposing would record now, before anything is written | `POST /api/cases/{id}/preview` (`Work.preview_admission`); `M.previewView`, `M.previewCurrent`; `ConsolePreview` |
 | Builder API (`/api/builder/*`) | Open | a separate surface, not part of this console |
 | Push updates | Open | there is no push: press `r` to reload |
@@ -330,7 +371,7 @@ Gaps from #95, closed or still open:
       the log's newest checkpoint covers it. `witness_unavailable` replaces a `500` in three cases, each with its
       own detail: nothing listens on the port; the answer is unreadable; or no answer came within the client's
       30 s. In the last case the witness may still have signed, and the detail says to read the log again (the
-      console does). `Work.submit_witness` is unchanged and still serves scripts. Requests run one at a time in a process, so four
+      console does). `Work.submit_witness` has since been removed. Requests run one at a time in a process, so four
       presses at once append one head (`test_presses_at_once_append_one_head`). Two `serve` processes over one
       database could still both append the same head; that costs a duplicate leaf, not a wrong verdict.
     - **Nothing is written to the case.** The test compares a full dump of the case database before and after. The
@@ -359,17 +400,19 @@ Gaps from #95, closed or still open:
     - **Not done.** The console still verifies no signature itself. No rate limit applies beyond one request at a
       time and the `already_witnessed` refusal: a holder of the role can ask once per new event. The witness's own
       protocol, `syberlabs/witness.py`, `syberlabs/tlog.py` and `spec/` are unchanged.
-- **Certificate** (closed for reading Build Thread certificates on this branch; it was *open, shown as missing* in
-  #118). Admission certificates (`syberlabs certify`, docs/CERTIFICATE.md) belong to Build Threads and are files under
+- **Certificate** (closed for reading Build Thread certificates in #121, under several keys in #122, with single
+  certificates revocable on this branch; it was
+  *open, shown as missing* in #118). Admission certificates (`syberlabs certify`, docs/CERTIFICATE.md) belong to Build Threads and are files under
   `<home>/certificates`. A SyberWork case is not a Build Thread, so there is still no per-case route
   (`GET /api/cases/{id}/certificate` stays `404 not_found`) and History draws nothing on a case as certified. It now
   says why, and **Open certificates in Studio** goes to the list when `serve` reads one. #118 named the per-case route as
   the missing piece. Building that would have meant inventing a link between a case and a thread that the code does
-  not have, so this branch adds a listing instead.
+  not have, so #121 added a listing instead.
   - **Configuration.** `syberwork serve` takes `SYBERWORK_CERTIFICATE_HOME` (the Build Thread home, `.syberlabs`) and
     `SYBERWORK_CERTIFICATE_PUBLIC` (the 64 hex characters `certify` writes to the `.pub` file). It needs both or neither.
     A key that is not 32 bytes of hex, or a home that is not a directory, stops `serve` (`_certificates` in
-    `syberwork/cli.py`). Nothing in the code chooses the key. The `.pub` file beside each certificate is never read:
+    `syberwork/cli.py`). Nothing in the code chooses the key. Since this branch the variable may list several keys
+    (below). The `.pub` file beside each certificate is never read:
     whoever can write the folder can write it too, so a certificate signed under another key fails even when its own
     `.pub` matches it (`test_another_key_or_changed_bytes_fail_and_state_nothing`).
   - **What serve checks.** `CertificateShelf.listing` (`syberwork/certificates.py`) runs
@@ -377,8 +420,8 @@ Gaps from #95, closed or still open:
     KEY` would with the journal layer added. The signature layer covers the size, the `payloadType`, the Ed25519
     signature over the DSSE PAE, the statement wrapper, the strict payload shape, the subject and the canonical bytes.
     The journal layer runs when `<home>/journal/threads/<thread>.jsonl` exists, and checks the certified prefix, its
-    head and `claims()` field by field. The **repository layer is not run**: it needs Git and the project's working
-    tree, and `serve` runs no Git. Every answer says so (`not_checked: ["repository"]`), and the console names
+    head and `claims()` field by field. The **repository layer is not run** on #121: it needs Git and the project's
+    working tree, and `serve` runs no Git (the *Repository layer* bullet below adds it, opt-in). Every answer says so (`not_checked: ["repository"]`), and the console names
     `syberlabs verify FILE --public KEY --repo .` for it. No layer note is returned, because those notes carry host
     paths.
   - **What the console draws** (`M.certificateView`). *certified* only for `verdict: pass`, `signature: ok`,
@@ -419,8 +462,239 @@ Gaps from #95, closed or still open:
     - An unreadable journal was drawn as *journal differs*.
     - Signed-only rows drew their checks green.
     - The path-disclosure test could not fail on Windows.
-  - **Not done.** The repository layer from `serve`. More than one trusted key, rotation or revocation (v0 has one key,
-    as docs/CERTIFICATE.md says). Any link from a case to a thread. The witness co-signature, which is docs/CERTIFICATE.md's
+  - **Several keys** (this branch, on main after #121). #121 left *more than one trusted key, rotation or revocation* open.
+    This branch closes the first two for reading and leaves revocation open.
+    - **Configuration.** `SYBERWORK_CERTIFICATE_PUBLIC` may list keys separated by commas: the new key and the ones being
+      rotated out, at most `MAX_KEYS` (8). Space around an entry is ignored. `serve` stops on any of these:
+      - an empty entry;
+      - an entry that is not exactly 64 hex characters (`bytes.fromhex` alone would take spaces between the pairs);
+      - a key listed twice, in either letter case;
+      - a ninth key;
+      - a key that is not usable (`usable_key`): it does not decode to a curve point, or it has small or mixed order.
+        `syberlabs.ed25519.verify` accepts any 32 bytes as a key. Under the identity point `01 00 … 00` (or `00 … 00`,
+        of order 4), the signature `R = B, s = 1` verifies any message. A test performs that forgery and shows the key
+        refused. A key `certify` derives from a seed is in the prime-order subgroup and passes. This also applied to the
+        one key #121 took.
+
+      `CertificateShelf` refuses the same (`test_the_shelf_takes_one_to_eight_distinct_keys`,
+      `test_a_key_anyone_could_sign_under_is_refused`, `test_serve_reads_a_comma_separated_list_and_refuses_a_malformed_one`;
+      exactly eight are accepted). One key behaves as in #121.
+    - **Which key is tried.** `syberlabs.dsse.verified_payload` tries a signature only under the key its `keyid` names,
+      or under any key when it names none. So `serve` tries a file only under the configured keys a signature in it could
+      match, in configured order (`_candidates`). A skipped key could only have failed as `signature_invalid`, so the
+      verdict is the same as trying every key (`test_narrowing_gives_the_verdict_of_trying_every_key`, over envelopes with
+      non-object entries, a null, integer, list or upper-case `keyid`, a bad signature beside a good one, `signatures` as
+      an object or a string, and a top-level array). The first key whose
+      report is not `signature_invalid` decides: its pass, or its own later failure (shape, subject, journal). Another key's
+      `signature_invalid` never hides it. A file that cannot be read that far is verified under the first key, which
+      names the failure. As with `syberlabs verify`, a genuine signature whose `keyid` names another key is not tried,
+      and fails. `test_a_file_is_tried_only_under_the_keys_its_signatures_could_match` checks the keys tried for each
+      case. Each of these mutations fails a test: trying every key, trying only the first, stopping at the first key
+      whatever it reports, trying keys past the signer, dropping the key check or the signature limit, parsing a key
+      with `bytes.fromhex` alone, and refusing an eighth key.
+    - **Cost.** A key-less signature is tried under every key, and `verified_payload` tries every signature entry. A
+      file may therefore carry at most `MAX_SIGNATURES` (2: the certifying process's, and the witness co-signature
+      docs/CERTIFICATE.md plans). A file with more is refused as `too_many_signatures` before any check is run
+      (`test_a_file_with_more_signatures_than_allowed_is_refused_unverified`). One file costs at most 2 × the number of
+      keys Ed25519 checks, 16 with 8 keys, about 0.14 s each the first time it is seen. #121 had no such limit: a 1 MiB
+      file of key-less entries cost on the order of ten thousand checks under its one key.
+    - **What is answered.** `public_keys` replaces #121's `public_key`, in configured order. `statement.keyid` is the
+      configured key that verified the file, never a `keyid` read from the file. A key no one configured is never named
+      (`test_each_listed_key_verifies_what_it_signed_and_the_row_names_it`).
+    - **What the console draws.** `M.certificateView` reads a statement only when its `keyid` is one of `public_keys`
+      in the same answer. Otherwise a pass is *unknown* and a signed file whose journal failed is *unknown*: no statement
+      and no key. Each signed row carries `key`, the 1-based position of its key in that list. Studio shows the keys in
+      order and, with more than one, *key N · d75a…* under each signed row's verdict. The browser walkthrough serves a
+      new key and the old one: the fixture's two files read *certified · key 2* and one re-signed under the new key reads
+      *certified · key 1*. The parity test runs the node projection on a real `CertificateShelf` answer under both keys.
+    - **Not done** (on #122; revocation of a certificate is the next bullet). Revocation by key, or any validity window: a listed key is trusted for any certificate it signs, whatever
+      its `issued_at`, until it is taken off the list and `serve` restarts (`test_removing_a_key_stops_trusting_what_it_signed`).
+      The cache is per process and the key list is fixed for its life, so a verdict is never kept under a changed list.
+      `syberlabs verify` still takes one `--public` key and accepts any 32 bytes as one. `SYBERWORK_WITNESS_PUBLIC` is
+      not checked with `usable_key` either: the weak-key check covers certificate keys only. The check belongs in
+      `syberlabs.ed25519` and was not moved there. `syberlabs/`, docs/CERTIFICATE.md and `spec/` are unchanged.
+    - **Independent review.** A Claude session that did not write the change reviewed it, without being told my
+      conclusions. It differential-fuzzed `_candidates` against trying every key (400 odd envelopes, 3 trusted keys and 1
+      untrusted) and found no mismatch, and no input that reads *certified* without a configured key's signature or that
+      names the wrong key. Its findings, all fixed on this branch:
+      - A weak key (the identity point, or another of small order) was accepted, as in #121, and anyone could sign under it.
+      - A file of many key-less signatures could hold the listing for hours, now up to 8 times longer than with one key.
+        The NOTES claim of one check per key was false for a file with several signatures.
+      - No test checked that exactly 8 keys are accepted, or the odd envelope shapes against trying every key.
+      - Spaces inside a key were accepted.
+  - **Revocation** (this branch, stacked on #122). #122 left revocation open. This branch revokes single certificates.
+    It does not revoke keys (taking a key off the list does that) and adds no validity window.
+    - **What is revoked.** A certificate, named by its digest: the SHA-256 of its payload as signed, i.e. the RFC 8785
+      bytes the bare form signs and the statement form carries as its `predicate` (`certificate_digest`). The signature
+      covers those bytes, and the verifier refuses any that are not their own JCS form, so a folder writer cannot change
+      the digest of a genuine certificate. Rewriting the file (indented, fields reordered, `keyid` dropped) leaves it
+      revoked, and so do re-signing the same payload under another configured key and signing a statement's predicate
+      in the bare form
+      (`test_a_listed_digest_fails_as_revoked_under_every_key_however_the_file_is_written`). The fixture's statement and
+      bare files come from two `certify` runs with different `issued_at`, so they are two certificates with two digests.
+      A new certificate for the same candidate has another digest and is not revoked: revoking a certificate is not
+      revoking its key or its candidate.
+    - **Configuration.** `SYBERWORK_CERTIFICATE_REVOKED`: digests separated by commas, at most `MAX_REVOKED` (256), read
+      in either case and kept lower-case. Space around an entry is ignored. `serve` stops on an empty entry, an entry that
+      is not exactly 64 hex characters, a digest listed twice (in either case), a 257th, or the variable set without
+      `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`. Unset or empty revokes nothing.
+      `CertificateShelf(home, keys, revoked)` takes only distinct lower-case digests
+      (`test_serve_reads_a_comma_separated_revocation_list_and_refuses_a_malformed_one`,
+      `test_the_shelf_takes_up_to_the_limit_of_distinct_lowercase_digests`). The list is fixed for the life of the
+      process, like the keys.
+    - **What serve answers.** Every row carries `digest`: the signed payload's digest when a configured key verified the
+      file, `null` otherwise (a file no configured key signed cannot be revoked, and fails already). A signed row whose
+      digest is listed answers `verdict: fail`, `reason: revoked`. Its other layers and its statement are kept as verified,
+      so the console can show what was revoked. Revocation comes before a journal failure in `reason`; the `journal`
+      field still names that failure. It is applied after the verdict cache, so a cached verdict is revoked too
+      (`test_revocation_holds_on_a_verdict_read_from_the_cache`). The answer lists `revoked` in configured order. It is the
+      deployment's configuration, like `public_keys`, and is answered to any principal, as the listing is.
+    - **What the console draws.** `M.certificateView` needs `revoked` to be a list of 64-character lower-case hex
+      digests, as serve writes them, or the whole answer is *unknown*: an entry in another case or with a space could not
+      be matched against a row's digest. *revoked* (denied tone, the statement under *do not treat it as certified*) only for `verdict: fail`,
+      `reason: revoked`, a statement under a listed key, and a 64-character lower-case `digest` that the same answer
+      lists. A row whose digest is listed but that serve passed, or that says `revoked` with a digest not listed, is
+      *unknown*: never certified, and never revoked on the row's word alone. A pass without a well-formed `digest` is
+      *unknown* too: the console could not tell whether it is revoked. Studio shows each signed row's full digest under
+      its verdict, the count of revoked digests beside the keys, and says in its hint how revocation works. A revoked
+      row's checks are not drawn green. The browser walkthrough adds a re-issued certificate under the new key and
+      revokes it: three rows read *certified*, that one *revoked*. The parity test runs the node projection on a real
+      revoking `CertificateShelf` answer.
+    - **Mutations.** Each of these fails a test: not revoking a cached verdict; taking the digest of the file bytes
+      instead of the signed payload; dropping revocation; drawing a pass without a digest as certified; drawing *revoked*
+      when the digest is not listed; drawing a listed pass as certified; accepting a list entry the server would not
+      write; not lower-casing the variable; the shelf accepting a digest twice; accepting the variable without the other
+      two. The CLI's own duplicate and count checks are each backed by the shelf's, so removing one alone still stops
+      `serve` and no test fails.
+    - **Independent review.** A Claude session that did not write the change reviewed it, without being told my
+      conclusions. It wrote genuine certificates with a listed digest in other encodings (base64 with newlines or junk
+      characters, a duplicate `payload` key, an extra key-less signature, a UTF-8 BOM, UTF-16, the payload re-signed as
+      a statement) and each read *revoked*. It found no way to make a listed certificate read *certified*. Its findings,
+      all fixed on this branch:
+      - The console accepted a `revoked` list whose entries it could not match (upper case, a space, a newline, empty),
+        and then drew a pass with the matching lower-case digest as *certified*.
+      - The #122 bullet above still listed revocation as not done.
+      - No test signed one payload in both forms; the Mutations bullet claimed a CLI-only duplicate check was tested.
+    - **Not done** (on #125; the validity window is the next bullet). Revoking by key, by candidate or by time: a compromised key is still handled by
+      taking it off `SYBERWORK_CERTIFICATE_PUBLIC`. The list is read at start, not reloaded; a change needs a restart.
+      `syberlabs verify` knows no revocation list and still passes a revoked certificate. `syberlabs/`,
+      docs/CERTIFICATE.md and `spec/` are unchanged.
+  - **Validity window** (this branch, stacked on #125). #125 left *a validity window* open. This branch adds one,
+    measured from the certificate's own `issued_at`. It adds no revocation by key, candidate or time.
+    - **Configuration.** `SYBERWORK_CERTIFICATE_MAX_AGE`: a whole number of seconds, 1 to `MAX_AGE_LIMIT` (ten years
+      of 366 days), digits only (space around it is ignored). `serve` stops on anything else, a sign, an underscore, a
+      unit, a non-ASCII digit, and on the variable set *empty*: unlike the revocation list, an empty value is refused
+      rather than read as no window, so an unset shell variable expanded into it cannot turn the window off without a
+      word. Set without `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`, it stops `serve` too. Unset,
+      nothing changes: no row expires and `validity` is `null`. `CertificateShelf(home, keys, revoked, max_age, clock)`
+      takes only an `int` in range (not `True`, `1.0` or `"60"`)
+      (`test_serve_reads_the_window_in_seconds_and_refuses_anything_else`,
+      `test_the_shelf_takes_a_whole_number_of_seconds_up_to_the_limit`).
+    - **What serve answers.** One clock reading per listing, `checked_at` (microseconds), judges every row. A signed
+      row carries `expires_at`: its `issued_at` plus the window. It fails as `expired` when `checked_at` is past
+      `expires_at` (at exactly `expires_at` it still passes), and as `not_yet_valid` when its `issued_at` is more than
+      `SKEW` (300 s) after `checked_at`. That bound matters: without it, a certificate dated in 2099 would never expire.
+      Its statement and other layers are kept. Revocation names the failure first, then the window, then the journal (whose
+      field still names its failure). A file no configured key signed states no `issued_at` and has no `expires_at`. The
+      window is applied after the verdict cache, as revocation is, so a cached pass expires when the clock passes it
+      without being verified again (`test_a_cached_verdict_expires_when_the_clock_passes_the_window`).
+    - **What the console draws.** `M.certificateView` needs `validity` to be `null` or `{max_age ≥ 1, skew ≥ 0,
+      checked_at ≥ 0}` of safe integers, or the whole answer is *unknown*; a missing `validity` is unknown too. With a
+      window, the console reckons each signed row itself from the same answer: `expires_at` must equal `issued_at` plus
+      `max_age`, and `checked_at` decides *current*, *expired* or *not yet valid*. *expired* and *not yet valid* (denied
+      tone, the statement under *do not treat it as certified*) are drawn only when serve failed the row with that reason
+      and the console's reckoning agrees. Every disagreement is *unknown*: a pass the answer's clock says has expired, an
+      `expired` the clock says is current, an `expires_at` that is not `issued_at` plus the window, an `issued_at` that is
+      not a whole number. Without a window, a row serve failed as `expired` is *unknown*. Studio shows the window and
+      `checked_at` beside the keys, *expires …* or *expired …* in UTC under each signed row's verdict, and says in its
+      hint that the date is the signer's. The browser walkthrough adds a certificate issued 60 days ago under a 30-day
+      window: three rows read *certified*, that one *expired* and the withdrawn one *revoked*. The parity test runs the
+      node projection on a real windowed `CertificateShelf` answer, with the statement form past its window and the bare
+      form not.
+    - **Mutations.** Each of these fails a test: expiring at exactly `expires_at`; dropping `not_yet_valid`; naming
+      expiry before revocation; the shelf taking `True` or `1.0`; reading an empty variable as no window; accepting the
+      variable without the other two; the console reckoning only *expired* and not *not yet valid*; not checking
+      `expires_at` against `issued_at` plus the window; drawing *expired* on serve's word alone; accepting a missing or
+      malformed `validity`. One survived and is equivalent: letting the pass branch also take `reason: expired`, which
+      the branch before it always catches first.
+    - **What it does not do.** `issued_at` is written by the signer and covered by its signature, so a folder writer
+      cannot change it, but a holder of a listed key can date a certificate as it likes. The window retires old genuine
+      certificates; it is no defense against a compromised key, which is still handled by taking the key off
+      `SYBERWORK_CERTIFICATE_PUBLIC`. The clock is `serve`'s own: one set wrong expires certificates early or keeps them
+      late, and nothing checks it. The window is read at start; a change needs a restart.
+  - **Repository layer** (this branch, stacked on #128). #121 to #128 left *the repository layer from `serve`* open. This
+    branch runs it, when the deployment names a repository. It adds no revocation by key, candidate or time.
+    - **Configuration.** `SYBERWORK_CERTIFICATE_REPOSITORY`: a path inside a Git working tree (a subdirectory names its
+      working tree, as `git` and `syberlabs verify --repo` read it). `serve` stops when it is set empty or blank (an
+      unset shell variable expanded into it would otherwise turn the layer off without a word, as with the window), when
+      git is missing, when the path is not inside a working tree (a bare repository or a `.git` folder is refused), and
+      when it is set without `SYBERWORK_CERTIFICATE_HOME` and `SYBERWORK_CERTIFICATE_PUBLIC`. Unset, nothing changes.
+      `CertificateShelf(…, repository=)` takes only a `CertificateRepository`, never a plain `Repo` or a path
+      (`test_serve_reads_the_repository_variable_and_refuses_an_empty_or_unusable_one`,
+      `test_the_shelf_takes_only_a_certificate_repository`).
+    - **What serve checks.** For every row a configured key signed, `syberlabs.certificate._layer_repository`, the same
+      function `syberlabs verify --repo` runs: base and result commits present, each tree equal to `rev-parse ^{tree}`,
+      the changed paths, and the diff's SHA-256 and size. The target ref's current state is not judged, as in the
+      verifier. A row the layer fails answers `verdict: fail` with its reason, and `repository` names it. Its statement,
+      digest and other layers are kept. The genuine fixture passes against its own project and a clone, and fails as
+      `commit_missing:base` against an unrelated repository: that is the negative control
+      (`test_the_genuine_certificates_hold_in_their_repository_and_an_unrelated_one_holds_neither`). Each of the seven
+      differences is named on a signed payload changed in one field
+      (`test_each_difference_from_the_repository_is_named_before_the_journal`). Unset, a certificate for a commit no
+      repository holds fails only on its journal (`test_without_a_repository_the_layer_is_not_run`).
+    - **Order.** Revocation, then the window, then the repository, then the journal. The journal field still names its
+      own failure (`test_revocation_and_the_window_name_the_failure_before_the_repository`).
+    - **Replace refs and lazy fetch.** `CertificateRepository` is `syberlabs.gitspace.Repo` with `GIT_NO_REPLACE_OBJECTS=1`
+      and `GIT_NO_LAZY_FETCH=1` in git's environment. Without the first, a `refs/replace/<name>` entry makes git read
+      another object for a commit name. Plain `Repo` then takes `eeee…` (no such commit) as present, with the real
+      result's tree and diff, and a certificate naming it passes the layer. `serve` fails it as `commit_missing:result`,
+      and the real result still holds when it is replaced by another commit
+      (`test_a_replacement_never_answers_for_a_commit`, whose control shows plain `Repo` following both replacements).
+      Without the second, a partial clone's missing blob would make `serve` fetch from the remote. With git older than
+      2.44, `GIT_NO_LAZY_FETCH` is ignored. **Finding, not fixed here:** `syberlabs verify --repo` uses plain `Repo` and
+      follows replace refs, so it passes such a certificate. `syberlabs/` is outside this branch.
+    - **Cache.** The repository layer runs after the verdict cache, like revocation and the window, because the
+      repository can change while the file does not. What it found to *hold* is kept per process (at most `CACHE`
+      entries). The key is everything it compared: both commits and trees, the paths, the diff digest and size. On every
+      later read a hold is confirmed by one `git cat-file --batch-check` showing both commits are still commit objects.
+      An object's name is the hash of its content, so the same commits mean the same trees and diff. A failure is never
+      kept: a commit fetched later reads *ok* on the next read, without a restart. A commit pruned from the repository
+      fails on the next read (`test_a_hold_is_confirmed_on_every_read_and_a_failure_is_not_kept`). A repository git
+      cannot read (moved, deleted, git failing or timing out) fails every signed row as `repository_unreadable`, cached
+      holds included, and reads *ok* again once it is back
+      (`test_a_repository_git_cannot_read_is_unreadable_and_never_a_pass`).
+    - **What serve answers.** `checked: ["signature", "repository", "journal"]`, `not_checked: []`, and a note that names
+      the layers and says the target ref is not judged. No path is answered (`test_the_route_answers_the_layer_to_any_principal_and_names_no_path`).
+    - **What the console draws.** `M.certificateView` reads the answer's layers as exactly one of the two shapes `serve`
+      writes, or the whole answer is *unknown*. With the repository checked, a row reads *certified* or *signed* only with
+      `repository: "ok"`. It reads *repository differs* (denied) or *repository unreadable* (unknown tone) only when
+      `serve` failed it with the reason its `repository` field names, from the server's list (`M.REPOSITORY_FAILURES`,
+      pinned equal to `REPOSITORY_FAILURES` by the parity test). Every disagreement is *unknown*: a pass with a failed or
+      missing field, a reason and a field that differ, a journal failure named while the field shows a repository
+      failure, a reason `serve` does not write. Without the repository checked, a row with any repository state is
+      *unknown*. Revocation and the window still win, as `serve` names them first. The texts of *certified* and *signed*
+      say the repository holds what the row states. The Studio hint names `SYBERWORK_CERTIFICATE_REPOSITORY` and says the
+      target ref is not judged. The browser walkthrough serves the project's repository and one more certificate under
+      the new key whose result commit is not there: three rows read *certified*, that one *repository differs* with
+      `commit_missing:result`, beside *expired* and *revoked*. The parity test runs the node projection on a real
+      repository-checking `CertificateShelf` answer.
+    - **Mutations.** Each of these fails a test: dropping the repository failure from the verdict; serving a hold without
+      checking both commits are still there; keeping a failure as a hold; dropping `GIT_NO_REPLACE_OBJECTS`; keying a hold
+      on the commits alone; taking a plain `Repo`; reading an unreadable repository as *ok*; naming the repository before
+      revocation and the window; reading an empty variable as no repository; in the console, dropping the disagreement
+      check, drawing a pass without looking at the field, drawing *repository differs* on the row's reason alone, reading
+      an answer of unknown layers as not checked, and accepting a missing field on a signed row. Fourteen mutants were
+      run by hand on this branch: "keeping a failure as a hold" survived at first, because the presence check hid it, and
+      the second read in the differences test now kills it. That is every mutant that was run, not a coverage figure.
+    - **What it does not do.** The cost is git's. A first read runs about seven git processes per distinct certificate.
+      The diff is streamed and hashed whole, as by `syberlabs verify --repo`, with no time limit (the other git calls
+      have `Repo`'s 30–120 s limits), and the listing lock is held meanwhile. Only a payload a configured key signed
+      reaches Git, so a folder writer cannot make `serve` diff arbitrary commits. Git reads the repository's own
+      configuration, as for `syberlabs verify --repo`: the repository is the deployment's to trust. Bare repositories
+      are not supported (`Repo` needs a working tree). The repository is read live, not fixed at start like the keys:
+      a fetch or a prune shows on the next read. GitHits grounding was not used: no dependency changed.
+  - **Not done.** The target ref's state from `serve` (where it points now, and whether the result is its ancestor), and
+    the replace-ref finding in `syberlabs verify --repo`. Revocation by key, candidate or time, and a window per key. Any link from a case to a thread. The witness co-signature, which is docs/CERTIFICATE.md's
     next packet; v0 certificates are signed in the certifying process, and the page says so. A push when a new file
     appears (press `r`). `syberlabs/certificate.py`, docs/CERTIFICATE.md and `spec/` are unchanged.
 - **Work item per case** (closed): History reads `GET /metrics/work_items/{id}` (an existing route) and

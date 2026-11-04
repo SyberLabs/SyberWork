@@ -25,11 +25,14 @@ def _roles(user: dict) -> list[str]:
     return roles
 
 
-def _actor(user: dict) -> str:
-    name = user.get("name")
-    if not isinstance(name, str) or not name:
-        raise Rejected("unauthorized", "principal name required")
-    return name
+def actor_of(user: dict) -> str:
+    """The identity the kernel compares (``approve``, ``commit``, evaluation, signoff): a registered principal's id,
+    else the configured user's name (``users`` keys are distinct). A display name is not an identity: two principals
+    named ``bot`` are two actors."""
+    found = user.get("principal_id") or user.get("name")
+    if not isinstance(found, str) or not found:
+        raise Rejected("unauthorized", "principal identity required")
+    return found
 
 
 def _require_mutation(user: dict) -> None:
@@ -39,7 +42,7 @@ def _require_mutation(user: dict) -> None:
 
 def dispatch_get(work, user, parts: list[str], query: str, last_event_id: str | None):
     """Return a role-framed projection, or an iterator of SSE frames for the stream."""
-    _actor(user)
+    actor_of(user)
     roles = _roles(user)
     store = BuilderStore(work)
     params = parse_qs(query)
@@ -78,7 +81,7 @@ def dispatch_get(work, user, parts: list[str], query: str, last_event_id: str | 
 
 
 def dispatch_post(work, user, parts: list[str], data: dict) -> dict:
-    actor = _actor(user)
+    actor = actor_of(user)
     roles = _roles(user)
     store = BuilderStore(work)
     match parts[2:]:

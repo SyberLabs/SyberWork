@@ -124,7 +124,7 @@ line a candidate manages to append during its suite refuses the check (`ledger_c
 the pinned key and appends under one acquisition of the journal lock, so two bootstraps racing on an empty
 ledger cannot both land. What the lineage does not cover is an attacker who rewrites the whole chain
 consistently from the rotation they want undone; an append, with any seed the owner ever held, buys nothing.
-That is the unanchored write boundary of `spec/GAPS.md` 65 (3), and anchoring the head in `tlog`/`witness` is
+That is the unanchored write boundary of `spec/GAPS.md` 67 (3), and anchoring the head in `tlog`/`witness` is
 the deferred fix. `Approved`, the record `transition` takes for a gated operation, is made by `verify_approval` only:
 its constructor demands a module-private token, and `transition` checks the token, so neither a dictionary nor
 an instance made around the constructor passes the gate.
@@ -382,6 +382,6 @@ Deferred from the consolidation packet, explicitly, so the next packet picks the
 them: `serves`, `mission_ref` and `done_when` on specs; a mandatory `human_owner` on tickets; `promote`
 renamed `pass`; `tickets.py` and `codemap.py` as modules of their own; the kernel approval seam (an `approved`
 event on a goal case in place of the owner's signature); the behavior-change label moving from the check's
-argv to the ticket (today it is per contract, `spec/GAPS.md` 65); and signing the ledger's chain head through
+argv to the ticket (today it is per contract, `spec/GAPS.md` 67); and signing the ledger's chain head through
 `witness`/`tlog` so a consistent forged chain is distinguishable from an honest one across runs (D1,
-`spec/GAPS.md` 65).
+`spec/GAPS.md` 67).

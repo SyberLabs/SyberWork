@@ -37,7 +37,7 @@ from syberlabs.canonical import canonical
 from syberlabs.claude_code import (BIN_ENV, CODE_TOOLS, DEFAULT_TOOLS, GITHITS_ENTRY, HOOKED, LOGIN_LANE_DROPPED_ENV, LOOKUP,
                                    SKILL_PATH, THIRD_PARTY_SWITCHES, ClaudeCodeProvider, Transcript, code_tools,
                                    githits_skill, instruction_file, parse_tools, query_text, version_tuple,
-                                   write_launcher)
+                                   web_tools, write_launcher)
 from syberlabs.cli import main as cli
 from syberlabs.events import verify_events
 from syberlabs.gitspace import IDENTITY
@@ -643,6 +643,19 @@ class Timeout(ClaudeCodeCase):
         time.sleep(1.5)
         self.assertEqual(beat.read_text(encoding="utf-8"), before, "the child was killed with its parent")
 
+    def test_a_prompt_the_stand_in_never_reads_does_not_hold_the_host_past_its_deadline(self):
+        """hunt-fixes-1, F2: on dc69499491 ``run_stream`` wrote the whole prompt before its deadline loop started, so
+        a Claude Code that did not read stdin held the host in ``write`` for as long as it lived."""
+        script = self.root.parent / "deaf.py"
+        script.write_text("import sys, time\nif '--version' in sys.argv:\n    print('2.1.309 (Claude Code)')\n"
+                          "    sys.exit(0)\ntime.sleep(8)\n", encoding="utf-8")
+        started, lines = time.monotonic(), []
+        with self.assertRaises(Rejected) as refused:
+            claude_code.run_stream([PY, str(script)], "x" * 200_000, cwd=self.root, env=dict(os.environ), timeout=1,
+                                   lines=lines)
+        self.assertEqual(refused.exception.code, "provider_timeout")
+        self.assertLess(time.monotonic() - started, 5)
+
     def test_a_timeout_ends_a_child_and_the_grandchild_it_started(self):
         """guard-hardening, finding 7: Claude Code starts a child that starts a grandchild; after provider_timeout
         neither is left running. ``checks._stop`` ends the session (POSIX, killpg) or the process tree (Windows,
@@ -839,8 +852,9 @@ class GitHitsAB(ClaudeCodeCase):
         config = self.root.parent / "githits.json"
         config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
         claude = self.stand_in("ab")
-        off = ClaudeCodeProvider(kit.repo, bare=True, executable=claude)
-        on = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, mcp_config=config)
+        # guard-lane-2: an MCP server on --bare is unscreened, so this A/B needs the operator's recorded override.
+        off = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, allow_unscreened_bare=True)
+        on = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, mcp_config=config, allow_unscreened_bare=True)
         self.assertEqual(on.command(), off.command() + ["--mcp-config", str(config.resolve())])
         command = off.command()
         for flag in ("-p", "--strict-mcp-config", "--no-session-persistence"):
@@ -883,7 +897,7 @@ class Confinement(ClaudeCodeCase):
         self.assertEqual(command[command.index("--tools") + 1], ",".join(DEFAULT_TOOLS))
         self.assertNotIn("Bash", DEFAULT_TOOLS, "no shell by default: a shell could read the guard's key")
         self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
-        wide = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY,
+        wide = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, allow_unscreened_bare=True,  # WebFetch
                                   allowed_tools=["Read", "Edit", "WebFetch", "Bash(git log *)", "mcp__githits"]).command()
         self.assertEqual(wide[wide.index("--tools") + 1], "Read,Edit,WebFetch,Bash",
                          "built-ins only (--tools does not affect MCP tools), a rule's specifier dropped")
@@ -947,7 +961,8 @@ class CodeToolsWithMcp(ClaudeCodeCase):
         # No server named, or no code-running tool: built as before.
         for config, tools in ((None, ["Read", "Bash"]), (self.mcp_file("empty.json", {}), ["Read", "Bash"]),
                               (githits, ["Read", "Edit", "WebFetch", "mcp__githits"])):
-            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config, allowed_tools=tools)
+            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config, allowed_tools=tools,
+                               allow_unscreened_bare=True)  # guard-lane-2's refusal is tested in UnscreenedBare
 
     def test_the_override_builds_it_and_is_recorded_in_signal_guard(self):
         kit = self.kit()
@@ -955,7 +970,8 @@ class CodeToolsWithMcp(ClaudeCodeCase):
         claude = self.stand_in("override")
         thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
         provider = self.provider(kit, thread, claude, bare=True, mcp_config=githits, max_calls=1,
-                                 allowed_tools=["Read", "Edit", "Bash", "mcp__githits"], allow_code_tools_with_mcp=True)
+                                 allowed_tools=["Read", "Edit", "Bash", "mcp__githits"], allow_code_tools_with_mcp=True,
+                                 allow_unscreened_bare=True)
         [candidate] = thread.propose(provider)
         self.assertIs(candidate.signal["guard"]["allow_code_tools_with_mcp"], True)
         self.assertEqual(candidate.signal["guard"]["policy_digest"], POLICY_DIGEST, "policy.json itself is unchanged")
@@ -964,6 +980,83 @@ class CodeToolsWithMcp(ClaudeCodeCase):
         other = kit.start("Add a CSV export (no override)", paths=["src/", "tests/"])
         [plain] = other.propose(self.provider(kit, other, claude, bare=True, max_calls=1))
         self.assertNotIn("allow_code_tools_with_mcp", plain.signal["guard"], "recorded only when the operator overrides")
+
+
+class UnscreenedBare(ClaudeCodeCase):
+    """guard-lane-2, M1 of #155's verification: Claude Code 2.1.312 runs no ``--settings`` hook under ``--bare``, so
+    a ``WebSearch`` or ``WebFetch`` lookup, or a call to a server ``--mcp-config`` names, leaves unscreened and is
+    flagged ``unguarded`` only afterwards. A ``--bare`` provider allowing any of them is refused when built, unless
+    the operator passes the recorded override; ``--lane api-hooked`` is where they are guarded. On f466967 each of
+    these providers was built without a word."""
+
+    def mcp_file(self, name, servers):
+        path = self.root.parent / name
+        path.write_text(json.dumps({"mcpServers": servers}) if servers is not None else "{not json", encoding="utf-8")
+        return path
+
+    def test_bare_refuses_web_tools_and_an_mcp_server_and_points_to_api_hooked(self):
+        kit = self.kit()
+        githits_mcp = self.mcp_file("githits.json", {"githits": {"command": "githits-stand-in"}})
+        broken = self.mcp_file("broken.json", None)
+        for kwargs in ({"allowed_tools": ["Read", "Edit", "WebSearch"]}, {"allowed_tools": ["Read", "WebFetch"]},
+                       {"allowed_tools": ["Read", "websearch"]}, {"allowed_tools": ["Read", "WebFetch(domain:pypi.org)"]},
+                       {"mcp_config": githits_mcp}, {"mcp_config": broken},
+                       {"mcp_config": githits_mcp, "allowed_tools": ["Read", "Edit", "mcp__githits"]},
+                       {"lane": "provider_3p", "allowed_tools": ["Read", "WebSearch"]}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(Rejected) as caught:
+                ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, **kwargs)
+            self.assertEqual(caught.exception.code, "invalid_provider")
+            for words in ("with --bare", "does not run --settings PreToolUse hooks under --bare",
+                          "flagged unguarded only afterwards", f"--lane {HOOKED} --trusted-tree",
+                          "--allow-unscreened-bare"):
+                self.assertIn(words, caught.exception.detail, kwargs)
+        self.assertEqual(web_tools(["Read", "WebSearch", "webfetch(x)", "WebSearchX", "mcp__githits__search", "Bash"]),
+                         ["WebSearch", "webfetch"])
+        # No web tool and no server named: --bare is built as before. On api-hooked the hook screens them.
+        for kwargs in ({}, {"allowed_tools": ["Read", "Edit", "mcp__githits"]}, {"mcp_config": self.mcp_file("e.json", {})}):
+            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, **kwargs)
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-placeholder"}):
+            for name in THIRD_PARTY_SWITCHES:
+                os.environ.pop(name, None)
+            hooked = ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=VERSION_ONLY,
+                                        mcp_config=githits_mcp, allowed_tools=["Read", "WebSearch", "WebFetch"])
+        self.assertFalse(hooked.bare)
+        self.assertFalse(hooked.allow_unscreened_bare)
+
+    def test_the_override_builds_it_and_is_recorded_in_signal_guard(self):
+        kit = self.kit()
+        githits_mcp = self.mcp_file("githits.json", {"githits": {"command": "githits-stand-in"}})
+        claude = self.stand_in("unscreened")
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        provider = self.provider(kit, thread, claude, bare=True, mcp_config=githits_mcp, max_calls=1,
+                                 allowed_tools=["Read", "Edit", "WebSearch", "mcp__githits"], allow_unscreened_bare=True)
+        [candidate] = thread.propose(provider)
+        self.assertIs(candidate.signal["guard"]["allow_unscreened_bare"], True)
+        [run] = self.runs("unscreened")
+        self.assertIn("--bare", run["argv"])
+        self.assertNotIn("--allow-unscreened-bare", run["argv"], "the host's switch, never Claude Code's")
+        other = kit.start("Add a CSV export (no override)", paths=["src/", "tests/"])
+        [plain] = other.propose(self.provider(kit, other, claude, bare=True, max_calls=1))
+        self.assertNotIn("allow_unscreened_bare", plain.signal["guard"], "recorded only when the operator overrides")
+
+    def test_no_documented_bare_invocation_runs_unscreened_lookups_without_the_override(self):
+        """docs/CLAUDE_CODE.md (:7 and the MCP A/B block) and docs/EXPERIMENTS.md showed ``--bare`` with
+        ``--mcp-config`` or ``WebSearch,WebFetch`` as plain usage. Every documented ``syberlabs propose`` line (a
+        continuation joined) that combines ``--bare`` with either must carry the override."""
+        root = Path(claude_code.__file__).resolve().parents[1]
+        sources = {path: path.read_text(encoding="utf-8") for path in sorted((root / "docs").glob("*.md"))}
+        sources[Path(claude_code.__file__)] = claude_code.__doc__
+        seen = 0
+        for path, text in sources.items():
+            for line in re.sub(r"\\\n\s*", " ", text).splitlines():
+                command = line.split(" #", 1)[0].strip()  # a trailing shell comment is prose
+                if not command.startswith("syberlabs propose --claude-code") or not re.search(r"--bare\b", command):
+                    continue
+                seen += 1
+                unscreened = "--mcp-config" in command or re.search(r"\bWeb(Search|Fetch)\b", command)
+                if unscreened:
+                    self.assertIn("--allow-unscreened-bare", command, f"{path.name}: {command.strip()}")
+        self.assertGreater(seen, 3, "the docs still show --bare invocations to check")
 
 
 def launcher_lookup(command: str) -> list:
@@ -1140,7 +1233,8 @@ class GitHitsLauncher(ClaudeCodeCase):
         config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
         operator = {k: v for k, v in os.environ.items() if claude_code.githits_variable(k)}
         self.assertEqual(set(operator), {githits.TOKEN_ENV, githits.URL_ENV, githits.LICENSES_ENV, *OPERATOR_GITHITS})
-        mcp_only = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config)
+        mcp_only = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config,
+                                      allow_unscreened_bare=True)
         self.assertFalse(mcp_only.githits, "no --githits: the MCP route only")
         kept = {k: v for k, v in mcp_only.environment().items() if claude_code.githits_variable(k)}
         self.assertEqual(kept, operator, "the operator's GitHits variables, the token included, unchanged")
@@ -1343,10 +1437,37 @@ class GitHitsLauncher(ClaudeCodeCase):
         with tempfile.TemporaryDirectory(prefix="with space ") as folder, self.assertRaises(Rejected):
             write_launcher(Path(folder))
 
+    def test_the_launcher_hands_words_starting_with_a_slash_over_unchanged(self):
+        """guard-lane-2, L1 of #155's verification: Git Bash rewrites an argument that starts with ``/`` when it
+        starts a Windows program (``/api/v1`` became ``C:/Program Files/Git/api/v1``), so the launcher's argv and
+        the hook's digest differed and an honest lookup was refused. The launcher now exports MSYS_NO_PATHCONV=1
+        and MSYS2_ARG_CONV_EXCL='*' before its exec. Run under a real ``sh`` when one is on PATH (Git Bash's on
+        Windows, where the conversion happens)."""
+        text = claude_code.launcher_text(sys.executable, GITHITS_ENTRY)
+        lines = text.splitlines()
+        export = lines.index("export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'")
+        self.assertLess(export, next(i for i, line in enumerate(lines) if line.startswith("exec ")), "before the exec")
+        sh = shutil.which("sh")
+        if not sh:
+            self.skipTest("no sh on PATH")
+        with tempfile.TemporaryDirectory() as folder:
+            entry = Path(folder) / "argv_entry.py"
+            entry.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+            launcher = write_launcher(Path(folder), entry=entry)
+            words = ["grep", "/api/v1", "--target", "pypi:requests@2.32.3", "/usr/lib"]
+            env = {k: v for k, v in os.environ.items() if k not in ("MSYS_NO_PATHCONV", "MSYS2_ARG_CONV_EXCL")}
+            done = subprocess.run([sh, "-c", launcher + " " + " ".join(words)], capture_output=True, timeout=120,
+                                  env=env)
+            os.chmod(launcher, stat.S_IREAD | stat.S_IWRITE)  # so the temporary directory can be removed on Windows
+            self.assertEqual(done.returncode, 0, done.stderr[-400:])
+            self.assertEqual(json.loads(done.stdout.decode("utf-8")), words, "the words the hook digested, unchanged")
+
     def test_the_skill_is_the_adapted_apache_text_and_carries_its_license(self):
         template, digest = githits_skill()
         self.assertEqual(digest, hashlib.sha256(SKILL_PATH.read_bytes().replace(b"\r\n", b"\n")).hexdigest())
         self.assertEqual(digest, SKILL_SHA256, "the committed blob's digest")
+        docs = (Path(claude_code.__file__).resolve().parents[1] / "docs" / "CLAUDE_CODE.md").read_text(encoding="utf-8")
+        self.assertIn(f"`{SKILL_SHA256[:8]}…{SKILL_SHA256[-4:]}`", docs, "guard-lane-2: docs quote today's digest")
         self.assertFalse(template.startswith("---"), "the front matter stays out of the prompt")
         self.assertIn("{launcher}", template)
         for words in ("Look up only when a failing check", "Never before a check has failed", "installed version",
@@ -1561,6 +1682,27 @@ class CommandLine(ClaudeCodeCase):
         events = json.loads(exported.read_text(encoding="utf-8"))["events"]
         [registered] = [e["body"] for e in events if e.get("kind") == "candidate_registered"]
         self.assertIs(registered["signal"]["guard"]["allow_code_tools_with_mcp"], True)
+
+    def test_the_unscreened_bare_refusal_and_its_override_from_the_terminal(self):
+        """guard-lane-2, M1: ``--bare`` with WebSearch is refused before anything runs; ``--allow-unscreened-bare``
+        builds it and the candidate records the override."""
+        self.assertEqual(self.run_cli("init")[0], 0)
+        self.assertEqual(self.run_cli("start", "Add a CSV export for report rows", "--paths", "src", "tests")[0], 0)
+        env = {BIN_ENV: " ".join(self.stand_in("cli-bare-web"))}
+        flags = ("propose", "--claude-code", "--bare", "--max-calls", "1", "--allowed-tools", "Read,Edit,WebSearch")
+        code, _, err = self.run_cli(*flags, env=env)
+        self.assertEqual(code, 2)
+        self.assertIn("invalid_provider", err)
+        self.assertIn("--allow-unscreened-bare", err)
+        self.assertIn(f"--lane {HOOKED}", err)
+        self.assertEqual(self.runs("cli-bare-web"), [], "refused before anything ran")
+        code, out, err = self.run_cli(*flags, "--allow-unscreened-bare", env=env)
+        self.assertEqual(code, 0, out + err)
+        exported = self.root.parent / "cli-bare-web-export.json"
+        self.assertEqual(self.run_cli("export", "--out", str(exported))[0], 0)
+        events = json.loads(exported.read_text(encoding="utf-8"))["events"]
+        [registered] = [e["body"] for e in events if e.get("kind") == "candidate_registered"]
+        self.assertIs(registered["signal"]["guard"]["allow_unscreened_bare"], True)
 
 
 if __name__ == "__main__":

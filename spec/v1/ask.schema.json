@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v1alpha1/ask.schema.json",
+  "title": "Ask",
+  "description": "A request for a human key. Protocol sdk.syberlabs.space/v1alpha1. Field names follow MasterMind asks (asks/ASK-nnn.json): id, key, owner, opened, expires, question, options, default_on_silence, context. key adds approve, the per-effect approval a case already records as an approved event; direction, keys and tiebreak are the charter's three keys. An approve ask binds to the exact digest it authorizes and never takes effect on silence. A keys ask may carry a default on silence, as MasterMind's do, but that default is the option that performs no effect (for example ASK-009: Contact stays parked); the schema cannot tell options apart, so that rule is the ledger's. The answer is a commit or an approved event by a principal other than the proposer, never an edit to the ask.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "key", "owner", "opened", "expires", "question", "options"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^(ASK-[0-9]{3,}|ask_[A-Za-z0-9._-]{1,120})$"},
+    "key": {"enum": ["approve", "direction", "keys", "tiebreak"]},
+    "owner": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
+    "opened": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"},
+    "expires": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}"},
+    "question": {"type": "string", "minLength": 1},
+    "options": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "default_on_silence": {"type": "string", "minLength": 1},
+    "binds_to": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "context": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"required": ["key"], "properties": {"key": {"const": "approve"}}},
+      "then": {"required": ["binds_to"], "properties": {"default_on_silence": false}}
+    }
+  ]
+}

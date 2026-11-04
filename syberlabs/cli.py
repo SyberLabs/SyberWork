@@ -178,6 +178,11 @@ def main(argv: list[str] | None = None) -> int:
                          help="for --claude-code: allow Bash or PowerShell in --allowed-tools although --mcp-config "
                               "names an MCP server (refused otherwise: the guard's key is in Claude Code's "
                               "environment); recorded in signal.guard")
+    propose.add_argument("--allow-unscreened-bare", action="store_true",
+                         help="for --claude-code --bare: allow WebSearch or WebFetch in --allowed-tools, or an "
+                              "--mcp-config naming an MCP server (refused otherwise: no --settings hook runs under "
+                              "--bare, so those lookups leave unscreened; use --lane api-hooked); recorded in "
+                              "signal.guard")
     propose.add_argument("--githits", action="store_true",
                          help="for --claude-code: GitHits through the API client (arm B of the pilot): a per-call "
                               "launcher as the only Bash command, guarded, its records journaled as lookups, and the "
@@ -643,6 +648,7 @@ def _run(kit: Kit, args) -> int:
                                           max_calls=args.max_calls, guard_max_lines=args.guard_max_lines,
                                           guard_max_chars=args.guard_max_chars,
                                           allow_code_tools_with_mcp=args.allow_code_tools_with_mcp,
+                                          allow_unscreened_bare=args.allow_unscreened_bare,
                                           githits=args.githits, arm=args.githits_arm,
                                           thread_label=thread.id if args.githits else None)
             found = thread.propose(provider, seed=args.seed)

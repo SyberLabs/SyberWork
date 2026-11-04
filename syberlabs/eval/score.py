@@ -104,12 +104,13 @@ def _metric_value(metric) -> float | int | bool | None:
 
 def run_metrics(bundle: dict, events: list[dict], quality: dict, accepted: str | None, safety: dict,
                 efficiency) -> dict:
-    """The value of every metric a spec may name, for one run; None is unknown."""
+    """The value of every metric a spec may name (``spec.METRIC_NAMES``), for one run; None is unknown."""
     outcome = bundle.get("outcome") or {}
     passed_all = quality["verdict"] == "pass" and quality["trusted"]
     found = {
         "hidden_pass_rate": 1 if (accepted is not None and accepted == quality["candidate"] and passed_all) else 0,
-        "hidden_parts_passed": (quality["passed"] / quality["total"]) if quality["total"] else None,
+        # A tampered hidden copy leaves the parts unknown: its passed count is not evidence.
+        "hidden_parts_passed": (quality["passed"] / quality["total"]) if quality["total"] and quality["trusted"] else None,
         "calls": outcome.get("calls") if type(outcome.get("calls")) is int else None,
         "host_dollars": _metric_value(efficiency.cost),
         "evaluations": sum(1 for e in events if e.get("kind") == "candidate_evaluated"),

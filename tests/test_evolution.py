@@ -5,13 +5,16 @@ tests exercise the same records against a real repository.
 """
 
 import copy
+import os
 import random
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from spec.validate import validate_events
-from syberlabs import Rejected, Session
+from syberlabs import Rejected, Session, evolution
 from syberlabs.contracts import prepare_contract
 from syberlabs.evolution import evaluation_denial, latest_evaluation, settings
 from syberlabs.planner import StaticPlanner
@@ -418,6 +421,43 @@ class IndexedEvaluations(Fixture):
             views = self.session.candidates(case)
             self.assertEqual([view["id"] for view in views], [f"c{n}" for n in registered])
             self.assertEqual({view["id"]: view["evaluation"] for view in views}, self.scanned(case), f"seed {seed}")
+
+
+class ScopeCase(unittest.TestCase):
+    """hunt-fixes-1, INT-2: on dc69499491 ``in_scope`` compared path prefixes case-sensitively, so on Windows and
+    macOS ``Tests/conftest.py`` passed an ``exclude`` of ``tests`` and ``.SyberLabs/x`` the always-excluded
+    ``.syberlabs``, though each is checked out onto the excluded file. The kernel's ``record_candidate`` computes
+    ``scope_violations`` through the same function."""
+
+    SCOPE = {"paths": ["src", "tests"], "exclude": ["tests/conftest.py", "src/vendor"]}  # entries as _path_list cleans them
+    EVERYTHING = {"paths": ["."], "exclude": ["tests"]}
+
+    def test_on_a_case_insensitive_filesystem_a_recased_path_cannot_escape_an_exclusion(self):
+        with mock.patch.object(evolution, "CASE_INSENSITIVE_PATHS", True):
+            for path in ("Tests/conftest.py", "tests/Conftest.PY", "SRC/Vendor/lib.py", "src/vendor/LIB.py"):
+                self.assertFalse(evolution.in_scope(self.SCOPE, path), path)
+            for path in (".SyberLabs/journal.json", ".Git/config", "Tests/test_app.py", "TESTS"):
+                self.assertFalse(evolution.in_scope(self.EVERYTHING, path), path)
+            self.assertTrue(evolution.in_scope(self.SCOPE, "SRC/app.py"), "inclusion folds the same way")
+            self.assertTrue(evolution.in_scope(self.SCOPE, "tests/test_app.py"))
+            self.assertTrue(evolution.in_scope(self.EVERYTHING, "src/app.py"))
+
+    def test_on_a_case_sensitive_filesystem_paths_compare_as_written(self):
+        with mock.patch.object(evolution, "CASE_INSENSITIVE_PATHS", False):
+            self.assertTrue(evolution.in_scope(self.EVERYTHING, "Tests/conftest.py"), "a distinct directory there")
+            self.assertTrue(evolution.in_scope(self.EVERYTHING, ".SyberLabs/journal.json"))
+            self.assertFalse(evolution.in_scope(self.EVERYTHING, "tests/conftest.py"))
+            self.assertFalse(evolution.in_scope(self.SCOPE, "SRC/app.py"), "inclusion does not fold either")
+
+    def test_the_rule_is_probed_on_this_host(self):
+        probed = evolution._case_insensitive_filesystem(evolution.__file__)
+        self.assertEqual(evolution.CASE_INSENSITIVE_PATHS, probed)
+        if os.name == "nt":
+            self.assertTrue(probed)
+        elif sys.platform.startswith("linux"):
+            self.assertFalse(probed)
+        self.assertEqual(evolution._case_insensitive_filesystem(""), os.path.normcase("A") != "A",
+                         "a path without letters falls back to the platform's rule")
 
 
 if __name__ == "__main__":

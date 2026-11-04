@@ -1,7 +1,8 @@
 """The runner: every (task, arm, seed) of a registered spec through a real unattended Build Thread, one bundle each.
 
 ``run_eval`` refuses a spec that is not exactly as registered (``spec.registered``) and, unless told it is a dry
-run, a checkout whose preflight for the current commit did not pass (``preflight_gate``). It expands the spec's
+run, a registration written from a checkout that differed from its commit (``spec.clean_registration``,
+``registration_dirty``) and a checkout whose preflight for the current commit did not pass (``preflight_gate``). It expands the spec's
 tasks x arms x seeds in spec order and shuffles them with ``order_seed`` (``plan``; a Fisher-Yates shuffle drawn
 from ``random.Random(order_seed).random()``, whose sequence Python guarantees across versions). Each run:
 
@@ -463,6 +464,7 @@ class EvalRun:
         gate = None
         if require_preflight:
             try:
+                specs.clean_registration(self.registration)  # once: the registration cannot change under a run
                 gate = preflight_gate(self.root, self.eval_id, self.harness)
             except Rejected as exc:
                 if not dry:

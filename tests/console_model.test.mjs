@@ -62,7 +62,28 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   assert.deepEqual(shelf.rows.map(r => [r.file, r.state, r.tone]), cases.certificates.expected);
   assert.equal(shelf.rows.find(r => r.state === 'not_signed').statement, null);
   assert.equal(shelf.rows.find(r => r.certified).statement.chain.count, cases.certificates.count);
+  assert.deepEqual(shelf.rows.filter(r => r.certified).map(r => r.key), [1, 1]);
   assert.equal(cases.console.certificates.configured, true);
+  // The same home read by a shelf that trusts a new key and the old one: every file certified, each under its own key.
+  const rotated = M.certificateView(cases.certificates.rotated.body);
+  assert.deepEqual(rotated.publicKeys, cases.certificates.rotated.body.public_keys);
+  assert.deepEqual(rotated.rows.map(r => [r.file, r.state, r.key]), cases.certificates.rotated.expected);
+  // And a shelf over that home that also revokes the statement form's digest: that file, and the same payload under the
+  // new key, read revoked; the bare form, another certificate, stays certified.
+  const revoked = M.certificateView(cases.certificates.revoked.body);
+  assert.deepEqual(revoked.rows.map(r => [r.file, r.state, r.key, r.digest]), cases.certificates.revoked.expected);
+  assert.deepEqual(revoked.revoked, cases.certificates.revoked.body.revoked);
+  // And one with a validity window whose clock has passed the statement form's (and so foreign.json's) but not the bare form's.
+  const windowed = M.certificateView(cases.certificates.windowed.body);
+  assert.deepEqual(windowed.rows.map(r => [r.file, r.state, r.expiresAt]), cases.certificates.windowed.expected);
+  assert.equal(windowed.validity.max_age, 1);
+  // And one that checks each signed file against the project's repository: the genuine files hold, and a result commit
+  // the repository does not have reads repository differs. The reasons are the server's own list.
+  assert.equal(shelf.repository, false);
+  const held = M.certificateView(cases.certificates.repository.body);
+  assert.deepEqual([held.state, held.repository, held.notChecked], ['read', true, []]);
+  assert.deepEqual(held.rows.map(r => [r.file, r.state, r.repository]), cases.certificates.repository.expected);
+  assert.deepEqual(M.REPOSITORY_FAILURES, cases.certificates.repository.failures);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -449,12 +470,14 @@ test('asking the witness is for the role serve names, and not for a head already
   assert.equal(M.can(ME('manager', ['manager']), 'witness_request', { console, view: null }).ok, true);
 });
 
-const CERTIFIED = { thread: '0123abcd-0000-4000-8000-000000000000', candidate: 'c1', objective: 'o', act_class: null, contract: { id: 'repo-change', version: 2 },
+const CERTIFIED = { keyid: 'd'.repeat(64), thread: '0123abcd-0000-4000-8000-000000000000', candidate: 'c1', objective: 'o', act_class: null, contract: { id: 'repo-change', version: 2 },
   result: { commit: 'a'.repeat(40), tree: 'b'.repeat(40), files: 2 }, target_ref: 'refs/heads/syberlabs/0123abcd', checks: [{ name: 'tests', required: true, state: 'passed' }],
   chain: { count: 12, head: 'c'.repeat(64) } };
-const SHELF = (rows, extra = {}) => ({ configured: true, public_key: 'd'.repeat(64), total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
+const SHELF = (rows, extra = {}) => ({ configured: true, public_keys: ['d'.repeat(64)], revoked: [], validity: null, total: rows.length, shown: rows.length, checked: ['signature', 'journal'],
   not_checked: ['repository'], certificates: rows, note: 'n', ...extra });
-const ROW = extra => ({ file: 'x.json', verdict: 'pass', reason: null, signature: 'ok', journal: 'ok', journal_present: true, repository: null, statement: CERTIFIED, ...extra });
+const DIGEST = '9a'.repeat(32);
+const ROW = extra => ({ file: 'x.json', verdict: 'pass', reason: null, signature: 'ok', journal: 'ok', journal_present: true, repository: null, statement: CERTIFIED,
+  digest: DIGEST, expires_at: null, ...extra });
 
 test('a certificate reads certified only when serve passed its signature and its journal', () => {
   const view = M.certificateView(SHELF([ROW({}), ROW({ file: 'y.json', journal: null, journal_present: false })]));
@@ -485,9 +508,185 @@ test('a failed certificate is named as failed, and states nothing unless its sig
   assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'x', journal: null })])).rows[0].state, 'unknown');
 });
 
+test('with more than one key, each signed row names the listed key that verified it, and no other key is read', () => {
+  const NEW = 'e'.repeat(64);
+  const view = M.certificateView(SHELF([ROW({}), ROW({ file: 'y.json', statement: { ...CERTIFIED, keyid: NEW } })], { public_keys: [NEW, 'd'.repeat(64)] }));
+  assert.deepEqual(view.publicKeys, [NEW, 'd'.repeat(64)]);
+  assert.deepEqual(view.rows.map(r => [r.file, r.state, r.key]), [['x.json', 'certified', 2], ['y.json', 'certified', 1]]);
+  // A statement under a key the same answer does not list, or naming none, is not drawn: a pass reads unknown, and so
+  // does a signed file whose journal failed.
+  for (const statement of [{ ...CERTIFIED, keyid: 'f'.repeat(64) }, { ...CERTIFIED, keyid: undefined }, { ...CERTIFIED, keyid: 4 }]) {
+    for (const extra of [{}, { verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated' }]) {
+      const row = M.certificateView(SHELF([ROW({ ...extra, statement })], { public_keys: [NEW, 'd'.repeat(64)] })).rows[0];
+      assert.deepEqual([row.state, row.certified, row.statement, row.key], ['unknown', false, null, null], JSON.stringify([statement.keyid, extra]));
+    }
+  }
+  // A failed signature names no key.
+  const unsigned = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'signature_invalid', signature: 'signature_invalid', journal: null, journal_present: null })])).rows[0];
+  assert.deepEqual([unsigned.state, unsigned.key], ['not_signed', null]);
+});
+
+test('a revoked certificate reads revoked only when the same answer lists its digest, and a listed digest is never certified', () => {
+  const revoked = M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'revoked' })], { revoked: ['0'.repeat(64), DIGEST] }));
+  const row = revoked.rows[0];
+  assert.deepEqual([row.state, row.tone, row.label, row.certified, row.key, row.digest], ['revoked', 'denied', 'revoked', false, 1, DIGEST]);
+  assert.equal(row.statement.candidate, 'c1', 'what was revoked is shown');
+  assert.match(row.text, /do not treat it as certified/);
+  assert.deepEqual([revoked.certified, revoked.revoked], [0, ['0'.repeat(64), DIGEST]]);
+  // Any disagreement between the row and the list is unknown: never certified, and never revoked on the row's word alone.
+  for (const [extra, list] of [
+    [{ verdict: 'fail', reason: 'revoked' }, []],                                       // serve says revoked, the answer lists no such digest
+    [{ verdict: 'fail', reason: 'revoked' }, ['0'.repeat(64)]],
+    [{}, [DIGEST]],                                                                      // a pass whose digest is listed
+    [{ journal: null, journal_present: false }, [DIGEST]],                               // a signed-only pass whose digest is listed
+    [{ verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated' }, [DIGEST]],
+    [{ verdict: 'pass', reason: 'revoked' }, [DIGEST]],
+    [{ verdict: 'fail', reason: 'revoked', statement: { ...CERTIFIED, keyid: 'f'.repeat(64) } }, [DIGEST]],
+    [{ verdict: 'fail', reason: 'revoked', statement: null }, [DIGEST]],
+    [{ verdict: 'fail', reason: 'revoked', digest: DIGEST.toUpperCase() }, [DIGEST]],                // a digest serve would not write
+  ]) {
+    const r = M.certificateView(SHELF([ROW(extra)], { revoked: list })).rows[0];
+    assert.deepEqual([r.state, r.certified, r.statement, r.digest], ['unknown', false, null, null], JSON.stringify([extra, list]));
+  }
+  // A pass is certified only with a digest the console could check against the list.
+  for (const digest of [undefined, null, 4, 'abc', DIGEST.toUpperCase(), DIGEST + '0']) {
+    for (const extra of [{}, { journal: null, journal_present: false }]) {
+      const r = M.certificateView(SHELF([ROW({ ...extra, digest })])).rows[0];
+      assert.deepEqual([r.state, r.certified], ['unknown', false], JSON.stringify([digest, extra]));
+    }
+  }
+  assert.equal(M.certificateView(SHELF([ROW({})])).rows[0].digest, DIGEST, 'a certified row shows the digest that would revoke it');
+  // An answer without a revocation list of strings is unknown: the console could not tell what is revoked.
+  // So is a list with an entry serve would not write: the console could not match it against a row's digest.
+  for (const extra of [{ revoked: undefined }, { revoked: null }, { revoked: DIGEST }, { revoked: [DIGEST, 3] }, { revoked: [DIGEST.toUpperCase()] },
+    { revoked: [' ' + DIGEST] }, { revoked: [DIGEST + '\n'] }, { revoked: [''] }, { revoked: [DIGEST.slice(1)] }]) {
+    assert.equal(M.certificateView(SHELF([ROW({})], extra)).state, 'unknown', JSON.stringify(extra));
+  }
+});
+
+test('a certificate outside the validity window reads expired or not yet valid only when serve and the same answer agree', () => {
+  const ISSUED = 1_700_000_000_000_000, AGE = 3600, SKEW = 300, END = ISSUED + AGE * 1e6;
+  const W = (checked, extra = {}) => ({ validity: { max_age: AGE, skew: SKEW, checked_at: checked }, ...extra });
+  const DATED = (extra = {}) => ROW({ statement: { ...CERTIFIED, issued_at: ISSUED }, expires_at: END, ...extra });
+  // Inside the window, to its last microsecond, and up to SKEW before issue (the signer's clock ran ahead): certified.
+  for (const checked of [ISSUED, END, ISSUED - SKEW * 1e6]) {
+    const r = M.certificateView(SHELF([DATED()], W(checked))).rows[0];
+    assert.deepEqual([r.state, r.certified, r.expiresAt], ['certified', true, END], String(checked));
+  }
+  const view = M.certificateView(SHELF([DATED()], W(ISSUED)));
+  assert.deepEqual(view.validity, { max_age: AGE, skew: SKEW, checked_at: ISSUED });
+  const expired = M.certificateView(SHELF([DATED({ verdict: 'fail', reason: 'expired' })], W(END + 1))).rows[0];
+  assert.deepEqual([expired.state, expired.tone, expired.label, expired.certified, expired.expiresAt, expired.key, expired.digest],
+    ['expired', 'denied', 'expired', false, END, 1, DIGEST]);
+  assert.equal(expired.statement.candidate, 'c1', 'what expired is shown');
+  const early = M.certificateView(SHELF([DATED({ verdict: 'fail', reason: 'not_yet_valid' })], W(ISSUED - SKEW * 1e6 - 1))).rows[0];
+  assert.deepEqual([early.state, early.tone, early.label, early.certified], ['not_yet_valid', 'denied', 'not yet valid', false]);
+  // A row expired by the window and listed as revoked reads revoked, as serve names it.
+  const both = M.certificateView(SHELF([DATED({ verdict: 'fail', reason: 'revoked' })], W(END + 1, { revoked: [DIGEST] }))).rows[0];
+  assert.equal(both.state, 'revoked');
+  // Any disagreement between the row, the window and the answer's clock is unknown: never certified, and never expired on
+  // the row's word alone.
+  for (const [extra, checked] of [
+    [{}, END + 1],                                                        // serve passed what the answer's clock says expired
+    [{}, ISSUED - SKEW * 1e6 - 1],                                        // and what it says is not yet valid
+    [{ journal: null, journal_present: false }, END + 1],                 // signed only, but expired
+    [{ verdict: 'fail', reason: 'expired' }, ISSUED],                     // serve says expired, the answer's clock says current
+    [{ verdict: 'fail', reason: 'not_yet_valid' }, END + 1],              // the other failure
+    [{ verdict: 'fail', reason: 'expired' }, ISSUED - SKEW * 1e6 - 1],
+    [{ verdict: 'pass', reason: 'expired' }, END + 1],
+    [{ verdict: 'fail', reason: 'expired', statement: null }, END + 1],
+    [{ verdict: 'fail', reason: 'expired', statement: { ...CERTIFIED, issued_at: ISSUED, keyid: 'f'.repeat(64) } }, END + 1],
+    [{ expires_at: END + 1 }, ISSUED],                                    // an expiry that is not issued_at plus the window
+    [{ expires_at: null }, ISSUED],
+    [{ expires_at: String(END) }, ISSUED],
+    [{ statement: { ...CERTIFIED, issued_at: String(ISSUED) } }, ISSUED],  // an issued_at the console cannot reckon
+    [{ statement: { ...CERTIFIED, issued_at: ISSUED + 0.5 }, expires_at: END + 0.5 }, ISSUED],
+    [{ statement: CERTIFIED }, ISSUED],                                   // none at all
+  ]) {
+    const r = M.certificateView(SHELF([DATED(extra)], W(checked))).rows[0];
+    assert.deepEqual([r.state, r.certified], ['unknown', false], JSON.stringify([extra, checked]));
+  }
+  // Without a window nothing expires: serve saying so is unknown, and a pass shows no expiry.
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'expired' })])).rows[0].state, 'unknown');
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'not_yet_valid' })])).rows[0].state, 'unknown');
+  assert.deepEqual(['certified', null], (r => [r.state, r.expiresAt])(M.certificateView(SHELF([DATED()])).rows[0]));
+  // A window serve would not write makes the whole answer unknown: the console could not tell what has expired.
+  for (const validity of [undefined, {}, 3600, [], { max_age: 0, skew: SKEW, checked_at: ISSUED }, { max_age: 1.5, skew: SKEW, checked_at: ISSUED },
+    { max_age: '3600', skew: SKEW, checked_at: ISSUED }, { max_age: AGE, skew: -1, checked_at: ISSUED }, { max_age: AGE, checked_at: ISSUED },
+    { max_age: AGE, skew: SKEW }, { max_age: AGE, skew: SKEW, checked_at: -1 }, { max_age: AGE, skew: SKEW, checked_at: 2 ** 53 }]) {
+    assert.equal(M.certificateView(SHELF([DATED()], { validity })).state, 'unknown', JSON.stringify(validity));
+  }
+});
+
+test('with the repository checked, a certificate is certified only with a repository of ok, and differs only as serve names it', () => {
+  const REPO = { checked: ['signature', 'repository', 'journal'], not_checked: [] };
+  const view = M.certificateView(SHELF([ROW({ repository: 'ok' }), ROW({ file: 'y.json', repository: 'ok', journal: null, journal_present: false })], REPO));
+  assert.equal(view.repository, true);
+  assert.deepEqual(view.rows.map(r => [r.state, r.certified, r.repository]), [['certified', true, 'ok'], ['signed', false, 'ok']]);
+  assert.match(view.rows[0].text, /the configured repository holds the commits, trees and diff it states, and the thread's journal/);
+  assert.match(view.rows[1].text, /so the journal was not checked/);
+  for (const reason of M.REPOSITORY_FAILURES) {
+    const r = M.certificateView(SHELF([ROW({ verdict: 'fail', reason, repository: reason, journal: 'result_differs' })], REPO)).rows[0];
+    const unreadable = reason === 'repository_unreadable';
+    assert.deepEqual([r.state, r.tone, r.certified, r.repository], [unreadable ? 'repository_unreadable' : 'repository_differs', unreadable ? 'unknown' : 'denied', false, reason], reason);
+    assert.equal(r.statement.candidate, 'c1', 'what failed is shown');
+    assert.match(r.text, unreadable ? /could not read the configured repository: not certified/ : /does not hold .* do not treat it as certified/);
+  }
+  // A journal failure with the repository holding reads as before; a revoked row stays revoked, as serve names it first.
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated', repository: 'ok' })], REPO)).rows[0].state, 'journal_differs');
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'revoked', repository: 'commit_missing:result' })], { ...REPO, revoked: [DIGEST] })).rows[0].state, 'revoked');
+  // A file no listed key signed has no repository state.
+  const unsigned = { verdict: 'fail', reason: 'signature_invalid', signature: 'signature_invalid', journal: null, journal_present: null, statement: null };
+  assert.equal(M.certificateView(SHELF([ROW({ ...unsigned, repository: null })], REPO)).rows[0].state, 'not_signed');
+  // Any disagreement between the row, its repository field and the answer is unknown: never certified, and never
+  // repository differs on the row's word alone.
+  for (const [extra, more] of [
+    [{ repository: null }, {}],                                                          // a pass serve did not check
+    [{ repository: undefined }, {}],
+    [{ repository: 'OK' }, {}],
+    [{ repository: true }, {}],
+    [{ repository: 'commit_missing:result' }, {}],                                       // a pass the repository failed
+    [{ journal: null, journal_present: false, repository: 'commit_missing:result' }, {}],
+    [{ journal: null, journal_present: false, repository: null }, {}],
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: 'ok' }, {}],         // the reason and the field disagree
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: 'commit_missing:base' }, {}],
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: null }, {}],
+    [{ verdict: 'pass', reason: 'commit_missing:result', repository: 'commit_missing:result' }, {}],
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: 'commit_missing:result', statement: null }, {}],
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: 'commit_missing:result', statement: { ...CERTIFIED, keyid: 'f'.repeat(64) } }, {}],
+    [{ verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated', repository: 'commit_missing:result' }, {}],  // serve names the repository first
+    [{ verdict: 'fail', reason: 'tree_mismatch', repository: 'tree_mismatch' }, {}],    // a reason serve does not write
+    [{ verdict: 'fail', reason: 'revoked', repository: 'held' }, { revoked: [DIGEST] }],
+    [{ ...unsigned, repository: 'ok' }, {}],
+  ]) {
+    const r = M.certificateView(SHELF([ROW(extra)], { ...REPO, ...more })).rows[0];
+    assert.deepEqual([r.state, r.certified, r.statement, r.repository], ['unknown', false, null, null], JSON.stringify(extra));
+  }
+  // Without the repository checked, a row naming any repository state is unknown, and so is a repository reason.
+  for (const repository of ['ok', 'commit_missing:result', 'repository_unreadable', false]) {
+    for (const extra of [{}, { verdict: 'fail', reason: repository }, { verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated' }, { verdict: 'fail', reason: 'revoked' }]) {
+      const r = M.certificateView(SHELF([ROW({ ...extra, repository })], { revoked: [DIGEST] })).rows[0];
+      assert.deepEqual([r.state, r.certified], ['unknown', false], JSON.stringify([repository, extra]));
+    }
+  }
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'commit_missing:result' })])).rows[0].state, 'unknown');
+  assert.equal(M.certificateView(SHELF([ROW({})])).rows[0].repository, null);
+  // An answer whose layers are neither of the two serve writes is unknown as a whole: the console could not tell what a
+  // row's repository field means.
+  for (const extra of [{ checked: ['signature', 'journal', 'repository'], not_checked: [] }, { checked: ['signature', 'repository', 'journal'], not_checked: ['repository'] },
+    { checked: ['signature', 'repository', 'journal'], not_checked: undefined }, { checked: ['signature', 'journal'], not_checked: [] },
+    { checked: ['signature', 'journal'], not_checked: ['repository', 'x'] }, { checked: undefined, not_checked: undefined }, { checked: 'signature,journal' },
+    { checked: ['signature', 'repository', 'journal', 'witness'], not_checked: [] }, { checked: ['repository'], not_checked: [] }]) {
+    assert.equal(M.certificateView(SHELF([ROW({ repository: 'ok' })], extra)).state, 'unknown', JSON.stringify(extra));
+    assert.equal(M.certificateView(SHELF([ROW({})], extra)).state, 'unknown', JSON.stringify(extra));
+  }
+});
+
 test('a certificate answer of another shape is unknown, and an unconfigured one says so', () => {
-  for (const body of [null, {}, { configured: 'yes' }, { configured: true }, { configured: true, certificates: [], total: '0', public_key: 'd' },
-    { configured: true, certificates: {}, total: 0, public_key: 'd' }]) {
+  for (const body of [null, {}, { configured: 'yes' }, { configured: true }, { configured: true, certificates: [], total: '0', public_keys: ['d'] },
+    { configured: true, certificates: {}, total: 0, public_keys: ['d'] }, { configured: true, certificates: [], total: 0, public_key: 'd' },
+    { configured: true, certificates: [], total: 0, public_keys: [] }, { configured: true, certificates: [], total: 0, public_keys: 'd' },
+    { configured: true, certificates: [], total: 0, public_keys: ['d', 3] }]) {
     assert.equal(M.certificateView(body).state, 'unknown', JSON.stringify(body));
   }
   assert.deepEqual(M.certificateView({ configured: false, note: 'serve reads no certificates; set X' }), { state: 'off', text: 'serve reads no certificates; set X' });

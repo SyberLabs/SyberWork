@@ -91,9 +91,10 @@ The two forms are the same statement under two `payloadType`s, not two certifica
 
 | Code | Layer | Meaning |
 | --- | --- | --- |
+| `public_key_invalid` | key | `--public` is unreadable, is not 64 hex characters, or is a key no seed derives. In the last case the detail ends in `syberlabs.ed25519.key_problem`'s word: `not_a_point`, `small_order` (the identity included) or `mixed_order`; under a small-order key anyone can sign without a seed (under the identity, `R = B, s = 1` verifies every certificate). A refusal, exit 2, before the file is read. A library caller of `verify_certificate` handed such a key, or anything but 32 bytes (`not_32_bytes`), gets this code as the signature layer's failure, the word last in its note, without the envelope being read; `dsse.verified_payload` gives `None` under it |
 | `certificate_too_large`, `certificate_unreadable` | signature | the file is over 1 MiB, or not a JSON object |
 | `payload_type_mismatch` | signature | the envelope's `payloadType` is neither `application/vnd.in-toto+json` nor `application/vnd.syberlabs.admission-certificate+json` |
-| `signature_invalid` | signature | no signature verifies under the given public key (forged key, changed bytes, foreign `keyid`, a swapped `payloadType`) |
+| `signature_invalid` | signature | no signature verifies under the given public key (forged key, changed bytes, foreign `keyid`, a swapped `payloadType`), or the `payload` or a `sig` is not exactly the standard, padded base64 `sign_dsse` writes. A newline or space, a character inserted from outside the alphabet, a third `=` or unused bits set were read before as the same bytes, so one signature could be many files; URL-safe characters and missing padding are refused too |
 | `payload_unreadable` | signature | the signed bytes are not a JSON object |
 | `statement_type_mismatch` | signature | a statement's `_type` is not `https://in-toto.io/Statement/v1` |
 | `predicate_type_mismatch` | signature | a statement's `predicateType` is not `https://sdk.syberlabs.space/certificate/v0alpha1` |
@@ -118,6 +119,7 @@ The two forms are the same statement under two `payloadType`s, not two certifica
 - **The certificate proves the journal's statement, not the merge.** `main` taking the change is a later effect; the target ref's state is reported for the reader, not judged.
 - **One key, no rotation, no revocation.** A compromised seed cannot be revoked; a verifier trusts whichever public key it was handed.
 - **`keyid` narrowing.** A genuine signature under a foreign `keyid` is rejected; this follows `syberlabs/dsse.py` and DSSE's rule that `keyid` only narrows the keys to try.
+- **One encoding.** `payload` and `sig` are read only as `base64.standard_b64encode` writes them. DSSE also allows URL-safe base64; this verifier refuses a `-` or `_`, as it already did in effect (the old decoder dropped them and read other bytes; a URL-safe string without either is the standard one and is accepted), and refuses a line-wrapped or otherwise re-encoded copy of a genuine certificate as `signature_invalid`. A tool that re-encodes an envelope before handing it on changes the file this verifier accepts.
 - **The journal layer never writes to or locks the journal.** `verify` opens `registry.jsonl` and the thread file read-only, takes no lock, and leaves a torn final line left by a writer that died mid-record in place: the line is ignored and the journal line says `1 torn trailing record ignored`, where the session's own reader would truncate it. A verifier can therefore work from a read-only copy of a journal, and reads whatever complete records are on disk at that moment. It never runs a check, a provider or a model, and never updates a ref.
 
 ## What comes next

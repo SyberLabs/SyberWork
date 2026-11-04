@@ -9,6 +9,8 @@ and again after restore.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from syberlabs.errors import Rejected
@@ -73,6 +75,29 @@ def _columns(store, table: str) -> list[str]:
     return [item[0] for item in row.description]
 
 
+def _write_file(directory: Path, name: str, text: str) -> None:
+    """Write ``directory/name`` as a new regular file; never through a link planted at that name.
+
+    ``Path.write_text`` follows a symlink, so a ``manifest.json`` linked elsewhere had its target replaced with
+    the snapshot. A link (or any non-regular file) at the name is refused, and the bytes are written to a fresh
+    temporary file in the same directory (created exclusively) and moved over the name.
+    """
+    target = directory / name
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise Rejected("backup_refused", f"{name} in the backup directory is a link or not a regular file")
+    handle, temporary = tempfile.mkstemp(prefix="." + name + ".", dir=directory)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(text)
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def export_cell(work, directory: str | Path) -> dict:
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -88,8 +113,8 @@ def export_cell(work, directory: str | Path) -> dict:
             rows = []
             for record in db.execute(f"SELECT * FROM {table}").fetchall():
                 rows.append({column: record[column] for column in columns})
-            (directory / f"{table}.json").write_text(json.dumps(rows, separators=(",", ":"), default=str), encoding="utf-8")
-    (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            _write_file(directory, f"{table}.json", json.dumps(rows, separators=(",", ":"), default=str))
+    _write_file(directory, "manifest.json", json.dumps(manifest, indent=2) + "\n")
     return manifest
 
 

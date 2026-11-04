@@ -19,6 +19,7 @@
     {"id": "syberwork", "label": "syberwork app", "paths": ["syberwork/**"]}
   ],
   "edges": [
+    {"from": "syberlabs-admission", "to": "syberlabs-agents"},
     {"from": "syberlabs-admission", "to": "syberlabs-build-thread"},
     {"from": "syberlabs-admission", "to": "syberlabs-primitives"},
     {"from": "syberlabs-agents", "to": "syberlabs-admission"},
@@ -54,8 +55,10 @@
     {"from": "syberlabs-signing", "to": "syberlabs-git"},
     {"from": "syberlabs-signing", "to": "syberlabs-primitives"},
     {"from": "syberwork", "to": "syberlabs-admission"},
+    {"from": "syberwork", "to": "syberlabs-agents"},
     {"from": "syberwork", "to": "syberlabs-build-thread"},
     {"from": "syberwork", "to": "syberlabs-builder"},
+    {"from": "syberwork", "to": "syberlabs-git"},
     {"from": "syberwork", "to": "syberlabs-primitives"},
     {"from": "syberwork", "to": "syberlabs-signing"}
   ]

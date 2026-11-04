@@ -1,0 +1,35 @@
+{
+  "schema": "attribution.schema.json",
+  "valid": [
+    {
+      "name": "proposal written by a Build Thread child, provenance derived from code",
+      "instance": {
+        "case_id": "thread-2026-11-02-a",
+        "seq": 4,
+        "agent": {
+          "id": "agt_buildthread.c1",
+          "root_id": "agt_buildthread",
+          "parent_id": "agt_buildthread",
+          "subject_binding": "github:sykosyber",
+          "platform": "codex"
+        },
+        "provenance": {
+          "system": "syberwork",
+          "module": "syberlabs/build.py",
+          "symbol": "Thread.propose",
+          "line": 956
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "attribution names an Agent identity, not a free-text actor",
+      "instance": {
+        "case_id": "thread-2026-11-02-a",
+        "seq": 4,
+        "agent": "claude"
+      }
+    }
+  ]
+}
