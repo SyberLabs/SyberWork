@@ -10,7 +10,9 @@ Every subprocess gets an explicit environment built from an allowlist (``minimal
 process's environment: ``PATH``, the variables a Windows interpreter needs to start, a temporary home, the
 variables Syber's ``runThread`` sets that the contract depends on, and, for propose, ``SYBERLABS_CLAUDE_BIN``
 naming the Claude Code stand-in from ``tests/test_claude_code.py``, as Syber names the real binary. Nothing else
-from the host reaches the CLI or the stand-in.
+from the host reaches the CLI or the stand-in. ``SYBERLABS_CLAUDE_BIN`` names one executable file (``wrapper``),
+which the CLI runs as a single argv item (``claude_code.claude_executable``), so a path with spaces keeps its
+boundaries on every platform.
 
 If Syber changes what it sends or reads, update ``SYBER_ARGV`` and the asserted fields here with a citation.
 """
@@ -20,6 +22,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -77,6 +81,21 @@ def run_step(argv: list[str], cwd: Path, env: dict) -> tuple[int, str, str]:
     return done.returncode, done.stdout, done.stderr
 
 
+def wrapper(argv: list[str], directory: Path) -> Path:
+    """One executable file that runs ``argv`` plus its own arguments: ``SYBERLABS_CLAUDE_BIN`` names it as a path,
+    which the CLI runs as ``[path]`` when it is a file (``claude_code.claude_executable``). A command line in that
+    variable is split with ``shlex`` in non-POSIX mode on Windows (``providers.split_command``), which keeps quotes
+    inside the split items, so a quoted path with spaces cannot reach the process intact there."""
+    if os.name == "nt":
+        path = directory / "claude.cmd"
+        path.write_text("@" + subprocess.list2cmdline(argv) + " %*\r\n", encoding="utf-8", newline="")
+    else:
+        path = directory / "claude"
+        path.write_text("#!/bin/sh\nexec " + shlex.join(argv) + ' "$@"\n', encoding="utf-8")
+        path.chmod(0o755)
+    return path
+
+
 def passed_candidates(status: dict) -> list[str]:
     """syberwork-builder.mjs passedCandidates, verbatim in Python: in scope and the host's own evaluation passed."""
     return [c["id"] for c in status.get("candidates", []) if c["in_scope"] and c["evaluation"] == "passed"]
@@ -92,9 +111,14 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         """One step as Syber runs it: a subprocess in the worktree, Syber's own arguments, a minimal environment."""
         return run_step([*SYBERLABS, *args], self.root, minimal_env(self.home, **(extra or {})))
 
-    def claude(self, name, **stand_in):
-        """The stand-in as Syber's SYBERLABS_CLAUDE_BIN (:363)."""
-        return {BIN_ENV: " ".join(self.stand_in(name, lookups=[], **stand_in))}
+    def claude(self, name, directory=None, **stand_in):
+        """The stand-in as Syber's SYBERLABS_CLAUDE_BIN (:363), through a wrapper in ``directory`` (default the
+        stand-in's own temporary directory)."""
+        argv = self.stand_in(name, lookups=[], **stand_in)
+        if directory is not None:  # the stand-in itself lives there too; its config and log stay where runs() reads
+            directory.mkdir(parents=True)
+            argv = [argv[0], shutil.copy(argv[1], directory / "stand in.py")]
+        return {BIN_ENV: str(wrapper([str(a) for a in argv], directory or Path(argv[1]).parent))}
 
     def status(self) -> dict:
         code, out, err = self.syber(SYBER_ARGV["status"])
@@ -167,6 +191,19 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         self.assertIs(verdict["acceptable"], False)
         self.assertIsInstance(verdict["reason"], str)  # quoted as the refusal (:437)
         self.assertNotEqual(code, 0)
+
+    def test_a_stand_in_under_a_path_with_spaces_still_launches(self):
+        """Syber's builder names its Claude Code by path (SYBER_CLAUDE_BIN, :363); a path with spaces must reach the
+        provider as one executable and run."""
+        self.assertEqual(self.syber(SYBER_ARGV["init"])[0], 0)
+        self.assertEqual(self.syber(SYBER_ARGV["start"])[0], 0)
+        spaced = self.root.parent / "claude code bin"
+        code, out, err = self.syber(SYBER_ARGV["propose"], self.claude("spaced", spaced))
+        self.assertEqual(code, 0, out + err)
+        self.assertTrue((spaced / "stand in.py").is_file())
+        [run] = self.runs("spaced")
+        self.assertIn("--bare", run["argv"])
+        self.assertEqual(passed_candidates(self.status()), ["c1"], "the stand-in ran and its change passed")
 
     def test_syber_propose_builds_the_provider_it_asks_for(self):
         """Ported from SW#175 (``test_syber_propose_argv_builds_the_claude_code_provider_it_asks_for``), observed on
