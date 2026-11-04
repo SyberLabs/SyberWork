@@ -285,7 +285,8 @@ def make_server(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *,
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "candidates":
                     self._json(work.candidates(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
-                    self._json({"valid": work.verify_chain(parts[2])})
+                    # The chain, and the witness's signed heads when serve reads its log (Work.verify_history).
+                    self._json(work.verify_history(parts[2], witness_log))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "side":
                     # Work.side_channel: the JCS digest and deciding rule id stored beside each event. Neither is
                     # in the event hash; events written before that table existed have no row.
