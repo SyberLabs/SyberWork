@@ -827,10 +827,11 @@ def run_libraries() -> None:
         raise AssertionError(report_sign_test([]))
     if run_id("task", "arm", 1) != "task.arm.s1":
         raise AssertionError(run_id("task", "arm", 1))
-    with tempfile.NamedTemporaryFile() as handle:
-        handle.write(b"simulation")
-        handle.flush()
-        digest = sha256(Path(handle.name))
+    # A file in a temporary folder, not NamedTemporaryFile: Windows refuses a second open of a file still held open.
+    with tempfile.TemporaryDirectory() as folder:
+        sample = Path(folder) / "sample.bin"
+        sample.write_bytes(b"simulation")
+        digest = sha256(sample)
     if digest != hashlib.sha256(b"simulation").hexdigest():
         raise AssertionError(digest)
     if loads('{"ok": true}') != {"ok": True}:
