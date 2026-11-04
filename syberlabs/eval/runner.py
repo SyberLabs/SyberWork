@@ -52,6 +52,12 @@ zero, or whose spend names a model the price table does not price stops the eval
 runner holds an eval at a time (``runs/.lock``; a second is refused ``eval_running``), and the preflight gate is
 asked again before every run, so a checkout that moves or changes mid-eval stops it.
 
+Before its first run, the runner asks ``arms.readiness`` of every arm a pending run uses (``readiness``): an
+interpreter or adapter file that is not there, a relative adapter path, or a package the adapter needs that the
+interpreter cannot import would make every call fail before a model and leave 0s that are never run again, so a run
+that is not dry stops ``adapter_unready`` instead; an unset credential variable is logged as a warning. ``estimate``
+gives the pending runs' worst-case dollars (the cap) and a nominal expected range; a dry run prints both.
+
 ``preflight`` runs the deterministic suites (``scripts/run_shards.py``, ``conformance.run``,
 ``benchmarks/run_scenarios.py``, and this package's tests) from the checkout and records the result for the
 commit in ``evals/<id>/preflight.json``.
@@ -481,6 +487,12 @@ class EvalRun:
         budget = self.doc["budget"]
         spent, unknown = self.spent(done)
         rows, stopped = [], None
+        pending = [item for item in planned if item.run_id not in done]
+        cost = estimate(self.doc, pending, spent)
+        ready = readiness(self.doc, pending, self.harness)
+        if not dry:
+            for line in ready["warnings"]:
+                self.log("warning: " + line)
         seed = None
         if not dry and os.environ.get(self.seed_env):
             from syberlabs.certificate import load_seed
@@ -493,6 +505,10 @@ class EvalRun:
             if dry:
                 rows.append({"run_id": item.run_id, "order_index": item.order_index, "state": "pending"})
                 continue
+            if ready["blocking"]:  # every call would fail before a model: a run would leave a bundle that is a 0
+                stopped = "adapter_unready"
+                self.log("stop: adapter_unready (" + "; ".join(ready["blocking"]) + ")")
+                break
             if unknown:
                 stopped = "eval_spend_unknown"
                 self.log("stop: eval_spend_unknown (" + "; ".join(unknown[:3]) + ")")
@@ -525,7 +541,7 @@ class EvalRun:
         return {"eval": self.eval_id, "spec_digest": self.registration["spec_digest"], "dry": dry,
                 "preflight": ("not required" if gate is None else gate.get("refused", "passed")),
                 "planned": len(planned), "runs": rows, "stopped": stopped, "spent_dollars": round(spent, 6),
-                "total_dollars": budget["total_dollars"]}
+                "total_dollars": budget["total_dollars"], "estimate": cost, "readiness": ready}
 
     # One run
 
@@ -693,6 +709,56 @@ class EvalRun:
         if not report.passed:
             raise Rejected("certificate_unverified", f"the run's own certificate does not verify: {report}")
         return {"state": "certified:" + public.hex()[:10], "path": "certificate.json"}
+
+
+def estimate(doc: dict, pending: list[Planned], spent: float = 0.0) -> dict:
+    """What the ``pending`` runs may spend, before any of them runs; never a bill and never a measurement.
+
+    ``worst_case_dollars`` is the cap the runner enforces: the runs times the spec's per-run ``dollars``, bounded by
+    what is left of ``total_dollars`` after ``spent``; the governor lets the call that crosses a ceiling complete, so
+    recorded spend can pass it by one call's cost. ``expected_dollars`` is a nominal range, priced by the spec's table
+    at ``arms.NOMINAL_CALL`` tokens per call (Jev's prior price of one call), from one call per run to each arm's K
+    calls (a run's ceiling bounds each run's share); it is None when a pending run's arm is not a JSON-adapter arm
+    (a Claude Code call has no nominal size here) or its model is not in the table, and then only the cap is known."""
+    budget = doc["budget"]
+    by_name = {arm["name"]: arm for arm in doc["arms"]}
+    remaining = max(0.0, budget["total_dollars"] - spent)
+    uncapped = len(pending) * budget["dollars"]
+    low = high = 0.0
+    missing = []
+    for item in pending:
+        arm = by_name[item.arm]
+        rate = (budget.get("prices") or {}).get(arm["model"])
+        if arm["kind"] not in arms.JSON_ADAPTER_KINDS or not rate:
+            missing.append(item.arm)
+            continue
+        tokens_in, tokens_out = arms.NOMINAL_CALL
+        call = (tokens_in * rate["input_per_million"] + tokens_out * rate["output_per_million"]) / 1e6
+        low += min(call, budget["dollars"])
+        high += min(call * arms.calls(arm, budget), budget["dollars"])
+    expected = None
+    if pending and not missing:
+        expected = {"low": round(min(low, remaining), 6), "high": round(min(high, remaining), 6),
+                    "basis": f"{arms.NOMINAL_CALL[0]} tokens in and {arms.NOMINAL_CALL[1]} out per call "
+                             f"(arms.NOMINAL_CALL) at the spec's prices, from 1 call per run to each arm's K; "
+                             f"a prior, not a measurement"}
+    return {"runs": len(pending), "per_run_dollars": budget["dollars"], "uncapped_dollars": round(uncapped, 6),
+            "remaining_dollars": round(remaining, 6), "worst_case_dollars": round(min(uncapped, remaining), 6),
+            "expected_dollars": expected, "no_nominal_basis": sorted(set(missing))}
+
+
+def readiness(doc: dict, pending: list[Planned], harness: Path = HARNESS) -> dict:
+    """``arms.readiness`` of every arm a pending run uses, in spec order: what would make every call fail before it
+    reaches a model (``blocking``; a run that is not dry stops ``adapter_unready`` before its first run) and what may
+    (``warnings``). It imports a package in a child process and calls no model."""
+    used, imports = {item.arm for item in pending}, {}
+    found = {"blocking": [], "warnings": []}
+    for arm in doc["arms"]:
+        if arm["name"] in used:
+            result = arms.readiness(arm, harness, imports)
+            found["blocking"] += result["blocking"]
+            found["warnings"] += result["warnings"]
+    return found
 
 
 def run_eval(evals_root: str | Path, eval_id: str, *, only: str | None = None, dry: bool = False,

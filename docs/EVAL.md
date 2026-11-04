@@ -43,7 +43,7 @@ syberlabs eval score <id> [--json]               # the gate, quality and efficie
 syberlabs eval report <id> [--partial] [--json]  # the paired analysis and the decision; report.md and report.json
 ```
 
-`--evals DIR` (before the subcommand) names another evals directory. In `--only`, an empty part or `*` matches anything. `--dry` prints the registered order with each run's state, `done` or `pending`, and runs nothing. It works before a preflight. `run` exits 1 when the eval stopped on its cap. `--hidden-root` is the host root under which each run's kit home and hidden copy get random names (default `<system temp>/syberlabs-eval-host`).
+`--evals DIR` (before the subcommand) names another evals directory. In `--only`, an empty part or `*` matches anything. `--dry` prints the registered order with each run's state, `done` or `pending`, and runs nothing. It works before a preflight. It also prints the pending runs' worst-case dollars (runs times the per-run `dollars`, bounded by what is left of `total_dollars`) and a nominal expected range (2000 tokens in and 500 out per call, `arms.NOMINAL_CALL`, at the spec's prices, from one call per run to each arm's K; a prior, not a measurement), and what would make every call of an arm fail before it reaches a model: an interpreter or adapter file that is not there, a relative adapter path, or a package the adapter needs that the interpreter cannot import (`anthropic` for `adapters/anthropic_adapter.py`). A run that is not dry stops `adapter_unready` on any of these before its first run, because each such run would leave a bundle scored 0 that is never run again; an unset `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` is a warning only. `run` exits 1 when the eval stopped on its cap. `--hidden-root` is the host root under which each run's kit home and hidden copy get random names (default `<system temp>/syberlabs-eval-host`).
 
 ## The spec
 
@@ -222,3 +222,31 @@ syberlabs eval report e5-single-vs-repair
 ## Not here yet
 
 The agent-facing safety tasks (`evals/tasks/safety-*`, from the deterministic scenarios) and the validation of the gate on them, the gate rules that are `not_computable` for some arms, and what else is open are in `spec/GAPS.md`, 60 and 62.
+
+## Running e5
+
+Running E5 spends money and is Class X: a named human runs it. Everything up to the spend has been exercised (2026-11-04, Linux, Python 3.13): the preflight (passed with node absent, so the browser tests skipped), and two runs through the unmodified spec, the real adapter and the `anthropic` SDK (2.4.0) against a local stand-in server, which spent nothing. Only the paid calls have not run.
+
+What it needs:
+
+- A clean checkout of the commit you will run (nothing changed outside `evals/`), from which the preflight has passed. The browser tests need Playwright's browsers when the `playwright` node package is installed (`npx playwright install chromium`), and skip when node or that package is absent.
+- The `anthropic` package importable by the interpreter that runs `syberlabs`, because the spec's `{python}` is that interpreter: `python -m pip install anthropic`. Without it, the dry run says `not ready` and the run stops `adapter_unready` before its first run.
+- `ANTHROPIC_API_KEY`, the adapter's credential (the SDK also reads `ANTHROPIC_AUTH_TOKEN`). SyberEval never writes it; the bundle's credential scan records only variable names.
+- Optionally `SYBERLABS_CERTIFICATE_SEED`, the factory key, to certify accepted runs; unset, they are recorded `uncertified`.
+- `ANTHROPIC_BASE_URL` unset, unless it names the real API: the SDK sends every call wherever it points.
+
+The commands, from the checkout (`python` is the interpreter with `anthropic` installed):
+
+```sh
+export PYTHONPATH=.
+python -m syberlabs eval preflight e5-single-vs-repair   # about four minutes; writes evals/e5-single-vs-repair/preflight.json
+python -m syberlabs eval run e5-single-vs-repair --dry   # the order, the cost estimate, and readiness: expect no "not ready" line
+python -m syberlabs eval run e5-single-vs-repair --only 'v3-journal_chain,repair,1'   # optional: one paid run first
+python -m syberlabs eval run e5-single-vs-repair         # resumable by run id; stops at the cap
+python -m syberlabs eval score e5-single-vs-repair
+python -m syberlabs eval report e5-single-vs-repair
+```
+
+The cost: 48 runs, at most $1.00 each, and **$10.00 for the eval**, which the runner enforces from its spend ledger. The governor lets the call that crosses a ceiling complete, so recorded spend can pass the cap by one call's cost. The dry run prints the nominal expected spend as **$0.43 to $1.51** (one call per run up to six per `repair` run, at $0.009 a call). For comparison, E3 measured Claude Sonnet 5.5 at medium effort, K = 6, on the four v3 fixtures (three repeats, 2026-10-22 and 2026-10-28, [MODEL_COMPARISON.md](MODEL_COMPARISON.md)) at $0.119 for 12 `single` runs ($0.0099 a call) and $0.23 for 12 `repair` runs. That suggests about $0.35 for E5's v3 half. No v4 dollars are recorded in this repository. Dollars are the harness's pricing of the recorded tokens, not an invoice.
+
+The runs write `runs/`, `spend.jsonl`, `index.json`, `preflight.json` and the report under `evals/e5-single-vs-repair/`. Publishing a number from them is Class P.
