@@ -185,14 +185,14 @@ class Restarts(RunnerCase):
         check, accept = Thread.check, Thread.accept
 
         def check_then_die(thread, candidate, **kwargs):
-            verdict = check(thread, candidate, **kwargs)
+            check(thread, candidate, **kwargs)
             raise KeyboardInterrupt  # the step completed; the process died before the next one
 
         def refuse_accept(thread, candidate, **kwargs):
             raise Rejected("io_error", "journal unavailable")  # refused before anything was written
 
         def accept_then_die(thread, candidate, **kwargs):
-            receipt = accept(thread, candidate, **kwargs)
+            accept(thread, candidate, **kwargs)
             raise KeyboardInterrupt
 
         injected = [("check", check_then_die), ("check", check_then_die), ("accept", refuse_accept),

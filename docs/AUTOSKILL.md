@@ -1,5 +1,7 @@
 # AutoSkill
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 AutoSkill chooses at most one certified skill for an agent turn. Jev ranks the catalog. Ordinary code decides whether that ranking is allowed to reach the agent. A selection names a document. It does not authorize a tool, a file write, or a network call.
 
 The catalog this design is built against is the skill tree in Everything Claude Code (ECC), the harness performance system published by the Anthropic x Forum Ventures hackathon winner. The screenshot under design shows that tree: a `skills/` directory of workflow documents (`tdd-workflow`, `verification-loop`, `security-review`), language and framework quartets (`django-patterns`, `django-security`, `django-tdd`, `django-verification`, and the same shape for Laravel, Spring Boot, and Quarkus), and cross-cutting procedures (`search-first`, `skill-stocktake`, `eval-harness`). ECC's own READMEs have quoted 56, 156, and 286 skills as the tree grew. AutoSkill pins one commit and one manifest. It does not follow a moving "latest".

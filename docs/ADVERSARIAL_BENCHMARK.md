@@ -1,5 +1,7 @@
 # Adversarial payment
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 Status: **measured on this simulation**. Not a customer. Not a run of OPA, Cedar, Temporal, LangGraph, or any other named product.
 
 The problem is one bank balance of 10000 and two invoices. `INV-LIVE` is 4000 and fresh. `INV-STALE` is 8000 and expired. The bank debits and then drops the HTTP response. A second attempt with a new idempotency key charges the account again.

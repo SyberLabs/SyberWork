@@ -453,11 +453,16 @@ class Session:
         except Exception as exc:
             state, proof = "unknown", {"error": exc.code if isinstance(exc, Rejected) else "status_unavailable"}
         if state == "applied":
+            verified = {"verified": True, "external_id": proof["external_id"],
+                        "request_digest": digest(proposal["args"]), "response_digest": digest(proof),
+                        "idempotency_key": proposal_id}
+            if isinstance(proof.get("destination"), str) and proof["destination"]:
+                # The destination the executor read (``github:owner/repo``, ``git:remote:ref``) travels with the
+                # recovered effect as commit's output carries it, so metrics and receipts see one and the same effect.
+                verified["destination"] = proof["destination"]
             event = self._append(case_id, "reconciled", {
                 "proposal_id": proposal_id, "action": proposal["action"], "success": True, "actor": actor,
-                "proof": {"verified": True, "external_id": proof["external_id"],
-                          "request_digest": digest(proposal["args"]), "response_digest": digest(proof),
-                          "idempotency_key": proposal_id},
+                "proof": verified,
             })
             return {"status": "verified", "reason": "destination_state_matched", "event": event}
         reason = "status_unavailable"
@@ -626,14 +631,6 @@ class Session:
         if not verify_events(events):
             return False
         return _side_matches(events, self._side.get(case_id, {}))
-
-    def submit_witness(self, case_id: str, client) -> dict:
-        """Ask an external witness to sign this case. This session has no signing seed."""
-        with self._lock:
-            if not self.verify_chain(case_id):
-                raise Rejected("invalid_chain", "case history does not verify")
-            events = json.loads(json.dumps(self.events[case_id]))
-        return client.submit(events)
 
     @_guard
     def side_channel(self, case_id: str) -> list[dict]:
