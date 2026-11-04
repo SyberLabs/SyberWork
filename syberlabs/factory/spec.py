@@ -10,17 +10,45 @@ A ticket is a delta over a footprint between two commits. ``ticket_from_spec`` o
 a promoted spec with the footprint resolved, the acceptance criteria copied from the scenarios, and one exit
 criterion per evidence kind. Agents are delegated to; a human stays the owner.
 
+The goal gate. The factory may propose a spec at any level; it may promote none. ``promote``, ``canonize``
+and ``retire`` (``GATED``) take a human actor and an approval that verifies: a DSSE envelope the owner signed
+over exactly this spec (its content digest before the operation), this operation and, for a promotion, the
+verdict ids it rests on, each resolved on the ledger to a ``review`` event that accepted this very variant.
+The approver may not be a proposer or the reviewer of that variant. ``transition`` accepts only the
+``Approved`` record :func:`verify_approval` returns, which nothing outside this module can construct, so a
+caller cannot hand it a dictionary of its own.
+
+The owner's public key is pinned on the ledger, not supplied by the caller: an ``owner_key_set`` event names
+it, the first one is the trust root of that ledger (bootstrap, written once), and a later one is a rotation
+the previous key signed (:func:`verify_rotation`). The pin is read through its lineage, never from the last
+event alone: :func:`owner_key_lineage` walks every ``owner_key_set`` in order and verifies each handover under
+the key pinned before it, so an appended pin, a rotation the pinned key did not sign, a stale ``previous`` or
+a malformed key invalidates the lineage instead of re-rooting the gate (``owner_key_lineage``). A rotation
+envelope is bound to its place on the chain: its payload names the ``seq`` of the pin it replaces and the
+ledger head at signing, the walk checks both against the chain, and a ``rotation_digest`` cited twice is a
+replay, so an honest handover cannot be appended again after the owner rotated that key away. :func:`gate`
+verifies every approval under the lineage's key only; a ledger with no pinned key refuses (``owner_key_unset``),
+an invalid lineage refuses (``owner_key_lineage``, never falling back to an earlier key) and an approval under
+any other key refuses (``owner_key_mismatch``), whoever runs the host command. The signing seed never enters
+this module. A kernel ``approved`` event on a goal case is the intended source of this approval once
+the factory has a case to hang it on; until then the signature stands in, and ``spec/GAPS.md`` records the
+gap.
+
 v0 implements the lifecycle a single spec needs: draft, revise, validate (to candidate), promote, canonize,
-retire. Mutation (several models proposing variants of one parent) is the v1 addition; the fields are here.
+retire, and the variant loop (several models proposing variants of one parent, one independent reviewer).
 """
 
 from __future__ import annotations
 
 import json
+import re
+import time
 
-from syberlabs.canonical import digest
+from syberlabs.canonical import canonical, digest
+from syberlabs.dsse import sign_dsse, verified_payload
 from syberlabs.errors import Rejected
 from syberlabs.factory import PROTOCOL
+from syberlabs.factory.independence import family, independence, model_of
 
 STATES = ("draft", "revised", "mutated", "candidate", "promoted", "canonical", "retired")
 EVIDENCE_KINDS = frozenset({"trace_diff", "drift", "tests", "mutation", "critic", "replay"})
@@ -32,6 +60,253 @@ TRANSITIONS = {
     "canonize": ({"promoted"}, "canonical"),
     "retire": ({"canonical", "promoted", "candidate"}, "retired"),
 }
+GATED = frozenset({"promote", "canonize", "retire"})
+ACTOR_KINDS = ("human", "model", "compiled")
+APPROVAL_PROTOCOL = "syberlabs.space/factory/approval/v0"
+APPROVAL_PAYLOAD_TYPE = "application/vnd.syberlabs.factory-approval+json"
+OWNER_KEY_PROTOCOL = "syberlabs.space/factory/owner-key/v1"
+# v0 envelopes named the two keys only and were bound to nothing on the chain, so one could be replayed (M4 of
+# the #164 delta verification); no production ledger carries one, and the walk refuses them outright.
+_RETIRED_OWNER_KEY_PROTOCOLS = frozenset({"syberlabs.space/factory/owner-key/v0"})
+OWNER_KEY_PAYLOAD_TYPE = "application/vnd.syberlabs.factory-owner-key+json"
+_PRINCIPAL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
+_HEX_KEY = re.compile(r"^[0-9a-f]{64}$")
+# The module-private token ``Approved`` demands: only :func:`verify_approval` holds it.
+_ISSUED = object()
+
+
+def principal(text: str) -> dict:
+    """``kind:id`` as a principal: ``kind`` is human, model or compiled and ``id`` is one token of at most 64
+    characters. Free text is refused, so an actor on the ledger is always a resolvable identity."""
+    kind, sep, actor_id = (text or "").partition(":")
+    if not sep or kind not in ACTOR_KINDS or not _PRINCIPAL_ID.match(actor_id):
+        raise Rejected("actor_invalid", f"an actor is kind:id with kind in {ACTOR_KINDS} and a one-token id, not {text!r}")
+    return {"kind": kind, "id": actor_id}
+
+
+class Approved(dict):
+    """A verified approval: what :func:`verify_approval` returns and the only thing ``transition`` takes for a
+    gated operation. The constructor demands a module-private token, so ``Approved({...})`` anywhere else
+    raises ``approval_forged`` instead of producing something the gate would accept; ``transition`` checks
+    the token again, so an instance made around the constructor is refused too."""
+
+    __slots__ = ("_issued",)
+
+    def __init__(self, payload: dict, *, _token: object = None):
+        if _token is not _ISSUED:
+            raise Rejected("approval_forged", "an Approved is made by verify_approval only; a verified approval is not a dictionary a caller writes")
+        super().__init__(payload)
+        self._issued = _ISSUED
+
+
+def _is_issued(approval: object) -> bool:
+    return isinstance(approval, Approved) and getattr(approval, "_issued", None) is _ISSUED
+
+
+def owner_key_lineage(events: list[dict], load_rotation=None) -> tuple[str | None, list[str]]:
+    """Walk every ``owner_key_set`` in ``events`` in order and return ``(pinned key, violations)``: the key the
+    verified lineage ends on (None when the ledger pins none) and every way the lineage fails. The first event
+    is the one unsigned bootstrap: ``previous`` None, no ``rotation_digest``. Every later one is a rotation:
+    ``previous`` is the key pinned right before it, ``rotation_digest`` names a stored envelope
+    (``load_rotation(digest)``, the ledger's ``approvals/``; None when missing or altered) that
+    :func:`verify_rotation` accepts under that previous key for exactly this position (its payload's
+    ``replaces_seq`` is the ``seq`` of the pin it replaces and its ``head`` is the hash of the event right
+    before this one, the ledger head when it was signed), and every ``keyid`` is a 64-hex public key. A second
+    bare bootstrap, a rotation signed by the new key, a stale ``previous``, a malformed key, an envelope signed
+    for another position (or never appended where it was signed) and a ``rotation_digest`` cited a second time
+    (a replay of an honest handover after the owner rotated that key away) are each a violation. With
+    violations the lineage is invalid and the key returned is None: a broken lineage pins nothing rather than
+    its last or an earlier key. Without a ``load_rotation`` no rotation can be checked, so a rotated ledger
+    read that way is invalid, by design."""
+    pinned, pinned_seq, cited, violations = None, None, {}, []
+    for index, event in enumerate(events):
+        if not isinstance(event, dict) or event.get("kind") != "owner_key_set":
+            continue
+        where = f"owner_key_set at seq {event.get('seq', '?')}"
+        body = event.get("body") if isinstance(event.get("body"), dict) else {}
+        keyid, previous, rotation = body.get("keyid"), body.get("previous"), body.get("rotation_digest")
+        if not (isinstance(keyid, str) and _HEX_KEY.match(keyid)):
+            violations.append(f"{where}: keyid is not a 64-hex public key")
+            continue
+        if pinned is None:
+            if previous is not None or rotation is not None:
+                violations.append(f"{where}: the first pin is the bootstrap and carries no previous key or rotation")
+        else:
+            if previous != pinned:
+                violations.append(f"{where}: previous {str(previous)[:10]!r} is not the key pinned before it ({pinned[:10]})")
+            if not (isinstance(rotation, str) and _HEX_KEY.match(rotation)):  # a sha256 digest has the key's shape
+                violations.append(f"{where}: a second pin is a rotation and names a rotation_digest; a bare pin does not re-root the ledger")
+            elif rotation in cited:
+                violations.append(f"{where}: rotation replayed; {rotation[:12]} was already cited at seq {cited[rotation]}")
+            else:
+                cited[rotation] = event.get("seq", "?")
+                before = events[index - 1].get("hash") if index and isinstance(events[index - 1], dict) else None
+                envelope = load_rotation(rotation) if load_rotation is not None else None
+                if envelope is None:
+                    violations.append(f"{where}: rotation {rotation[:12]} is missing, altered or unavailable")
+                elif not (isinstance(pinned_seq, int) and isinstance(before, str)):
+                    violations.append(f"{where}: the chain gives this rotation no position (seq and hash) to bind to")
+                else:
+                    try:
+                        verify_rotation(envelope, bytes.fromhex(pinned), bytes.fromhex(keyid), replaces_seq=pinned_seq, head=before)
+                    except Rejected as exc:
+                        violations.append(f"{where}: {exc.detail}")
+        pinned, pinned_seq = keyid, event.get("seq")
+    return (None if violations else pinned), violations
+
+
+def pinned_owner_key(events: list[dict], load_rotation=None) -> str | None:
+    """The owner's public key (hex) the ledger pins, read through its verified lineage
+    (:func:`owner_key_lineage`): None when the ledger has pinned none, refused (``owner_key_lineage``) when the
+    lineage does not verify. Never the last event's key on its own, and never an earlier key as a fallback."""
+    pinned, violations = owner_key_lineage(events, load_rotation)
+    if violations:
+        raise Rejected("owner_key_lineage", "the ledger's owner-key lineage does not verify: " + "; ".join(violations))
+    return pinned
+
+
+def rotation_payload(previous: bytes, next_key: bytes, *, replaces_seq: int, head: str) -> dict:
+    """What the current owner signs to hand the ledger to a new key: the key being replaced, the key that
+    replaces it, and the place on the chain this handover is for (``replaces_seq``, the ``seq`` of the
+    ``owner_key_set`` that pinned ``previous``, and ``head``, the ledger head hash at signing, which is the
+    ``previous`` of the event the rotation lands as). Signed by ``previous``; nothing else can rotate, and the
+    envelope verifies at that one position only."""
+    if not (isinstance(replaces_seq, int) and not isinstance(replaces_seq, bool) and replaces_seq >= 1):
+        raise Rejected("owner_key_rotation", "a rotation names the seq of the pin it replaces")
+    if not (isinstance(head, str) and _HEX_KEY.match(head)):  # a chain hash has the key's shape
+        raise Rejected("owner_key_rotation", "a rotation names the ledger head it was signed over")
+    return {"protocol": OWNER_KEY_PROTOCOL, "previous": previous.hex(), "next": next_key.hex(),
+            "replaces_seq": replaces_seq, "head": head, "at": int(time.time() * 1_000_000)}
+
+
+def sign_rotation(payload: dict, seed: bytes) -> dict:
+    return sign_dsse(OWNER_KEY_PAYLOAD_TYPE, canonical(payload).encode("utf-8"), seed)
+
+
+def verify_rotation(envelope: dict, previous: bytes, next_key: bytes, *, replaces_seq: int, head: str) -> dict:
+    """The rotation payload when ``envelope`` verifies under ``previous`` (the pinned key) and names exactly
+    this handover at exactly this position (``replaces_seq`` and ``head`` as :func:`rotation_payload` binds
+    them); refused (``owner_key_rotation``) otherwise, a retired ``owner-key/v0`` envelope included."""
+    payload = verified_payload(envelope, previous, OWNER_KEY_PAYLOAD_TYPE)
+    if payload is None:
+        raise Rejected("owner_key_rotation", "a rotation is signed by the key the ledger pins now; this one does not verify under it")
+    try:
+        rotation = json.loads(payload)
+    except ValueError:
+        raise Rejected("owner_key_rotation", "the rotation payload is not JSON") from None
+    if not isinstance(rotation, dict):
+        raise Rejected("owner_key_rotation", "the rotation payload is not a factory rotation")
+    if rotation.get("protocol") in _RETIRED_OWNER_KEY_PROTOCOLS:
+        raise Rejected("owner_key_rotation", f"the rotation is {rotation['protocol']}, which binds to nothing on the chain and is refused; "
+                                             f"rotations are {OWNER_KEY_PROTOCOL}")
+    if (rotation.get("protocol") != OWNER_KEY_PROTOCOL
+            or rotation.get("previous") != previous.hex() or rotation.get("next") != next_key.hex()):
+        raise Rejected("owner_key_rotation", "the rotation does not name this handover (previous and next key)")
+    if rotation.get("replaces_seq") != replaces_seq or rotation.get("head") != head:
+        raise Rejected("owner_key_rotation", f"the rotation was signed for another position (replaces seq {rotation.get('replaces_seq')!r} "
+                                             f"over head {str(rotation.get('head'))[:12]}); here it replaces seq {replaces_seq} over head {head[:12]}")
+    return rotation
+
+
+def approval_payload(spec: dict, operation: str, approver: dict, *, verdict_ids: list[str] | None = None,
+                     spec_digest_value: str | None = None) -> dict:
+    """What the owner signs: this spec (by id, version and digest), this operation, the verdicts a promotion
+    rests on, and who approves. The digest is the spec's content digest (:func:`spec_digest`: the parsed
+    document without ``history``) before the operation, so a re-serialized file is the same spec and an
+    edit to the file's ``history`` is not covered; the ledger's ``spec_changed`` events are the history."""
+    if operation not in GATED:
+        raise Rejected("spec_operation", f"an approval covers one of {sorted(GATED)}, not {operation!r}")
+    if approver.get("kind") != "human":
+        raise Rejected("approval_actor", "an approval is a human act; the approver's kind is human")
+    return {"protocol": APPROVAL_PROTOCOL, "operation": operation, "spec_id": spec["spec_id"], "version": spec["version"],
+            "spec_digest": spec_digest_value or spec_digest(spec), "verdict_ids": sorted(verdict_ids or []),
+            "approver": {"kind": "human", "id": approver["id"]}, "at": int(time.time() * 1_000_000)}
+
+
+def sign_approval(payload: dict, seed: bytes) -> dict:
+    """The owner's DSSE envelope over the canonical approval payload (the certificate module's Ed25519)."""
+    return sign_dsse(APPROVAL_PAYLOAD_TYPE, canonical(payload).encode("utf-8"), seed)
+
+
+def verify_approval(envelope: dict, public: bytes, spec: dict, operation: str, *, verdict_ids: list[str] | None = None,
+                    spec_digest_value: str | None = None) -> Approved:
+    """The approval inside ``envelope`` when its signature verifies under the owner's ``public`` key and it
+    covers exactly this spec, this operation and these verdicts. Anything else is refused."""
+    payload = verified_payload(envelope, public, APPROVAL_PAYLOAD_TYPE)
+    if payload is None:
+        raise Rejected("approval_unverified", "the approval does not verify under the owner's public key")
+    try:
+        approval = json.loads(payload)
+    except ValueError:
+        raise Rejected("approval_unverified", "the approval payload is not JSON") from None
+    if not isinstance(approval, dict) or approval.get("protocol") != APPROVAL_PROTOCOL:
+        raise Rejected("approval_unverified", "the approval payload is not a factory approval")
+    expected = {"operation": operation, "spec_id": spec["spec_id"], "version": spec["version"],
+                "spec_digest": spec_digest_value or spec_digest(spec), "verdict_ids": sorted(verdict_ids or [])}
+    for key, value in expected.items():
+        if approval.get(key) != value:
+            raise Rejected("approval_mismatch", f"the approval's {key} is {approval.get(key)!r}; this {operation} has {value!r}")
+    approver = approval.get("approver")
+    if not isinstance(approver, dict) or approver.get("kind") != "human" or not _PRINCIPAL_ID.match(str(approver.get("id"))):
+        raise Rejected("approval_actor", "the approval names no human approver")
+    return Approved({**approval, "keyid": public.hex()}, _token=_ISSUED)
+
+
+def resolve_verdicts(events: list[dict], spec: dict, verdict_ids: list[str], spec_digest_value: str | None = None) -> list[dict]:
+    """Each verdict id resolved on the ledger: a ``spec_changed`` ``review`` event that accepted a variant, and
+    the ``validate`` event that wrote that variant as the candidate whose digest is this spec's. Returns one
+    record per verdict (``verdict_id``, ``variant_id``, ``reviewer``, ``proposers``); refuses an unknown,
+    rejecting or mismatched verdict, and refuses when no verdict is given."""
+    if not verdict_ids:
+        raise Rejected("spec_verdict", "promotion records the review verdicts it rests on; none given")
+    current = spec_digest_value or spec_digest(spec)
+    changes = [e["body"] for e in events if e["kind"] == "spec_changed" and e["body"].get("spec_id") == spec["spec_id"]]
+    resolved = []
+    for verdict_id in verdict_ids:
+        review = next((c for c in changes if c.get("operation") == "review" and c.get("verdict_id") == verdict_id), None)
+        if review is None:
+            raise Rejected("spec_verdict", f"verdict {verdict_id!r} is not a review on the ledger for spec {spec['spec_id']}")
+        if review.get("decision") != "accept":
+            raise Rejected("spec_verdict", f"verdict {verdict_id!r} did not accept (decision {review.get('decision')!r})")
+        variant_id = review.get("variant_id")
+        validated = next((c for c in changes if c.get("operation") == "validate" and c.get("accepted_variant") == variant_id
+                          and c.get("verdict_id") == verdict_id), None)
+        if validated is None or validated.get("spec_digest") != current:
+            raise Rejected("spec_verdict", f"verdict {verdict_id!r} accepted variant {variant_id}, which is not this spec "
+                                           f"(digest {current[:12]}); the file was edited after review or never written by the loop")
+        proposers = sorted({c["actor"].get("id") for c in changes if c.get("operation") == "mutate"
+                            and c.get("variant_id") == variant_id and isinstance(c.get("actor"), dict)})
+        resolved.append({"verdict_id": verdict_id, "variant_id": variant_id, "reviewer": review.get("actor"),
+                         "proposers": proposers})
+    return resolved
+
+
+def gate(spec: dict, operation: str, actor: dict, events: list[dict], envelope: dict, *,
+         verdict_ids: list[str] | None = None, spec_digest_value: str | None = None, load_rotation=None) -> tuple[Approved, list[dict]]:
+    """The goal gate in one call: the actor is human and is the approver, the ledger pins an owner key whose
+    lineage verifies and the approval verifies under that key (no other) and covers this spec and operation,
+    and (on promote) every verdict resolves to an accepting review of this variant whose proposers and
+    reviewer are not the approver. The key is read from ``events`` through :func:`pinned_owner_key`, never
+    taken from the caller; ``load_rotation`` (the ledger's ``approvals/`` reader) only supplies the stored
+    rotation envelopes, each of which must still verify under the key the chain pinned before it. An invalid
+    lineage refuses (``owner_key_lineage``). Returns the approval and the resolved verdicts."""
+    if actor.get("kind") != "human":
+        raise Rejected("spec_actor", f"{operation} is an owner act: the actor's kind is human, not {actor.get('kind')!r}")
+    pinned = pinned_owner_key(events, load_rotation)
+    if pinned is None:
+        raise Rejected("owner_key_unset", "the ledger pins no owner key; `factory owner --public KEY` (or the first `--owner-public`) sets it")
+    declared = [s.get("keyid") for s in (envelope.get("signatures") or []) if isinstance(s, dict)] if isinstance(envelope, dict) else []
+    if declared and pinned not in declared:
+        raise Rejected("owner_key_mismatch", f"the approval is signed under key {str(declared[0])[:10]}, not the owner key the ledger pins ({pinned[:10]})")
+    resolved = resolve_verdicts(events, spec, list(verdict_ids or []), spec_digest_value) if operation == "promote" else []
+    approval = verify_approval(envelope, bytes.fromhex(pinned), spec, operation, verdict_ids=verdict_ids, spec_digest_value=spec_digest_value)
+    if approval["approver"]["id"] != actor.get("id"):
+        raise Rejected("approval_actor", f"the approval was signed for {approval['approver']['id']!r}, not the actor {actor.get('id')!r}")
+    for record in resolved:
+        parties = set(record["proposers"]) | {(record.get("reviewer") or {}).get("id")}
+        if actor["id"] in parties:
+            raise Rejected("approval_not_independent", f"{actor['id']} proposed or reviewed variant {record['variant_id']} and cannot approve it")
+    return approval, resolved
 
 
 def new_spec(spec_id: str, capability: str, requirements: list[dict], footprint_hint: list[str], *,
@@ -60,7 +335,8 @@ def new_spec(spec_id: str, capability: str, requirements: list[dict], footprint_
 
 
 def spec_digest(spec: dict) -> str:
-    """The spec without its history, so two specs with the same content digest alike."""
+    """The content digest: the parsed spec without its ``history``, so two files with the same content digest
+    alike however they are serialized. The ledger's events are the history; the file's copy is not covered."""
     return digest({k: v for k, v in spec.items() if k != "history"})
 
 
@@ -72,6 +348,21 @@ def transition(spec: dict, operation: str, actor: dict, **detail) -> dict:
     allowed, target = TRANSITIONS[operation]
     if spec["state"] not in allowed:
         raise Rejected("spec_state", f"{operation} is not allowed from state {spec['state']!r} (needs one of {sorted(allowed)})")
+    if operation in GATED:
+        # The goal gate: a human actor and the approval ``verify_approval`` (or ``gate``) returned for this very
+        # operation on this very spec. A model actor, a missing approval, or a dictionary that is not an
+        # ``Approved`` is refused here, whatever the caller said on argv.
+        if actor.get("kind") != "human":
+            raise Rejected("spec_actor", f"{operation} is an owner act: the actor's kind is human, not {actor.get('kind')!r}")
+        approval = detail.get("approval")
+        if not _is_issued(approval):
+            raise Rejected("spec_approval", f"{operation} needs the owner's verified approval (see `factory approve`); none given")
+        if approval["operation"] != operation or approval["spec_id"] != spec["spec_id"] or approval["version"] != spec["version"]:
+            raise Rejected("approval_mismatch", f"the approval covers {approval['operation']} of {approval['spec_id']} v{approval['version']}")
+        if approval["approver"]["id"] != actor.get("id"):
+            raise Rejected("approval_actor", f"the approval was signed for {approval['approver']['id']!r}, not {actor.get('id')!r}")
+        if operation == "promote" and sorted(detail.get("verdict_ids") or []) != approval["verdict_ids"]:
+            raise Rejected("spec_verdict", "promotion records the review verdicts the approval covers; they differ or none were given")
     if operation == "revise":
         delta = detail.get("delta") or {}
         _apply_delta(spec, delta)
@@ -86,14 +377,14 @@ def transition(spec: dict, operation: str, actor: dict, **detail) -> dict:
         findings = validate(spec, detail.get("space"))
         if findings:
             raise Rejected("spec_invalid", "; ".join(findings))
-    elif operation == "promote":
-        if not detail.get("verdict_ids"):
-            raise Rejected("spec_verdict", "promotion records the review verdicts it rests on; none given")
     elif operation == "retire":
         spec["supersedes"] = detail.get("superseded_by")
     record = {"operation": operation, "actor": actor, "from": spec["state"], "to": target, "version": spec["version"],
-              "input_digest": digest({k: v for k, v in detail.items() if k != "space"}),
+              "input_digest": digest({k: v for k, v in detail.items() if k not in ("space", "approval")}),
               "reason": detail.get("reason")}
+    if operation in GATED:
+        record["approval"] = {"keyid": detail["approval"]["keyid"], "approver": detail["approval"]["approver"],
+                              "spec_digest": detail["approval"]["spec_digest"], "verdict_ids": detail["approval"]["verdict_ids"]}
     spec["state"] = target
     spec["history"].append(record)
     return record
@@ -260,14 +551,26 @@ def review_request(parent: dict, variants: list[dict], objective: str | None) ->
             "variants": [{k: v for k, v in variant.items() if k != "history"} for variant in variants]}
 
 
+def party(kind: str, name: str, answer: dict | None) -> dict:
+    """A proposer or reviewer as the ledger records it: the caller's name, and the model and provider family
+    the command declared in its answer (``model``, or ``signal.harness.model``). The family is what
+    independence is judged on; a command that declares no model has none and cannot be judged independent."""
+    recorded = {"kind": kind, "id": name, "model": model_of(answer) if isinstance(answer, dict) else None}
+    recorded["family"] = family(recorded)
+    return recorded
+
+
 def judge(variants: list[dict], verdicts: list[dict], reviewer: dict) -> dict:
-    """Apply a reviewer's verdicts. The reviewer may not have proposed any of the variants (independence, as
-    the critic rule has it), a variant with findings cannot be accepted, and at most one variant is accepted.
-    Returns ``{"accepted": variant_id or None, "verdicts": [...]}`` with each verdict stamped by the reviewer."""
+    """Apply a reviewer's verdicts. The reviewer is independent of every proposer by provider family
+    (``independence``: both families recorded and different; an unknown family refuses), a variant with
+    findings cannot be accepted, and at most one variant is accepted. Returns ``{"accepted": variant_id or
+    None, "verdicts": [...]}`` with each verdict stamped by the reviewer."""
     by_id = {v["variant_id"]: v for v in variants}
     for variant in variants:
-        if variant.get("proposer", {}).get("id") == reviewer.get("id") and variant.get("proposer", {}).get("kind") == reviewer.get("kind"):
-            raise Rejected("reviewer_not_independent", f"{reviewer.get('id')} proposed variant {variant['variant_id']} and cannot review it")
+        independent, reason = independence(variant.get("proposer"), reviewer)
+        if not independent:
+            raise Rejected("reviewer_not_independent", f"{reviewer.get('id')} cannot review variant {variant['variant_id']} "
+                                                       f"by {variant.get('proposer', {}).get('id')}: {reason}")
     accepted = None
     stamped = []
     for verdict in verdicts:

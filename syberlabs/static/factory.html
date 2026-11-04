@@ -129,13 +129,29 @@ const DATA = /*__FACTORY_DATA__*/null;
     for (const { e, line } of edgeEls) { const on = litEdges.has(e.from + '->' + e.to); line.classList.toggle('lit', on); if (on) line.setAttribute('marker-end', 'url(#a-lit)'); else line.setAttribute('marker-end', e.kind === 'divergent' ? 'url(#a-bad)' : 'url(#a-line)'); }
     document.getElementById('seqlabel').textContent = `seq ${seq} / ${maxSeq}`;
     const top = active[active.length - 1];
-    document.getElementById('stepinfo').innerHTML = top ? `<code>${top.file}:${top.line}</code> in <b>${top.component || '(unmapped)'}</b>` : (seq === 0 ? 'run start' : (seq >= maxSeq ? 'run end' : 'between spans'));
-    const stack = document.getElementById('stack'); stack.innerHTML = '';
-    for (const s of active) { const li = document.createElement('li'); li.className = 'active'; li.innerHTML = `${s.component || '(unmapped)'} <code>${s.fn}</code> <span style="color:var(--quiet)">${s.start}..${s.end === null ? '' : s.end}</span>`; stack.appendChild(li); }
-    const list = document.getElementById('effects'); list.innerHTML = '';
+    // Recorded strings (file names, function names, component ids, io argv) come from the recorded program:
+    // every one goes in through textContent, never through markup.
+    const node = (tag, text, attrs) => { const n = document.createElement(tag); n.textContent = text; for (const k in (attrs || {})) n.setAttribute(k, attrs[k]); return n; };
+    const fill = (parent, ...children) => { parent.replaceChildren(); for (const c of children) parent.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); };
+    const info = document.getElementById('stepinfo');
+    if (top) { fill(info, node('code', `${top.file}:${top.line}`), ' in ', node('b', top.component || '(unmapped)')); }
+    else { fill(info, seq === 0 ? 'run start' : (seq >= maxSeq ? 'run end' : 'between spans')); }
+    const stack = document.getElementById('stack'); stack.replaceChildren();
+    for (const s of active) {
+      const li = node('li', '', { class: 'active' });
+      fill(li, `${s.component || '(unmapped)'} `, node('code', String(s.fn)), ' ', node('span', `${s.start}..${s.end === null ? '' : s.end}`, { style: 'color:var(--quiet)' }));
+      stack.appendChild(li);
+    }
+    const list = document.getElementById('effects'); list.replaceChildren();
     const shown = effects.filter(e => e.seq <= seq); const tail = shown.slice(-40);
-    if (shown.length > tail.length) { const li = document.createElement('li'); li.style.color = 'var(--quiet)'; li.textContent = `${shown.length - tail.length} earlier`; list.appendChild(li); }
-    for (const e of tail) { const li = document.createElement('li'); const what = e.t === 'io' && e.payload && e.payload.argv ? e.payload.argv.filter(a => !a.startsWith('-') && !a.includes('/') && !/^[0-9a-f]{7,}/.test(a)).slice(0, 3).join(' ') : (e.digest || '').slice(0, 10); li.innerHTML = `<code>${e.seq}</code> ${e.t} <b>${e.name}</b> <code>${what}</code>${e.replayed ? ' (replayed)' : ''}`; list.appendChild(li); }
+    if (shown.length > tail.length) { list.appendChild(node('li', `${shown.length - tail.length} earlier`, { style: 'color:var(--quiet)' })); }
+    for (const e of tail) {
+      // An io entry carries only its masked argv (the exporter leaves payloads out of the page); everything else shows its digest.
+      const what = e.t === 'io' && Array.isArray(e.argv) ? e.argv.filter(a => !a.startsWith('-') && !a.startsWith('<path>')).slice(0, 3).join(' ') : (e.digest || '').slice(0, 10);
+      const li = node('li', '');
+      fill(li, node('code', String(e.seq)), ` ${e.t} `, node('b', String(e.name)), ' ', node('code', what), e.replayed ? ' (replayed)' : '');
+      list.appendChild(li);
+    }
   }
   slider.addEventListener('input', () => render(Number(slider.value)));
   let timer = null;

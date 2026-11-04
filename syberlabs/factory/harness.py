@@ -28,23 +28,48 @@ string that builds the ``Recorder``, installs ``recorder.hook`` with
 ``sys.setprofile``, runs the entrypoint, and reports; the parent only reads the
 journal the child wrote. A program that wants to record itself in process can
 install ``recorder.hook`` the same way, outside this repository.
+
+The child is the candidate's process, so nothing it says is taken on trust:
+
+- it runs under ``python -I`` (no site customisation, no ``PYTHON*`` variables,
+  no current directory on ``sys.path``) in a host-owned scratch directory that
+  is outside the worktree and outside the ledger; the child is never told where
+  the ledger is, and the parent moves the journal into the ledger afterwards;
+- every journal record carries a seal, an HMAC chained from the previous
+  record under a per-run key the parent generated; ``verify_journal`` refuses a
+  journal with a record written around the recorder;
+- the child's report comes back over a private pipe and must carry the run's
+  nonce; a line printed to stdout is never a report, and the status in the
+  report must agree with the ``end`` record the parent reads from the journal.
+
+The residual is memory: code in the child can reach the recorder (and its key)
+through ``sys.modules``, because io observation needs to run in the candidate's
+process. That is recorded in ``spec/GAPS.md``; a sandbox is not claimed.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 
+from syberlabs._patterns import SECRET
 from syberlabs.canonical import canonical, digest
 from syberlabs.errors import Rejected
 
-RECORDER_VERSION = "profile-0.2"
+RECORDER_VERSION = "profile-0.3"
+MAX_CHANNEL_BYTES = 4 * 1024 * 1024
+MAX_TAIL_CHARS = 4000
 # What the child observes without the program's cooperation. Each is a wrapper installed in the child before
 # the run: a subprocess's argv and cwd, a socket's peer. Observed, journaled as ``io``, never replayed.
 OBSERVERS = ("subprocess", "socket")
@@ -99,6 +124,56 @@ def mask(token: str) -> str:
     return _HEX_INSIDE.sub("<hex>", token)
 
 
+REDACTED = "<redacted>"
+_CREDENTIAL_KEY = re.compile(r"(?i)(token|secret|passw(or)?d|api[_-]?key|authorization|credential|bearer|extraheader|cookie)")
+_CREDENTIAL_FLAGS = frozenset({"--token", "--password", "--passwd", "--secret", "--api-key", "--apikey", "--auth-token",
+                               "--access-token", "--bearer", "-H", "--header", "--cookie"})
+_BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}")
+_PEM = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S)
+
+
+def scrub(text):
+    """``text`` with credential shapes removed before it is journaled: the kernel's shared credential pattern
+    (``syberlabs._patterns.SECRET``, the one ``metrics`` and the query guard use), bearer tokens, PEM private
+    keys, and the value of a ``KEY=value`` pair whose key names a credential (``GITHUB_TOKEN=``,
+    ``http.extraheader=``). Anything that is not a string is returned as it is."""
+    if not isinstance(text, str):
+        return text
+    text = _PEM.sub(REDACTED, _BEARER.sub("Bearer " + REDACTED, SECRET.sub(REDACTED, text)))
+    head, sep, tail = text.partition("=")
+    if sep and tail and " " not in head and _CREDENTIAL_KEY.search(head):
+        return head + "=" + REDACTED
+    return text
+
+
+def scrub_argv(argv) -> list[str]:
+    """A subprocess argv with credentials removed: the value after a credential flag (``--token X``, ``-H
+    'Authorization: ...'``), the value of ``--flag=X`` for the same flags, and :func:`scrub` on the rest."""
+    out = []
+    redact_next = False
+    for item in argv:
+        item = str(item)
+        if redact_next:
+            out.append(REDACTED)
+            redact_next = False
+            continue
+        flag, sep, _value = item.partition("=")
+        if item in _CREDENTIAL_FLAGS:
+            out.append(item)
+            redact_next = True
+        elif sep and flag in _CREDENTIAL_FLAGS:
+            out.append(flag + "=" + REDACTED)
+        else:
+            out.append(scrub(item))
+    return out
+
+
+def scrub_text(text: str, limit: int = MAX_TAIL_CHARS) -> str:
+    """A bounded tail of free text (a test runner's output) with credential shapes removed, line by line."""
+    tail = text[-limit:] if limit else text
+    return "\n".join(scrub(line) for line in tail.split("\n"))
+
+
 def new_run_id() -> str:
     """Time-ordered, unique: microseconds since the epoch in hex, then 8 random hex digits."""
     return f"{int(time.time() * 1_000_000):014x}{secrets.token_hex(4)}"
@@ -138,8 +213,12 @@ class Recorder:
     def __init__(self, root: str | Path, journal: str | Path, file_components: dict | None = None, *,
                  run_id: str | None = None, revision: str | None = None, entrypoint: str | None = None,
                  fixture_digest: str | None = None, space_digest: str | None = None,
-                 replay_of: str | Path | None = None, blobs: str | Path | None = None):
+                 replay_of: str | Path | None = None, blobs: str | Path | None = None, key: str | None = None):
         self.root = Path(root).resolve()
+        # The seal: each record's HMAC, chained from the previous record's, under the per-run key ``record``
+        # generated in the parent. A line written to the journal file around the recorder has no valid seal.
+        self._key = key.encode("ascii") if key else None
+        self._mac = ""
         self._root_prefix = str(self.root) + os.sep
         self.journal = Path(journal)
         self.file_components = dict(file_components or {})
@@ -174,7 +253,7 @@ class Recorder:
                   "entrypoint": self.entrypoint, "fixture_digest": self.fixture_digest,
                   "space_digest": self.space_digest, "recorder": RECORDER_VERSION,
                   "replay_of": self._replayed_run, "started_at": int(time.time() * 1_000_000),
-                  "root": self.root.name, "python": sys.version.split()[0]}
+                  "root": self.root.name, "python": sys.version.split()[0], "sealed": self._key is not None}
         self._write(header)
         _CURRENT.append(self)
         return self
@@ -205,7 +284,11 @@ class Recorder:
     def _write(self, record: dict) -> None:
         if self.seq > MAX_RECORDS:
             raise Rejected("journal_too_long", f"more than {MAX_RECORDS} records; stop the run")
-        self._handle.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False, default=str) + "\n")
+        line = json.dumps(record, separators=(",", ":"), ensure_ascii=False, default=str)
+        if self._key is not None:
+            self._mac = _seal(self._key, self._mac, line)
+            line = line[:-1] + ',"m":"' + self._mac + '"}'
+        self._handle.write(line + "\n")
 
     # -- the profile hook ------------------------------------------------------------------------------------
 
@@ -334,87 +417,216 @@ class Recorder:
 
 # -- recording in a child process ----------------------------------------------------------------------------
 
+def _seal(key: bytes, previous: str, line: str) -> str:
+    """The seal of one journal line: HMAC-SHA256 over the previous seal and the line, under the run's key."""
+    return hmac.new(key, (previous + line).encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+
+
+def verify_journal(path: str | Path, key: str) -> str | None:
+    """None when every line of the journal carries the seal the run's key gives it, else the first problem.
+    A last line without a newline is torn (the child died writing it), which is a problem too: a sealed
+    journal ends with its ``end`` record."""
+    secret = key.encode("ascii")
+    previous = ""
+    text = Path(path).read_text(encoding="utf-8")
+    if not text:
+        return "the journal is empty"
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    else:
+        return f"line {len(lines)} is torn"
+    for index, line in enumerate(lines, 1):
+        body, sep, tail = line.rpartition(',"m":"')
+        if not sep or len(tail) != 34 or not tail.endswith('"}'):
+            return f"line {index} carries no seal"
+        expected = _seal(secret, previous, body + "}")
+        if not hmac.compare_digest(expected, tail[:32]):
+            return f"line {index} was not written by this run's recorder"
+        previous = expected
+    return None
+
+
 # The child's whole program. It is a string so that no importable file in this repository installs a profile
-# hook (see the module docstring). The parent hands it one JSON object on stdin; it prints one JSON line.
+# hook (see the module docstring). The parent hands it one JSON object on stdin; it answers one JSON line over
+# the private channel, never on stdout. Everything lives in one function so that the program under test finds
+# no configuration, key or channel in ``__main__``; what it can still reach is the recorder itself.
 BOOTSTRAP = r"""
-import importlib, importlib.util, json, runpy, sys
-config = json.loads(sys.stdin.read())
-# The recorder is the host's, loaded by file under a private name; the program under test then imports
-# whatever ``syberlabs`` its own tree holds (on this repository, the candidate's). The two never share a name.
-sys.path.insert(0, config["syberlabs_parent"])
-_spec = importlib.util.spec_from_file_location("_factory_harness", config["harness_path"])
-harness = importlib.util.module_from_spec(_spec)
-sys.modules["_factory_harness"] = harness
-_spec.loader.exec_module(harness)
-for _name in [n for n in sys.modules if n == "syberlabs" or n.startswith("syberlabs.")]:
-    del sys.modules[_name]
-sys.path.remove(config["syberlabs_parent"])
-sys.path.insert(0, config["root"])
-recorder = harness.Recorder(config["root"], config["journal"], config["file_components"], run_id=config["run_id"],
-                            revision=config["revision"], entrypoint=config["entry"], fixture_digest=config["fixture_digest"],
-                            space_digest=config["space_digest"], replay_of=config["replay_of"], blobs=config["blobs"])
-report = {"run_id": config["run_id"], "status": None, "error": None, "outcome": None, "counts": None}
-if "subprocess" in config["observe"]:
-    import subprocess as _sp
-    _popen_init = _sp.Popen.__init__
-    def _observed_init(self, args, *rest, **kwargs):
-        argv = [str(a) for a in (args if isinstance(args, (list, tuple)) else [args])]
-        recorder.io("subprocess", {"argv": argv[:64], "cwd": str(kwargs.get("cwd") or "")},
-                    key={"argv": [harness.mask(a) for a in argv[:64]]})
-        return _popen_init(self, args, *rest, **kwargs)
-    _sp.Popen.__init__ = _observed_init
-if "socket" in config["observe"]:
-    import socket as _so
-    _connect = _so.socket.connect
-    def _observed_connect(self, address):
-        recorder.io("socket.connect", {"address": str(address)})
-        return _connect(self, address)
-    _so.socket.connect = _observed_connect
-try:
-    with recorder:
-        if config["function"]:
-            # The import is not the run: resolve the function first, then record only the call.
-            module = importlib.import_module(config["module"])
-            function = getattr(module, config["function"])
-        sys.setprofile(recorder.hook)
-        try:
-            if config["function"]:
-                outcome = function(recorder.context, config["fixture"])
-                try:
-                    json.dumps(outcome)
-                    report["outcome"] = outcome
-                except (TypeError, ValueError):
-                    report["outcome"] = repr(outcome)[:2000]
-            else:
-                runpy.run_path(config["script"], run_name="__main__")
-        finally:
-            sys.setprofile(None)
-except harness.Diverged as exc:
-    report["error"] = exc.detail
-except SystemExit as exc:
-    if exc.code not in (None, 0):
-        report["error"] = "exited with " + str(exc.code)
-except BaseException as exc:
-    report["error"] = type(exc).__name__ + ": " + str(exc)[:300]
-report["status"] = recorder.status
-report["counts"] = recorder.counts
-sys.stdout.write("\n" + json.dumps(report) + "\n")
+def _main():
+    import importlib, importlib.util, json, os, runpy, sys
+    config = json.loads(sys.stdin.read())
+    if os.name == "nt":
+        import msvcrt
+        channel_fd = msvcrt.open_osfhandle(config["channel"], os.O_WRONLY)
+        os.set_handle_inheritable(config["channel"], False)  # a process the program starts does not get it
+    else:
+        channel_fd = config["channel"]
+        os.set_inheritable(channel_fd, False)
+    channel = os.fdopen(channel_fd, "wb", buffering=0)
+    nonce = config["nonce"]
+    # The recorder is the host's, loaded by file under a private name; the program under test then imports
+    # whatever ``syberlabs`` its own tree holds (on this repository, the candidate's). The two never share a name.
+    sys.path.insert(0, config["syberlabs_parent"])
+    spec = importlib.util.spec_from_file_location("_factory_harness", config["harness_path"])
+    harness = importlib.util.module_from_spec(spec)
+    sys.modules["_factory_harness"] = harness
+    spec.loader.exec_module(harness)
+    for name in [n for n in sys.modules if n == "syberlabs" or n.startswith("syberlabs.")]:
+        del sys.modules[name]
+    sys.path.remove(config["syberlabs_parent"])
+    sys.path.insert(0, config["root"])
+    recorder = harness.Recorder(config["root"], config["journal"], config["file_components"], run_id=config["run_id"],
+                                revision=config["revision"], entrypoint=config["entry"], fixture_digest=config["fixture_digest"],
+                                space_digest=config["space_digest"], replay_of=config["replay_of"], blobs=config["blobs"],
+                                key=config["key"])
+    report = {"n": nonce, "run_id": config["run_id"], "status": None, "error": None, "outcome": None, "counts": None}
+    if "subprocess" in config["observe"]:
+        import subprocess as _sp
+        _popen_init = _sp.Popen.__init__
+        def _observed_init(self, args, *rest, **kwargs):
+            argv = harness.scrub_argv([str(a) for a in (args if isinstance(args, (list, tuple)) else [args])][:64])
+            recorder.io("subprocess", {"argv": argv, "cwd": harness.scrub(str(kwargs.get("cwd") or ""))},
+                        key={"argv": [harness.mask(a) for a in argv]})
+            return _popen_init(self, args, *rest, **kwargs)
+        _sp.Popen.__init__ = _observed_init
+    if "socket" in config["observe"]:
+        import socket as _so
+        _connect = _so.socket.connect
+        def _observed_connect(self, address):
+            recorder.io("socket.connect", {"address": harness.scrub(str(address))})
+            return _connect(self, address)
+        _so.socket.connect = _observed_connect
+    function = config["function"]
+    module_name, script, fixture = config["module"], config["script"], config["fixture"]
+    del config
+    try:
+        with recorder:
+            if function:
+                # The import is not the run: resolve the function first, then record only the call.
+                target = getattr(importlib.import_module(module_name), function)
+            sys.setprofile(recorder.hook)
+            try:
+                if function:
+                    outcome = target(recorder.context, fixture)
+                    try:
+                        json.dumps(outcome)
+                        report["outcome"] = outcome
+                    except (TypeError, ValueError):
+                        report["outcome"] = repr(outcome)[:2000]
+                else:
+                    runpy.run_path(script, run_name="__main__")
+            finally:
+                sys.setprofile(None)
+    except harness.Diverged as exc:
+        report["error"] = exc.detail
+    except SystemExit as exc:
+        if exc.code not in (None, 0):
+            report["error"] = "exited with " + str(exc.code)
+    except BaseException as exc:
+        report["error"] = type(exc).__name__ + ": " + str(exc)[:300]
+    report["status"] = recorder.status
+    report["counts"] = recorder.counts
+    channel.write((json.dumps(report) + "\n").encode("utf-8"))
+    channel.close()
+_main()
 """
+
+
+class _Channel:
+    """The parent's end of the private pipe: the child inherits only the write end, a thread collects the
+    lines, and ``report`` accepts exactly one message that carries this run's nonce."""
+
+    def __init__(self):
+        self._read, self._write = os.pipe()
+        self.lines: list[bytes] = []
+        self.overflow = False
+        if os.name == "nt":
+            import msvcrt
+            self.handle = msvcrt.get_osfhandle(self._write)
+            os.set_handle_inheritable(self.handle, True)
+            info = subprocess.STARTUPINFO()
+            info.lpAttributeList = {"handle_list": [self.handle]}  # only this pipe is inherited, beside the std handles
+            self.popen_kwargs = {"startupinfo": info}
+        else:
+            self.handle = self._write
+            self.popen_kwargs = {"pass_fds": (self._write,)}
+        self._reader = threading.Thread(target=self._collect, daemon=True)
+
+    def started(self) -> None:
+        """The child holds the write end now (or never will): drop the parent's copy and start reading."""
+        os.close(self._write)
+        self._reader.start()
+
+    def _collect(self) -> None:
+        total = 0
+        with os.fdopen(self._read, "rb") as stream:
+            for line in stream:
+                total += len(line)
+                if total > MAX_CHANNEL_BYTES:
+                    self.overflow = True
+                    continue
+                self.lines.append(line)
+
+    def report(self, nonce: str) -> tuple[dict | None, str | None]:
+        """The one report bound to ``nonce``, or the reason there is none."""
+        self._reader.join(timeout=30)
+        if self._reader.is_alive():
+            return None, "the channel stayed open after the child exited"
+        if self.overflow:
+            return None, f"the channel carried more than {MAX_CHANNEL_BYTES} bytes"
+        if len(self.lines) != 1:
+            return None, f"the channel carried {len(self.lines)} messages, not one"
+        try:
+            message = json.loads(self.lines[0])
+        except ValueError:
+            return None, "the message is not JSON"
+        if not isinstance(message, dict) or not hmac.compare_digest(str(message.get("n")), nonce):
+            return None, "the message does not carry this run's nonce"
+        message.pop("n", None)
+        return message, None
+
+
+def _tail(path: Path) -> str:
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.seek(max(0, size - MAX_TAIL_CHARS * 4))
+            return handle.read().decode("utf-8", errors="replace")[-MAX_TAIL_CHARS:]
+    except OSError:
+        return ""
 
 
 def record(root: str | Path, journal: str | Path, entry: str, *, file_components: dict | None = None,
            fixture: dict | None = None, run_id: str | None = None, revision: str | None = None,
            space_digest: str | None = None, replay_of: str | Path | None = None, blobs: str | Path | None = None,
-           python: str | None = None, timeout: float = 3600.0, observe: tuple = OBSERVERS) -> dict:
-    """Run ``entry`` under the recorder in a child interpreter and return its report.
+           python: str | None = None, timeout: float = 3600.0, observe: tuple = OBSERVERS,
+           strip_env: tuple = ()) -> dict:
+    """Run ``entry`` under the recorder in an isolated child interpreter and return its report.
 
     ``entry`` is ``module:function`` (imported from ``root``, called as ``function(ctx, fixture)``) or a script
     path (run as ``__main__``; it takes its context from :func:`current`). The report has ``run_id``, ``status``
-    (``ok``, ``diverged``, ``error``, or ``killed`` on timeout), ``counts``, ``outcome`` and ``error``. The
-    journal is at ``journal`` whatever happened. ``observe`` names the io observers the child installs
-    (default: subprocesses and socket connections); pass ``()`` for none. The child inherits this process's environment: a program's
-    own secrets stay its own, and nothing here is a sandbox."""
+    (``ok``, ``diverged``, ``error``, or ``killed`` on timeout), ``counts``, ``outcome``, ``error``, and the tails
+    of ``stdout`` and ``stderr``. ``observe`` names the io observers the child installs (default: subprocesses
+    and socket connections); pass ``()`` for none.
+
+    The child runs ``python -I`` in a host-owned scratch directory and writes its journal and blobs there; it is
+    never told where ``journal`` or ``blobs`` are. Afterwards the parent verifies the journal's seal under the
+    per-run key, reads the ``end`` record itself, requires the child's report (one message on a private pipe,
+    bound by the run's nonce) to agree with it, and only then moves the journal to ``journal`` and the blobs to
+    ``blobs``. A journal that fails its seal is not delivered, and neither is the journal of a run that was
+    killed. On timeout the whole process tree is stopped.
+
+    The child runs under the Build Thread's scrubbed environment (``checks.scrubbed_environment``: ``PATH``,
+    the locale, the package managers' cache variables, a temporary ``HOME`` and ``TMP`` inside the scratch
+    directory, ``SYBERLABS_CANDIDATE`` and ``SYBERLABS_BASE`` as the host has them), never this process's
+    whole environment: the host's signing seed (``certificate.DEFAULT_SEED_ENV``) and every variable named in
+    ``strip_env`` (a ``--seed-env``) are not in it, whatever the host holds. ``-I`` drops the ``PYTHON*``
+    variables besides. This is still not a sandbox."""
+    from syberlabs.certificate import DEFAULT_SEED_ENV
+    from syberlabs.checks import scrubbed_environment, stop_tree  # the Build Thread's own; parent side only
+
     root = Path(root).resolve()
+    destination = Path(journal).resolve()
     run_id = run_id or new_run_id()
     module = function = script = None
     if ":" in entry and not Path(entry).exists():
@@ -423,37 +635,104 @@ def record(root: str | Path, journal: str | Path, entry: str, *, file_components
         script = str(Path(entry).resolve())
         if not Path(script).exists():
             raise Rejected("entry_missing", f"{entry} is neither module:function nor a file")
-    config = {
-        "root": str(root), "journal": str(Path(journal).resolve()), "file_components": dict(file_components or {}),
-        "run_id": run_id, "revision": revision, "entry": entry, "fixture": fixture if fixture is not None else {},
-        "fixture_digest": digest(fixture if fixture is not None else {}), "space_digest": space_digest,
-        "replay_of": str(Path(replay_of).resolve()) if replay_of else None, "blobs": str(Path(blobs).resolve()) if blobs else None,
-        "module": module, "function": function, "script": script, "observe": list(observe),
-        "syberlabs_parent": str(Path(__file__).resolve().parents[2]), "harness_path": str(Path(__file__).resolve()),
-    }
-    Path(journal).parent.mkdir(parents=True, exist_ok=True)
+    nonce, key = secrets.token_hex(16), secrets.token_hex(32)
+    report = {"run_id": run_id, "status": "error", "error": None, "counts": None, "outcome": None,
+              "stdout": "", "stderr": "", "returncode": None}
+    scratch = Path(tempfile.mkdtemp(prefix="syberlabs-factory-"))  # host-owned: outside the worktree and the ledger
     try:
-        done = subprocess.run([python or sys.executable, "-c", BOOTSTRAP], input=json.dumps(config), capture_output=True,
-                              text=True, cwd=str(root), timeout=timeout, encoding="utf-8", errors="replace")
-    except subprocess.TimeoutExpired:
-        return {"run_id": run_id, "status": "killed", "error": f"no end after {timeout} seconds", "counts": None,
-                "outcome": None, "stdout": "", "stderr": ""}
-    lines = done.stdout.splitlines()
-    report = None
-    for index in range(len(lines) - 1, -1, -1):
-        if lines[index].startswith("{") and '"run_id"' in lines[index]:
+        child_home = scratch / "home"
+        child_home.mkdir()
+        env = scrubbed_environment(child_home, os.environ.get("SYBERLABS_CANDIDATE") or run_id, os.environ.get("SYBERLABS_BASE"))
+        for name in (DEFAULT_SEED_ENV, *strip_env):
+            env.pop(name, None)
+        child_journal = scratch / "journal.jsonl"
+        child_blobs = scratch / "blobs" if blobs is not None else None
+        child_replay = None
+        if replay_of is not None:
+            child_replay = scratch / "replay.jsonl"
+            shutil.copyfile(replay_of, child_replay)
+            if blobs is not None:
+                child_blobs.mkdir()
+                for recorded in read_journal(child_replay):
+                    blob = recorded.get("blob")
+                    if blob and (Path(blobs) / blob).exists():
+                        shutil.copyfile(Path(blobs) / blob, child_blobs / blob)
+        config = {
+            "root": str(root), "journal": str(child_journal), "file_components": dict(file_components or {}),
+            "run_id": run_id, "revision": revision, "entry": entry, "fixture": fixture if fixture is not None else {},
+            "fixture_digest": digest(fixture if fixture is not None else {}), "space_digest": space_digest,
+            "replay_of": str(child_replay) if child_replay else None, "blobs": str(child_blobs) if child_blobs else None,
+            "module": module, "function": function, "script": script, "observe": list(observe),
+            "syberlabs_parent": str(Path(__file__).resolve().parents[2]), "harness_path": str(Path(__file__).resolve()),
+            "nonce": nonce, "key": key,
+        }
+        channel = _Channel()
+        killed = False
+        with (scratch / "stdout").open("wb") as out, (scratch / "stderr").open("wb") as err:
             try:
-                report = json.loads(lines[index])
-            except ValueError:
-                continue
-            lines = lines[:index]
-            break
-    if report is None:
-        report = {"run_id": run_id, "status": "error", "error": f"the child exited {done.returncode} without a report",
-                  "counts": None, "outcome": None}
-    report["stdout"] = "\n".join(lines)
-    report["stderr"] = done.stderr[-4000:]
-    report["returncode"] = done.returncode
+                proc = subprocess.Popen([python or sys.executable, "-I", "-c", BOOTSTRAP], stdin=subprocess.PIPE, stdout=out,
+                                        stderr=err, cwd=str(root), env=env, close_fds=True,
+                                        start_new_session=hasattr(os, "setsid"), **channel.popen_kwargs)
+            finally:
+                channel.started()
+            try:
+                proc.stdin.write(json.dumps({**config, "channel": channel.handle}).encode("utf-8"))
+                proc.stdin.close()
+            except OSError:
+                pass  # the child is already gone; its missing report says so
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    report["returncode"] = proc.wait(timeout=0.05)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if time.monotonic() > deadline:
+                    stop_tree(proc)
+                    killed = True
+                    break
+        report["stdout"], report["stderr"] = _tail(scratch / "stdout"), _tail(scratch / "stderr")
+        message, problem = channel.report(nonce)
+        deliver = child_journal.exists()
+        if killed:
+            report["status"], report["error"] = "killed", f"no end after {timeout} seconds"
+            deliver = False  # a run that was stopped has no end record; its journal is not evidence and is not delivered
+        elif not deliver:
+            report["error"] = "the child wrote no journal"
+        else:
+            unsealed = verify_journal(child_journal, key)
+            if unsealed is not None:
+                report["error"] = f"journal_unsealed: {unsealed}"
+                deliver = False
+            else:
+                records = read_journal(child_journal)
+                end = records[-1] if records and records[-1].get("t") == "end" else None
+                if end is None or records[0].get("t") != "run" or records[0].get("run_id") != run_id:
+                    report["error"] = "the journal has no end record for this run"
+                    deliver = False  # a journal the recorder never closed is not evidence of a run
+                else:
+                    report["status"], report["counts"] = end["status"], end.get("counts")
+        if message is None:
+            report["error"] = report["error"] or f"no report over the private channel: {problem}"
+            if report["status"] == "ok":
+                report["status"] = "error"
+        elif message.get("run_id") != run_id or message.get("status") != report["status"]:
+            if report["status"] != "killed":
+                report["status"] = "error"
+            report["error"] = report["error"] or "the child's report does not match its journal"
+        else:
+            report["outcome"] = message.get("outcome")
+            report["error"] = report["error"] or message.get("error")
+        if deliver:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(child_journal), str(destination))
+            if child_blobs is not None and child_blobs.exists():
+                Path(blobs).mkdir(parents=True, exist_ok=True)
+                for blob in child_blobs.iterdir():
+                    if not (Path(blobs) / blob.name).exists():
+                        shutil.move(str(blob), str(Path(blobs) / blob.name))
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     return report
 
 

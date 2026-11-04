@@ -12,7 +12,7 @@ architecture conformance, spec-driven development, attestation, ledger storage) 
 are in the architecture plan this slice was built from. This page is what the repository does today.
 
 Package: `syberlabs/factory/`. Standard library only. `syberlabs` still does not import `syberwork`.
-Claim ceiling for this page: **implemented** and **tested** (`tests/test_factory.py`, 18 tests, and the
+Claim ceiling for this page: **implemented** and **tested** (`tests/test_factory.py`, 51 tests, and the
 CLI run below). Nothing here is measured, deployed or externally validated.
 
 ## The v0 slice
@@ -43,8 +43,11 @@ python -m syberlabs.factory show RUN_A                                    # the 
 python -m syberlabs.factory at RUN_A --seq 10                             # main.run and effects.submit are open
 python -m syberlabs.factory replay RUN_A --entry fxapp.main:run --fixture fixture.json   # effects come from the journal
 python -m syberlabs.factory spec validate spec.json
-python -m syberlabs.factory spec promote spec.json --verdict review-1 --actor model:reviewer
-python -m syberlabs.factory ticket spec.json --req R1 --baseline RUN_A --owner mateo --out ticket.json
+python -m syberlabs.factory variants spec.json --proposer claude=CMD --reviewer gpt=CMD   # writes spec.v2.json, prints the verdict id
+python -m syberlabs.factory owner --public owner.pub                      # pin the owner key, once; the gate trusts no other
+python -m syberlabs.factory approve spec.v2.json --verdict VERDICT --actor human:mateo --seed-env SYBERLABS_FACTORY_OWNER_SEED --out approval.json
+python -m syberlabs.factory spec promote spec.v2.json --verdict VERDICT --actor human:mateo --approval approval.json
+python -m syberlabs.factory ticket spec.v2.json --req R1 --baseline RUN_A --owner mateo --out ticket.json
 python -m syberlabs.factory record --entry fxapp.main:run --fixture fixture.json --revision candidate1
 python -m syberlabs.factory attest --baseline RUN_A --candidate RUN_B --ticket ticket.json --commit candidate1 \
     --seed-env SYBERLABS_FACTORY_SEED --out attestation.json             # exit 0: diff empty, promote True
@@ -57,9 +60,101 @@ An entrypoint is `module:function`, imported from the root and called as `functi
 hook installed after the import so the import is not part of the run, or a script run as `__main__` whose
 own body is its first span and which takes its context from `syberlabs.factory.harness.current()`. Effects
 go through `ctx.run(name, fn, ...)`; that is the only instrumentation a program needs, and the only part
-replay cannot do without. The child inherits the caller's environment, as provider commands do; it is not a
-sandbox. The signing seed is read from the named environment variable the way `syberlabs certify` reads
-it; only the name is recorded.
+replay cannot do without. The child runs under the Build Thread's scrubbed environment
+(`checks.scrubbed_environment`: `PATH`, the locale, the package managers' cache variables, a temporary `HOME`
+and `TMP` inside the host-owned scratch directory, `SYBERLABS_CANDIDATE` and `SYBERLABS_BASE` as the host has
+them), not the caller's whole environment, and `-I` drops the `PYTHON*` variables besides; the host's signing
+seed (`SYBERLABS_CERTIFICATE_SEED`) and a check's `--seed-env` variable are never in it. It is not a sandbox.
+The signing seed is read from the named environment variable the way `syberlabs certify` reads it; only the
+name is recorded.
+
+## The goal gate
+
+The factory may propose a spec at any level; it may promote none. `spec promote`, `canonize` and `retire`
+take a human `--actor` (`kind:id`, resolved to a principal; free text is refused) and an approval that
+verifies: `factory approve` signs, with the owner's seed, a payload naming the spec (id, version and its
+content digest: the parsed document without `history`, so a re-serialized file is the same spec), the
+operation and the verdict ids; `spec promote` verifies it under the owner key the ledger pins, requires the
+approver to be the actor, and resolves each `--verdict` on the ledger to a `review` event that accepted the
+very variant the file is (the `validate` event's digest must match, so a spec edited after review is
+refused), whose proposers and reviewer the approver is not. The approval is stored under `approvals/` and
+logged as `approval_recorded`; the `spec_changed` cites that event's hash. A model actor, a missing
+approval, a verdict that is a string rather than a review, or an approval under another key each refuse, and
+the variant loop no longer suggests that the reviewer promote what it reviewed.
+
+**The trust model.** Promotion is bound to the owner key the ledger pins, not to whoever runs the host
+command. The key lives on the ledger as an `owner_key_set` event: `factory owner --public KEY` (or the first
+`--owner-public` a `spec promote` sees) pins it once, and that bootstrap is the one unsigned act, done by the
+operator by hand on a ledger that pins none (a Class C act: whoever pins first owns that ledger). From then on
+`spec.gate` reads the pinned key from the ledger's events and verifies under it only: a ledger with no pinned
+key refuses (`owner_key_unset`), an approval signed under any other key refuses (`owner_key_mismatch`), and
+`--owner-public` naming a different key refuses the same way rather than being believed. Rotation is
+`factory owner --public NEW --seed-env OLD`: the key pinned now signs the handover, the ledger stores that
+signature under `approvals/` and cites it from the new `owner_key_set`, and `verify` checks it like any
+artifact; a rotation the pinned key did not sign is refused (`owner_key_rotation`). The verifier's repro of
+#164 (generate a keypair, approve with it, promote with `--owner-public mine.pub`) is refused at
+`owner_key_mismatch`, and `tests/test_factory.py::CliTests::test_the_owner_key_is_pinned_and_rotates_only_under_the_old_key`
+pins that.
+
+**The lineage rule.** The pinned key is read through the ledger's verified lineage, never from the newest
+`owner_key_set` alone (`spec.owner_key_lineage`, `Ledger.owner_key_lineage`). Walking every `owner_key_set` in
+order: the first is the one bare bootstrap (`previous` null, no `rotation_digest`); every later one is a
+rotation whose `previous` is exactly the key pinned before it, whose `rotation_digest` names a stored envelope
+under `approvals/` and is cited by no other `owner_key_set`, and whose envelope verifies (`verify_rotation`)
+under that previous key for this very position; every keyid is a 64-hex public key. The envelope
+(`syberlabs.space/factory/owner-key/v1`; a `v0` envelope, bound to nothing, is refused) is signed over
+`previous`, `next`, `replaces_seq` (the `seq` of the `owner_key_set` it replaces) and `head` (the ledger head
+when it was signed, which is the `previous` hash of the event it lands as), and the walk checks the last two
+against the chain, so an honest handover cannot be appended a second time after the owner rotated that key
+away (`rotation replayed`), and an envelope signed for one position, or signed and stored but never appended
+there, fails at any other. Any violation is named by `problems` as `owner_key_lineage`, `verify` is false, and the
+ledger pins nothing: `spec.gate`, `factory owner` and `set_owner_key` refuse with `owner_key_lineage` rather
+than falling back to the last or an earlier key, so a second bare bootstrap is a violation, not a re-pin. The
+delta verification's four shapes (an `owner_key_set` appended through the public `append` with an attacker's
+key; a rotation signed by the new key instead of the pinned one; a rotation whose `previous` is a key rotated
+out earlier; a malformed keyid as the last event) each leave the hash chain intact and each are refused this
+way, in `CliTests::test_the_owner_key_is_the_verified_lineage_not_the_newest_event`; the replay of an honest
+`A -> B` envelope after `B -> A` (the second verification's M4) and an envelope moved to another position are
+refused the same way, in `CliTests::test_a_rotation_binds_to_its_position_and_a_replayed_envelope_is_refused`.
+`spec promote|canonize|retire`
+verify the ledger before the gate reads it (`ledger_corrupt`), and `factory check` verifies it once more after
+the candidate's test suite ran and before anything is attested, against the head its own run record left, so a
+line a candidate manages to append during its suite refuses the check (`ledger_corrupt`;
+`BuildThreadCheck::test_a_ledger_that_changes_under_the_test_suite_refuses_the_check`). `set_owner_key` reads
+the pinned key and appends under one acquisition of the journal lock, so two bootstraps racing on an empty
+ledger cannot both land. What the lineage does not cover is an attacker who rewrites the whole chain
+consistently from the rotation they want undone; an append, with any seed the owner ever held, buys nothing.
+That is the unanchored write boundary of `spec/GAPS.md` 65 (3), and anchoring the head in `tlog`/`witness` is
+the deferred fix. `Approved`, the record `transition` takes for a gated operation, is made by `verify_approval` only:
+its constructor demands a module-private token, and `transition` checks the token, so neither a dictionary nor
+an instance made around the constructor passes the gate.
+
+The approval covers the spec's **content** digest, parsed and with `history` excluded, not the file's bytes;
+both sides digest the same way, so a re-indented or re-keyed file still promotes, and an edit to the file's
+`history` between signing and promotion is invisible to the approval. That is deliberate: the ledger's
+`spec_changed` events are the history of record, the file's copy is a convenience the promotion rewrites
+anyway, and binding the bytes would refuse the re-serialized file for nothing gained. The intended source of
+the approval is a kernel `approved` event on a goal case (approver not proposer, `session.py`); until the
+factory has a case to hang it on, the owner's signature stands in (`spec/GAPS.md`).
+
+## The candidate is not trusted
+
+The candidate's program runs in a child the parent does not believe. The child runs `python -I` in a
+host-owned scratch directory outside the worktree and outside the ledger, and is never told where the
+ledger is; the parent moves the journal into `runs/` afterwards. Every journal record carries a seal, an
+HMAC chained from the previous record under a per-run key the parent generated, and the parent refuses a
+journal with a line written around the recorder, a line edited afterwards, a torn tail, or no `end`. The
+child's report travels over a private pipe and must carry the run's nonce; a line printed to stdout is
+output, never a report, and the status it claims must agree with the `end` record the parent reads itself.
+`factory check` verifies the ledger, chain and artifacts, before the candidate runs and again after it
+exits, and refuses if anything moved in between. A run stopped at its timeout has no `end` record, and its
+journal is not delivered either. The child's environment is the Build Thread's scrubbed one, without the
+host's signing seed or the check's `--seed-env` variable, so the recorded program and the test suite it is
+followed by cannot read the seed that signs the attestation; the same scrubbed environment runs the suite. Every artifact load checks the file against the digest the
+ledger recorded, so an edited golden journal cannot become a baseline (`load_run` refuses it, `verify`
+names it). The residual is memory: code in the child can reach the recorder and its key through
+`sys.modules`, because io observation has to run in the candidate's process. That is recorded in
+`spec/GAPS.md`, and this is still not a sandbox.
 
 The repository checks itself the same way. `docs/architecture.declared.json` declares four components
 (`syberlabs`, `syberlabs.eval`, `syberlabs.factory`, `syberwork`) and the edges allowed between them;
@@ -197,12 +292,16 @@ removed, footprint hint, rationale). Each delta becomes a variant through `mutat
 the latest Space graph (findings stay on the variant rather than hiding it), and is logged as
 `spec_changed` with the proposer as actor; a proposer that returns no JSON is logged as a failed mutate
 and the loop continues. The reviewer is one command that sees every variant with its findings and answers
-a verdict per variant. `judge` enforces three rules: the reviewer did not propose any variant (the critic
-rule's independence), a variant with findings cannot be accepted, and at most one variant is accepted. The
-accepted variant is validated to candidate and written as the spec's next version; `spec promote` with the
-verdict id then opens its tickets. `tests/fixtures/factory_app/proposers.py` stands in for the models, and
-`tests/test_factory.py::Variants` runs the loop with one sound proposer, one that overreaches, and one that
-breaks. Nothing here imports a model SDK; the adapter for a real model is the command.
+a verdict per variant. `judge` enforces three rules: the reviewer is independent of every proposer by
+provider family (`factory/independence.py`: the family is read from the model the command declared in its
+answer, `model` or `signal.harness.model`; two names on one family are not independent, and a party whose
+family is not recorded refuses rather than passes), a variant with findings cannot be accepted, and at most
+one variant is accepted. The accepted variant is validated to candidate and written as the spec's next
+version; the owner then approves and promotes it (the goal gate above) and the promotion opens its tickets.
+`tests/fixtures/factory_app/proposers.py` stands in for the models, and `tests/test_factory.py::Variants`
+runs the loop with one sound proposer, one that overreaches, and one that breaks. Nothing here imports a
+model SDK; the adapter for a real model is the command. `independence()` is small and importable so that
+`critic.independent` can adopt it; `critic` is unchanged here.
 
 ## Where this departs from the plan, and why
 
@@ -230,7 +329,8 @@ breaks. Nothing here imports a model SDK; the adapter for a real model is the co
   be converted to it later.
 - **Spec variants are commands.** The plan had Claude, Grok and Cursor propose and GPT review. They do, as
   commands at a process boundary, which is how this repository treats every model; the `--proposer` and
-  `--reviewer` names are what the ledger records as actors.
+  `--reviewer` names are what the ledger records as actors, beside the model and provider family each
+  command declared.
 
 ## What a cell is, exactly
 
@@ -246,9 +346,17 @@ component nothing called at a revision has no cells there, and that absence is i
   through `ctx.run` as an effect result, which is the right boundary anyway.
 - Python only. A function call is a span; a module's import runs as one `<module>` span; statements
   outside any function in an already-imported module are not visible.
-- Replay re-executes the program's own code. It is not a sandbox and nothing here is.
-- One writer per ledger at a time. The ledger refuses to append to a log whose chain does not verify, but
-  it has no cross-process lock; the harness journal is written by the process that records.
+- Replay re-executes the program's own code. It is not a sandbox and nothing here is; the trust boundary
+  above raises the cost of a forged run, and the residual (the recorder shares the candidate's memory) is
+  in `spec/GAPS.md`.
+- Ledger appends go through the kernel journal's writer (lock, fsync, torn-tail repair), so two factory
+  commands on one home serialize; the harness journal is written by the recorder in the child and sealed
+  under the parent's per-run key.
+- Subprocess argv and cwd, socket addresses and the test runner's output tail are scrubbed of credential
+  shapes (the kernel's shared pattern, bearer tokens, PEM keys, `KEY=value` with a credential key, the value
+  after a credential flag) before they are journaled or attested; a credential in some other shape is not.
+- The behavior-change label is a flag on the check's argv, so it is per contract, not per ticket; a ticket
+  that intends a behavior change cannot yet say so on its own.
 - The trace diff compares component transitions (or function names), effect result digests and masked io
   keys. It does not compare arguments or return values of ordinary calls, or timing, so two runs that
   differ only in what a pure function returned diff empty. The spec's scenarios and the tests evidence kind
@@ -269,3 +377,11 @@ step, mutation score in the gate, change coupling from git history in `impact`, 
 Barn reading attestations. The open decision upstream of all of it is
 whether a host-run trace diff over a declared footprint counts as independent review for MasterMind's auto
 class; if it does, the loop closes without changing who promotes.
+
+Deferred from the consolidation packet, explicitly, so the next packet picks them up rather than rediscovers
+them: `serves`, `mission_ref` and `done_when` on specs; a mandatory `human_owner` on tickets; `promote`
+renamed `pass`; `tickets.py` and `codemap.py` as modules of their own; the kernel approval seam (an `approved`
+event on a goal case in place of the owner's signature); the behavior-change label moving from the check's
+argv to the ticket (today it is per contract, `spec/GAPS.md` 65); and signing the ledger's chain head through
+`witness`/`tlog` so a consistent forged chain is distinguishable from an honest one across runs (D1,
+`spec/GAPS.md` 65).

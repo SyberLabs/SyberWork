@@ -117,6 +117,12 @@ def _stop(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
+# The two routines another host-side runner reuses (the factory's harness and its tests runner), under public
+# names: the scrubbed environment a check runs under, and the stop of a check's whole process tree.
+scrubbed_environment = _environment
+stop_tree = _stop
+
+
 def run_check(argv: list[str], cwd: Path, env: dict, timeout: int, max_output: int, log: Path,
               stdin: Path | None = None) -> dict:
     """Run one check. ``stdin`` is a file handed to the command's standard input; without one it reads nothing."""
