@@ -42,7 +42,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import statistics
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -59,6 +61,12 @@ CLAUDE_ONLY = ("lane", "bare", "trusted_tree", "tools", "max_turns", "githits", 
 WITHHELD_ENV = ("GITHUB_TOKEN", "GH_TOKEN")
 NOMINAL_CALL = (2000, 500)  # tokens in, out: Jev's prior price of one mutation
 HIDDEN_PREFIX = "hidden."  # tasks.HIDDEN_PREFIX: the contract names every hidden check hidden.<name>
+# Adapters this checkout ships whose every call fails before it reaches a model unless the adapter's interpreter can
+# import a package; the repository has no runtime dependencies, so nothing installs it (``readiness``).
+ADAPTER_REQUIRES = {"anthropic_adapter.py": "anthropic"}
+# The variables an adapter's SDK reads its credential from. None set is a warning, not a refusal: the adapter also
+# names an ``ant auth login`` profile, which this check cannot see.
+ADAPTER_CREDENTIALS = {"anthropic_adapter.py": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
 
 
 def check(arm: dict, budget: dict) -> list[str]:
@@ -114,6 +122,49 @@ def calls(arm: dict, budget: dict) -> int:
 def resolve(argv: list[str], harness: Path = HARNESS) -> list[str]:
     """``{python}`` and ``{harness}`` in an adapter or executable argv."""
     return [sys.executable if arg == "{python}" else arg.replace("{harness}", str(harness)) for arg in argv]
+
+
+def readiness(arm: dict, harness: Path = HARNESS, _imports: dict | None = None) -> dict:
+    """Why every call of a JSON-adapter ``arm`` would fail before it reaches a model (``blocking``), and what may
+    make it fail (``warnings``), without running the adapter or calling a model: the interpreter is found; each
+    ``.py`` file the argv names is an absolute path that exists (the adapter runs with the run's repository as its
+    working directory, where a relative path does not exist: E3, 2026-10-21); the interpreter can import the package
+    an adapter of ``ADAPTER_REQUIRES`` needs (a child process that only imports it); one of the adapter's
+    ``ADAPTER_CREDENTIALS`` is set. ``_imports`` caches the import probe by (interpreter, module)."""
+    blocking, warnings = [], []
+    if arm["kind"] not in JSON_ADAPTER_KINDS:
+        return {"blocking": blocking, "warnings": warnings}
+    argv, label = resolve(arm["adapter"], harness), arm["name"]
+    if not argv or not (Path(argv[0]).is_file() or shutil.which(argv[0])):
+        return {"blocking": [f"{label}: interpreter {argv[0] if argv else None!r} not found"], "warnings": warnings}
+    imports = {} if _imports is None else _imports
+    for arg in argv[1:]:
+        path = Path(arg)
+        if path.suffix != ".py":
+            continue
+        if not path.is_absolute():
+            blocking.append(f"{label}: adapter {arg} is a relative path; the adapter runs in the run's repository")
+            continue
+        if not path.is_file():
+            blocking.append(f"{label}: adapter {arg} not found")
+            continue
+        module = ADAPTER_REQUIRES.get(path.name)
+        if module:
+            key = (argv[0], module)
+            if key not in imports:
+                try:
+                    imports[key] = subprocess.run([argv[0], "-c", f"import {module}"], capture_output=True,
+                                                  timeout=120).returncode == 0
+                except (OSError, subprocess.TimeoutExpired):
+                    imports[key] = False
+            if not imports[key]:
+                blocking.append(f"{label}: {path.name} needs the {module} package, which {argv[0]} cannot import "
+                                f"(install it: {argv[0]} -m pip install {module})")
+        names = ADAPTER_CREDENTIALS.get(path.name)
+        if names and not any(os.environ.get(name) for name in names):
+            warnings.append(f"{label}: none of {', '.join(names)} is set; every call fails unless another credential "
+                            f"source the SDK reads serves")
+    return {"blocking": blocking, "warnings": warnings}
 
 
 def jev_prices(prices: dict | None) -> dict | None:

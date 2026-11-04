@@ -252,7 +252,8 @@ class Tasks(Workspace):
                          "the copy re-hashes to the task")
         for path in staged.rglob("*"):
             if path.is_file():
-                self.assertFalse(os.access(path, os.W_OK), f"{path.name} is read-only")
+                # The mode bits, not os.access: root may write a read-only file, and a container runs as root.
+                self.assertEqual(path.stat().st_mode & 0o222, 0, f"{path.name} is read-only")
         checks, required = tasks.contract_checks(task, staged)
         self.assertEqual(sorted(checks), ["hidden.discount", "hidden.shipping", "hidden.tax"])
         self.assertEqual(required, sorted(checks))
@@ -516,6 +517,78 @@ class Preflight(Workspace):
         self.assertIn("test_eval_*.py", argv["eval_tests"])
 
 
+class CostAndReadiness(Workspace):
+    """A dry run states what the pending runs may spend; a run whose adapter cannot reach a model never starts."""
+
+    def register(self, **changes):
+        doc = tiny_spec(self.ids, self.digests, **changes)
+        spec.register(self.write_spec(doc))
+        return doc
+
+    def test_a_dry_run_estimates_the_cap_and_a_nominal_range(self):
+        self.register()
+        cost = runner.run_eval(self.root, "tiny", require_preflight=False, dry=True)["estimate"]
+        # 8 runs at a $0.50 per-run cap under a $5.00 total; one nominal call is 2000 in and 500 out at $2 and $10
+        # per million, $0.009: 8 runs at one call each, up to single 4 x 1 call and repair 4 x 3 calls.
+        self.assertEqual((cost["runs"], cost["uncapped_dollars"], cost["remaining_dollars"],
+                          cost["worst_case_dollars"]), (8, 4.0, 5.0, 4.0))
+        self.assertEqual((cost["expected_dollars"]["low"], cost["expected_dollars"]["high"]), (0.072, 0.144))
+        self.assertIn("not a measurement", cost["expected_dollars"]["basis"])
+        one = runner.run_eval(self.root, "tiny", require_preflight=False, dry=True, only="v1-pricing,repair,1")
+        self.assertEqual((one["estimate"]["worst_case_dollars"], one["estimate"]["expected_dollars"]["high"]),
+                         (0.5, 0.027))
+
+    def test_the_total_cap_bounds_the_worst_case_and_an_unpriced_arm_has_no_expected_figure(self):
+        doc = tiny_spec(self.ids, self.digests)
+        doc["budget"] = dict(doc["budget"], total_dollars=1.0)
+        cost = runner.estimate(doc, runner.plan(doc), spent=0.25)
+        self.assertEqual((cost["uncapped_dollars"], cost["remaining_dollars"], cost["worst_case_dollars"]),
+                         (4.0, 0.75, 0.75))
+        doc["arms"] = [dict(doc["arms"][0], model="unpriced"), doc["arms"][1]]
+        cost = runner.estimate(doc, runner.plan(doc))
+        self.assertIsNone(cost["expected_dollars"])
+        self.assertEqual(cost["no_nominal_basis"], ["single"])
+        self.assertEqual(runner.estimate(doc, [])["worst_case_dollars"], 0.0)
+        from syberlabs.eval.cli import describe_estimate
+        self.assertIn("only the cap is known", describe_estimate(cost)[-1])
+
+    def assert_stops_before_any_run(self, blocking: str):
+        dry = runner.run_eval(self.root, "tiny", require_preflight=False, dry=True)
+        self.assertTrue(any(blocking in line for line in dry["readiness"]["blocking"]), dry["readiness"])
+        self.assertEqual({row["state"] for row in dry["runs"]}, {"pending"})
+        found = runner.run_eval(self.root, "tiny", require_preflight=False, seed_env="SYBERLABS_EVAL_NO_SEED")
+        self.assertEqual((found["stopped"], found["runs"]), ("adapter_unready", []))
+        runs = self.root / "tiny" / "runs"
+        self.assertEqual(sorted(p.name for p in runs.iterdir()) if runs.is_dir() else [], [runner.LOCK],
+                         "the runner's lock and no run, no bundle")
+        self.assertFalse((self.root / "tiny" / runner.SPEND_FILE).exists(), "nothing charged")
+
+    def test_a_missing_adapter_file_stops_the_eval_before_its_first_run(self):
+        missing = ["{python}", "{harness}/benchmarks/no_such_adapter.py"]
+        doc = tiny_spec(self.ids, self.digests)
+        self.register(arms=[dict(arm, adapter=missing) for arm in doc["arms"]])
+        self.assert_stops_before_any_run("no_such_adapter.py not found")
+
+    def test_a_relative_adapter_path_stops_the_eval_before_its_first_run(self):
+        relative = ["{python}", "benchmarks/simulated_model.py"]  # E3 2026-10-21: the adapter runs in the run's repo
+        doc = tiny_spec(self.ids, self.digests)
+        self.register(arms=[dict(arm, adapter=relative) for arm in doc["arms"]])
+        self.assert_stops_before_any_run("relative path")
+
+    def test_a_package_the_adapter_needs_and_cannot_import_stops_the_eval(self):
+        from unittest import mock
+        self.register()
+        with mock.patch.dict(arms.ADAPTER_REQUIRES, {"simulated_model.py": "syberlabs_eval_no_such_module"}):
+            self.assert_stops_before_any_run("cannot import")
+        with mock.patch.dict(arms.ADAPTER_CREDENTIALS, {"simulated_model.py": ("SYBERLABS_EVAL_NO_SUCH_KEY",)}):
+            os.environ.pop("SYBERLABS_EVAL_NO_SUCH_KEY", None)
+            found = runner.run_eval(self.root, "tiny", require_preflight=False, dry=True)
+        self.assertEqual(found["readiness"]["blocking"], [])
+        self.assertEqual(len(found["readiness"]["warnings"]), 2, "an unset credential warns once per arm")
+        self.assertEqual(arms.readiness({"name": "cc", "kind": "claude-code"}),
+                         {"blocking": [], "warnings": []}, "only JSON-adapter arms are probed")
+
+
 class Terminal(unittest.TestCase):
     def cli(self, *args):
         from syberlabs.cli import main
@@ -575,6 +648,15 @@ class Terminal(unittest.TestCase):
             self.assertEqual(found["preflight"], "preflight_missing")
             self.assertEqual([row["order_index"] for row in found["runs"]], list(range(48)))
             self.assertEqual([row["run_id"] for row in found["runs"]], [p.run_id for p in runner.plan(doc)])
+            # the cap: 48 runs at $1.00 bounded by the $10.00 total; nominal: 2000 in and 500 out at $2 and $10 per
+            # million is $0.009 a call, 48 runs at one call each up to single 24 x 1 and repair 24 x 6 calls
+            cost = found["estimate"]
+            self.assertEqual((cost["uncapped_dollars"], cost["worst_case_dollars"]), (48.0, 10.0))
+            self.assertEqual((cost["expected_dollars"]["low"], cost["expected_dollars"]["high"]), (0.432, 1.512))
+            code, out = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry")
+            self.assertEqual(code, 0)
+            self.assertIn("estimate: worst case $10.0000 for 48 pending run(s)", out)
+            self.assertIn("estimate: expected $0.4320 to $1.5120", out)
             code, _ = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry", "--only",
                                "v3-journal_chain,repair,")
             self.assertEqual(code, 0)
