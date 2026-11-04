@@ -45,7 +45,9 @@ import sys
 # also names the two methods through which a test reports an expected failure or an unexpected success.
 # Revision 4: harness_override also names the methods that register and run a test's cleanups and run its
 # subtests, and unittest_patch an assignment of one of them on anything.
-REVIEWER = {"name": "rules", "revision": "4"}
+# Revision 5: test_replaced, an assignment, deletion or patch of a test method (an attribute named test...) on
+# anything other than ``self``.
+REVIEWER = {"name": "rules", "revision": "5"}
 TEST_MARKERS = ("tests/", "test/", "/test_", "_test.", "spec/")
 SOURCE_SUFFIXES = (".py", ".js", ".ts", ".go", ".rs", ".java", ".rb", ".c", ".h", ".cs", ".mjs")
 MAX_INTEGRITY_FINDINGS = 40  # per candidate; the summary counts the rest
@@ -61,6 +63,8 @@ TEST_INTEGRITY = {
                         "...): it can report a test that never ran; or one that runs its cleanups or subtests "
                         "(doCleanups, subTest, ...): it can swallow its own failures",
     "load_tests": "defines load_tests: the module chooses its own test set at discovery",
+    "test_replaced": "replaces, deletes or patches a test method (an attribute named test... on anything other than "
+                     "self): the replaced test then reports whatever its replacement does",
     "unittest_patch": "changes unittest's own objects (assigns, deletes or patches unittest attributes or a result's "
                       "callbacks, or reaches self._outcome / shouldStop)",
     "sys_modules": "writes sys.modules['unittest...'] or sys.modules['__main__']",
@@ -100,7 +104,7 @@ PATCHERS = ("patch", "patch.object", "patch.dict", "patch.multiple", "mock.patch
 
 # Where each family applies. Test code gets every family. Any other changed Python file gets the
 # families that tamper with the harness from inside the test process: a test can import it.
-HARNESS_RULES = ("harness_override", "unittest_patch", "sys_modules", "runner_reach", "dynamic_code")
+HARNESS_RULES = ("harness_override", "unittest_patch", "sys_modules", "runner_reach", "dynamic_code", "test_replaced")
 TEST_ONLY_RULES = ("process_exit", "signal_handler", "exit_at_import", "load_tests")
 # Two parts of ``runner_reach`` stay test-scoped. A forged report needs the channel's nonce, and only
 # reading the process's memory gets it: gc, frames, ``__main__``, ctypes, trace and audit hooks.
@@ -111,6 +115,8 @@ TEST_ONLY_RULES = ("process_exit", "signal_handler", "exit_at_import", "load_tes
 TEST_ONLY_REACH_CALLS = {"os.dup", "os.dup2", "os.write", "os.fdopen", "os.set_inheritable",
                          "os.set_handle_inheritable"}
 TEST_ONLY_REACH_MODULES = {"msvcrt", "_winapi"}
+# The prefix ``unittest``'s loader collects test methods by (``TestLoader.testMethodPrefix``).
+TEST_PREFIX = "test"
 PYTHON_SOURCE = (".py", ".pyw")
 PYTHON_COMPILED = (".pyc", ".pyd", ".so")
 
@@ -330,6 +336,27 @@ class _Scan(ast.NodeVisitor):
         return any(isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test")
                    for item in cls.body)
 
+    def _patched_attributes(self, name: str, node: ast.Call) -> list:
+        """The attribute names a ``mock.patch`` call replaces, when the source names them (none on ``self``).
+
+        ``patch("pkg.Cls.attr")`` replaces ``attr``; ``patch.object(obj, "attr")`` and ``patch.multiple(obj,
+        attr=...)`` replace theirs on ``obj``; ``patch.dict`` replaces keys, not attributes.
+        """
+        args = node.args
+        if name.endswith("patch.dict"):
+            return []
+        if name.endswith("patch.object"):
+            if len(args) >= 2 and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str) \
+                    and not self._on_self(args[0]):
+                return [args[1].value]
+            return []
+        if name.endswith("patch.multiple"):
+            return [] if args and self._on_self(args[0]) else [k.arg for k in node.keywords if k.arg]
+        first = args[0] if args else next((k.value for k in node.keywords if k.arg == "target"), None)
+        if isinstance(first, ast.Constant) and isinstance(first.value, str) and "." in first.value:
+            return [first.value.rsplit(".", 1)[1]]
+        return []
+
     # statements ---------------------------------------------------------------------------
     def visit_Raise(self, node):
         exc = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
@@ -338,7 +365,35 @@ class _Scan(ast.NodeVisitor):
             self.hit(node, "exit_at_import", f"raise {name}")
         self.generic_visit(node)
 
+    @staticmethod
+    def _leaves(target):
+        """The names a target binds: the target itself, or each element of a tuple, list or starred target."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                yield from _Scan._leaves(element)
+        elif isinstance(target, ast.Starred):
+            yield from _Scan._leaves(target.value)
+        else:
+            yield target
+
+    @staticmethod
+    def _on_self(node) -> bool:
+        return isinstance(node, ast.Name) and node.id == "self"
+
+    def _test_method_targets(self, targets, verb):
+        """``X.test_... = ...`` or ``del X.test_...`` when X is not ``self``: a test's method replaced at run time.
+
+        ``self.test_...`` is left out: a test instance has already fetched its own method when its code runs,
+        and the attribute cannot reach another test's instance.
+        """
+        for target in targets:
+            for leaf in self._leaves(target):
+                if isinstance(leaf, ast.Attribute) and leaf.attr.startswith(TEST_PREFIX) and not self._on_self(leaf.value):
+                    owner = self.name(leaf.value) or ast.unparse(leaf.value)
+                    self.hit(leaf, "test_replaced", f"{verb} {owner}.{leaf.attr}")
+
     def _targets(self, targets, verb):
+        self._test_method_targets(targets, verb)
         for target in targets:
             for node in ast.walk(target):
                 if isinstance(node, ast.Attribute):
@@ -443,6 +498,9 @@ class _Scan(ast.NodeVisitor):
             elif name != "getattr" and (self._rooted(target, ("unittest",)) or args[1].value in RESULT_CALLBACKS
                                         or args[1].value in HARNESS or args[1].value in IDENTITY_ATTRIBUTES):
                 self.hit(node, "unittest_patch", f"{name}({target}, {args[1].value!r})")
+            if name != "getattr" and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str) \
+                    and args[1].value.startswith(TEST_PREFIX) and not self._on_self(args[0]):
+                self.hit(node, "test_replaced", f"{name}({target or ast.unparse(args[0])}, {args[1].value!r})")
         if name and name.split(".")[-1] in ("pop", "update", "setdefault", "clear", "__setitem__", "__delitem__") \
                 and self.name(node.func.value if isinstance(node.func, ast.Attribute) else None) == "sys.modules":
             method = name.split(".")[-1]
@@ -456,6 +514,9 @@ class _Scan(ast.NodeVisitor):
             if isinstance(target, str) and self._rooted(target, ("unittest", "__main__", "sys.modules")) \
                     and not target.startswith("unittest.mock"):
                 self.hit(node, "unittest_patch", f"{name}({target!r})")
+            for attribute in self._patched_attributes(name, node):
+                if attribute.startswith(TEST_PREFIX):
+                    self.hit(node, "test_replaced", f"{name}(..., {attribute!r})")
         self.generic_visit(node)
 
 
