@@ -1,5 +1,5 @@
 {
-  "description": "SHA-256 of canonical JSON of each frozen v0alpha1 schema file as of origin/main 8a5e21f, when v1alpha1 was drafted. Canonical JSON (sorted keys, compact separators, non-ASCII preserved) makes the lock independent of line endings. A change to any of them is deliberate: update this lock in the same pull request and say why.",
+  "description": "SHA-256 of canonical JSON of each frozen v0alpha1 schema file as of origin/main 8a5e21f, when v1alpha1 was drafted. Canonical JSON (sorted keys, compact separators, non-ASCII preserved) makes the lock independent of line endings. A change to any of them is deliberate: update this lock in the same pull request and say why. Updated for reconciliation.schema.json after #165 added the optional proof.destination (a recovered settlement's destination); additive, so v1alpha1 is unaffected.",
   "files": {
     "acceptance-clause.schema.json": "e1ffc561d8f4d9e134452497d5790d1ab9a90a977939531a9fbb8d810fa0ff7a",
     "action-definition.schema.json": "6c6422654e047d58355689bb0a305e727506de9bfb8bee537dd90121d2d1dc60",
@@ -15,7 +15,7 @@
     "observation.schema.json": "683ea1653692ca2cb399a5b8303bf190e1e3cd0ba21fd12f0be58699ae250585",
     "policy.schema.json": "c7d1257ba17476ced1b0ae1ee1520e3d2a69e52a871efd035c8947f9717cdda8",
     "proposal.schema.json": "43dc1ec5181314380519cb93cac7c0779e72da3d1da473e604063ccca225f7b0",
-    "reconciliation.schema.json": "bc749a0961cf41d40a675e3a3b883c40eaf7fb3b28a26d57ebdffb1a8513c371",
+    "reconciliation.schema.json": "1621c2aef9f0c849690cfc4659afe31ece4677beafea1729f1d3b8a43c6dd2e8",
     "resolution-task.schema.json": "4a2e75f72177e2ee64339631d9c250a8a67bfe1d5006d4f9d003b86631f2c01a",
     "source-definition.schema.json": "dc3bdce61488cce47490a1ff99fc58a3eeca1b0588dc4f4e6b5747c7455082ed"
   }
