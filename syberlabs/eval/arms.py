@@ -57,7 +57,7 @@ EVOLVE_ONLY = ("population", "generations", "crossover_every")
 CLAUDE_ONLY = ("lane", "bare", "trusted_tree", "tools", "max_turns", "githits", "mcp_config", "executable")
 # Removed from the environment while an arm proposes; restored after (the certificate seed variable is added).
 WITHHELD_ENV = ("GITHUB_TOKEN", "GH_TOKEN")
-NOMINAL_CALL = (2000, 500)  # tokens in, out: Jev's prior price of one mutation (benchmarks/model_vs_patch.py)
+NOMINAL_CALL = (2000, 500)  # tokens in, out: Jev's prior price of one mutation
 HIDDEN_PREFIX = "hidden."  # tasks.HIDDEN_PREFIX: the contract names every hidden check hidden.<name>
 
 

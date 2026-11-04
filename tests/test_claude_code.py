@@ -643,6 +643,19 @@ class Timeout(ClaudeCodeCase):
         time.sleep(1.5)
         self.assertEqual(beat.read_text(encoding="utf-8"), before, "the child was killed with its parent")
 
+    def test_a_prompt_the_stand_in_never_reads_does_not_hold_the_host_past_its_deadline(self):
+        """hunt-fixes-1, F2: on dc69499491 ``run_stream`` wrote the whole prompt before its deadline loop started, so
+        a Claude Code that did not read stdin held the host in ``write`` for as long as it lived."""
+        script = self.root.parent / "deaf.py"
+        script.write_text("import sys, time\nif '--version' in sys.argv:\n    print('2.1.309 (Claude Code)')\n"
+                          "    sys.exit(0)\ntime.sleep(8)\n", encoding="utf-8")
+        started, lines = time.monotonic(), []
+        with self.assertRaises(Rejected) as refused:
+            claude_code.run_stream([PY, str(script)], "x" * 200_000, cwd=self.root, env=dict(os.environ), timeout=1,
+                                   lines=lines)
+        self.assertEqual(refused.exception.code, "provider_timeout")
+        self.assertLess(time.monotonic() - started, 5)
+
     def test_a_timeout_ends_a_child_and_the_grandchild_it_started(self):
         """guard-hardening, finding 7: Claude Code starts a child that starts a grandchild; after provider_timeout
         neither is left running. ``checks._stop`` ends the session (POSIX, killpg) or the process tree (Windows,

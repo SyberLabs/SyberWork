@@ -28,6 +28,7 @@
             "request_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "response_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "idempotency_key": {"type": "string", "minLength": 1},
+            "destination": {"type": "string", "minLength": 1},
             "amount_units": {"type": "string", "minLength": 1},
             "asset": {"type": "string", "minLength": 1},
             "counterparty": {"type": "string", "minLength": 1},

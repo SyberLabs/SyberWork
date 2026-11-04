@@ -148,7 +148,7 @@ from syberlabs import githits_pace, query_guard
 from syberlabs.checks import _stop
 from syberlabs.errors import Rejected
 from syberlabs.gitspace import MAX_FILE_BYTES, Repo
-from syberlabs.providers import (RepairProvider, USAGE_FIELDS, current_meter, model_usage, refuse, split_command,
+from syberlabs.providers import (RepairProvider, USAGE_FIELDS, current_meter, feed_stdin, model_usage, refuse, split_command,
                                  tool_usage)
 from syberlabs.query_guard import query_text
 from syberlabs.search import SearchSpace
@@ -638,11 +638,7 @@ def run_stream(argv: Sequence[str], prompt: str, *, cwd: Path, env: dict, timeou
 
         reader = threading.Thread(target=read, daemon=True)
         reader.start()
-        try:
-            proc.stdin.write(prompt.encode("utf-8"))
-            proc.stdin.close()
-        except (BrokenPipeError, OSError):
-            pass
+        feed_stdin(proc, prompt.encode("utf-8"))  # under the deadline: a child that never reads must not hold the host
         deadline = time.monotonic() + timeout
         while proc.poll() is None:
             if time.monotonic() > deadline or size[0] > MAX_STREAM_BYTES:

@@ -52,7 +52,7 @@ from typing import Any
 
 from syberlabs.canonical import digest
 from syberlabs.errors import Rejected
-from syberlabs.eval.spec import HARNESS, HEX64, NAME, read_json, validate_schema, write_json
+from syberlabs.eval.spec import HARNESS, HEX64, NAME, read_json, validate_schema
 
 TASK_SCHEMA_ID = "syberlabs.eval/task.v1"
 HIDDEN = "hidden"

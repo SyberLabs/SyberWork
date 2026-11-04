@@ -410,7 +410,7 @@ class Search(RepoCase):
                     seen.append(None)
                 except Rejected as exc:
                     seen.append(exc.code)
-                except Exception as exc:  # SearchStopped is the host's; the provider sees it end the search
+                except Exception:  # SearchStopped is the host's; the provider sees it end the search
                     seen.append("stopped")
                     raise
 
@@ -465,13 +465,13 @@ class Search(RepoCase):
 
     def test_command_provider_records_what_it_drops_itself(self):
         script = self.root.parent / "many.py"
-        script.write_text(textwrap.dedent(f'''\
+        script.write_text(textwrap.dedent('''\
             import json, sys
             json.load(sys.stdin)
-            items = [{{"changes": {{"src/v{{}}.py".format(n): "n = {{}}\\n".format(n)}}}} for n in range(4)]
+            items = [{"changes": {"src/v{}.py".format(n): "n = {}\\n".format(n)}} for n in range(4)]
             if "broken" in sys.argv:
-                items[1] = {{"changes": "not an object"}}
-            print(json.dumps({{"candidates": items, "recommended": [0], "usage": {{"input_tokens": 9, "output_tokens": 9, "model": "m"}}}}))
+                items[1] = {"changes": "not an object"}
+            print(json.dumps({"candidates": items, "recommended": [0], "usage": {"input_tokens": 9, "output_tokens": 9, "model": "m"}}))
             '''))
         kit = self.kit(self.contract(**{"evolution.budget": {"max_candidates": 3, "max_evaluations": 3}}))
         thread = kit.start("Add a CSV export")

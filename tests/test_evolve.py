@@ -252,7 +252,7 @@ class Evolution(unittest.TestCase):
             self.assertEqual(request["feedback"], {"candidate": parent.id,
                                                    "checks": [dataclasses.asdict(check) for check in parent.checks]})
             self.assertEqual(request["feedback"]["checks"], [check.__dict__ for check in parent.checks],
-                             "the repair arm's shape (benchmarks/model_vs_patch.py: Patches.search), on the same candidate")
+                             "the repair arm's shape, on the same candidate")
             self.assertEqual([c["state"] for c in request["feedback"]["checks"]], [c.state for c in parent.checks])
             for check in request["feedback"]["checks"]:
                 self.assertEqual(set(check), {"name", "state", "exit_code", "duration_ms", "output_tail"})

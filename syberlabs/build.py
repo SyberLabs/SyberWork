@@ -266,7 +266,7 @@ class GitSearchSpace:
         # search; ``_pending`` the part not yet attributed to a candidate; ``dollars`` the priced part that
         # is. ``prior_dollars`` is what the thread's earlier searches cost. All measured here, none declared.
         budget_config = thread.config["budget"]
-        self.prices, self.max_dollars, self.strict = budget_config["prices"], budget_config["max_dollars"], budget_config["strict"]
+        self.prices, self.max_dollars = budget_config["prices"], budget_config["max_dollars"]
         self.prior_dollars = prior_dollars
         self.observed: list[dict] = []
         self._pending: list[dict] = []
@@ -1382,7 +1382,7 @@ class Thread:
                 promotion = proposal["action"] == self.config["promotion"]["action"]
                 proof = found["event"]["body"].get("proof", {}) if status == "succeeded" else {}
                 receipts.append(Receipt(status, proposal["args"].get("candidate"), body["proposal_id"], found["reason"],
-                                        self.target_ref if promotion else proposal["action"],
+                                        self.target_ref if promotion else proof.get("destination") or proposal["action"],
                                         proposal["args"].get("commit") if status == "succeeded" else None,
                                         found["event"]["hash"], external_id=proof.get("external_id")))
         return receipts
