@@ -37,6 +37,7 @@ from urllib.parse import quote
 from syberlabs import critic, outcome
 from syberlabs.checks import _stop
 from syberlabs.errors import Rejected
+from syberlabs.gitspace import Repo
 from syberlabs.session import NoWrite
 from syberlabs.targets import credentialed_opener, guard_request, trusted_origin
 
@@ -189,6 +190,31 @@ def validate(doc: dict) -> None:
         raise _bad(f"unknown field {sorted(unknown)[0]} for {effect}")
 
 
+def _bounded(argv: list[str], env: dict, timeout: float) -> tuple[int | None, str]:
+    """Run ``argv`` to completion or to ``timeout``; ``(None, "")`` when the deadline ended it.
+
+    The command runs in its own session (POSIX) and a timeout ends that session, or the process tree on
+    Windows, through ``checks._stop``: ``subprocess.run(timeout=...)`` ends ``git`` and leaves a transport
+    it started, such as ``ssh``, running past the publish. Output is read from a file, never a pipe, so a
+    child that keeps the pipe open cannot hold the call past its deadline.
+    """
+    with tempfile.TemporaryFile() as out:
+        proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
+                                start_new_session=hasattr(os, "setsid"))
+        deadline = time.monotonic() + timeout
+        while proc.poll() is None:
+            if time.monotonic() > deadline or os.fstat(out.fileno()).st_size > MAX_OUTPUT:
+                _stop(proc)
+                return None, ""
+            time.sleep(0.02)
+        out.seek(0)
+        return proc.returncode, out.read(MAX_OUTPUT).decode(errors="replace")
+
+
+def _git_env() -> dict:
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+
+
 class _Publisher:
     """Shared plumbing: the thread a proposal belongs to, and bounded subprocesses."""
 
@@ -211,8 +237,12 @@ class GitPush(_Publisher):
         return "" if "{thread}" in self.doc.get("branch", "syberlabs/{thread}") else self._thread(case_id).base
 
     def _remote_head(self, ref: str) -> str | None:
-        raw = self.kit.repo.git("ls-remote", self.doc["remote"], ref, timeout=self.timeout)
-        for line in raw.decode().splitlines():
+        # The same argv and scrubbed environment as ``Repo.git``, under a deadline that ends the transport too.
+        code, text = _bounded(["git", "-C", str(self.kit.repo.root), "-c", "core.fsmonitor=false",
+                               "ls-remote", self.doc["remote"], ref], Repo._env(), self.timeout)
+        if code != 0:
+            raise RuntimeError("ls-remote did not finish")
+        for line in text.splitlines():
             commit, _, name = line.partition("\t")
             if name == ref:
                 return commit
@@ -222,9 +252,11 @@ class GitPush(_Publisher):
         ref = "refs/heads/" + self._branch(case_id)
         argv = ["git", "-C", str(self.kit.repo.root), "push", "--porcelain",
                 f"--force-with-lease={ref}:{self._lease(case_id)}", self.doc["remote"], f"{args['commit']}:{ref}"]
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout,
-                              env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"})
-        flags = [line.split("\t") for line in done.stdout.splitlines() if "\t" in line]
+        code, text = _bounded(argv, _git_env(), self.timeout)
+        if code is None:
+            # The deadline ended the push and everything it started; the remote may or may not have the ref.
+            raise RuntimeError("push outcome unknown")
+        flags = [line.split("\t") for line in text.splitlines() if "\t" in line]
         mine = next((f for f in flags if len(f) >= 2 and f[1].endswith(":" + ref)), None)
         if mine and mine[0] in ("*", " ", "="):
             return {"destination": f"git:{self.doc['remote']}:{ref}", "external_id": args["commit"]}

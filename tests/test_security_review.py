@@ -10,6 +10,7 @@ import ipaddress
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -17,7 +18,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -355,6 +356,106 @@ class PublishTimeoutEndsTheTree(unittest.TestCase):
             size = beat.stat().st_size if beat.exists() else 0
             time.sleep(0.6)
             self.assertEqual(beat.stat().st_size if beat.exists() else 0, size, "the grandchild kept running")
+
+
+class GitPushTimeoutEndsTheTree(unittest.TestCase):
+    """Follow-up: ``GitPush`` ran ``git push`` under ``subprocess.run(timeout=...)``, which ends ``git`` and
+    leaves the transport it started (``ssh``) running. Its timeout now ends the whole session, as a publish
+    command's and a check's do, for the push and for the ``ls-remote`` status read."""
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "the process-group path is POSIX; Windows uses taskkill /T")
+    def test_a_timed_out_push_or_status_leaves_no_transport_running(self):
+        from syberlabs.gitspace import Repo
+        from syberlabs.publish import GitPush
+
+        for step in ("apply", "status"):
+            with self.subTest(step=step), tempfile.TemporaryDirectory() as folder:
+                root, beat = Path(folder) / "repo", Path(folder) / "beat"
+                child = ("import time,pathlib\n"
+                         f"p=pathlib.Path({str(beat)!r})\n"
+                         "while True:\n    p.open('a').write('.')\n    time.sleep(0.05)\n")
+                transport = Path(folder) / "transport.py"
+                transport.write_text("import subprocess,sys,time\n"
+                                     f"subprocess.Popen([sys.executable,'-c',{child!r}])\ntime.sleep(60)\n")
+                git = lambda *a: subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True)
+                root.mkdir()
+                git("init", "-q")
+                git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "c")
+                git("remote", "add", "origin", "ssh://example.invalid/repo.git")
+                # A stand-in for ssh that starts a child of its own and never answers.
+                git("config", "core.sshCommand", f"{Path(sys.executable).as_posix()} {transport.as_posix()}")
+                commit = git("rev-parse", "HEAD").stdout.decode().strip()
+
+                class Kit:
+                    repo = Repo(root)
+
+                push = GitPush(Kit(), {"remote": "origin", "timeout_seconds": 1})
+                started = time.monotonic()
+                # Either way the outcome is unknown; what this test checks is what is left running.
+                with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)):
+                    getattr(push, step)("abcdef0123", {"commit": commit}, "k")
+                self.assertLess(time.monotonic() - started, 30)
+                time.sleep(0.3)
+                size = beat.stat().st_size if beat.exists() else 0
+                time.sleep(0.6)
+                self.assertEqual(beat.stat().st_size if beat.exists() else 0, size, "the transport's child kept running")
+
+
+class HistoryVerifiesAgainstTheWitness(unittest.TestCase):
+    """Follow-up: the hash chain does not stop a database owner who rewrites and rehashes history. Verify history
+    (``Work.verify_history``, ``GET /verify``, ``syberwork verify``) now also reads the witness's log, whose signed
+    heads are outside the database, so a rehash after a head was signed fails verification."""
+
+    def _rehash(self, database, work, case, seq):
+        import sqlite3
+        from syberlabs.canonical import canonical
+        from syberlabs.events import GENESIS, event_digest
+        with closing(sqlite3.connect(database)) as db, db:
+            db.execute("UPDATE events SET body=? WHERE case_id=? AND seq=?", (canonical({"rewritten": True}), case, seq))
+            db.execute("DELETE FROM event_side WHERE case_id=?", (case,))
+        previous = GENESIS
+        with closing(sqlite3.connect(database)) as db, db:
+            for event in work.inspect(case)["events"]:
+                event = dict(event, previous=previous)
+                previous = event_digest(event)
+                db.execute("UPDATE events SET previous=?, hash=? WHERE case_id=? AND seq=?", (event["previous"], previous, case, event["seq"]))
+
+    def test_a_rehash_after_signing_fails_and_the_limit_is_stated_without_a_log(self):
+        from syberlabs.ed25519 import generate
+        from syberlabs.tlog import TransparencyLog
+        from syberlabs.witness import Witness
+        from tests.test_external_witness import _install_note
+
+        seed, public = generate()
+        with tempfile.TemporaryDirectory() as folder:
+            database = Path(folder) / "case.sqlite"
+            work = Work(database)
+            self.addCleanup(work.close)
+            _install_note(work)
+            case = work.create_case("note", 1, {"name": "a"}, "operator")
+            work.propose(case, "note", {}, "operator", ["operator"])
+            witness = Witness(str(Path(folder) / "witness.sqlite"), seed)
+            self.addCleanup(witness.close)
+            log = TransparencyLog.open_readonly(Path(folder) / "witness.sqlite", public)
+            self.addCleanup(log.close)
+
+            unsigned = work.verify_history(case, log)
+            self.assertEqual((unsigned["valid"], unsigned["witness"]["witnessed_through"]), (True, None))
+            self.assertIn("no head", unsigned["note"])
+            count = len(work.inspect(case)["events"])
+            witness.attest(work.inspect(case)["events"])
+            signed = work.verify_history(case, log)
+            self.assertEqual((signed["valid"], signed["witness"]["witnessed_through"], signed["witness"]["conflicts"]),
+                             (True, count, []))
+
+            self._rehash(database, work, case, 1)
+            self.assertTrue(work.verify_chain(case), "the chain alone cannot see a rehash")
+            alone = work.verify_history(case)
+            self.assertEqual((alone["valid"], alone["chain"], alone["witness"]), (True, True, None))
+            self.assertIn("rehashed", alone["note"])
+            checked = work.verify_history(case, log)
+            self.assertEqual((checked["valid"], checked["chain"]), (False, True))
+            self.assertEqual([c["verdict"] for c in checked["witness"]["conflicts"]], ["head_differs"])
 
 
 class BindAndUsers(unittest.TestCase):
