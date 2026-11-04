@@ -30,6 +30,7 @@ from pathlib import Path
 from syberlabs.admission import approval_roles
 from syberlabs.build import Kit
 from syberlabs.canonical import canonical
+from syberlabs.events import GENESIS, event_digest
 from syberlabs.certificate import certify, write_certificate
 from syberlabs.dsse import CHAIN_HEAD_TYPE, CHECKPOINT_TYPE, sign_chain_head, sign_dsse
 from syberlabs import ed25519
@@ -615,19 +616,20 @@ class ConsoleSideRecords(CellCase):
             db.execute("UPDATE event_side SET jcs=? WHERE case_id=? AND seq=1", ("0" * 64, case))
         rows = self.cell.json(f"/api/cases/{case}/side")[1]
         self.assertEqual(rows[0]["jcs"], "0" * 64)
-        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify"), (200, {"valid": False}))
+        status, body = self.cell.json(f"/api/cases/{case}/verify")
+        self.assertEqual((status, body["valid"], body["chain"]), (200, False, False))
         with connect_db(self.cell.database) as db:
             db.execute("DELETE FROM event_side WHERE case_id=? AND seq=1", (case,))
         self.assertEqual([row["seq"] for row in self.cell.json(f"/api/cases/{case}/side")[1]][:1], [2])
-        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True},
-                         "verify cannot notice a missing row, which is why the console says so instead of calling it legacy")
+        self.assertTrue(self.cell.json(f"/api/cases/{case}/verify")[1]["valid"],
+                        "verify cannot notice a missing row, which is why the console says so instead of calling it legacy")
         # Nor does verify check a row with no digest, or a rule id: the console presents neither as checked.
         decision = next(e["seq"] for e in self.cell.work.inspect(case)["events"] if e["kind"] == "decision")
         with connect_db(self.cell.database) as db:
             db.execute("UPDATE event_side SET jcs=NULL, rule='invented.rule' WHERE case_id=? AND seq=?", (case, decision))
         row = next(r for r in self.cell.json(f"/api/cases/{case}/side")[1] if r["seq"] == decision)
         self.assertEqual((row["jcs"], row["rule"]), (None, "invented.rule"))
-        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True})
+        self.assertTrue(self.cell.json(f"/api/cases/{case}/verify")[1]["valid"])
         app = read_text(STATIC / "app.js")
         for wording in ("it cannot notice a missing row", "Verify history does not check a row without a digest",
                         "the rule ids are in no hash and nothing checks them", "only Verify history tells them apart"):
@@ -718,9 +720,32 @@ class ConsoleWitness(CellCase):
         self.assertEqual(self.cell.json(f"/api/cases/{case}/witness")[1]["witnessed_through"], len(events))
         with closing(sqlite3.connect(self.cell.database)) as db, db:
             db.execute("UPDATE events SET body=? WHERE case_id=? AND seq=1", (canonical({"tampered": True}), case))
-        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": False})
+        verify = self.cell.json(f"/api/cases/{case}/verify")[1]
+        self.assertEqual((verify["valid"], verify["chain"], [c["verdict"] for c in verify["witness"]["conflicts"]]),
+                         (False, False, ["chain_broken"]))
         body = self.cell.json(f"/api/cases/{case}/witness")[1]
         self.assertEqual(([e["verdict"] for e in body["entries"]], body["witnessed_through"]), (["chain_broken"], None))
+
+    def test_a_rehashed_history_passes_the_chain_but_not_verify(self):
+        """Security review follow-up: the database owner rewrites event #1 and rehashes every event after it. The
+        chain verifies, which is the limit of a hash chain; Verify history reads the witness's log and refuses it."""
+        case, events = self.case_events()
+        self.attest(events)
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1]["witness"]["witnessed_through"], len(events))
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            db.execute("UPDATE events SET body=? WHERE case_id=? AND seq=1", (canonical({"tampered": True}), case))
+            db.execute("DELETE FROM event_side WHERE case_id=?", (case,))
+        previous = GENESIS
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            for event in self.cell.work.inspect(case)["events"]:
+                event = dict(event, previous=previous)
+                previous = event_digest(event)
+                db.execute("UPDATE events SET previous=?, hash=? WHERE case_id=? AND seq=?", (event["previous"], previous, case, event["seq"]))
+        self.assertTrue(self.cell.work.verify_chain(case), "a rehashed chain verifies on its own")
+        status, body = self.cell.json(f"/api/cases/{case}/verify")
+        self.assertEqual((status, body["valid"], body["chain"]), (200, False, True))
+        self.assertEqual([c["verdict"] for c in body["witness"]["conflicts"]], ["head_differs"])
+        self.assertIsNone(body["witness"]["witnessed_through"])
 
     def test_an_unreadable_leaf_is_skipped_not_a_crash(self):
         case, events = self.case_events()

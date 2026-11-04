@@ -1237,6 +1237,34 @@ class Work:
         with self.tx() as db:
             return self.chain_ok(db, case_id)
 
+    def verify_history(self, case_id: str, log=None) -> dict:
+        """``GET /api/cases/{id}/verify`` and ``syberwork verify``: the hash chain, and the witness's log when one is read.
+
+        The chain alone (``chain``) catches an edit that was not rehashed. Whoever owns the database can rewrite an
+        event and rehash every event after it, and the chain still verifies. A head the witness signed is outside the
+        database, under a key the database owner does not hold, so with ``log`` (``TransparencyLog.open_readonly``)
+        a rewritten, truncated or rehashed history shows as a conflict (``head_differs``, ``beyond_history``,
+        ``chain_broken``) and ``valid`` is false. Without a log, or for events after ``witnessed_through``, ``valid``
+        is the chain's answer and the note says what it cannot see. Events are read once, in one transaction.
+        """
+        with self.tx() as db:
+            chain = self.chain_ok(db, case_id)
+            events = self._events(db, case_id)
+        if log is None:
+            return {"valid": chain, "chain": chain, "witness": None,
+                    "note": "Hash chain only: it does not detect a history rewritten and rehashed by the database owner. "
+                            "Read a witness log (SYBERWORK_WITNESS_LOG, SYBERWORK_WITNESS_PUBLIC) to check against signed heads"}
+        status = self._witness_judgement(case_id, events, log)
+        conflicts = [entry for entry in status["entries"] if entry["verdict"] in WITNESS_CONFLICTS]
+        through = status["witnessed_through"]
+        note = ("A head the witness signed conflicts with this history: it was changed after signing" if conflicts else
+                f"Chain checked, and events #1 to #{through} match a head the witness signed" if through else
+                "Chain checked; the witness has signed no head of this case yet, so a rehash would not show")
+        return {"valid": chain and not conflicts, "chain": chain,
+                "witness": {"witnessed_through": through, "count": status["count"],
+                            "conflicts": [{"index": e["index"], "count": e["count"], "verdict": e["verdict"]} for e in conflicts]},
+                "note": note}
+
     def side_channel(self, case_id: str) -> list[dict]:
         """JCS digest and deciding rule id for each new event. Neither is in the event hash.
 
