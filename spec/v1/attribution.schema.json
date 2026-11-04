@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v1alpha1/attribution.schema.json",
+  "title": "EventAttribution",
+  "description": "Which Agent wrote one event, and from where in the code. Protocol sdk.syberlabs.space/v1alpha1. Stored beside the v0alpha1 envelope, like the JCS digest and the deciding rule id in event_side, and not an input to hash, so every existing chain and golden trace verifies unchanged. provenance follows cross-platform's Provenance: derived from the code that ran, never declared by the agent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["case_id", "seq", "agent"],
+  "properties": {
+    "case_id": {"type": "string", "minLength": 1},
+    "seq": {"type": "integer", "minimum": 1},
+    "agent": {"$ref": "identity.schema.json"},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "module", "symbol"],
+      "properties": {
+        "system": {"type": "string", "minLength": 1},
+        "module": {"type": "string", "minLength": 1},
+        "symbol": {"type": "string", "minLength": 1},
+        "line": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
