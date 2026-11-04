@@ -1483,7 +1483,9 @@ class ConsoleCertificateRevocation(CellCase):
         self.assertEqual(self.shelf.revoked, (), "nothing is revoked unless the deployment lists it")
         cell = Cell(Path(tempfile.mkdtemp(dir=self.cert_home.parent)), 8999, certificates=CertificateShelf(self.cert_home, PUBLIC, (self.digest(),)))
         self.addCleanup(cell.close)
-        status, body = cell.json("/api/certificates", who="supplier")
+        # An observer-only credential reads no certificate (security review, finding 4); any principal beyond it does.
+        self.assertEqual(cell.json("/api/certificates", who="supplier")[0], 403)
+        status, body = cell.json("/api/certificates", who="manager")
         self.assertEqual((status, body["revoked"], body["public_keys"]), (200, [self.digest()], [PUBLIC.hex()]))
         rows = {row["file"]: row["reason"] for row in body["certificates"]}
         self.assertEqual(rows, {f"{self.cert_payload['thread'][:8]}-c1.bare.json": "revoked", self.statement(): None})
@@ -1604,7 +1606,9 @@ class ConsoleCertificateValidity(CellCase):
         self.dated("old.json", self.now - self.AGE * 1_000_000 - 1)
         cell = Cell(Path(tempfile.mkdtemp(dir=self.cert_home.parent)), 8999, certificates=self.shelf_at())
         self.addCleanup(cell.close)
-        status, body = cell.json("/api/certificates", who="supplier")
+        # An observer-only credential reads no certificate (security review, finding 4); any principal beyond it does.
+        self.assertEqual(cell.json("/api/certificates", who="supplier")[0], 403)
+        status, body = cell.json("/api/certificates", who="manager")
         self.assertEqual((status, body["validity"]["max_age"], body["validity"]["checked_at"]), (200, self.AGE, self.now))
         self.assertEqual({row["file"]: row["reason"] for row in body["certificates"]}["old.json"], "expired")
 
@@ -1812,7 +1816,9 @@ class ConsoleCertificateRepository(CellCase):
         self.signed("unheld.json", commit="e" * 40)
         cell = Cell(Path(tempfile.mkdtemp(dir=self.project.parent)), 8999, certificates=self.shelf_over())
         self.addCleanup(cell.close)
-        status, body = cell.json("/api/certificates", who="supplier")
+        # An observer-only credential reads no certificate (security review, finding 4); any principal beyond it does.
+        self.assertEqual(cell.json("/api/certificates", who="supplier")[0], 403)
+        status, body = cell.json("/api/certificates", who="manager")
         self.assertEqual((status, body["checked"], body["not_checked"]), (200, ["signature", "repository", "journal"], []))
         rows = {row["file"]: row for row in body["certificates"]}
         self.assertEqual((rows["unheld.json"]["verdict"], rows["unheld.json"]["reason"]), ("fail", "commit_missing:result"))
