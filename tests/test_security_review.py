@@ -427,35 +427,38 @@ class HistoryVerifiesAgainstTheWitness(unittest.TestCase):
         from tests.test_external_witness import _install_note
 
         seed, public = generate()
-        with tempfile.TemporaryDirectory() as folder:
-            database = Path(folder) / "case.sqlite"
-            work = Work(database)
-            self.addCleanup(work.close)
-            _install_note(work)
-            case = work.create_case("note", 1, {"name": "a"}, "operator")
-            work.propose(case, "note", {}, "operator", ["operator"])
-            witness = Witness(str(Path(folder) / "witness.sqlite"), seed)
-            self.addCleanup(witness.close)
-            log = TransparencyLog.open_readonly(Path(folder) / "witness.sqlite", public)
-            self.addCleanup(log.close)
+        # Registered first, so it runs last: Windows deletes an SQLite file only after every handle is closed.
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        folder = scratch.name
+        database = Path(folder) / "case.sqlite"
+        work = Work(database)
+        self.addCleanup(work.close)
+        _install_note(work)
+        case = work.create_case("note", 1, {"name": "a"}, "operator")
+        work.propose(case, "note", {}, "operator", ["operator"])
+        witness = Witness(str(Path(folder) / "witness.sqlite"), seed)
+        self.addCleanup(witness.close)
+        log = TransparencyLog.open_readonly(Path(folder) / "witness.sqlite", public)
+        self.addCleanup(log.close)
 
-            unsigned = work.verify_history(case, log)
-            self.assertEqual((unsigned["valid"], unsigned["witness"]["witnessed_through"]), (True, None))
-            self.assertIn("no head", unsigned["note"])
-            count = len(work.inspect(case)["events"])
-            witness.attest(work.inspect(case)["events"])
-            signed = work.verify_history(case, log)
-            self.assertEqual((signed["valid"], signed["witness"]["witnessed_through"], signed["witness"]["conflicts"]),
-                             (True, count, []))
+        unsigned = work.verify_history(case, log)
+        self.assertEqual((unsigned["valid"], unsigned["witness"]["witnessed_through"]), (True, None))
+        self.assertIn("no head", unsigned["note"])
+        count = len(work.inspect(case)["events"])
+        witness.attest(work.inspect(case)["events"])
+        signed = work.verify_history(case, log)
+        self.assertEqual((signed["valid"], signed["witness"]["witnessed_through"], signed["witness"]["conflicts"]),
+                         (True, count, []))
 
-            self._rehash(database, work, case, 1)
-            self.assertTrue(work.verify_chain(case), "the chain alone cannot see a rehash")
-            alone = work.verify_history(case)
-            self.assertEqual((alone["valid"], alone["chain"], alone["witness"]), (True, True, None))
-            self.assertIn("rehashed", alone["note"])
-            checked = work.verify_history(case, log)
-            self.assertEqual((checked["valid"], checked["chain"]), (False, True))
-            self.assertEqual([c["verdict"] for c in checked["witness"]["conflicts"]], ["head_differs"])
+        self._rehash(database, work, case, 1)
+        self.assertTrue(work.verify_chain(case), "the chain alone cannot see a rehash")
+        alone = work.verify_history(case)
+        self.assertEqual((alone["valid"], alone["chain"], alone["witness"]), (True, True, None))
+        self.assertIn("rehashed", alone["note"])
+        checked = work.verify_history(case, log)
+        self.assertEqual((checked["valid"], checked["chain"]), (False, True))
+        self.assertEqual([c["verdict"] for c in checked["witness"]["conflicts"]], ["head_differs"])
 
 
 class BindAndUsers(unittest.TestCase):
