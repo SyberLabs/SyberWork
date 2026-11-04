@@ -4,8 +4,10 @@ Factory gate G6 fails when an Attest artifact type can map to a ``reconciled``
 event, or when caller-supplied ``success``/``evidence`` is accepted as proof.
 The static half is ``scripts/g6_bridge_mapping_lint.py``; this file runs it on
 the tree, proves it fails closed on seeded violations, and checks the same
-rules at runtime. The positive control keeps "refuse everything" from passing:
-a matching destination lookup must still reconcile.
+rules at runtime. An Attest artifact offered where destination proof belongs
+(a status record, or a local executor's output or status proof) is refused with
+reason ``attest_artifact_not_proof``. The positive controls keep "refuse
+everything" from passing: a matching destination lookup must still reconcile.
 """
 
 import contextlib
@@ -24,12 +26,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from case_studies.enterprise_procurement import CONTRACT, SimulatedERP, configure
+from examples import release_gate
 from examples.attest_receipt_observe import receipt_to_observation
 from syberlabs import attest_reconcile_map
-from syberlabs.attest_reconcile_map import classify_attest_artifact
+from syberlabs.attest_reconcile_map import attest_artifact, classify_attest_artifact
 from syberlabs.canonical import digest
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.session import Session
+from syberwork import core
 from syberwork.core import HTTP, Rejected, Work
 from syberwork.server import make_server
 
@@ -53,6 +57,22 @@ def proven_receipt(case_id: str) -> dict:
         "evidence": {"before": {"status": "failed", "observed": {}, "note": "before", "screenshot": None},
                      "after": {"status": "proven", "observed": {}, "note": "after", "screenshot": None}},
         "handoff": None, "disposition": "repaired", "verified": False,
+    }
+
+
+def attest_marks(case_id: str) -> dict:
+    """Top-level Attest marks a payload may carry where destination proof belongs, by name."""
+    receipt = proven_receipt(case_id)
+    return {
+        "receipt": receipt,
+        "receipt_without_schema": {k: v for k, v in receipt.items() if k != "schema"},
+        "bridge_observation": receipt_to_observation(receipt),
+        "recheck_label": {"app_claim_recheck": {"status": "proven", "destination_proof": False}},
+        "other_attest_schema": {"schema": "attest.run_receipt/v1"},
+        "run_receipt": {"kind": "RunReceipt", "status": "passed"},
+        "authority_decision": {"type": "AuthorityDecision", "decision": "doc_repair_allowed"},
+        "handoff_package": {"artifact": "HandoffPackage", "status": "ready_for_human"},
+        "snake_case_kind": {"kind": "run_receipt"},
     }
 
 
@@ -145,6 +165,14 @@ class G6StaticLint(unittest.TestCase):
          'return self._append(db, case_id, "observed", {',
          'return self._append(db, case_id, "reconciled" if verified else "observed", {',
          "Work.observe uses 'reconciled'"),
+        # The Attest-proof guard removed from an emitter, or from the classifier.
+        ("work lookup skips the attest guard", "syberwork/core.py",
+         "if matched and attest_artifact(record):", "if False:", "Work.reconcile may append 'reconciled' without"),
+        ("session reconcile skips the attest guard", "syberlabs/session.py",
+         "if attest_artifact(proof):", "if False:", "Session.reconcile may append 'reconciled' without"),
+        ("attest guard deleted from the classifier", "syberlabs/attest_reconcile_map.py",
+         "def attest_artifact(payload: object) -> bool:", "def attest_payload(payload: object) -> bool:",
+         "attest_artifact not found"),
         ("kind smuggled through a variable", "syberwork/core.py",
          "    def signoff(self, case_id: str, actor: str, roles: list[str], role: str) -> dict:\n",
          "    def signoff(self, case_id: str, actor: str, roles: list[str], role: str) -> dict:\n"
@@ -212,8 +240,8 @@ class G6ClassifierNeverReconciles(unittest.TestCase):
                     Session.reconcile(bare, "case", "proposal", "manager", ["manager"], **outcome)
 
 
-class G6Reconciliation(unittest.TestCase):
-    """Runtime checks on an unknown effect whose write the destination did commit."""
+class UnknownOrder(unittest.TestCase):
+    """An unknown effect whose write the destination did commit, with the Attest receipt on the case."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -257,6 +285,10 @@ class G6Reconciliation(unittest.TestCase):
         self.assertEqual(proof["external_id"], record["external_id"])
         self.assertTrue(self.order_recorded())
         self.assertEqual(self.erp.order_count(), 1)
+
+
+class G6Reconciliation(UnknownOrder):
+    """Runtime checks on an unknown effect whose write the destination did commit."""
 
     def test_caller_success_or_evidence_is_refused_before_lookup(self):
         before = self.events()
@@ -308,6 +340,177 @@ class G6Reconciliation(unittest.TestCase):
         status, body = post({"proposal_id": self.proposal["id"]})
         self.assertEqual(status, 200, body)
         self.assert_matching_lookup_reconciles(body)
+
+
+class G6AttestArtifactPredicate(unittest.TestCase):
+    """``attest_artifact`` names an Attest payload by its top-level marks, and nothing else."""
+
+    def test_attest_marks_are_recognized(self):
+        for name, payload in attest_marks("case").items():
+            with self.subTest(name):
+                self.assertTrue(attest_artifact(payload))
+                # Adding a destination's fields does not make it the destination's record.
+                self.assertTrue(attest_artifact({**payload, "state": "committed", "external_id": "PO-1",
+                                                 "idempotency_key": "key", "request_digest": "0" * 64}))
+
+    def test_destination_records_are_not(self):
+        records = {
+            "status_record": {"state": "committed", "external_id": "PO-1", "idempotency_key": "k",
+                              "request_digest": "0" * 64},
+            "generic_receipt_type": {"type": "receipt", "external_id": "PO-1"},
+            "git_push_proof": {"external_id": "abc123", "destination": "git:origin:refs/heads/x"},
+            "receipt_quoted_in_a_nested_field": {"external_id": "DOC-1", "content": proven_receipt("case")},
+            "some_receipt_fields": {"claim": "C-1", "authority": "ops", "external_id": "PO-1"},
+            "attestation_schema": {"schema": "attestation/v1"},
+            "capitalized_prefix": {"schema": "Attest.receipt/v0"},
+            "outcome_kind": {"kind": "reconciled"},
+            "non_string_kind": {"kind": ["RunReceipt"], "schema": {"id": "attest.receipt/v0"}},
+            "empty": {},
+        }
+        for name, record in records.items():
+            with self.subTest(name):
+                self.assertFalse(attest_artifact(record))
+        for value in (None, "attest.receipt/v0", "RunReceipt", ["RunReceipt"], 0, True):
+            with self.subTest(value=value):
+                self.assertFalse(attest_artifact(value))
+
+
+class _Response:
+    """A 200 status reply with a fixed body, in the shape ``HTTP.open`` returns."""
+
+    status = 200
+
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def read(self, limit=-1):
+        return self.body if limit < 0 else self.body[:limit]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class G6WorkStatusRecordIsNotAttest(UnknownOrder):
+    """A status record that is an Attest artifact never reconciles, even when it matches the write."""
+
+    def record(self) -> dict:
+        order = self.erp.order_for_key(self.proposal["id"])
+        return {"state": "committed", "idempotency_key": self.proposal["id"],
+                "request_digest": order["request_digest"], "external_id": order["external_id"]}
+
+    def reconcile_with(self, record: dict) -> dict:
+        with patch.object(core.HTTP, "open", return_value=_Response(json.dumps(record).encode())):
+            return self.work.reconcile(self.case, self.proposal["id"], "manager", ["manager"])
+
+    def test_matching_record_with_attest_marks_is_unverified(self):
+        for name, marks in attest_marks(self.case).items():
+            with self.subTest(name):
+                result = self.reconcile_with({**marks, **self.record()})
+                self.assertEqual((result["status"], result["reason"]), ("unverified", "attest_artifact_not_proof"))
+                self.assertEqual(result["event"]["kind"], "reconciliation_checked")
+        self.assertFalse(any(e["kind"] == "reconciled" for e in self.events()))
+        self.assertFalse(self.order_recorded())
+        retry = self.work.compiled_propose(self.case, "scheduler", ["operator", "compiled"])
+        self.assertEqual(retry["decision"]["reason"], "effect_unresolved:" + self.proposal["action"])
+
+    def test_positive_control_record_quoting_a_receipt_still_reconciles(self):
+        record = {**self.record(), "type": "receipt", "memo": proven_receipt(self.case)}
+        result = self.reconcile_with(record)
+        self.assertEqual((result["status"], result["reason"]), ("verified", "destination_record_matched"))
+        self.assertEqual(result["event"]["body"]["proof"]["response_digest"], digest(record))
+        self.assertTrue(self.order_recorded())
+
+
+class _Executor:
+    """A local executor whose write may be lost and whose status reports a scripted proof."""
+
+    def __init__(self, output=None):
+        self.output, self.state, self.proof = output, "applied", {}
+
+    def apply(self, case_id, args, key):
+        if self.output is None:
+            raise OSError("connection reset after the write")
+        return self.output
+
+    def status(self, case_id, args, key):
+        return self.state, self.proof
+
+
+class G6SessionExecutorProofIsNotAttest(unittest.TestCase):
+    """A local executor that hands back an Attest artifact has not reported its destination."""
+
+    def setUp(self):
+        self.session = Session()
+        self.session.install_contract(release_gate.CONTRACT)
+        self.session.install_policy(release_gate.POLICY)
+        self.session.install_action("record_checks", {"kind": "local"})
+        self.session.install_action("publish", {"kind": "local", "effect": "tag_push"})
+        self.case = self.session.create_case("release-gate", 1, {"version": "1.4.0"}, "engineer")
+        self.session.observe(self.case, "checks", {"version": "1.4.0"}, "ci", "build-90", "engineer", verified=True)
+        review = self.session.propose(self.case, "record_checks", {"version": "1.4.0"}, "engineer", ["engineer"])
+        self.session.commit(self.case, review["proposal"]["id"], "engineer")
+
+    def publish(self, executor: _Executor) -> str:
+        self.session.bind_effect("publish", executor)
+        proposal = self.session.propose(self.case, "publish", {"version": "1.4.0"}, "engineer", ["engineer"])
+        key = proposal["proposal"]["id"]
+        self.session.approve(self.case, key, "maintainer", ["maintainer"])
+        return key
+
+    def reconcile(self, key: str) -> dict:
+        return self.session.reconcile(self.case, key, "engineer", ["engineer"])
+
+    def events(self) -> list[dict]:
+        return self.session.inspect(self.case)["events"]
+
+    def assert_unresolved(self) -> None:
+        events = self.events()
+        self.assertFalse(any(e["kind"] in ("reconciled", "effect_succeeded", "effect_rejected")
+                             and e["body"].get("action") == "publish" for e in events))
+        self.assertFalse(next(r for r in self.session.inspect(self.case)["acceptance"] if r["id"] == "published")["passed"])
+        retry = self.session.propose(self.case, "publish", {"version": "1.4.0"}, "engineer", ["engineer"])
+        self.assertEqual(retry["decision"]["reason"], "effect_unresolved:publish")
+
+    def test_attest_status_proof_is_unverified_in_every_state(self):
+        executor = _Executor()
+        key = self.publish(executor)
+        self.assertEqual(self.session.commit(self.case, key, "engineer")["status"], "unknown")
+        for state in ("applied", "not_applied", "absent", "unknown"):
+            for name, marks in attest_marks(self.case).items():
+                with self.subTest(state=state, proof=name):
+                    executor.state, executor.proof = state, {**marks, "external_id": "v1.4.0"}
+                    result = self.reconcile(key)
+                    self.assertEqual((result["status"], result["reason"]), ("unverified", "attest_artifact_not_proof"))
+                    self.assertEqual(result["event"]["kind"], "reconciliation_checked")
+                    self.assertFalse(verified_reconciliation(result["event"]))
+        self.assert_unresolved()
+        # Positive control: the destination's own record still settles the same claim.
+        executor.state, executor.proof = "applied", {"external_id": "v1.4.0", "ref": "refs/tags/v1.4.0"}
+        result = self.reconcile(key)
+        self.assertEqual((result["status"], result["event"]["kind"]), ("verified", "reconciled"))
+        self.assertTrue(verified_reconciliation(result["event"]))
+        self.assertTrue(next(r for r in self.session.inspect(self.case)["acceptance"] if r["id"] == "published")["passed"])
+
+    def test_attest_write_output_is_an_unknown_effect(self):
+        for name, marks in attest_marks(self.case).items():
+            with self.subTest(name):
+                self.setUp()
+                executor = _Executor(output={**marks, "external_id": "v1.4.0"})
+                key = self.publish(executor)
+                self.assertEqual(self.session.commit(self.case, key, "engineer")["status"], "unknown")
+                unknown = [e for e in self.events() if e["kind"] == "effect_unknown"]
+                self.assertEqual([e["body"]["error"] for e in unknown], ["attest_artifact_not_proof"])
+                self.assert_unresolved()
+                executor.proof = {"external_id": "v1.4.0"}
+                self.assertEqual(self.reconcile(key)["status"], "verified")
+
+    def test_positive_control_plain_write_output_succeeds(self):
+        key = self.publish(_Executor(output={"external_id": "v1.4.0", "note": proven_receipt(self.case)}))
+        self.assertEqual(self.session.commit(self.case, key, "engineer")["status"], "succeeded")
+        self.assertTrue(next(r for r in self.session.inspect(self.case)["acceptance"] if r["id"] == "published")["passed"])
 
 
 if __name__ == "__main__":

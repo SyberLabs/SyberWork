@@ -1,12 +1,17 @@
 """Effect evidence predicates shared by admission and acceptance."""
 
 import json
+import unicodedata
 
 # Top-level fields a destination uses to say its record is not a live effect. A flag that is
 # present must be exactly false, ``livemode`` exactly true, and a label exactly a live label.
 SIMULATION_FLAGS = ("simulated", "simulation", "sandbox", "dry_run", "test", "testnet", "preview")
 SIMULATION_LABELS = ("mode", "environment", "env")
 LIVE_LABELS = ("live", "production", "mainnet")
+# Character categories a destination record ID may not contain: control (Cc), format (Cf, e.g. U+200B
+# zero-width space, U+202E right-to-left override), surrogate (Cs), line and paragraph separators (Zl, Zp).
+# A space separator (Zs) other than U+0020 is refused too.
+INVISIBLE_CATEGORIES = ("Cc", "Cf", "Cs", "Zl", "Zp")
 # Objects and arrays a destination body may nest, counting the top level as 1. A fixed cap, because
 # the depth at which the parser itself gives up varies with the Python version and the call stack.
 MAX_DEPTH = 64
@@ -75,6 +80,15 @@ def simulation_labeled(record) -> bool:
     return (any(name in record and record[name] is not False for name in SIMULATION_FLAGS)
             or ("livemode" in record and record["livemode"] is not True)
             or any(name in record and record[name] not in LIVE_LABELS for name in SIMULATION_LABELS))
+
+
+def record_id(value) -> bool:
+    """True when ``value`` can name a destination record: a string with a character other than a space, in
+    which every character is visible or U+0020. A blank ID, or one carrying a control, format, separator or
+    surrogate character, names no record a reader can tell apart from another, so it settles nothing."""
+    return (isinstance(value, str) and bool(value.strip(" "))
+            and not any(unicodedata.category(char) in INVISIBLE_CATEGORIES
+                        or (char != " " and unicodedata.category(char) == "Zs") for char in value))
 
 
 def verified_reconciliation(event: dict) -> bool:
