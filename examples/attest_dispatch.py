@@ -333,7 +333,7 @@ def validate_git_diff(patch: str) -> None:
     if not patch or not patch.strip():
         raise DispatchError("worker produced an empty diff")
     lines = patch.splitlines()
-    if not lines or not lines[0].startswith("diff --git a/"):
+    if not lines[0].startswith("diff --git a/"):
         raise DispatchError("worker stdout must start with a Git-format diff")
     if "*** Begin Patch" in patch or "```" in patch:
         raise DispatchError("worker stdout must not contain patch wrappers or Markdown fences")
@@ -411,8 +411,6 @@ def load_worker_config(path: Path, worker_name: str | None = None) -> dict[str, 
                 raise DispatchError(f"{worker_label}.cmd must be a command string or nonempty argument list")
         except ValueError as exc:
             raise DispatchError(f"invalid {worker_label}.cmd: {exc}") from exc
-        if not argv:
-            raise DispatchError(f"{worker_label}.cmd must contain a command")
         config_dir = str(path.resolve().parent)
         argv = [arg.replace("{python}", sys.executable).replace("{config_dir}", config_dir) for arg in argv]
         return {"type": "command", "argv": argv}

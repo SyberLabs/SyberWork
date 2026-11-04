@@ -52,7 +52,7 @@ def effects(history: list) -> list[dict]:
             destination = output.get("destination") or output.get("ref")
             external = output.get("external_id") or output.get("new")
         elif verified_reconciliation(event):
-            destination, external = None, body["proof"]["external_id"]
+            destination, external = body["proof"].get("destination"), body["proof"]["external_id"]
         else:
             continue
         found.append({"action": body["action"], "proposal_id": body["proposal_id"], "destination": destination,

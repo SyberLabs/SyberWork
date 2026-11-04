@@ -19,6 +19,7 @@ import uuid
 from typing import Any, Callable
 
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
+from syberlabs.attest_reconcile_map import attest_artifact
 from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
 from syberlabs.clock import as_seconds, stamp
@@ -28,7 +29,7 @@ from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import acceptance_results, signer_is_effect_actor
 from syberlabs.evolution import candidate_record, candidate_views, evaluation_record, search_record
-from syberlabs.evidence import verified_reconciliation
+from syberlabs.evidence import record_id, verified_reconciliation
 from syberlabs.jcs import envelope_jcs
 from syberlabs import retention
 from syberlabs.planner import HttpPlanner, planning_context
@@ -96,27 +97,52 @@ class Session:
                 self._sync()
 
     def _sync(self) -> None:
-        """Apply registry records and events other processes appended."""
-        for record in self._journal.read_new(self._journal.registry):
-            if record["t"] == "contract":
-                doc = record["doc"]
-                try:
-                    valid = json.loads(canonical(prepare_contract(doc))) == doc
-                except Rejected:
-                    valid = False
-                if not valid:
-                    raise Rejected("journal_corrupt", f"contract {doc.get('id')}@{doc.get('version')} does not validate")
-                self.contracts[(doc["id"], doc["version"])] = doc
-            elif record["t"] == "policy":
-                self.policies[record["doc"]["version"]] = record["doc"]
-            elif record["t"] == "action":
-                self.actions[record["name"]] = record["doc"]
+        """Apply registry records and events other processes appended.
+
+        A registry that does not validate is read again from its first record on the next call, so it is refused
+        again on every call until the file validates."""
+        records = self._journal.read_new(self._journal.registry)
+        try:
+            for record in records:
+                if record["t"] == "contract":
+                    doc = record["doc"]
+                    try:
+                        valid = json.loads(canonical(prepare_contract(doc))) == doc
+                    except Rejected:
+                        valid = False
+                    if not valid:
+                        raise Rejected("journal_corrupt", f"contract {doc.get('id')}@{doc.get('version')} does not validate")
+                    self.contracts[(doc["id"], doc["version"])] = doc
+                elif record["t"] == "policy":
+                    self.policies[record["doc"]["version"]] = record["doc"]
+                elif record["t"] == "action":
+                    self.actions[record["name"]] = record["doc"]
+        except BaseException:
+            self._journal.unread(self._journal.registry)
+            raise
         for case_id in list(self.cases):
             self._load(case_id)
 
     def _load(self, case_id: str) -> None:
-        """Read a thread's new records and check each event links to the chain."""
-        records = self._journal.read_new(self._journal.thread_path(case_id))
+        """Read a thread's new records and check each event links to the chain.
+
+        A thread that does not load is dropped from memory and its file is read again from the first line on the
+        next access, so it stays refused (``journal_corrupt``) for as long as the file does not verify from its
+        first record, in this session and in any other on the same journal. Without this, the read offset had
+        already moved past the refused records, and the next access served the verified prefix as if it were
+        the whole thread."""
+        path = self._journal.thread_path(case_id)
+        try:
+            self._read(case_id, path)
+        except BaseException:
+            self.cases.pop(case_id, None)
+            self.events.pop(case_id, None)
+            self._side.pop(case_id, None)
+            self._journal.unread(path)
+            raise
+
+    def _read(self, case_id: str, path) -> None:
+        records = self._journal.read_new(path)
         events = self.events.setdefault(case_id, [])
         for record in records:
             if record["t"] == "case":
@@ -375,6 +401,12 @@ class Session:
                 self._append(case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": code})
                 return {"status": "unknown", "proposal_id": proposal_id,
                         "detail": "Check the destination with reconcile; the write might have happened"}
+        if attest_artifact(output):
+            # An Attest artifact is an observation, not the destination's report of this write (G6).
+            self._append(case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"],
+                                                     "error": "attest_artifact_not_proof"})
+            return {"status": "unknown", "proposal_id": proposal_id,
+                    "detail": "The executor reported an Attest artifact, not the destination's record; reconcile"}
         result = self._append(case_id, "effect_succeeded", {
             "proposal_id": proposal_id, "action": proposal["action"], "output": output, "claim_hash": claim["hash"],
         })
@@ -390,7 +422,15 @@ class Session:
         ``absent`` (a remote destination does not show the write: ``not_applied``
         only once the claim is older than the executor's ``settle_seconds``,
         pending before that), or anything else (pending). A caller cannot supply
-        the outcome.
+        the outcome. A proof that is an Attest artifact (``attest_artifact``) is
+        recorded as ``unverified`` with reason ``attest_artifact_not_proof``
+        whatever the state: Attest observed, the destination did not report.
+        An ``applied`` proof whose ``external_id`` is not a nonempty string (or
+        a proof that is not an object) is recorded as ``unverified`` with reason
+        ``external_id_missing``: a verified reconciliation must cite the
+        destination's record, so the effect stays unresolved. A blank ID, or one
+        with a control, format, separator or surrogate character, counts as
+        missing (``record_id``).
         An action that declares no ``effect`` has no executor and no destination:
         the record is the effect. A claim of such an action that commit left open
         (the process died between ``effect_started`` and ``effect_succeeded``) is
@@ -427,12 +467,30 @@ class Session:
             state, proof = executor.status(case_id, proposal["args"], proposal_id)
         except Exception as exc:
             state, proof = "unknown", {"error": exc.code if isinstance(exc, Rejected) else "status_unavailable"}
+        if attest_artifact(proof):
+            event = self._append(case_id, "reconciliation_checked", {
+                "proposal_id": proposal_id, "action": proposal["action"],
+                "status": "unverified", "reason": "attest_artifact_not_proof", "actor": actor,
+            })
+            return {"status": "unverified", "reason": "attest_artifact_not_proof", "event": event}
+        if state == "applied" and not (isinstance(proof, dict) and record_id(proof.get("external_id"))):
+            # Without the destination's record id, ``applied`` names no record a verified reconciliation can cite.
+            event = self._append(case_id, "reconciliation_checked", {
+                "proposal_id": proposal_id, "action": proposal["action"],
+                "status": "unverified", "reason": "external_id_missing", "actor": actor,
+            })
+            return {"status": "unverified", "reason": "external_id_missing", "event": event}
         if state == "applied":
+            verified = {"verified": True, "external_id": proof["external_id"],
+                        "request_digest": digest(proposal["args"]), "response_digest": digest(proof),
+                        "idempotency_key": proposal_id}
+            if isinstance(proof.get("destination"), str) and proof["destination"]:
+                # The destination the executor read (``github:owner/repo``, ``git:remote:ref``) travels with the
+                # recovered effect as commit's output carries it, so metrics and receipts see one and the same effect.
+                verified["destination"] = proof["destination"]
             event = self._append(case_id, "reconciled", {
                 "proposal_id": proposal_id, "action": proposal["action"], "success": True, "actor": actor,
-                "proof": {"verified": True, "external_id": proof["external_id"],
-                          "request_digest": digest(proposal["args"]), "response_digest": digest(proof),
-                          "idempotency_key": proposal_id},
+                "proof": verified,
             })
             return {"status": "verified", "reason": "destination_state_matched", "event": event}
         reason = "status_unavailable"
@@ -601,14 +659,6 @@ class Session:
         if not verify_events(events):
             return False
         return _side_matches(events, self._side.get(case_id, {}))
-
-    def submit_witness(self, case_id: str, client) -> dict:
-        """Ask an external witness to sign this case. This session has no signing seed."""
-        with self._lock:
-            if not self.verify_chain(case_id):
-                raise Rejected("invalid_chain", "case history does not verify")
-            events = json.loads(json.dumps(self.events[case_id]))
-        return client.submit(events)
 
     @_guard
     def side_channel(self, case_id: str) -> list[dict]:

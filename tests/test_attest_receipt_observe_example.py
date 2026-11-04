@@ -40,10 +40,12 @@ class AttestReceiptObserveExample(unittest.TestCase):
             "ticket_title": receipt["ticket"]["title"],
             "app_patch_sha256": receipt["app"]["patch_sha256"],
         })
-        self.assertEqual(value["destination_verification"], {
+        self.assertEqual(value["app_claim_recheck"], {
             "status": "proven",
             "method": "Kane re-check",
+            "destination_proof": False,
         })
+        self.assertNotIn("destination_verification", value)
         self.assertIs(value["verified"], False)
         self.assertIs(observation["verified"], False)
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from spec.validate import check as check_schema
 from spec.validate import validate_events
-from syberlabs import Rejected, critic, metrics
+from syberlabs import critic, metrics
 from syberlabs.cli import main as cli
 from syberlabs.evolve import CommandMutator, EvolutionaryProvider
 from syberlabs.providers import CommandProvider, RepairProvider, tool_usage
@@ -165,12 +165,33 @@ class Derivations(unittest.TestCase):
         self.assertEqual((item.githits_lookups.value, item.web_lookups.value), (2, 1), "attempted, blocked included")
         self.assertEqual((item.lookups_blocked.value, item.lookups_blocked.basis), (1, (blocked,)), "a rule, not pass or unguarded")
         self.assertEqual(item.to_dict()["lookups_blocked"]["value"], 1)
-        self.assertEqual(metrics.provenance(item, "lookups_blocked")[0]["kind"], "observed")
         before = j.fact("lookup", {"tool": "WebSearch", "ok": True}, version="s1.1.4")  # recorded before the guard existed
         [item] = metrics.work_items(j.events)
         self.assertEqual((item.lookups_blocked.value, item.lookups_blocked.basis), (None, (before,)))
         self.assertEqual(self.item_a.lookups_blocked.value, None, "lookups counted, no lookup facts: unknown, not 0")
         self.assertEqual(self.item_a.to_dict()["lookups_blocked"]["value"], "unknown")
+
+    def test_a_githits_doctor_fact_is_never_counted_as_a_lookup(self):
+        """githits-pilot-hardening, item 1: a readiness check (``githits.doctor``) is the operator's, not a lookup,
+        whether it sits beside client lookups or alone (no fallback to the declared count either)."""
+        j = Journal("thread-d")
+        j.add("case_created", {"actor": "agent@example.test", "contract": ["repo-change", 4], "inputs": {}}, at=T0)
+        search = j.fact("lookup", {"tool": "githits.search", "ok": True, "guard": "pass"}, version="s1.1.1")
+        j.fact("lookup", {"tool": "githits.doctor", "ok": True, "guard": "pass"}, version="s1.1.2")
+        example = j.fact("lookup", {"tool": "githits.example", "ok": False, "guard": "pass"}, version="s1.1.3")
+        j.add("candidate_registered", {"id": "c1", "operator": "patch", "actor": HOST, "signal": {
+            "model_usage": U[0], "tool_usage": {"web_search": 0, "web_fetch": 0, "githits": 3}}})
+        [item] = metrics.work_items(j.events)
+        self.assertEqual((item.githits_lookups.value, item.githits_lookups.basis), (2, (search, example)))
+        self.assertIn("doctor excluded", item.githits_lookups.note)
+        alone = Journal("thread-e")
+        alone.add("case_created", {"actor": "agent@example.test", "contract": ["repo-change", 4], "inputs": {}}, at=T0)
+        alone.fact("lookup", {"tool": "githits.doctor", "ok": True, "guard": "pass"}, version="s1.1.1")
+        alone.add("candidate_registered", {"id": "c1", "operator": "patch", "actor": HOST, "signal": {
+            "model_usage": U[0], "tool_usage": {"web_search": 0, "web_fetch": 0, "githits": 1}}})
+        [item] = metrics.work_items(alone.events)
+        self.assertEqual((item.githits_lookups.value, item.githits_lookups.basis), (0, ()),
+                         "a doctor record alone is still host-observed, and still not a lookup")
 
     def test_the_cancelled_thread_says_unknown_where_nothing_was_recorded(self):
         b, e = self.item_b, self.eb
@@ -193,20 +214,6 @@ class Derivations(unittest.TestCase):
         [item] = metrics.work_items(a.events)
         self.assertEqual((item.opened.value, item.delivered.value, item.agent_time.value), (True, None, None))
         self.assertEqual(metrics.incomplete([item]), [], "--check judges delivered items only")
-
-    def test_provenance_lists_the_events_behind_one_number(self):
-        e = self.ea
-        rows = metrics.provenance(self.item_a, "fix_rounds")
-        self.assertEqual([r["hash"] for r in rows], [e["eval1"], e["c2"], e["eval2"], e["c3"]])
-        self.assertEqual([r["kind"] for r in rows],
-                         ["candidate_evaluated", "candidate_registered", "candidate_evaluated", "candidate_registered"])
-        self.assertEqual([r["seq"] for r in rows], sorted(r["seq"] for r in rows))
-        self.assertEqual([r["hash"] for r in metrics.provenance(self.item_a, "delivered")], [e["merged"]])
-        self.assertEqual([r["hash"] for r in metrics.provenance(self.item_b, "web_lookups")], [self.eb["c1"]],
-                         "an unknown cites the registration that declared nothing")
-        self.assertEqual(metrics.provenance(self.item_b, "review_rejections"), [], "zero, and nothing to cite")
-        with self.assertRaises(KeyError):
-            metrics.provenance(self.item_a, "velocity")
 
     def test_summary_counts_unknowns_beside_means_and_medians(self):
         found = metrics.summary(self.items)

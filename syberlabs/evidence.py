@@ -1,5 +1,95 @@
 """Effect evidence predicates shared by admission and acceptance."""
 
+import json
+import unicodedata
+
+# Top-level fields a destination uses to say its record is not a live effect. A flag that is
+# present must be exactly false, ``livemode`` exactly true, and a label exactly a live label.
+SIMULATION_FLAGS = ("simulated", "simulation", "sandbox", "dry_run", "test", "testnet", "preview")
+SIMULATION_LABELS = ("mode", "environment", "env")
+LIVE_LABELS = ("live", "production", "mainnet")
+# Character categories a destination record ID may not contain: control (Cc), format (Cf, e.g. U+200B
+# zero-width space, U+202E right-to-left override), surrogate (Cs), line and paragraph separators (Zl, Zp).
+# A space separator (Zs) other than U+0020 is refused too.
+INVISIBLE_CATEGORIES = ("Cc", "Cf", "Cs", "Zl", "Zp")
+# Objects and arrays a destination body may nest, counting the top level as 1. A fixed cap, because
+# the depth at which the parser itself gives up varies with the Python version and the call stack.
+MAX_DEPTH = 64
+
+
+class AmbiguousRecord(ValueError):
+    """A destination body whose meaning depends on the parser: a field named twice, a number that
+    overflows a double, or a string with an unpaired surrogate (RFC 8259 sections 4, 6 and 8.2)."""
+
+
+def _unique_fields(pairs: list) -> dict:
+    record = {}
+    for name, value in pairs:
+        if name in record:
+            raise AmbiguousRecord(f"duplicate field {name!r}")
+        record[name] = value
+    return record
+
+
+def _not_json(constant: str):
+    # Python's parser accepts NaN, Infinity and -Infinity; JSON does not.
+    raise ValueError(f"{constant} is not JSON")
+
+
+def _finite(text: str) -> float:
+    number = float(text)
+    if number in (float("inf"), float("-inf")):
+        raise AmbiguousRecord("number overflows a double")
+    return number
+
+
+def _check_values(record) -> None:
+    """Iterative, so a body the parser could nest cannot exhaust the stack here."""
+    stack = [(record, 1)]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, (dict, list)) and depth > MAX_DEPTH:
+            raise ValueError("destination body nests too deeply")
+        if isinstance(value, dict):
+            stack.extend((name, depth) for name in value)
+            stack.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            stack.extend((item, depth + 1) for item in value)
+        elif isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise AmbiguousRecord("string has an unpaired surrogate") from None
+
+
+def destination_record(raw: bytes):
+    """Parse a destination body as strict JSON. A body with no single meaning raises ``AmbiguousRecord``,
+    never last-wins; a body that is not JSON, or nests deeper than ``MAX_DEPTH``, raises ``ValueError``."""
+    try:
+        record = json.loads(raw, object_pairs_hook=_unique_fields, parse_constant=_not_json, parse_float=_finite)
+    except RecursionError:
+        raise ValueError("destination body nests too deeply") from None
+    _check_values(record)
+    return record
+
+
+def simulation_labeled(record) -> bool:
+    """True when a destination record labels itself as simulated, sandbox, test or otherwise not live."""
+    if not isinstance(record, dict):
+        return False
+    return (any(name in record and record[name] is not False for name in SIMULATION_FLAGS)
+            or ("livemode" in record and record["livemode"] is not True)
+            or any(name in record and record[name] not in LIVE_LABELS for name in SIMULATION_LABELS))
+
+
+def record_id(value) -> bool:
+    """True when ``value`` can name a destination record: a string with a character other than a space, in
+    which every character is visible or U+0020. A blank ID, or one carrying a control, format, separator or
+    surrogate character, names no record a reader can tell apart from another, so it settles nothing."""
+    return (isinstance(value, str) and bool(value.strip(" "))
+            and not any(unicodedata.category(char) in INVISIBLE_CATEGORIES
+                        or (char != " " and unicodedata.category(char) == "Zs") for char in value))
+
 
 def verified_reconciliation(event: dict) -> bool:
     """Legacy manager attestations do not establish external execution."""
@@ -49,7 +139,12 @@ def acceptance_results(contract: dict, history: list) -> list[dict]:
                                   and e["body"]["action"] == clause.get("after_action")), 0)
             passed = any(e["kind"] == "signed" and e["body"]["role"] == clause["role"] and (not clause.get("after_action") or e["seq"] > completed_seq > 0) for e in history)
         elif clause["kind"] == "fact":
-            passed = any(e["kind"] == "observed" and e["body"]["key"] == clause["key"] and e["body"]["value"] == clause.get("equals") for e in history)
+            # The newest observation of the key decides, as admission reads facts; an older matching value does
+            # not. A clause that asks for ``verified`` (or names a ``source``) is held to it.
+            latest = next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == clause["key"]), None)
+            passed = (latest is not None and latest["body"]["value"] == clause.get("equals")
+                      and (not clause.get("verified") or latest["body"].get("verified") is True)
+                      and ("source" not in clause or latest["body"].get("source") == clause["source"]))
         else:
             passed = False
         results.append({"id": clause["id"], "passed": passed})

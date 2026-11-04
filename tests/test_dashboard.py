@@ -7,7 +7,7 @@ import json
 import re
 
 from syberlabs import dashboard, refusals
-from syberlabs.admission import rule_order
+from syberlabs.admission import RULES
 from tests.test_build_thread import GOOD, RepoCase
 
 BROKEN = {**GOOD, "src/report.py": "def rows():\n    return []\n"}
@@ -43,7 +43,7 @@ class Refusals(Journaled):
         self.assertEqual((row["thread"], row["candidate"], row["action"], row["phase"]),
                          (self.thread.id, "c2", "accept_change", "propose"))
         self.assertEqual((row["reason"], row["rule"]), ("candidate_check_failed:tests", "candidate.promotable"))
-        self.assertIn(row["rule"], rule_order())
+        self.assertIn(row["rule"], [name for name, _ in RULES])
         self.assertEqual((row["actor"], row["origin"], row["provider"]), ("dev@example.test", "human", "patch@1"))
         self.assertEqual(row["commit"], self.thread.candidates()[1].commit)
         [check] = row["checks"]
@@ -177,7 +177,7 @@ class WorkItems(Journaled):
 class Empty(RepoCase):
     def test_an_empty_home_renders_a_page(self):
         kit = self.kit()
-        page = dashboard.render(kit)
+        page = dashboard.render_html(dashboard.collect(kit))
         self.assertIn("No threads in this journal.", page)
         self.assertIn("The kernel refused nothing.", page)
         self.assertEqual(len(re.findall(r"<h2>", page)), 5, "no certificates section without certificates")

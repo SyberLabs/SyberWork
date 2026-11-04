@@ -52,7 +52,7 @@ class Malformed(Exception):
 class Divergence(Exception):
     def __init__(self, scenario: str, field: str, expected, observed) -> None:
         super().__init__(f"{scenario}: {field}: expected {expected!r}, observed {observed!r}")
-        self.scenario, self.field, self.expected, self.observed = scenario, field, expected, observed
+        self.field, self.expected, self.observed = field, expected, observed
 
 
 def validate_scenario(scenario, origin: str = "scenario"):

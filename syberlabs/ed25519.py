@@ -6,6 +6,7 @@ process. It is not written into a case database.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 
@@ -89,20 +90,36 @@ def _base() -> _Point:
 _B = _base()
 
 
-def public_from_seed(seed: bytes) -> bytes:
+def _seed_bytes(seed: bytes) -> bytes:
     if len(seed) != 32:
         raise ValueError("Ed25519 seed must be 32 bytes")
+    return bytes(seed)
+
+
+@functools.lru_cache(maxsize=8)
+def _public_for(seed: bytes) -> bytes:
+    """The public key of ``seed``, derived once per seed and kept for the eight most recent seeds.
+
+    Only this module computes the key that enters a signature's challenge; no caller can supply one. Two signatures
+    of one message under one seed with two different keys there would reveal the private scalar. The cache keeps
+    up to eight seeds for the life of the process, as a transparency log or a witness already keeps its own."""
     digest = hashlib.sha512(seed).digest()
     return _encode(_mul(_B, _clamp(digest[:32])))
 
 
+def public_from_seed(seed: bytes) -> bytes:
+    return _public_for(_seed_bytes(seed))
+
+
 def sign(seed: bytes, message: bytes) -> bytes:
-    """Detached signature over ``message``. ``seed`` is the 32-byte private key."""
-    if len(seed) != 32:
-        raise ValueError("Ed25519 seed must be 32 bytes")
+    """Detached signature over ``message``. ``seed`` is the 32-byte private key.
+
+    The public key is derived from ``seed`` here (``_public_for``, once per seed), so signing again under a seed
+    already used costs one scalar multiplication, not two."""
+    seed = _seed_bytes(seed)
     digest = hashlib.sha512(seed).digest()
     scalar = _clamp(digest[:32])
-    public = _encode(_mul(_B, scalar))
+    public = _public_for(seed)
     nonce = int.from_bytes(hashlib.sha512(digest[32:] + message).digest(), "little") % _L
     commitment = _encode(_mul(_B, nonce))
     challenge = int.from_bytes(hashlib.sha512(commitment + public + message).digest(), "little") % _L
@@ -111,7 +128,11 @@ def sign(seed: bytes, message: bytes) -> bytes:
 
 
 def verify(public: bytes, message: bytes, signature: bytes) -> bool:
-    """True when ``signature`` is an Ed25519 signature of ``message`` by ``public``."""
+    """True when ``signature`` is an Ed25519 signature of ``message`` by ``public``.
+
+    RFC 8032's check and only that: ``public`` may be any 32 bytes that decode, a small-order point included, under
+    which a signature verifies without a seed. ``dsse.verified_payload``, ``verify_chain_head`` and
+    ``verify_certificate`` refuse such a key first (``key_problem``); a caller of this function decides for itself."""
     if len(public) != 32 or len(signature) != 64:
         return False
     try:
@@ -124,6 +145,51 @@ def verify(public: bytes, message: bytes, signature: bytes) -> bool:
         return False
     challenge = int.from_bytes(hashlib.sha512(signature[:32] + public + message).digest(), "little") % _L
     return _mul(_B, response) == commitment + _mul(point, challenge)
+
+
+KEY_PROBLEMS = ("not_32_bytes", "not_a_point", "small_order", "mixed_order")
+
+
+def key_problem(public: object) -> str | None:
+    """Why ``public`` is not a key only its seed's holder can sign under, or None when it is one.
+
+    ``verify`` takes any 32 bytes, as RFC 8032 does. Under the identity point (``01 00 … 00``) the signature
+    ``R = B, s = 1`` verifies every message; under another point of order ``n``, ``R = s·B + j·A`` verifies for
+    about one choice of ``(s, j)`` in ``n``. Whoever chooses such a key can sign without a seed, so a caller that
+    takes a public key from outside its process checks it here first; ``dsse.verified_payload`` and the verifiers
+    above it do. A key ``public_from_seed`` derives is a point of the prime-order subgroup: it decodes,
+    ``8·A`` is not the identity, and ``L·A`` is. The answer is one of ``KEY_PROBLEMS``, and stays that word:
+
+    - ``not_32_bytes``: not a ``bytes`` of length 32;
+    - ``not_a_point``: no curve point has this encoding, or it is not the canonical one (``y`` at or above ``p``,
+      or ``x = 0`` with the sign bit set);
+    - ``small_order``: ``8·A`` is the identity, the identity included;
+    - ``mixed_order``: a prime-order point plus a small-order one; no seed derives it.
+    """
+    if not isinstance(public, bytes) or len(public) != 32:
+        return "not_32_bytes"
+    return _point_problem(public)
+
+
+@functools.lru_cache(maxsize=32)
+def _point_problem(public: bytes) -> str | None:
+    """``key_problem`` past the length, kept for the 32 most recent keys: ``L·A`` costs about as much as a third of a
+    ``verify``, and a reader checks the same configured key on every open."""
+    try:
+        point = _decode(public)
+    except ValueError:
+        return "not_a_point"
+    identity = _Point(0, 1)
+    if _mul(point, 8) == identity:
+        return "small_order"
+    if _mul(point, _L) != identity:
+        return "mixed_order"
+    return None
+
+
+def usable_key(public: object) -> bool:
+    """Whether ``public`` is a prime-order Ed25519 point: ``key_problem`` has nothing to say about it."""
+    return key_problem(public) is None
 
 
 def generate() -> tuple[bytes, bytes]:

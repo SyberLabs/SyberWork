@@ -21,6 +21,7 @@ class EconomicActions(unittest.TestCase):
         self.addCleanup(self.work.close)
         self.records = {}
         self.mode = "success"
+        self.receipt = None  # optional callable(record) -> bytes sent instead of the receipt
         owner = self
 
         class Settlement(BaseHTTPRequestHandler):
@@ -41,7 +42,7 @@ class EconomicActions(unittest.TestCase):
                     return
                 if owner.mode == "mismatch":
                     record = {**record, "amount_units": "1"}
-                data = json.dumps(record).encode()
+                data = owner.receipt(record) if owner.receipt else json.dumps(record).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -162,6 +163,50 @@ class EconomicActions(unittest.TestCase):
         self.mode = "mismatch"
         self.assertEqual(self.work.commit(case, key, "operator")["status"], "unknown")
         self.assertFalse(self.work.inspect(case)["complete"])
+
+    def test_receipt_on_another_rail_labeled_simulated_or_ambiguous_never_succeeds(self):
+        receipts = {
+            "other_rail": lambda r: json.dumps({**r, "rail": "usdc_service_sandbox"}).encode(),
+            "sandbox_label": lambda r: json.dumps({**r, "sandbox": True}).encode(),
+            "duplicate_state": lambda r: (json.dumps({**r, "state": "pending"})[:-1] + ', "state": "settled"}').encode(),
+        }
+        for name, receipt in receipts.items():
+            with self.subTest(receipt=name):
+                case, evidence = self.case("100000")
+                key = self.approved(case, evidence, "100000")
+                self.receipt = receipt
+                self.assertEqual(self.work.commit(case, key, "operator")["status"], "unknown")
+                self.assertFalse(self.work.inspect(case)["complete"])
+
+    def test_receipt_that_is_not_strict_json_never_succeeds(self):
+        """A lenient parse would read each receipt as matching; none may settle or crash the commit."""
+        receipts = {
+            "nan_fee": ', "fee": NaN}',
+            "overflowing_fee": ', "fee": 1e400}',
+            "unpaired_surrogate": ', "note": "\\udc80"}',
+            "nesting_past_cap": ', "meta": ' + "[" * 64 + "]" * 64 + "}",
+        }
+        for name, tail in receipts.items():
+            with self.subTest(receipt=name):
+                case, evidence = self.case("100000")
+                key = self.approved(case, evidence, "100000")
+                self.receipt = lambda r, tail=tail: (json.dumps(r)[:-1] + tail).encode()
+                self.assertEqual(self.work.commit(case, key, "operator")["status"], "unknown")
+                self.assertEqual(self.work.inspect(case)["events"][-1]["kind"], "effect_unknown")
+                self.assertFalse(self.work.inspect(case)["complete"])
+
+    def test_receipt_and_status_naming_the_installed_rail_settle(self):
+        self.receipt = lambda r: json.dumps({**r, "rail": "usdc_service", "livemode": True}).encode()
+        first, evidence = self.case()
+        self.assertEqual(self.work.commit(first, self.approved(first, evidence), "operator")["status"], "succeeded")
+        self.receipt = None
+        case, evidence = self.case("100000")
+        key = self.approved(case, evidence, "100000")
+        self.mode = "lost"
+        self.assertEqual(self.work.commit(case, key, "operator")["status"], "unknown")
+        self.records[key] = {**self.records[key], "rail": "usdc_service", "environment": "production"}
+        self.assertEqual(self.work.reconcile(case, key, "manager", ["manager"])["status"], "verified")
+        self.assertTrue(self.work.inspect(case)["complete"])
 
     def test_unknown_status_404_or_mismatch_retains_reservation(self):
         case, evidence = self.case()

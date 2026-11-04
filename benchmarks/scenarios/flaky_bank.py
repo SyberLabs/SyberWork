@@ -80,7 +80,7 @@ class FlakyBank:
         host.ids["pay"] = host.ids["pay_vendor"]
         host.explain_last("approval_required:manager")
         host.approve("pay", "operator", ["operator", "manager"])
-        host.bind_bank(LIVE)
+        host.bind_bank()
         host.approve("pay", "manager", ["manager"])
         host.commit("pay", "operator")
         host.propose("pay_vendor", {"invoice_id": LIVE["id"], "amount": LIVE["total"]}, "operator", ["operator"])

@@ -77,7 +77,6 @@ class Candidate:
     note: str = ""
     evaluation: str = "none"  # none, passed, failed, stale
     promotion: str = "provisional"  # provisional, denied, needs_approval, admitted, unresolved, not_applied, promoted
-    promotion_reason: str | None = None
     proposal_id: str | None = None
     checks: tuple[CheckResult, ...] = field(default=(), compare=False)
     origin: Mapping[str, str] | None = None
@@ -99,7 +98,7 @@ class Candidate:
             changed_paths=tuple(view["changed_paths"]), scope_violations=tuple(view["scope_violations"]),
             limit_violations=tuple(view["limit_violations"]), diff_bytes=view["diff"]["bytes"],
             signal=view["signal"], note=view["note"], evaluation=view["evaluation"]["state"],
-            promotion=view["promotion"]["state"], promotion_reason=view["promotion"]["reason"],
+            promotion=view["promotion"]["state"],
             proposal_id=view["promotion"]["proposal_id"],
             checks=tuple(CheckResult(c["name"], c["state"], c["exit_code"], c["duration_ms"], c["output_tail"])
                          for c in view["evaluation"]["checks"]),

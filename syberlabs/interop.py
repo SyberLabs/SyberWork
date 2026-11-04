@@ -20,7 +20,7 @@ from syberlabs.protocol import SIDE_PROTOCOL
 
 CLOUD_EVENT_SOURCE = "https://sdk.syberlabs.space/v0alpha1"
 
-__all__ = ["at_microseconds", "cloudevent", "witness", "witness_matches"]
+__all__ = ["at_microseconds", "cloudevent", "witness"]
 
 
 def cloudevent(event: Mapping) -> dict:
@@ -53,12 +53,3 @@ def witness(case_id: str, events: list, key: bytes) -> dict:
     }
     mac = hmac.new(key, canonical(payload).encode(), hashlib.sha256).hexdigest()
     return {"alg": "HMAC-SHA256", "payload": payload, "mac": mac}
-
-
-def witness_matches(document: Mapping, events: list, key: bytes) -> bool:
-    """True when ``document`` is the witness of these events under ``key``."""
-    payload = document.get("payload")
-    if not isinstance(payload, dict) or "case_id" not in payload:
-        return False
-    again = witness(payload["case_id"], events, key)
-    return hmac.compare_digest(again["mac"], str(document.get("mac", ""))) and again["payload"] == dict(payload)

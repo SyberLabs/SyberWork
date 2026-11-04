@@ -1,0 +1,35 @@
+name: factory-gates
+
+# Factory CI gates (FACTORY red-team rubric §3). Additive: this workflow does not
+# change ci.yml, and branch protection decides whether a gate is required.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  g6-bridge-mapping:
+    # G6 fails when an Attest artifact type can map to a `reconciled` event, or when
+    # caller-supplied `success`/`evidence` is accepted as reconciliation proof.
+    name: G6 Bridge mapping lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Static bridge mapping lint
+        run: python scripts/g6_bridge_mapping_lint.py
+      - name: G6 behavior, lint self-test, and positive controls
+        # The same tests also run in ci.yml's full suite; here they gate G6 alone.
+        run: >-
+          PYTHONPATH=. python -m unittest -v
+          tests.test_g6_bridge_mapping
+          tests.test_attest_reconcile_map
+          tests.test_reconciliation

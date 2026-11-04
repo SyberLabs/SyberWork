@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.syberlabs.space/v1alpha1/event.schema.json",
+  "title": "Event",
+  "description": "The v1alpha1 event envelope is the v0alpha1 envelope, unchanged: same fields, same 21 kinds, same canonical-JSON SHA-256. Agent attribution is a side record (attribution.schema.json), not a new envelope field, so no recorded chain changes shape.",
+  "$ref": "../event.schema.json"
+}

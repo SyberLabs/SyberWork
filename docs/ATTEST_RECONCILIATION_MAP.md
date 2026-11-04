@@ -40,10 +40,46 @@ after SyberWork calls the installed action's `status_url` and matches the
 committed state, original idempotency key, exact request digest, and nonempty
 destination external ID. The resulting
 proof includes the destination response digest. Caller-provided success or
-evidence is refused. A 404 is recorded as pending (`not_found_not_proof`): it
+evidence is refused, and the HTTP reconcile route refuses any field other than
+`proposal_id`. The receipt example labels Kane's `proven` re-check as
+`app_claim_recheck` with `destination_proof: false`; it never calls it
+destination verification. A 404 is recorded as pending (`not_found_not_proof`): it
 never proves that no write occurred, since a destination may be eventually
 consistent. A 404 therefore cannot release the unresolved effect or satisfy
-acceptance.
+acceptance. Adversarial cases for this boundary live in
+[`tests/test_bridge_redteam.py`](../tests/test_bridge_redteam.py).
+
+## An Attest artifact offered as destination proof
+
+The same rule holds when an Attest artifact arrives where destination proof
+belongs. `attest_artifact` in the classifier module recognizes one by its
+top-level fields: a `schema` or `version` string that starts with `attest.`; a
+`kind`, `type` or `artifact` that names `RunReceipt`, `AuthorityDecision` or
+`HandoffPackage`, or their snake_case forms; all three receipt fields `claim`,
+`authority` and `disposition`; or the bridge's `app_claim_recheck` label. Three
+places apply it, and each one refuses with the stable reason
+`attest_artifact_not_proof`:
+
+- A `status_url` record that matches state, key, digest and external ID but is
+  an Attest artifact records `reconciliation_checked` as `unverified`. A record
+  that does not match keeps the reason `destination_record_mismatch`, as a
+  simulated record does.
+- A local executor's `status` proof that is an Attest artifact records
+  `reconciliation_checked` as `unverified` in every state. So `applied` does
+  not reconcile, and `not_applied` or `absent` does not free the action.
+- A local executor's `apply` output that is an Attest artifact records
+  `effect_unknown` with error `attest_artifact_not_proof`, not
+  `effect_succeeded`. Only a later status proof that is not an Attest artifact
+  settles it.
+
+Only the top level is read. A destination may store an Attest receipt as the
+content of a write, and its record of that write may quote the receipt in a
+nested field. The generic type `receipt` is not an Attest mark, because an
+ordinary settlement record may use it. The rule does not cover an `http` write
+reply or an `economic_http` settlement receipt at commit. The G6 lint
+(`scripts/g6_bridge_mapping_lint.py`) fails when either `reconciled` emitter
+can append before it calls `attest_artifact`. Cases:
+[`tests/test_g6_bridge_mapping.py`](../tests/test_g6_bridge_mapping.py).
 
 See the [destination reconciliation contract](RECONCILIATION.md) and the
 [reconciliation event schema](../spec/reconciliation.schema.json). In

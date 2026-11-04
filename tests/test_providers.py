@@ -9,8 +9,11 @@ import contextlib
 import io
 import json
 import sys
+import tempfile
 import textwrap
+import time
 import unittest
+from pathlib import Path
 
 from adapters import anthropic_adapter
 from spec.validate import validate_events
@@ -18,7 +21,8 @@ from syberlabs import Rejected
 from syberlabs.cli import main as cli
 from syberlabs.events import verify_events
 from syberlabs.evolve import mutation_feedback
-from syberlabs.providers import PROTOCOL, FunctionProvider, RepairProvider, model_usage, repair_feedback
+from syberlabs.providers import PROTOCOL, FunctionProvider, RepairProvider, model_usage, repair_feedback, run_json
+from tests.test_checks import alive
 from tests.test_build_thread import EXPORT, GOOD, REPORT, RepoCase
 
 PY = sys.executable
@@ -245,7 +249,7 @@ class Repair(RepairCase):
             space.evaluate(first.id)
             seen["after"] = repair_feedback(space, first.id)
             view = space.candidate(first.id)
-            seen["harness"] = {"candidate": first.id,  # Patches.search, benchmarks/model_vs_patch.py
+            seen["harness"] = {"candidate": first.id,  # the repair arm's shape
                                "files": {p: space.read(first.id, p) for p in view.changed_paths if space.read(first.id, p) is not None},
                                "checks": [c.__dict__ for c in view.checks]}
             seen["mutation"] = mutation_feedback(space, first.id)
@@ -288,6 +292,45 @@ class CommandLine(RepairCase):
         code, out, _ = self.run_cli("check", "c2")
         self.assertEqual(code, 0, out)
         self.assertIn("acceptable", out)
+
+
+class RunJson(unittest.TestCase):
+    """``providers.run_json`` under a child that misbehaves (hunt-fixes-1, F2 and F3)."""
+
+    def test_a_child_that_never_reads_its_input_is_stopped_at_the_deadline(self):
+        """F2: on dc69499491 the whole payload was written before the deadline loop started, so a child that did
+        not read stdin held the host in ``write`` until the child exited (8 s here), and its empty stdout then read
+        ``provider_shape``. The payload is written on a thread (``feed_stdin``) and the answer is
+        ``provider_timeout`` at the deadline."""
+        started = time.monotonic()
+        with self.assertRaises(Rejected) as refused:
+            run_json([PY, "-c", "import time; time.sleep(8)"], {"pad": "x" * 200_000}, timeout=1)
+        elapsed = time.monotonic() - started
+        self.assertEqual(refused.exception.code, "provider_timeout")
+        self.assertLess(elapsed, 5, f"the host waited {elapsed:.1f} s on a child that never read its input")
+
+    def test_a_timeout_ends_the_grandchild_too(self):
+        """F3: on dc69499491 a timeout killed the direct child only; a grandchild (a model call, a build, a server
+        the adapter started) kept running and spending. ``checks._stop`` ends the session (POSIX) or the process
+        tree (Windows), as it does for a check."""
+        script = textwrap.dedent("""\
+            import pathlib, subprocess, sys, time
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            pathlib.Path(sys.argv[1]).write_text(str(child.pid))
+            sys.stdin.read()
+            time.sleep(60)
+            """)
+        with tempfile.TemporaryDirectory() as folder:
+            record = Path(folder) / "grandchild.pid"
+            with self.assertRaises(Rejected) as refused:
+                run_json([PY, "-c", script, str(record)], {}, timeout=3)
+            self.assertEqual(refused.exception.code, "provider_timeout")
+            grandchild = int(record.read_text())
+        deadline = time.monotonic() + 10
+        while alive(grandchild) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        self.assertFalse(alive(grandchild), f"grandchild {grandchild} survived the timeout")
 
 
 if __name__ == "__main__":

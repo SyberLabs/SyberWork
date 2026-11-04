@@ -266,7 +266,7 @@ class GitSearchSpace:
         # search; ``_pending`` the part not yet attributed to a candidate; ``dollars`` the priced part that
         # is. ``prior_dollars`` is what the thread's earlier searches cost. All measured here, none declared.
         budget_config = thread.config["budget"]
-        self.prices, self.max_dollars, self.strict = budget_config["prices"], budget_config["max_dollars"], budget_config["strict"]
+        self.prices, self.max_dollars = budget_config["prices"], budget_config["max_dollars"]
         self.prior_dollars = prior_dollars
         self.observed: list[dict] = []
         self._pending: list[dict] = []
@@ -737,8 +737,23 @@ class Kit:
         return matches[0]
 
     def _incomplete(self, case_id: str) -> bool:
-        """True when ``start`` was interrupted after ``case_created`` and before the base observation."""
-        return latest_observation(self.session.history(case_id), "base") is None
+        """True when ``start`` was interrupted after ``case_created`` and before the base observation.
+
+        Reads the thread's records from the first line until that observation (the second event of a completed
+        start) instead of loading the thread, so listing threads costs one short read each, not their whole
+        histories. Opening the thread still verifies its chain.
+
+        These records are not verified here. One that is not a well-formed event (a body that is not an object, a
+        missing key) is an altered journal, not an interrupted start: the thread lists as started, the listing of
+        every other thread is unaffected, and opening this one refuses ``journal_corrupt``."""
+        records = self.journal.records(case_id)
+        try:
+            return not any(record.get("t") == "event" and latest_observation([record["event"]], "base") is not None
+                           for record in records)
+        except (AttributeError, KeyError, TypeError):
+            return False
+        finally:
+            records.close()
 
     def _interrupted(self, contract_id: str, version: int, inputs: dict) -> str | None:
         """The most recent thread, when its start was interrupted and it was started with exactly these inputs."""
@@ -1367,7 +1382,7 @@ class Thread:
                 promotion = proposal["action"] == self.config["promotion"]["action"]
                 proof = found["event"]["body"].get("proof", {}) if status == "succeeded" else {}
                 receipts.append(Receipt(status, proposal["args"].get("candidate"), body["proposal_id"], found["reason"],
-                                        self.target_ref if promotion else proposal["action"],
+                                        self.target_ref if promotion else proof.get("destination") or proposal["action"],
                                         proposal["args"].get("commit") if status == "succeeded" else None,
                                         found["event"]["hash"], external_id=proof.get("external_id")))
         return receipts
@@ -1489,9 +1504,8 @@ class Runner:
     and an attended thread are reported as idle, not retried.
     """
 
-    def __init__(self, kit: Kit, *, thread: str | None = None, publish: bool = False, log=None,
-                 margin: float = FRESHNESS_MARGIN_SECONDS):
-        self.kit, self.only, self.publish, self.margin = kit, thread, publish, margin
+    def __init__(self, kit: Kit, *, thread: str | None = None, publish: bool = False, log=None):
+        self.kit, self.only, self.publish = kit, thread, publish
         self.log = log or (lambda line: None)
 
     def run(self, *, once: bool = False, interval: float = 30.0) -> int:
@@ -1620,7 +1634,7 @@ class Runner:
         if evaluation is None:
             return False
         max_age = thread.config["evaluation"]["max_age_seconds"]
-        margin = min(self.margin, max_age / 2)
+        margin = min(FRESHNESS_MARGIN_SECONDS, max_age / 2)
         return max_age - (time.time() - as_seconds(evaluation["at"])) <= margin
 
     def _next_publish(self, thread: "Thread", events: Sequence[dict]) -> str | None:

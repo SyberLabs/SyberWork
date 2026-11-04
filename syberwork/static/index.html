@@ -1,28 +1,52 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SyberWork — Work, with a record</title><link rel="stylesheet" href="/style.css"></head>
+<meta name="color-scheme" content="dark light">
+<title>SyberWork console</title><link rel="stylesheet" href="/style.css"></head>
 <body>
-<header><div class="mark">S<span>∕</span>W</div><div><strong>SYBERWORK</strong><small>Contract · Authority · Evidence · Execution</small></div><span class="tag">LOCAL OPERATOR CONSOLE</span></header>
-<main>
-<section class="top"><div class="eyebrow">OPERATIONS / CASES</div><h1>Work, with a record.</h1><p>Proposals are visible. Permissions have reasons. Completion requires evidence.</p></section>
-<div class="layout">
-<aside>
-<section class="card"><h2>Identity</h2><label>Access token<input id="token" type="password" placeholder="Paste a token from syberwork init"></label><button id="connect">Connect</button><div id="identity" class="muted">Not connected</div></section>
-<section class="card"><h2>Cases</h2><button id="refresh" class="secondary">Refresh cases</button><div id="cases" class="case-list"></div><hr><label>Contract ID<input id="contract" value="purchase-order"></label><label>Version<input id="version" type="number" value="1"></label><label>Input (JSON)<textarea id="inputs">{"part_number":"P-104","quantity":2}</textarea></label><button id="create">Open case</button></section>
-</aside>
-<div class="workspace">
-<section class="card title-card"><div><div class="eyebrow">SELECTED CASE</div><h2 id="case-title">Choose or create a case</h2><div id="case-meta" class="muted"></div></div><div id="complete" class="status">—</div></section>
-<section class="card"><div class="row"><h2>Completion clauses</h2><button id="verify" class="secondary">Verify history</button></div><div id="clauses" class="clauses muted">Nothing selected</div><div id="next" class="muted"></div><button id="compiled" class="secondary">Propose next compiled step</button></section>
-<div class="dual">
-<section class="card"><h2>Observe a fact</h2><p class="hint">Refresh through a configured source for verified evidence. Manual observations stay marked as assertions.</p><label>Key<input id="fact-key" placeholder="quote"></label><label>Source<input id="fact-source" placeholder="supplier"></label><label>Record key<input id="record-key" placeholder="supplier-quote-id"></label><button id="refresh-fact">Refresh from source</button><hr><label>Manual value (JSON)<textarea id="fact-value">{"price":250,"supplier":"Example"}</textarea></label><label>Claimed version<input id="fact-version" placeholder="quote-7"></label><button id="observe" class="secondary">Record assertion</button></section>
-<section class="card"><h2>Propose an action</h2><p class="hint">A configured planner, compiled path, or person uses this same boundary.</p><label>Action<input id="action" placeholder="record_review"></label><label>Arguments (JSON)<textarea id="arguments">{"part_number":"P-104"}</textarea></label><label>Proposer origin<select id="origin"><option>human</option><option>compiled</option><option>model</option></select></label><div class="actions"><button id="propose">Submit proposal</button><button id="suggest" class="secondary">Ask configured planner</button></div></section>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="brand" aria-label="SyberWork"><span class="mark" aria-hidden="true">S/W</span><span class="word">SyberWork</span><span class="scope">local cell</span></div>
+  <nav class="views" aria-label="Views">
+    <button type="button" data-view="cases" aria-keyshortcuts="g c">Cases</button>
+    <button type="button" data-view="studio" aria-keyshortcuts="g s">Studio</button>
+  </nav>
+  <div id="metrics" class="metrics" aria-label="Cell metrics"></div>
+  <div class="spacer"></div>
+  <button type="button" id="identity-button" class="identity-button" aria-haspopup="dialog" aria-keyshortcuts="i">
+    <span class="who" id="identity-name">Not connected</span><span id="identity-roles" class="roles"></span><kbd>i</kbd>
+  </button>
+  <button type="button" id="help-button" class="ghost icon" aria-label="Keyboard shortcuts and legend" aria-keyshortcuts="?">?</button>
+</header>
+<div class="frame">
+  <aside class="rail" aria-label="Cases">
+    <div class="rail-head">
+      <input id="case-filter" type="search" placeholder="Filter cases" aria-label="Filter cases" aria-keyshortcuts="/" autocomplete="off">
+      <button type="button" id="new-case" class="primary" aria-keyshortcuts="n">New case <kbd>n</kbd></button>
+    </div>
+    <div id="case-list" class="case-list" role="listbox" aria-label="Cases" tabindex="0"></div>
+  </aside>
+  <main id="main" tabindex="-1"></main>
 </div>
-<section class="card"><h2>Decision desk</h2><p class="hint">Approval and execution are separate. Switch credentials for an independent manager approval.</p><label>Proposal ID<input id="proposal" placeholder="Select a proposal from the history"></label><div class="actions"><button id="approve" class="secondary">Approve</button><button id="commit">Execute</button><button id="signoff" class="secondary">Sign off as manager</button></div><div id="response" class="response"></div></section>
-<section class="card"><h2>Resolution desk</h2><p class="hint">Request a task from verified source options. The assigned owner changes the authoritative source using its own access; then verify the result here. A manager may escalate after the deadline or cancel with a reason.</p><div id="resolutions" class="clauses muted">No resolution tasks</div><label>Resolution key<input id="resolution-key" placeholder="site"></label><label>Task ID<input id="task-id" placeholder="Select a task above"></label><div class="actions"><button id="request-resolution">Request resolution</button><button id="resolve-resolution" class="secondary">Verify source decision</button><button id="escalate-resolution" class="secondary">Escalate overdue task</button></div><label>Cancellation reason<input id="cancel-reason" placeholder="Required for manager cancellation"></label><button id="cancel-case" class="secondary">Cancel case</button></section>
-<section class="card"><div class="row"><h2>Candidates</h2><span class="eyebrow">PROVISIONAL UNTIL ADMITTED</span></div><p class="hint">A search host registers candidates; a separate evaluator credential records check results. Lineage is provenance, not evidence: only a candidate's own evaluation counts, and a person proposes promotion.</p><div id="candidates" class="events muted">No evolution section in this contract</div><details><summary>Record a candidate or evaluation (JSON)</summary><label>Candidate<textarea id="candidate-json" class="large"></textarea></label><button id="record-candidate" class="secondary">Register candidate</button><label>Evaluation<textarea id="evaluation-json" class="large"></textarea></label><button id="record-evaluation" class="secondary">Record evaluation</button></details></section>
-<section class="card"><h2>Check an unknown effect</h2><p class="hint">A manager can ask the installed destination for the original idempotency key. Only a matching committed record verifies success. Missing or inconclusive results leave the case open.</p><button id="check-effect" class="secondary">Verify destination status</button></section>
-<section class="card"><h2>Amendment replay</h2><p class="hint">Compare decisions against recorded events. Replay does not call external systems.</p><div class="row"><label>Contract version<input id="replay-contract" type="number" value="1"></label><label>Policy version<input id="replay-policy" type="number" value="1"></label></div><button id="replay" class="secondary">Compare versions</button><pre id="diff"></pre></section>
-<details class="card studio"><summary>Contract & connector studio · administrator</summary><p class="hint">Publish immutable versions. Credentials stay on the server in environment variables. Changes to actions or sources require new names.</p><button id="show-artifacts" class="secondary">Inspect compiled contract</button><pre id="artifacts"></pre><label>Contract JSON<textarea id="contract-json" class="large"></textarea></label><button id="publish-contract" class="secondary">Publish contract</button><label>Global policy JSON<textarea id="policy-json" class="large"></textarea></label><button id="publish-policy" class="secondary">Publish policy</button><label>Action name<input id="action-name" placeholder="issue_order_v2"></label><label>Action JSON<textarea id="action-json" class="large"></textarea></label><button id="publish-action" class="secondary">Register action</button><label>Source name<input id="source-name" placeholder="inventory"></label><label>Source JSON<textarea id="source-json" class="large">{"kind":"http","url":"https://example.internal/items/{key}","value_path":["part_number"],"roles":["operator"],"auth_env":"INVENTORY_API_TOKEN"}</textarea></label><button id="publish-source" class="secondary">Register source</button></details>
-<section class="card"><div class="row"><h2>Case history</h2><span class="eyebrow">PROPOSALS · DECISIONS · EFFECTS</span></div><div id="events" class="events muted">Nothing selected</div></section>
-</div></div>
-</main><div id="toast" role="status" aria-live="polite"></div><script src="/app.js" defer></script></body></html>
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+<dialog id="identity-dialog" aria-labelledby="identity-title">
+  <form method="dialog" class="dialog-head"><h2 id="identity-title">Identity</h2><button class="ghost icon" aria-label="Close">×</button></form>
+  <p class="hint">Each credential is a separate actor. Tokens stay in this tab's session storage and are sent only to this loopback service as a bearer token. Use one credential per role: the proposer, approver and signer must differ.</p>
+  <div id="identity-list" class="identity-list"></div>
+  <form id="identity-form" class="stack">
+    <label>Add a credential<input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Token printed by syberwork init" required></label>
+    <div class="row-end"><button type="button" id="forget-all" class="ghost danger-text">Forget all</button><button class="primary">Connect</button></div>
+  </form>
+</dialog>
+
+<dialog id="newcase-dialog" aria-labelledby="newcase-title">
+  <form method="dialog" class="dialog-head"><h2 id="newcase-title">Open a case</h2><button class="ghost icon" aria-label="Close">×</button></form>
+  <form id="newcase-form" class="stack"></form>
+</dialog>
+
+<dialog id="help-dialog" aria-labelledby="help-title">
+  <form method="dialog" class="dialog-head"><h2 id="help-title">Keys and legend</h2><button class="ghost icon" aria-label="Close">×</button></form>
+  <div id="help-body"></div>
+</dialog>
+<script type="module" src="/app.js"></script>
+</body></html>

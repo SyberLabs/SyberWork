@@ -32,7 +32,6 @@ from syberlabs.builder import (
     generation_summary,
     instance_equivalence,
     integrity_projection,
-    nodes_for_paths,
     normalize_activity,
     normalize_agent,
     normalize_descriptor,
@@ -473,12 +472,11 @@ class BuilderStore(BuilderRecords):
             })
             return stored
 
-    def record_integrity(self, document: dict, actor: str, *, principal_kind: str | None = None, host: bool = False, verifier=None) -> dict:
+    def record_integrity(self, document: dict, actor: str, *, principal_kind: str | None = None, host: bool = False) -> dict:
         observation = assess_integrity(
             normalize_integrity(document),
             principal_kind=principal_kind,
             host=host,
-            verifier=verifier,
         )
         if observation["verifier"] != actor:
             raise Rejected("verifier_mismatch", "verifier principal is the caller")
@@ -721,7 +719,7 @@ class BuilderStore(BuilderRecords):
             world = self._generation_world(db, generation_id)
             bindings = self._bindings(db, generation_id) if world is not None else []
             candidates = [
-                self._candidate_projection(generation, link, snapshot, feedback, integrity, prototypes)
+                self._candidate_projection(link, snapshot, feedback, integrity, prototypes)
                 for link in links
             ]
             if world is not None:

@@ -21,6 +21,7 @@ changed paths it reports.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -70,6 +71,23 @@ MAX_RECORD_BYTES = 65_536
 
 # Paths the host keeps out of every candidate, whatever the scope says.
 ALWAYS_EXCLUDED = (".git", ".syberlabs")
+
+
+def _case_insensitive_filesystem(path: str) -> bool:
+    """Whether the filesystem holding ``path`` compares names case-insensitively (Windows, macOS by default): the
+    path spelt in its letters' other case is the same file."""
+    swapped = path.swapcase()
+    try:
+        if swapped != path and os.path.exists(swapped):
+            return os.path.samefile(path, swapped)
+    except OSError:
+        pass
+    return os.path.normcase("A") != "A"
+
+
+# Scope entries and repository paths compare case-insensitively where this host's filesystem does: there ``Tests/x``
+# and ``tests/x`` are checked out onto the same file, so the first must not escape an ``exclude`` of the second.
+CASE_INSENSITIVE_PATHS = _case_insensitive_filesystem(__file__)
 
 _NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -121,12 +139,23 @@ def _path_list(values: Any, name: str, *, required: bool) -> list[str]:
     return cleaned
 
 
+def _folded(path: str) -> str:
+    return path.casefold() if CASE_INSENSITIVE_PATHS else path
+
+
 def _matches(path: str, entry: str) -> bool:
+    path, entry = _folded(path), _folded(entry)
     return entry == "." or path == entry or path.startswith(entry + "/")
 
 
 def in_scope(scope: dict, path: str) -> bool:
-    """True when the contract's mutable scope admits this repository path."""
+    """True when the contract's mutable scope admits this repository path.
+
+    Prefixes compare as the host filesystem compares names (``CASE_INSENSITIVE_PATHS``): on Windows and macOS
+    ``Tests/conftest.py`` is excluded by ``tests`` and ``.SyberLabs/x`` by ``.syberlabs``, as each would be checked
+    out onto the excluded file; on a case-sensitive filesystem they are distinct paths and compare as written. The
+    kernel's ``record_candidate`` recomputes ``scope_violations`` through this function, so one rule governs both.
+    """
     cleaned = clean_path(path)
     if cleaned is None or cleaned == ".":
         return False
@@ -610,10 +639,13 @@ def candidate_views(contract: dict, history: list, now) -> list[dict]:
             candidate_id = body["args"].get("candidate")
             if isinstance(candidate_id, str):
                 proposals.setdefault(candidate_id, []).append(body["id"])
-    decisions, outcomes = {}, {}
+    decisions, outcomes, evaluations = {}, {}, {}
     for event in history:
         body = event["body"]
-        if event["kind"] == "decision":
+        if event["kind"] == "candidate_evaluated":
+            # The last one in history order is the newest: what ``latest_evaluation`` finds scanning backwards.
+            evaluations[(body["candidate"], body["commit"], body["tree"])] = event
+        elif event["kind"] == "decision":
             decisions[body["proposal_id"]] = body
         elif event["kind"] in ("effect_started", "effect_unknown", "effect_rejected", "effect_succeeded"):
             outcomes.setdefault(body["proposal_id"], []).append(event["kind"])
@@ -624,7 +656,7 @@ def candidate_views(contract: dict, history: list, now) -> list[dict]:
         if event["kind"] != "candidate_registered":
             continue
         candidate = event["body"]
-        evaluation = latest_evaluation(history, candidate)
+        evaluation = evaluations.get((candidate["id"], candidate["commit"], candidate["tree"]))
         if evaluation is None:
             evaluated = "none"
         else:

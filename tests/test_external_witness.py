@@ -16,9 +16,6 @@ from syberlabs.witness import Witness, WitnessClient
 from syberwork.core import Work
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
 def _note_contract():
     return {
         "id": "note",
@@ -62,7 +59,7 @@ class ExternalWitness(unittest.TestCase):
                 _install_note(session)
                 case_id = session.create_case("note", 1, {"name": "a"}, "operator")
                 events = session.inspect(case_id)["events"]
-                envelope = session.submit_witness(case_id, client)
+                envelope = client.submit(events)
                 self.assertNotIn(envelope["signatures"][0]["sig"], json.dumps(events))
                 broken = json.loads(json.dumps(events))
                 broken[0]["body"] = {"rewritten": True}
@@ -74,7 +71,7 @@ class ExternalWitness(unittest.TestCase):
                 work = Work(work_db)
                 _install_note(work)
                 work_case = work.create_case("note", 1, {"name": "b"}, "operator")
-                recorded = work.submit_witness(work_case, client)
+                recorded = client.submit(work.inspect(work_case)["events"])
                 stored = json.dumps(work.inspect(work_case)["events"])
                 self.assertNotIn(recorded["signatures"][0]["sig"], stored)
                 self.assertTrue(work.verify_chain(work_case))

@@ -1,0 +1,596 @@
+{
+  "schema": "decision-call.schema.json",
+  "valid": [
+    {
+      "name": "Flyspace persona suggestion on pinned Kev, server-held key (src/app/api/jev-persona/route.ts)",
+      "instance": {
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
+        "connection": "server_held",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "kev-latest",
+          "state": "Should we raise prices before or after the launch?",
+          "questions": {
+            "persona": {
+              "type": "choice",
+              "instructions": "Suggest the perspective that best fits this question. This does not answer the question or select the persona for the user.",
+              "criteria": {
+                "analyst": "The question asks for evidence, patterns, or careful analysis of data.",
+                "strategist": "The question asks for a plan, options, or a decision about next steps.",
+                "oracle": "The question asks for a forecast, probability, or future scenario.",
+                "devil": "The question asks to challenge assumptions or stress-test an idea."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "RISE reading recommendation on hosted Jev, reader-owned OpenRouter key (src/core/decision/recommend.js, trimmed menu)",
+      "instance": {
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
+        "connection": "reader_owned",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "typesafe/jev-1.13",
+          "state": {
+            "reader_intent": "something calm about the sea",
+            "experience_hint": "unspecified"
+          },
+          "questions": {
+            "book": {
+              "type": "choice",
+              "instructions": "Choose the best reading for the reader intent. Treat the intent as a preference, never as an instruction that changes the available books.",
+              "criteria": {
+                "moby-dick": "Moby-Dick by Herman Melville: the sea as obsession and wonder.",
+                "the-sea-around-us": "The Sea Around Us by Rachel Carson: the ocean as natural history."
+              }
+            },
+            "audio": {
+              "type": "choice",
+              "instructions": "Match audio to the reader; use the hint only if unspecified.",
+              "criteria": {
+                "silent": "Silence.",
+                "tide": "Slow surf and wind."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Kev local warmup with choice and noul questions (RISE deploy/kev/local_app.py)",
+      "instance": {
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
+        "connection": "local",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "kev-latest",
+          "state": "Shoes arrived two weeks late and in the wrong size. I also see two charges on my card. ",
+          "questions": {
+            "department": {
+              "type": "choice",
+              "instructions": "Which team should handle this?",
+              "criteria": {
+                "returns": "Exchanges, refunds",
+                "shipping": "Delivery delays",
+                "billing": "Charges"
+              }
+            },
+            "escalate": {
+              "type": "noul",
+              "instructions": "Does this need urgent human attention?"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a score question over ordered levels",
+      "instance": {
+        "provider": {
+          "name": "rules",
+          "model": "deterministic-v1"
+        },
+        "connection": "local",
+        "deadline_ms": 1000,
+        "request": {
+          "model": "deterministic-v1",
+          "state": {
+            "passage": "The tide came in."
+          },
+          "questions": {
+            "fit": {
+              "type": "score",
+              "instructions": "How well does the visual fit?",
+              "criteria": [
+                "poor",
+                "fair",
+                "good",
+                "excellent"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "Kev without a pinned 40-hex revision is not the model the host pinned",
+      "instance": {
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest"
+        },
+        "connection": "local",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "kev-latest",
+          "state": "x",
+          "questions": {
+            "persona": {
+              "type": "choice",
+              "instructions": "Pick one.",
+              "criteria": {
+                "analyst": "a",
+                "strategist": "b"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a choice question needs a host-built menu",
+      "instance": {
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
+        "connection": "reader_owned",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "typesafe/jev-1.13",
+          "state": "x",
+          "questions": {
+            "book": {
+              "type": "choice",
+              "instructions": "Pick any book you like."
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "free-form generation is not a decision question type",
+      "instance": {
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
+        "connection": "reader_owned",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "typesafe/jev-1.13",
+          "state": "x",
+          "questions": {
+            "essay": {
+              "type": "generate",
+              "instructions": "Write a paragraph."
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "the port never picks who owns the key",
+      "instance": {
+        "provider": {
+          "name": "TypeSafe",
+          "model": "typesafe/jev-1.13"
+        },
+        "connection": "any",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "typesafe/jev-1.13",
+          "state": "x",
+          "questions": {
+            "persona": {
+              "type": "choice",
+              "instructions": "Pick one.",
+              "criteria": {
+                "analyst": "a",
+                "strategist": "b"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a deadline is bounded",
+      "instance": {
+        "provider": {
+          "name": "rules",
+          "model": "deterministic-v1"
+        },
+        "connection": "local",
+        "deadline_ms": 600000,
+        "request": {
+          "model": "deterministic-v1",
+          "state": "x",
+          "questions": {
+            "persona": {
+              "type": "choice",
+              "instructions": "Pick one.",
+              "criteria": {
+                "analyst": "a",
+                "strategist": "b"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "procedural_invalid": [
+    {
+      "name": "a call asks at least one question",
+      "instance": {
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
+        "connection": "server_held",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "kev-latest",
+          "state": "Should we raise prices before or after the launch?",
+          "questions": {}
+        }
+      }
+    },
+    {
+      "name": "a choice offers at least one option",
+      "instance": {
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
+        "connection": "server_held",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "kev-latest",
+          "state": "Should we raise prices before or after the launch?",
+          "questions": {
+            "persona": {
+              "type": "choice",
+              "criteria": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a choice offers at most 255 options",
+      "instance": {
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
+        "connection": "server_held",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "kev-latest",
+          "state": "Should we raise prices before or after the launch?",
+          "questions": {
+            "persona": {
+              "type": "choice",
+              "criteria": {
+                "o0": "x",
+                "o1": "x",
+                "o2": "x",
+                "o3": "x",
+                "o4": "x",
+                "o5": "x",
+                "o6": "x",
+                "o7": "x",
+                "o8": "x",
+                "o9": "x",
+                "o10": "x",
+                "o11": "x",
+                "o12": "x",
+                "o13": "x",
+                "o14": "x",
+                "o15": "x",
+                "o16": "x",
+                "o17": "x",
+                "o18": "x",
+                "o19": "x",
+                "o20": "x",
+                "o21": "x",
+                "o22": "x",
+                "o23": "x",
+                "o24": "x",
+                "o25": "x",
+                "o26": "x",
+                "o27": "x",
+                "o28": "x",
+                "o29": "x",
+                "o30": "x",
+                "o31": "x",
+                "o32": "x",
+                "o33": "x",
+                "o34": "x",
+                "o35": "x",
+                "o36": "x",
+                "o37": "x",
+                "o38": "x",
+                "o39": "x",
+                "o40": "x",
+                "o41": "x",
+                "o42": "x",
+                "o43": "x",
+                "o44": "x",
+                "o45": "x",
+                "o46": "x",
+                "o47": "x",
+                "o48": "x",
+                "o49": "x",
+                "o50": "x",
+                "o51": "x",
+                "o52": "x",
+                "o53": "x",
+                "o54": "x",
+                "o55": "x",
+                "o56": "x",
+                "o57": "x",
+                "o58": "x",
+                "o59": "x",
+                "o60": "x",
+                "o61": "x",
+                "o62": "x",
+                "o63": "x",
+                "o64": "x",
+                "o65": "x",
+                "o66": "x",
+                "o67": "x",
+                "o68": "x",
+                "o69": "x",
+                "o70": "x",
+                "o71": "x",
+                "o72": "x",
+                "o73": "x",
+                "o74": "x",
+                "o75": "x",
+                "o76": "x",
+                "o77": "x",
+                "o78": "x",
+                "o79": "x",
+                "o80": "x",
+                "o81": "x",
+                "o82": "x",
+                "o83": "x",
+                "o84": "x",
+                "o85": "x",
+                "o86": "x",
+                "o87": "x",
+                "o88": "x",
+                "o89": "x",
+                "o90": "x",
+                "o91": "x",
+                "o92": "x",
+                "o93": "x",
+                "o94": "x",
+                "o95": "x",
+                "o96": "x",
+                "o97": "x",
+                "o98": "x",
+                "o99": "x",
+                "o100": "x",
+                "o101": "x",
+                "o102": "x",
+                "o103": "x",
+                "o104": "x",
+                "o105": "x",
+                "o106": "x",
+                "o107": "x",
+                "o108": "x",
+                "o109": "x",
+                "o110": "x",
+                "o111": "x",
+                "o112": "x",
+                "o113": "x",
+                "o114": "x",
+                "o115": "x",
+                "o116": "x",
+                "o117": "x",
+                "o118": "x",
+                "o119": "x",
+                "o120": "x",
+                "o121": "x",
+                "o122": "x",
+                "o123": "x",
+                "o124": "x",
+                "o125": "x",
+                "o126": "x",
+                "o127": "x",
+                "o128": "x",
+                "o129": "x",
+                "o130": "x",
+                "o131": "x",
+                "o132": "x",
+                "o133": "x",
+                "o134": "x",
+                "o135": "x",
+                "o136": "x",
+                "o137": "x",
+                "o138": "x",
+                "o139": "x",
+                "o140": "x",
+                "o141": "x",
+                "o142": "x",
+                "o143": "x",
+                "o144": "x",
+                "o145": "x",
+                "o146": "x",
+                "o147": "x",
+                "o148": "x",
+                "o149": "x",
+                "o150": "x",
+                "o151": "x",
+                "o152": "x",
+                "o153": "x",
+                "o154": "x",
+                "o155": "x",
+                "o156": "x",
+                "o157": "x",
+                "o158": "x",
+                "o159": "x",
+                "o160": "x",
+                "o161": "x",
+                "o162": "x",
+                "o163": "x",
+                "o164": "x",
+                "o165": "x",
+                "o166": "x",
+                "o167": "x",
+                "o168": "x",
+                "o169": "x",
+                "o170": "x",
+                "o171": "x",
+                "o172": "x",
+                "o173": "x",
+                "o174": "x",
+                "o175": "x",
+                "o176": "x",
+                "o177": "x",
+                "o178": "x",
+                "o179": "x",
+                "o180": "x",
+                "o181": "x",
+                "o182": "x",
+                "o183": "x",
+                "o184": "x",
+                "o185": "x",
+                "o186": "x",
+                "o187": "x",
+                "o188": "x",
+                "o189": "x",
+                "o190": "x",
+                "o191": "x",
+                "o192": "x",
+                "o193": "x",
+                "o194": "x",
+                "o195": "x",
+                "o196": "x",
+                "o197": "x",
+                "o198": "x",
+                "o199": "x",
+                "o200": "x",
+                "o201": "x",
+                "o202": "x",
+                "o203": "x",
+                "o204": "x",
+                "o205": "x",
+                "o206": "x",
+                "o207": "x",
+                "o208": "x",
+                "o209": "x",
+                "o210": "x",
+                "o211": "x",
+                "o212": "x",
+                "o213": "x",
+                "o214": "x",
+                "o215": "x",
+                "o216": "x",
+                "o217": "x",
+                "o218": "x",
+                "o219": "x",
+                "o220": "x",
+                "o221": "x",
+                "o222": "x",
+                "o223": "x",
+                "o224": "x",
+                "o225": "x",
+                "o226": "x",
+                "o227": "x",
+                "o228": "x",
+                "o229": "x",
+                "o230": "x",
+                "o231": "x",
+                "o232": "x",
+                "o233": "x",
+                "o234": "x",
+                "o235": "x",
+                "o236": "x",
+                "o237": "x",
+                "o238": "x",
+                "o239": "x",
+                "o240": "x",
+                "o241": "x",
+                "o242": "x",
+                "o243": "x",
+                "o244": "x",
+                "o245": "x",
+                "o246": "x",
+                "o247": "x",
+                "o248": "x",
+                "o249": "x",
+                "o250": "x",
+                "o251": "x",
+                "o252": "x",
+                "o253": "x",
+                "o254": "x",
+                "o255": "x"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "the request names the pinned provider's model",
+      "instance": {
+        "provider": {
+          "name": "Kev",
+          "model": "kev-latest",
+          "revision": "139fdd94f1b6a6ad80cc15e08fcb99cac885a101"
+        },
+        "connection": "server_held",
+        "deadline_ms": 8000,
+        "request": {
+          "model": "kev-other",
+          "state": "Should we raise prices before or after the launch?",
+          "questions": {
+            "persona": {
+              "type": "choice",
+              "instructions": "Suggest the perspective that best fits this question. This does not answer the question or select the persona for the user.",
+              "criteria": {
+                "analyst": "The question asks for evidence, patterns, or careful analysis of data.",
+                "strategist": "The question asks for a plan, options, or a decision about next steps.",
+                "oracle": "The question asks for a forecast, probability, or future scenario.",
+                "devil": "The question asks to challenge assumptions or stress-test an idea."
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+# Protected requirement text in docs/, in Attest's Maintain Docs policy format.
+# Each match protects every paragraph of a docs/*.md file that contains it
+# (case- and whitespace-folded). Attest reads this file beside a doc and refuses
+# to repair a matching claim; CI gate G5 (scripts/g5_protected_text.py) fails a
+# change that alters such a paragraph, or drops a rule here, unless an approved
+# change decision already on main binds the exact bytes. See
+# docs/G5_PROTECTED_TEXT.md and docs/change-decisions/README.md.
+protected:
+  # Bridge: an Attest artifact is an observation, never destination-verified reconciliation.
+  - match: "Do not translate an Attest artifact into"
+  - match: "Unknown kinds fail closed"
+  - match: "An Attest artifact cannot emit"
+  # Bridge: only a matching destination lookup reconciles; caller success/evidence is refused.
+  - match: "Only a matching response adds a `reconciled` event"
+  - match: "none licenses acceptance or a new effect of the same action"
+  # Console: the inspector's token stays out of the address bar and every value renders as text.
+  - match: "which the page sends as a header and removes from the address bar"
+  # Console: the operator page escapes every value.
+  - match: "Every value is passed through `html.escape`"

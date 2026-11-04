@@ -8,32 +8,191 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from .builder_http import dispatch_get, dispatch_post
+from syberlabs.evolution import AUTOMATION_ROLES
+from syberlabs.planner import HttpPlanner
+
+from .builder_http import actor_of, dispatch_get, dispatch_post
+from .certificates import not_configured as certificates_not_configured
 from .core import Rejected, Work, digest
 
 STATIC = Path(__file__).parent / "static"
+# The directory holding syberlabs/ and syberwork/. Explained rule modules are named relative to it.
+PACKAGES = Path(__file__).resolve().parents[1]
+# The console's files. Anything else under static/ is not served.
+ASSETS = {"app.js": "text/javascript", "model.js": "text/javascript", "style.css": "text/css"}
+# Who may read published policy bodies (GET /api/policies). An economic policy carries budget limits, so the
+# reader is an administrator or the approver role, and not an automation credential (model, compiled, search).
+# There is no separate policy-read role; model.js mirrors this to suggest an identity that can read them.
+POLICY_READERS = frozenset({"admin", "manager"})
+# Roles that only attest facts (``syberwork init`` gives the inventory and supplier credentials ``observer``).
+# A principal holding nothing else may post its own source's observations and read its own profile, but it
+# reads no case, contract, certificate or metric: those name every case's inputs, history and amounts.
+ATTEST_ONLY_ROLES = frozenset({"observer"})
+# The first path segments of the reads ``_case_reader`` guards.
+CASE_READS = (("metrics",), ("api", "cases"), ("api", "contracts"), ("api", "certificates"), ("api", "builder"))
 
 
-def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766):
-    httpd = make_server(work, users, host, port)
+def _planner_configured() -> bool:
+    """Whether SYBERWORK_PLANNER_URL names a usable endpoint. The URL itself is not disclosed."""
+    try:
+        HttpPlanner().ensure_configured()
+        return True
+    except Rejected:
+        return False
+
+
+def _policy_reader(roles) -> bool:
+    return bool(POLICY_READERS.intersection(roles)) and not AUTOMATION_ROLES.intersection(roles)
+
+
+def _case_reader(roles) -> bool:
+    """Whether a principal may read cases, contracts, certificates and metrics: any role beyond attesting."""
+    return isinstance(roles, list) and bool({r for r in roles if isinstance(r, str)} - ATTEST_ONLY_ROLES)
+
+
+def _source_roles(work: Work) -> dict:
+    """Each installed source's read roles, as refresh_fact checks them, and nothing else of its definition.
+
+    install_source does not validate ``roles``; a value that is not a list of names is answered as None, so the
+    console says the server decides instead of forecasting from a value refresh_fact would misread.
+    """
+    found = {}
+    for name, doc in work.registry("sources").items():
+        roles = doc.get("roles", ["operator"])
+        found[name] = {"roles": roles if isinstance(roles, list) and all(isinstance(r, str) for r in roles) else None}
+    return found
+
+
+def _version(text: str) -> int:
+    if not text.isdecimal() or len(text) > 9:
+        raise Rejected("not_found", "contract version must be a positive integer")
+    return int(text)
+
+
+def _module(module) -> str | None:
+    """A rule's module relative to the installed packages, or None when it lies outside them.
+
+    Provenance names the module relative to the working directory, else to the packages, else in
+    full (syberlabs/admission.py ``_rule_provenance``). From ``/`` the first form carries this host's
+    layout, so the file is found again in the same order and named from the packages only.
+    """
+    if not isinstance(module, str) or not module:
+        return None
+    for root in (Path.cwd(), PACKAGES):
+        try:
+            found = (root / module).resolve()
+            if found.is_file():
+                return found.relative_to(PACKAGES).as_posix()
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _explanation(work: Work, case_id: str, proposal_id: str, when: str) -> dict:
+    """Work.explain_admission for an HTTP reader, plus the decision as recorded. Appends nothing.
+
+    A rule module outside the installed packages (a rule loaded from elsewhere) is withheld rather
+    than disclose this host's filesystem layout; the rule and symbol are still answered.
+    """
+    explained = work.explain_admission(case_id, proposal_id, when=when)
+    found = explained.get("provenance") or {}
+    module = _module(found.get("module"))
+    return {"proposal_id": proposal_id, "when": when, "status": explained["status"], "reason": explained["reason"],
+            "rule": explained["rule"], "provenance": {"module": module, "symbol": found.get("symbol"), "line": found.get("line")},
+            "recorded": work.recorded_decision(case_id, proposal_id)}
+
+
+def _preview(work: Work, case_id: str, data: dict, name: str, roles: list) -> dict:
+    """Work.preview_admission for an HTTP caller: what proposing would record now. Appends nothing.
+
+    Without an ``args`` key the server binds them from the contract; any value present, null included, is admitted
+    as given, as propose would admit it. The rule module is named as the explain route names it.
+    """
+    previewed = work.preview_admission(case_id, data["action"], data.get("args"), name, roles, data.get("origin", "human"),
+                                       bind="args" not in data)
+    found = previewed.get("provenance") or {}
+    return {**previewed, "provenance": {"module": _module(found.get("module")), "symbol": found.get("symbol"), "line": found.get("line")},
+            "written": False, "note": "Admission now for a proposal not yet made; nothing was recorded and nothing is reserved"}
+
+
+class UserFile:
+    """``users.json`` read again whenever it changes, so a removed or rotated credential stops working without a
+    restart. Read on each request by ``stat``; parsed only when its size or modification time moves. A file that
+    is missing, unreadable or not a JSON object of users answers with no users: every bearer is refused (cell
+    principals registered in the database still authenticate)."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self._stamp = None
+        self._users: dict = {}
+
+    def __call__(self) -> dict:
+        try:
+            status = self.path.stat()
+            stamp = (status.st_mtime_ns, status.st_size, status.st_ino)
+        except OSError:
+            self._stamp, self._users = None, {}
+            return {}
+        if stamp != self._stamp:
+            try:
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
+                valid = isinstance(loaded, dict) and all(
+                    isinstance(info, dict) and isinstance(info.get("hash"), str) for info in loaded.values())
+            except (OSError, ValueError):
+                loaded, valid = {}, False
+            self._users = loaded if valid else {}
+            self._stamp = stamp
+        return self._users
+
+
+def serve(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
+          witness_role=None, certificates=None):
+    httpd = make_server(work, users, host, port, witness_log=witness_log, witness_client=witness_client, witness_role=witness_role,
+                        certificates=certificates)
     print(f"SyberWork listening at http://{host}:{httpd.server_port}", flush=True)
     httpd.serve_forever()
 
 
-def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766) -> ThreadingHTTPServer:
-    """Build the loopback server without starting it. Port 0 picks a free port."""
+def make_server(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
+                witness_role=None, certificates=None) -> ThreadingHTTPServer:
+    """Build the loopback server without starting it. Port 0 picks a free port.
+
+    ``users`` is a mapping of name to ``{hash, roles, sources}``, or a callable returning one on each request
+    (``UserFile``, which ``syberwork serve`` passes, so an edit to ``users.json`` applies without a restart).
+
+    ``witness_log`` is a ``TransparencyLog.open_readonly`` reader of the witness's log, or None. It holds no seed and
+    cannot append; ``GET /api/cases/{id}/witness`` reads it. ``witness_client`` is a ``WitnessClient`` on the witness's
+    loopback port and ``witness_role`` the one role whose holders ``POST /api/cases/{id}/witness`` lets ask it to sign:
+    both or neither, and only beside the log. Nothing in the code chooses that role; ``syberwork serve`` reads it from
+    SYBERWORK_WITNESS_ROLE.
+
+    ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the public keys its certificates are
+    verified under (one, or a few during a rotation), with the certificate digests it revokes and its validity window, or
+    None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from SYBERWORK_CERTIFICATE_HOME,
+    SYBERWORK_CERTIFICATE_PUBLIC, SYBERWORK_CERTIFICATE_REVOKED and SYBERWORK_CERTIFICATE_MAX_AGE.
+    """
     loopback = host in ("127.0.0.1", "::1", "localhost")
-    if not loopback and os.getenv("SYBERWORK_BIND", "") != host:
+    # An empty host binds every interface. SYBERWORK_BIND names a non-loopback address on purpose, so an empty or
+    # unset value never vouches for one, even when the host is empty too.
+    if not loopback and (not host or not isinstance(host, str) or os.getenv("SYBERWORK_BIND", "") != host):
         raise Rejected("unsafe_bind", "the operator service must bind to loopback")
+    if (witness_client is None) != (witness_role is None) or (witness_client is not None and witness_log is None):
+        raise Rejected("invalid_runtime", "a witness client needs a role and the witness log, and a role needs a client")
+    if witness_role is not None and (not isinstance(witness_role, str) or not witness_role or any(c.isspace() for c in witness_role)
+                                     or witness_role in AUTOMATION_ROLES):
+        raise Rejected("invalid_runtime", "the witness role must be one role name, not an automation role")
+    if witness_client is not None and witness_client.public != witness_log.public:
+        raise Rejected("invalid_runtime", "the witness client and the witness log must be under the same public key")
     started = time.monotonic()
 
     class Handler(BaseHTTPRequestHandler):
         def _user(self):
             token = self.headers.get("Authorization", "").removeprefix("Bearer ")
             hashed = hashlib.sha256(token.encode()).hexdigest()
-            for name, info in users.items():
+            current = users() if callable(users) else users
+            for name, info in current.items():
                 if token and hmac.compare_digest(info["hash"], hashed):
                     return {"name": name, **info}
             principal = work.principal_for_token(token)
@@ -71,10 +230,12 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 if not parts or parts == ["index.html"]:
                     self._static("index.html", "text/html")
                     return
-                if parts in (["app.js"], ["style.css"]):
-                    self._static(parts[0], "text/javascript" if parts[0].endswith(".js") else "text/css")
+                if len(parts) == 1 and parts[0] in ASSETS:
+                    self._static(parts[0], ASSETS[parts[0]])
                     return
                 user = self._user()
+                if any(tuple(parts[:len(prefix)]) == prefix for prefix in CASE_READS) and not _case_reader(user.get("roles", [])):
+                    raise Rejected("forbidden", "a role beyond observer is required to read cases, contracts, certificates, metrics and builder views")
                 if len(parts) in (2, 3) and parts[:2] == ["metrics", "work_items"]:
                     # Per-work-item metrics (docs/METRICS.md): every item, or one thread's, with each number's basis.
                     try:
@@ -89,16 +250,54 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                         if key in user:
                             profile[key] = user[key]
                     self._json(profile)
+                elif parts == ["api", "console"]:
+                    # What the console needs to render honest states; no secret or URL is disclosed.
+                    # witness: whether serve reads the witness's log, and the role that may ask it to sign (None: no one).
+                    # certificates: whether serve reads a Build Thread home's certificates; the path is not disclosed.
+                    self._json({"planner_configured": _planner_configured(), "effects": work.effects,
+                                "witness": {"log": witness_log is not None, "request_role": witness_role},
+                                "certificates": {"configured": certificates is not None}})
+                elif parts == ["api", "certificates"]:
+                    # Admission certificates of Build Threads, each verified by serve under a configured key. A case
+                    # has none, so there is no per-case route. Without a configured home the answer says so.
+                    self._json(certificates.listing() if certificates is not None else certificates_not_configured())
                 elif parts == ["api", "cases"]:
                     self._json(work.list_cases())
+                elif parts == ["api", "contracts"]:
+                    self._json(work.list_contracts())
+                elif len(parts) == 4 and parts[:2] == ["api", "contracts"]:
+                    self._json(work.contract(unquote(parts[2]), _version(parts[3])))
                 elif len(parts) == 5 and parts[:2] == ["api", "contracts"] and parts[4] == "artifacts":
-                    self._json(work.artifacts(parts[2], int(parts[3])))
+                    self._json(work.artifacts(unquote(parts[2]), _version(parts[3])))
+                elif parts == ["api", "policies"]:
+                    if not _policy_reader(user.get("roles", [])):
+                        raise Rejected("forbidden", "admin or manager role required, without an automation role")
+                    self._json(work.list_policies())
+                elif parts == ["api", "sources"] and "admin" not in user.get("roles", []):
+                    # Anyone else sees only the read roles, so a refusal can name the role it needs.
+                    self._json(_source_roles(work))
+                elif parts in (["api", "actions"], ["api", "sources"]):
+                    if "admin" not in user.get("roles", []):
+                        raise Rejected("forbidden", "admin role required")
+                    self._json(work.registry(parts[1]))
                 elif len(parts) == 3 and parts[:2] == ["api", "cases"]:
                     self._json(work.inspect(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "candidates":
                     self._json(work.candidates(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
                     self._json({"valid": work.verify_chain(parts[2])})
+                elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "side":
+                    # Work.side_channel: the JCS digest and deciding rule id stored beside each event. Neither is
+                    # in the event hash; events written before that table existed have no row.
+                    self._json(work.side_channel(unquote(parts[2])))
+                elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "witness":
+                    # Work.witness_status: each signed chain head the witness's log holds for this case, judged against
+                    # the events now. Without a configured log the answer says so; nothing is drawn as witnessed.
+                    self._json(work.witness_status(unquote(parts[2]), witness_log))
+                elif len(parts) == 6 and parts[:2] == ["api", "cases"] and parts[3] == "proposals" and parts[5] == "explain":
+                    # The deciding rule for a stored proposal: ?when=recorded (the original decision) or now (the default).
+                    when = parse_qs(urlsplit(self.path).query).get("when", ["now"])[-1]
+                    self._json(_explanation(work, unquote(parts[2]), unquote(parts[4]), when))
                 elif parts[:2] == ["api", "builder"]:
                     outcome = dispatch_get(work, user, parts, urlsplit(self.path).query, self.headers.get("Last-Event-ID"))
                     if isinstance(outcome, dict):
@@ -109,6 +308,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._json({"error": "not_found"}, 404)
             except Rejected as e:
                 status = {"unauthorized": 401, "not_found": 404, "unknown_metric": 404}.get(e.code, 409)
+                if e.code == "forbidden" and self._parts()[:2] != ["api", "builder"]:
+                    status = 403  # a console read the principal's roles do not cover; the builder keeps its statuses
                 self._json({"error": e.code, "detail": e.detail}, status)
             except Exception:
                 self._json({"error": "internal_error"}, 500)
@@ -135,7 +336,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
             self.send_header("Content-Type", mime + "; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'")
+            # default-src does not govern framing: frame-ancestors (and X-Frame-Options for older browsers) does.
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             self.wfile.write(body)
 
@@ -156,7 +359,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
         def do_POST(self):
             try:
                 user, parts, data = self._user(), self._parts(), self._body()
-                name, roles = user["name"], user.get("roles", [])
+                actor, roles = actor_of(user), user.get("roles", [])  # the principal id, never the display name
                 if parts == ["api", "contracts"] and "admin" in roles:
                     work.install_contract(data); result = {"installed": True}
                 elif parts == ["api", "policies"] and "admin" in roles:
@@ -168,45 +371,57 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 elif parts == ["api", "cases"]:
                     if "operator" not in roles:
                         raise Rejected("forbidden", "operator role required")
-                    result = {"id": work.create_case(data["contract_id"], data["version"], data["inputs"], name)}
+                    result = {"id": work.create_case(data["contract_id"], data["version"], data["inputs"], actor)}
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"]:
                     case_id, operation = parts[2:]
                     if operation == "facts":
                         if data["source"] not in user.get("sources", []):
                             raise Rejected("source_denied", "actor cannot attest this source")
-                        result = work.observe(case_id, data["key"], data["value"], data["source"], data["version"], name)
+                        result = work.attest(case_id, data["key"], data["value"], data["source"], data["version"], actor)
                     elif operation == "refresh":
-                        result = work.refresh_fact(case_id, data["source"], data["key"], data["record_key"], name, roles)
+                        result = work.refresh_fact(case_id, data["source"], data["key"], data["record_key"], actor, roles)
                     elif operation == "resolution-request":
-                        result = work.request_resolution(case_id, data["key"], name, roles)
+                        result = work.request_resolution(case_id, data["key"], actor, roles)
                     elif operation == "resolution-resolve":
-                        result = work.resolve_resolution(case_id, data["task_id"], name, roles)
+                        result = work.resolve_resolution(case_id, data["task_id"], actor, roles)
                     elif operation == "resolution-escalate":
-                        result = work.escalate_resolution(case_id, data["task_id"], name, roles)
+                        result = work.escalate_resolution(case_id, data["task_id"], actor, roles)
                     elif operation == "cancel":
-                        result = work.cancel_case(case_id, data["reason"], name, roles)
+                        result = work.cancel_case(case_id, data["reason"], actor, roles)
                     elif operation == "proposals":
-                        result = work.propose(case_id, data["action"], data["args"], name, roles, data.get("origin", "human"))
+                        result = work.propose(case_id, data["action"], data["args"], actor, roles, data.get("origin", "human"))
                     elif operation == "compiled":
-                        result = work.compiled_propose(case_id, name, roles)
+                        result = work.compiled_propose(case_id, actor, roles)
                     elif operation == "suggest":
-                        result = work.model_propose(case_id, name, roles)
+                        result = work.model_propose(case_id, actor, roles)
                     elif operation == "approve":
-                        result = work.approve(case_id, data["proposal_id"], name, roles)
+                        result = work.approve(case_id, data["proposal_id"], actor, roles)
                     elif operation == "commit":
-                        result = work.commit(case_id, data["proposal_id"], name)
+                        result = work.commit(case_id, data["proposal_id"], actor)
                     elif operation == "signoff":
-                        result = work.signoff(case_id, name, roles, data["role"])
+                        result = work.signoff(case_id, actor, roles, data["role"])
                     elif operation == "reconcile":
-                        if "success" in data or "evidence" in data:
+                        # Only the proposal is named. Any outcome-shaped field (success, evidence,
+                        # proof, an Attest receipt, ...) is refused rather than ignored.
+                        if set(data) != {"proposal_id"}:
                             raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")
-                        result = work.reconcile(case_id, data["proposal_id"], name, roles)
+                        result = work.reconcile(case_id, data["proposal_id"], actor, roles)
                     elif operation == "candidates":
-                        result = work.record_candidate(case_id, data, name, roles)
+                        result = work.record_candidate(case_id, data, actor, roles)
                     elif operation == "evaluations":
-                        result = work.record_evaluation(case_id, data, name, roles)
+                        result = work.record_evaluation(case_id, data, actor, roles)
                     elif operation == "searches":
-                        result = work.record_search(case_id, data["phase"], data["search"], name, roles)
+                        result = work.record_search(case_id, data["phase"], data["search"], actor, roles)
+                    elif operation == "preview":
+                        result = _preview(work, case_id, data, actor, roles)
+                    elif operation == "witness":
+                        # Ask the witness to sign this head. It appends to its own log; the case gets nothing.
+                        if witness_client is None:
+                            raise Rejected("witness_not_configured", "serve has no witness to ask; set SYBERWORK_WITNESS_PORT and SYBERWORK_WITNESS_ROLE")
+                        # An automation credential never asks, as it never reads policies: a leaf cannot be removed.
+                        if witness_role not in roles or AUTOMATION_ROLES.intersection(roles):
+                            raise Rejected("forbidden", f"{witness_role} role required to ask the witness, without an automation role")
+                        result = work.request_witness(unquote(case_id), witness_client, witness_log, user["name"], user.get("principal_id"))  # a trace label beside the principal id, not a compared identity
                     elif operation == "replay":
                         result = work.replay(case_id, data["contract_version"], data["policy_version"])
                     else:

@@ -19,7 +19,11 @@ their caches (``APPDATA``, ``LOCALAPPDATA`` and ``USERPROFILE`` on Windows,
 ``XDG_CACHE_HOME`` on POSIX, and the explicit ``npm_config_cache``,
 ``CARGO_HOME``, ``RUSTUP_HOME``, ``GOPATH``, ``GOCACHE`` and ``GOMODCACHE``
 when set), so a candidate does not re-download every package. ``HOME`` is
-still the temporary home.
+still the temporary home. Every check also gets ``SYBERLABS_CANDIDATE`` (the
+candidate's id) and ``SYBERLABS_BASE`` (the thread's base commit, when the
+candidate names one), so a check can compare the candidate with its base:
+``scripts/run_shards.py`` refuses a test set that shrank against it
+(``docs/TESTING.md``). Both are the host's values, never the candidate's.
 
 A critic check may additionally receive the variables the operator names in
 ``SYBERLABS_CHECK_ENV`` in the host's own environment (comma-separated, for
@@ -46,10 +50,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 import signal
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -73,11 +75,13 @@ CHECK_ENV = "SYBERLABS_CHECK_ENV"
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
 
 
-def _environment(home: Path, candidate: str) -> dict:
+def _environment(home: Path, candidate: str, base: str | None = None) -> dict:
     env = {key: os.environ[key] for key in PASS_ENV if key in os.environ}
     env.update({"HOME": str(home), "TMPDIR": str(home), "TEMP": str(home), "TMP": str(home),
                 "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", "CI": "1",
                 "SYBERLABS_CANDIDATE": candidate})
+    if base:
+        env["SYBERLABS_BASE"] = base
     return env
 
 
@@ -111,6 +115,12 @@ def _stop(proc: subprocess.Popen) -> None:
     except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired):
         pass
     proc.wait()
+
+
+# The two routines another host-side runner reuses (the factory's harness and its tests runner), under public
+# names: the scrubbed environment a check runs under, and the stop of a check's whole process tree.
+scrubbed_environment = _environment
+stop_tree = _stop
 
 
 def run_check(argv: list[str], cwd: Path, env: dict, timeout: int, max_output: int, log: Path,
@@ -184,7 +194,7 @@ def evaluate(repo: Repo, candidate: dict, evaluation: dict, *, context: dict | N
     diff = None
     setup_failed = False
     with tempfile.TemporaryDirectory(prefix="syberlabs-home-") as home, repo.worktree(candidate["commit"]) as tree:
-        env = _environment(Path(home), candidate["id"])
+        env = _environment(Path(home), candidate["id"], candidate.get("base"))
         for name, check in sorted(evaluation["checks"].items()):
             if setup_failed:
                 results.append({"name": name, "state": "error", "exit_code": None, "duration_ms": 0,
@@ -210,6 +220,3 @@ def evaluate(repo: Repo, candidate: dict, evaluation: dict, *, context: dict | N
     return {"candidate": candidate["id"], "commit": candidate["commit"], "tree": candidate["tree"],
             "evaluator": EVALUATOR, "checks": results}
 
-
-def environment_note() -> str:
-    return f"{platform.system()} {platform.machine()} python {sys.version.split()[0]}"

@@ -1,5 +1,7 @@
 # Build Thread
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 A Build Thread is one governed change to one local Git repository. It shows why a candidate was accepted or refused, what it changed, and what actually happened. It can be resumed from its record after a crash. It needs Python 3.11+ and `git`, and no account, model, or network.
 
 ## Ten minutes
@@ -98,7 +100,7 @@ To land an accepted change on `main`, merge `syberlabs/<thread>` yourself. Setti
 
 ## Metrics
 
-`syberlabs metrics` folds every thread's events into one row of nine per-work-item metrics (cost with its basis, turns, agent time, fix rounds, web and GitHits lookups, delivered, review rejections, human interventions), each with the event hashes it came from and `unknown` where the record has no fact; `--json`, `--csv`, `--since`, `--check`, and `--from-export` for records written by `export`. `syberlabs note --intervention KIND` and `syberlabs review --record` write the facts a person's act or a verifier's verdict leave; `accept`, `approve` and `check --rerun` by a person write one automatically; `syberlabs settle` records the merge, the closing and the reviews of each pull request a thread opened, which is what makes `delivered` and agent time known. See [METRICS.md](METRICS.md).
+`syberlabs metrics` folds every thread's events into one row of nine per-work-item metrics (cost with its basis, turns, agent time, fix rounds, web and GitHits lookups, delivered, review rejections, human interventions), each with the event hashes it came from and `unknown` where the record has no fact; `--json`, `--csv`, `--since`, `--check`, and `--from-export` for records written by `export`. `syberlabs note --intervention KIND` and `syberlabs review --record` write the facts a person's act or a verifier's verdict leave; `accept`, `approve` and `check --rerun` by a person write one automatically; `syberlabs settle` records the merge, the closing and the reviews of each pull request a thread opened, which is what makes `delivered` and agent time known. See [METRICS.md](METRICS.md). To compare provider configurations on fixed tasks under a pre-registered spec, every attempt run through this thread with acceptance checks the host holds out of the agent's sight, see [EVAL.md](EVAL.md).
 
 ## Inspector
 
@@ -151,7 +153,7 @@ GITHUB_TOKEN="$(gh auth token)" syberlabs run --interval 300   # steps, then a s
 Every installed document and event is one fsynced line in `.syberlabs/journal/` before memory changes. `Session(journal=Journal(path))` gives any SDK project the same store, and the same conformance run passes on the in-memory and durable sessions. On reopening:
 
 - a torn final line from a crash is dropped;
-- a malformed line, an event that breaks its hash chain, or a registry contract that no longer validates refuses to load (`journal_corrupt`);
+- a malformed line, an event that breaks its hash chain, or a registry contract that no longer validates refuses to load (`journal_corrupt`), and keeps refusing on every later access in the same process, from any session or `Kit` on that journal, until the file verifies from its first record;
 - another process's appends are read before each operation (a cross-process file lock: `flock` on POSIX, `msvcrt.locking` on Windows).
 
 An acceptance interrupted after its durable claim shows as an open item, and `syberlabs recover` settles it from the branch. A thread holds at most 20,000 events.

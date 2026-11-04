@@ -1,5 +1,7 @@
 # AutoSkill
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 AutoSkill chooses at most one certified skill for an agent turn. Jev ranks the catalog. Ordinary code decides whether that ranking is allowed to reach the agent. A selection names a document. It does not authorize a tool, a file write, or a network call.
 
 The catalog this design is built against is the skill tree in Everything Claude Code (ECC), the harness performance system published by the Anthropic x Forum Ventures hackathon winner. The screenshot under design shows that tree: a `skills/` directory of workflow documents (`tdd-workflow`, `verification-loop`, `security-review`), language and framework quartets (`django-patterns`, `django-security`, `django-tdd`, `django-verification`, and the same shape for Laravel, Spring Boot, and Quarkus), and cross-cutting procedures (`search-first`, `skill-stocktake`, `eval-harness`). ECC's own READMEs have quoted 56, 156, and 286 skills as the tree grew. AutoSkill pins one commit and one manifest. It does not follow a moving "latest".
@@ -293,6 +295,8 @@ selector(turn, catalog, policy, answers) -> receipt
 ```
 
 `answers` is the `answers` object from one or more `systemone` responses. The pure function does not open a socket. Tests feed it recorded JSON.
+
+**Adapter status (2026-10-28).** The AutoSkill selector and its HTTP command are not built. The one Jev adapter in this repository is the branch policy `TypeSafeJevPolicy` (`syberlabs/jev_api.py`, `docs/EVOLUTION.md`): one `choice` per search decision, ids and numbers only, validated and with a local fallback. Its live calls of 2026-10-28 correct three things this design assumed. `jev-1.13.0` is still served as itself, but `jev-1.14.0` (2026-10-14) is now `jev-latest`, and `GET /v1/models` lists only the aliases. Probabilities come at two decimals and sum to 1 only within 0.01 on three options, so "omits a sent option" is not the only check a `choice` needs: a sum tolerance and an exact key set are. A missing key is 403, not 401. TypeSafe prices input only, $0.042 per million tokens; output is free.
 
 The HTTP command reads `TYPESAFE_API_KEY` from the environment, posts to `https://api.typesafe.ai/v1/systemone`, times out at 120 seconds, and prints the response JSON. The key never enters the receipt, the catalog, or a log line. A non-200, a missing `answers` object, or a `choice` whose probabilities omit a sent option becomes reason `jev_unavailable` and decision `none`. The hosted proxy at `https://jevtypesafeai.com/api/v1/decide` speaks the same question types and is not the adapter this design pins.
 
