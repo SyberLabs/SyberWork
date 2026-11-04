@@ -119,4 +119,26 @@ def run(args) -> int:
         print(f"{found['eval']}: {len(found['runs'])} of {found['planned']} listed, spent "
               f"${found['spent_dollars']:.4f} of ${found['total_dollars']:.4f}; preflight {found['preflight']}"
               + (f"; stopped: {found['stopped']}" if found["stopped"] else ""))
+        if args.dry:
+            for line in describe_estimate(found["estimate"]):
+                print(line)
+            for line in found["readiness"]["blocking"]:
+                print(f"not ready: {line} (a run would stop adapter_unready)")
+            for line in found["readiness"]["warnings"]:
+                print(f"warning: {line}")
     return 1 if found["stopped"] else 0
+
+
+def describe_estimate(cost: dict) -> list[str]:
+    """``runner.estimate`` as the lines a dry run prints."""
+    lines = [f"estimate: worst case ${cost['worst_case_dollars']:.4f} for {cost['runs']} pending run(s): "
+             f"{cost['runs']} x ${cost['per_run_dollars']:.4f} per-run cap = ${cost['uncapped_dollars']:.4f}, "
+             f"bounded by the ${cost['remaining_dollars']:.4f} left of total_dollars (the call that crosses a "
+             f"ceiling completes, so recorded spend can pass it by one call's cost)"]
+    expected = cost["expected_dollars"]
+    if expected:
+        lines.append(f"estimate: expected ${expected['low']:.4f} to ${expected['high']:.4f} at {expected['basis']}")
+    elif cost["runs"]:
+        lines.append("estimate: no expected figure (no nominal basis for arm(s) "
+                     + ", ".join(cost["no_nominal_basis"]) + "); only the cap is known")
+    return lines
