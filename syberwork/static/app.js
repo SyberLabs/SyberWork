@@ -1207,7 +1207,9 @@ function openCertificates() {
 // the keys it was given; the console checks no signature, and draws as certified only what M.certificateView reads so.
 // With more than one key (a rotation), each signed row names the key that verified it. Each signed row shows its digest,
 // which SYBERWORK_CERTIFICATE_REVOKED lists to revoke it; a revoked row reads revoked, beside what it states. With a
-// validity window (SYBERWORK_CERTIFICATE_MAX_AGE), each signed row says when it expires, as serve's clock reckons it.
+// validity window (SYBERWORK_CERTIFICATE_MAX_AGE), each signed row says when it expires, as serve's clock reckons it. With a
+// repository (SYBERWORK_CERTIFICATE_REPOSITORY), the hint names it among the layers serve checked, and a row it fails reads
+// repository differs or unreadable.
 function studioCertificates() {
   if (!state.certificates) {
     const read = api('/api/certificates').then(body => ({view: M.certificateView(body)}), error => ({error}));
@@ -1250,8 +1252,12 @@ function certificatesView(entry) {
             r.expiresAt !== null ? h('div', {class: 'muted mono-s'}, (r.state === 'expired' ? 'expired ' : 'expires ') + utc(r.expiresAt)) : null));
       })))
       : h('p', {class: 'muted'}, 'No certificate files under ', mono('<home>/certificates'), '.'),
-    h('p', {class: 'hint'}, 'Checked by serve: ', v.checked.join(' and ') || 'nothing', '. Not checked: ', v.notChecked.join(', ') || 'nothing',
-      ' (the commits, trees and diff in Git); run ', mono('syberlabs verify FILE --public KEY --repo .'), ' for it. The keys are serve\'s configuration (',
+    h('p', {class: 'hint'}, ...(v.repository
+      ? ['Checked by serve: signature, repository and journal. The repository is ', mono('SYBERWORK_CERTIFICATE_REPOSITORY'),
+        ': each signed row\'s base and result commits are in it with the trees, changed paths and diff the certificate states; where the target ref points now is not judged.']
+      : ['Checked by serve: ', v.checked.join(' and ') || 'nothing', '. Not checked: ', v.notChecked.join(', ') || 'nothing',
+        ' (the commits, trees and diff in Git); run ', mono('syberlabs verify FILE --public KEY --repo .'), ' for it, or give serve ', mono('SYBERWORK_CERTIFICATE_REPOSITORY'), '.']),
+      ' The keys are serve\'s configuration (',
       mono('SYBERWORK_CERTIFICATE_PUBLIC'), ', the current key and any still being rotated out; a listed key is trusted until it is removed). A certificate whose digest ',
       mono('SYBERWORK_CERTIFICATE_REVOKED'), ' lists reads revoked under every key. ', v.validity
         ? ['One issued more than ', span(v.validity.max_age), ' before serve\'s clock reads expired, and one dated more than ', span(v.validity.skew), ' after it not yet valid (', mono('SYBERWORK_CERTIFICATE_MAX_AGE'), '); the date is the signer\'s, so the window retires old certificates and does not stop a key holder from dating a new one.']

@@ -77,6 +77,13 @@ test('parity with the Python predicates', { skip: !process.env.PARITY }, () => {
   const windowed = M.certificateView(cases.certificates.windowed.body);
   assert.deepEqual(windowed.rows.map(r => [r.file, r.state, r.expiresAt]), cases.certificates.windowed.expected);
   assert.equal(windowed.validity.max_age, 1);
+  // And one that checks each signed file against the project's repository: the genuine files hold, and a result commit
+  // the repository does not have reads repository differs. The reasons are the server's own list.
+  assert.equal(shelf.repository, false);
+  const held = M.certificateView(cases.certificates.repository.body);
+  assert.deepEqual([held.state, held.repository, held.notChecked], ['read', true, []]);
+  assert.deepEqual(held.rows.map(r => [r.file, r.state, r.repository]), cases.certificates.repository.expected);
+  assert.deepEqual(M.REPOSITORY_FAILURES, cases.certificates.repository.failures);
 });
 
 test('event time reads microseconds and legacy seconds', () => {
@@ -608,6 +615,70 @@ test('a certificate outside the validity window reads expired or not yet valid o
     { max_age: '3600', skew: SKEW, checked_at: ISSUED }, { max_age: AGE, skew: -1, checked_at: ISSUED }, { max_age: AGE, checked_at: ISSUED },
     { max_age: AGE, skew: SKEW }, { max_age: AGE, skew: SKEW, checked_at: -1 }, { max_age: AGE, skew: SKEW, checked_at: 2 ** 53 }]) {
     assert.equal(M.certificateView(SHELF([DATED()], { validity })).state, 'unknown', JSON.stringify(validity));
+  }
+});
+
+test('with the repository checked, a certificate is certified only with a repository of ok, and differs only as serve names it', () => {
+  const REPO = { checked: ['signature', 'repository', 'journal'], not_checked: [] };
+  const view = M.certificateView(SHELF([ROW({ repository: 'ok' }), ROW({ file: 'y.json', repository: 'ok', journal: null, journal_present: false })], REPO));
+  assert.equal(view.repository, true);
+  assert.deepEqual(view.rows.map(r => [r.state, r.certified, r.repository]), [['certified', true, 'ok'], ['signed', false, 'ok']]);
+  assert.match(view.rows[0].text, /the configured repository holds the commits, trees and diff it states, and the thread's journal/);
+  assert.match(view.rows[1].text, /so the journal was not checked/);
+  for (const reason of M.REPOSITORY_FAILURES) {
+    const r = M.certificateView(SHELF([ROW({ verdict: 'fail', reason, repository: reason, journal: 'result_differs' })], REPO)).rows[0];
+    const unreadable = reason === 'repository_unreadable';
+    assert.deepEqual([r.state, r.tone, r.certified, r.repository], [unreadable ? 'repository_unreadable' : 'repository_differs', unreadable ? 'unknown' : 'denied', false, reason], reason);
+    assert.equal(r.statement.candidate, 'c1', 'what failed is shown');
+    assert.match(r.text, unreadable ? /could not read the configured repository: not certified/ : /does not hold .* do not treat it as certified/);
+  }
+  // A journal failure with the repository holding reads as before; a revoked row stays revoked, as serve names it first.
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated', repository: 'ok' })], REPO)).rows[0].state, 'journal_differs');
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'revoked', repository: 'commit_missing:result' })], { ...REPO, revoked: [DIGEST] })).rows[0].state, 'revoked');
+  // A file no listed key signed has no repository state.
+  const unsigned = { verdict: 'fail', reason: 'signature_invalid', signature: 'signature_invalid', journal: null, journal_present: null, statement: null };
+  assert.equal(M.certificateView(SHELF([ROW({ ...unsigned, repository: null })], REPO)).rows[0].state, 'not_signed');
+  // Any disagreement between the row, its repository field and the answer is unknown: never certified, and never
+  // repository differs on the row's word alone.
+  for (const [extra, more] of [
+    [{ repository: null }, {}],                                                          // a pass serve did not check
+    [{ repository: undefined }, {}],
+    [{ repository: 'OK' }, {}],
+    [{ repository: true }, {}],
+    [{ repository: 'commit_missing:result' }, {}],                                       // a pass the repository failed
+    [{ journal: null, journal_present: false, repository: 'commit_missing:result' }, {}],
+    [{ journal: null, journal_present: false, repository: null }, {}],
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: 'ok' }, {}],         // the reason and the field disagree
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: 'commit_missing:base' }, {}],
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: null }, {}],
+    [{ verdict: 'pass', reason: 'commit_missing:result', repository: 'commit_missing:result' }, {}],
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: 'commit_missing:result', statement: null }, {}],
+    [{ verdict: 'fail', reason: 'commit_missing:result', repository: 'commit_missing:result', statement: { ...CERTIFIED, keyid: 'f'.repeat(64) } }, {}],
+    [{ verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated', repository: 'commit_missing:result' }, {}],  // serve names the repository first
+    [{ verdict: 'fail', reason: 'tree_mismatch', repository: 'tree_mismatch' }, {}],    // a reason serve does not write
+    [{ verdict: 'fail', reason: 'revoked', repository: 'held' }, { revoked: [DIGEST] }],
+    [{ ...unsigned, repository: 'ok' }, {}],
+  ]) {
+    const r = M.certificateView(SHELF([ROW(extra)], { ...REPO, ...more })).rows[0];
+    assert.deepEqual([r.state, r.certified, r.statement, r.repository], ['unknown', false, null, null], JSON.stringify(extra));
+  }
+  // Without the repository checked, a row naming any repository state is unknown, and so is a repository reason.
+  for (const repository of ['ok', 'commit_missing:result', 'repository_unreadable', false]) {
+    for (const extra of [{}, { verdict: 'fail', reason: repository }, { verdict: 'fail', reason: 'chain_truncated', journal: 'chain_truncated' }, { verdict: 'fail', reason: 'revoked' }]) {
+      const r = M.certificateView(SHELF([ROW({ ...extra, repository })], { revoked: [DIGEST] })).rows[0];
+      assert.deepEqual([r.state, r.certified], ['unknown', false], JSON.stringify([repository, extra]));
+    }
+  }
+  assert.equal(M.certificateView(SHELF([ROW({ verdict: 'fail', reason: 'commit_missing:result' })])).rows[0].state, 'unknown');
+  assert.equal(M.certificateView(SHELF([ROW({})])).rows[0].repository, null);
+  // An answer whose layers are neither of the two serve writes is unknown as a whole: the console could not tell what a
+  // row's repository field means.
+  for (const extra of [{ checked: ['signature', 'journal', 'repository'], not_checked: [] }, { checked: ['signature', 'repository', 'journal'], not_checked: ['repository'] },
+    { checked: ['signature', 'repository', 'journal'], not_checked: undefined }, { checked: ['signature', 'journal'], not_checked: [] },
+    { checked: ['signature', 'journal'], not_checked: ['repository', 'x'] }, { checked: undefined, not_checked: undefined }, { checked: 'signature,journal' },
+    { checked: ['signature', 'repository', 'journal', 'witness'], not_checked: [] }, { checked: ['repository'], not_checked: [] }]) {
+    assert.equal(M.certificateView(SHELF([ROW({ repository: 'ok' })], extra)).state, 'unknown', JSON.stringify(extra));
+    assert.equal(M.certificateView(SHELF([ROW({})], extra)).state, 'unknown', JSON.stringify(extra));
   }
 });
 

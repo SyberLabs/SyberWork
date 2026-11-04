@@ -37,6 +37,7 @@ from syberlabs.ed25519 import generate, public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import AUTOMATION_ROLES
+from syberlabs.gitspace import Repo
 from syberlabs.jcs import envelope_jcs, jcs_bytes
 from syberlabs.metrics import METRICS, UNKNOWN, Metric, _cell
 from syberlabs.tlog import TransparencyLog, merkle_root
@@ -47,7 +48,7 @@ from syberwork.cli import _certificates, _witness_log, _witness_request
 from syberwork.core import Work
 from syberwork.server import POLICY_READERS, make_server
 from syberwork.trace import TraceLog
-from tests.test_build_thread import GOOD, REPORT, TEST_REPORT, git
+from tests.test_build_thread import GOOD, REPORT, TEST_REPORT, git, git_ref
 from tests.test_certificate import OTHER_PUBLIC, OTHER_SEED, PUBLIC, SEED
 
 # A third key that no test configures: a certificate signed under it is never trusted.
@@ -1626,6 +1627,222 @@ class ConsoleCertificateValidity(CellCase):
             configured("3600", home=None, public=None)
 
 
+class ConsoleCertificateRepository(CellCase):
+    """SYBERWORK_CERTIFICATE_REPOSITORY: every signed certificate is checked against a Git working tree as
+    ``syberlabs verify --repo`` checks it (both commits present, their trees, the changed paths and the diff), and one the
+    repository does not hold fails with that layer's reason. It still shows what it states."""
+
+    certificates = True
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.cert_home.parent
+        # A clone of the project holds the same commits, and can lose them or go away without touching the home inside it.
+        self.clone = self.project.parent / "clone"
+        git(self.project.parent, "clone", "-q", "--no-hardlinks", str(self.project), str(self.clone))
+
+    def folder(self) -> Path:
+        return self.cert_home / "certificates"
+
+    def signed(self, name, seed=SEED, **changes):
+        """The fixture's payload with ``changes`` to its result (or top-level fields), signed in the bare form."""
+        result = {k: changes.pop(k) for k in list(changes) if k in self.cert_payload["result"]}
+        payload = dict(self.cert_payload, **changes)
+        payload["result"] = dict(payload["result"], **result)
+        envelope = sign_dsse("application/vnd.syberlabs.admission-certificate+json", jcs_bytes(payload), seed)
+        (self.folder() / name).write_text(json.dumps(envelope), encoding="utf-8")
+        return payload
+
+    def shelf_over(self, path=None, *revoked, max_age=None, clock=time.time):
+        repository = shelf_module.CertificateRepository(self.clone if path is None else path)
+        return CertificateShelf(self.cert_home, PUBLIC, revoked, max_age, clock, repository=repository)
+
+    def rows(self, shelf):
+        body = shelf.listing()
+        return body, {row["file"]: row for row in body["certificates"]}
+
+    def fixture_files(self):
+        thread8 = self.cert_payload["thread"][:8]
+        return f"{thread8}-c1.bare.json", f"{thread8}-c1.json"
+
+    def prune(self, commit):
+        """Drop every ref of the clone that reaches ``commit``, then the object itself."""
+        for ref in git(self.clone, "for-each-ref", "--format=%(refname)", "--contains", commit).split():
+            git(self.clone, "update-ref", "-d", ref)
+        git(self.clone, "reflog", "expire", "--expire=now", "--all")
+        git(self.clone, "gc", "-q", "--prune=now")
+        self.assertIsNone(git_ref(self.clone, commit + "^{commit}"), "the commit is gone from the clone")
+
+    def test_without_a_repository_the_layer_is_not_run(self):
+        """The negative control: unset, the answer names the repository as not checked and no row carries a state."""
+        self.assertIsNone(self.shelf.repository)
+        self.signed("unheld.json", commit="e" * 40)
+        status, body = self.cell.json("/api/certificates")
+        self.assertEqual((status, body["checked"], body["not_checked"]), (200, ["signature", "journal"], ["repository"]))
+        self.assertIn("syberlabs verify FILE --public KEY --repo PATH", body["note"])
+        rows = {row["file"]: row for row in body["certificates"]}
+        self.assertEqual({name: row["repository"] for name, row in rows.items()}, dict.fromkeys(rows))
+        for name in self.fixture_files():
+            self.assertEqual(rows[name]["verdict"], "pass")
+        # A certificate naming a commit no repository holds fails only on its journal here, never on the repository.
+        self.assertNotIn(rows["unheld.json"]["reason"], shelf_module.REPOSITORY_FAILURES)
+
+    def test_the_genuine_certificates_hold_in_their_repository_and_an_unrelated_one_holds_neither(self):
+        body, rows = self.rows(self.shelf_over(self.project))
+        self.assertEqual((body["checked"], body["not_checked"], body["note"]),
+                         (["signature", "repository", "journal"], [], shelf_module.REPOSITORY_NOTE))
+        for name in self.fixture_files():
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["signature"], row["repository"], row["journal"]),
+                                 ("pass", None, "ok", "ok", "ok"))
+        self.assertEqual({row["repository"] for row in self.rows(self.shelf_over())[1].values()}, {"ok"}, "a clone holds them too")
+        # Another repository, with other commits: the same genuine certificates fail, and still state what they say.
+        other = self.project.parent / "other"
+        (other / "src").mkdir(parents=True)
+        (other / "src" / "report.py").write_text("print('another project')\n")
+        git(self.project.parent, "init", "-q", "-b", "main", str(other))
+        git(other, "add", ".")
+        git(other, "commit", "-qm", "another")
+        _, rows = self.rows(self.shelf_over(other))
+        for name in self.fixture_files():
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["repository"], row["journal"]),
+                                 ("fail", "commit_missing:base", "commit_missing:base", "ok"))
+                self.assertEqual(row["statement"]["candidate"], "c1", "what failed is shown")
+
+    def test_each_difference_from_the_repository_is_named_before_the_journal(self):
+        result = self.cert_payload["result"]
+        base = self.cert_payload["base"]
+        # Sorted after the fixture's files, so the genuine pair is held first: a hold never answers for other trees or
+        # another diff under the same two commits.
+        cases = {
+            "a-result.json": ({"commit": "e" * 40}, "commit_missing:result"),
+            "b-base.json": ({"base": dict(base, commit="d" * 40)}, "commit_missing:base"),
+            "c-base-tree.json": ({"base": dict(base, tree=result["tree"])}, "tree_mismatch:base"),
+            "d-result-tree.json": ({"tree": base["tree"]}, "tree_mismatch:result"),
+            "e-paths.json": ({"changed_paths": result["changed_paths"][:1], "files": 1}, "changed_paths_mismatch"),
+            "f-digest.json": ({"diff_digest": "0" * 64}, "diff_mismatch:digest"),
+            "g-bytes.json": ({"diff_bytes": result["diff_bytes"] + 1}, "diff_mismatch:bytes"),
+        }
+        for name, (changes, _) in cases.items():
+            self.signed(name, **changes)
+        shelf = self.shelf_over()
+        # Read twice: a failure is never kept as a hold, so the second read, its commits all present, fails the same.
+        for read in ("first", "again"):
+            _, rows = self.rows(shelf)
+            for name in self.fixture_files():
+                self.assertEqual((rows[name]["verdict"], rows[name]["repository"]), ("pass", "ok"))
+            for name, (_, reason) in cases.items():
+                with self.subTest(name, read=read):
+                    row = rows[name]
+                    self.assertIn(reason, shelf_module.REPOSITORY_FAILURES)
+                    self.assertEqual((row["verdict"], row["reason"], row["signature"], row["repository"]), ("fail", reason, "ok", reason))
+                    # The journal says otherwise too, and its field still names that; the repository is named first.
+                    self.assertNotIn(row["journal"], (None, "ok"))
+                    self.assertEqual(row["statement"]["candidate"], "c1")
+
+    def test_revocation_and_the_window_name_the_failure_before_the_repository(self):
+        unheld = self.signed("unheld.json", commit="e" * 40)
+        stale = self.signed("stale.json", commit="e" * 40, issued_at=self.cert_payload["issued_at"] - 7200 * 1_000_000)
+        _, rows = self.rows(self.shelf_over(None, shelf_module.certificate_digest(unheld), max_age=3600,
+                                            clock=lambda: self.cert_payload["issued_at"] / 1e6 + 60))
+        self.assertEqual((rows["unheld.json"]["reason"], rows["unheld.json"]["repository"]), ("revoked", "commit_missing:result"))
+        self.assertEqual((rows["stale.json"]["reason"], rows["stale.json"]["repository"]), ("expired", "commit_missing:result"))
+        self.assertEqual(stale["result"]["commit"], "e" * 40)
+
+    def test_a_hold_is_confirmed_on_every_read_and_a_failure_is_not_kept(self):
+        shelf = self.shelf_over()
+        result = self.cert_payload["result"]["commit"]
+        with unittest.mock.patch.object(shelf_module, "_layer_repository", wraps=shelf_module._layer_repository) as spy:
+            self.assertEqual({row["repository"] for row in self.rows(shelf)[1].values()}, {"ok"})
+            # The fixture's two certificates state the same commits, trees and diff: the second is held from the first.
+            self.assertEqual(spy.call_count, 1, "one check for what both files state")
+            self.assertEqual({row["repository"] for row in self.rows(shelf)[1].values()}, {"ok"})
+            self.assertEqual(spy.call_count, 1, "a hold is served while both commits are there")
+            # The result commit leaves the repository: the next read fails, though the file and its journal did not change.
+            self.prune(result)
+            _, rows = self.rows(shelf)
+            self.assertEqual({(row["verdict"], row["reason"], row["journal"]) for row in rows.values()},
+                             {("fail", "commit_missing:result", "ok")})
+            self.assertEqual(spy.call_count, 3, "checked again for each file: a failure is not held")
+            # Fetched back: the failure was not kept, so the same process reads a pass again.
+            git(self.clone, "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*")
+            self.assertEqual({(row["verdict"], row["repository"]) for row in self.rows(shelf)[1].values()}, {("pass", "ok")})
+
+    def test_a_repository_git_cannot_read_is_unreadable_and_never_a_pass(self):
+        shelf = self.shelf_over()
+        self.assertEqual({row["repository"] for row in self.rows(shelf)[1].values()}, {"ok"})
+        moved = self.clone.with_name("moved")
+        self.clone.rename(moved)
+        self.addCleanup(lambda: moved.exists() and moved.rename(self.clone))
+        _, rows = self.rows(shelf)
+        self.assertEqual({(row["verdict"], row["reason"], row["repository"], row["journal"]) for row in rows.values()},
+                         {("fail", "repository_unreadable", "repository_unreadable", "ok")}, "a hold is not served without git's word")
+        moved.rename(self.clone)
+        self.assertEqual({row["verdict"] for row in self.rows(shelf)[1].values()}, {"pass"})
+
+    def test_a_replacement_never_answers_for_a_commit(self):
+        """A refs/replace entry makes plain git read another object for a name. serve reads the objects themselves."""
+        base, result = self.cert_payload["base"], self.cert_payload["result"]
+        # A certificate for a commit the repository does not hold, and a replacement that names it after the real result.
+        self.signed("replaced.json", commit="e" * 40)
+        git(self.clone, "update-ref", "refs/replace/" + "e" * 40, result["commit"])
+        # And the real result replaced by the base, whose tree is another.
+        git(self.clone, "replace", result["commit"], base["commit"])
+        plain = Repo(self.clone)
+        self.assertEqual(plain.rev("e" * 40), "e" * 40, "the control: plain git takes the replacement for the commit")
+        self.assertEqual(plain.tree(result["commit"]), base["tree"], "and reads another tree for the real one")
+        _, rows = self.rows(self.shelf_over())
+        self.assertEqual((rows["replaced.json"]["verdict"], rows["replaced.json"]["reason"]), ("fail", "commit_missing:result"))
+        for name in self.fixture_files():
+            self.assertEqual((rows[name]["verdict"], rows[name]["repository"]), ("pass", "ok"))
+
+    def test_the_route_answers_the_layer_to_any_principal_and_names_no_path(self):
+        self.signed("unheld.json", commit="e" * 40)
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.project.parent)), 8999, certificates=self.shelf_over())
+        self.addCleanup(cell.close)
+        status, body = cell.json("/api/certificates", who="supplier")
+        self.assertEqual((status, body["checked"], body["not_checked"]), (200, ["signature", "repository", "journal"], []))
+        rows = {row["file"]: row for row in body["certificates"]}
+        self.assertEqual((rows["unheld.json"]["verdict"], rows["unheld.json"]["reason"]), ("fail", "commit_missing:result"))
+        text = json.dumps(body)
+        for path in (self.clone, self.project):
+            for spelled in {str(path), path.as_posix(), json.dumps(str(path))[1:-1]}:
+                self.assertNotIn(spelled, text)
+
+    def test_the_shelf_takes_only_a_certificate_repository(self):
+        self.assertIsInstance(self.shelf_over().repository, shelf_module.CertificateRepository)
+        for repository in (Repo(self.clone), str(self.clone), self.clone, True):
+            with self.subTest(repr(repository)), self.assertRaises(Rejected):
+                CertificateShelf(self.cert_home, PUBLIC, repository=repository)
+        environment = shelf_module.CertificateRepository._env()
+        self.assertEqual((environment["GIT_NO_REPLACE_OBJECTS"], environment["GIT_NO_LAZY_FETCH"]), ("1", "1"))
+
+    def test_serve_reads_the_repository_variable_and_refuses_an_empty_or_unusable_one(self):
+        parser = argparse.ArgumentParser()
+        def configured(repository=None, home=str(self.cert_home), public=PUBLIC.hex()):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            names = {k: v for k, v in (("SYBERWORK_CERTIFICATE_HOME", home), ("SYBERWORK_CERTIFICATE_PUBLIC", public),
+                                       ("SYBERWORK_CERTIFICATE_REPOSITORY", repository)) if v is not None}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertIsNone(configured().repository)
+        top = Path(git(self.clone, "rev-parse", "--show-toplevel"))
+        self.assertEqual(configured(str(self.clone)).repository.root, top)
+        # A subdirectory of the working tree names the working tree, as git and syberlabs verify --repo read it.
+        self.assertEqual(configured(str(self.project / "src")).repository.root, Path(git(self.project, "rev-parse", "--show-toplevel")))
+        self.assertIsInstance(configured(str(self.clone)).repository, shelf_module.CertificateRepository)
+        # Empty is refused, not read as no repository: an unset shell variable expanded into it would turn the layer off.
+        # So are a path git does not resolve to a working tree: an absent one, and a .git folder (no working tree inside it).
+        for repository in ("", " ", "\n", str(self.project.parent / "absent"), str(self.clone / ".git")):
+            with self.subTest(repository), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(repository)
+        with self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+            configured(str(self.clone), home=None, public=None)
+
+
 class ConsolePreview(CellCase):
     """POST /api/cases/{id}/preview: what proposing would record now (Work.preview_admission). It records nothing."""
 
@@ -1922,6 +2139,15 @@ class ConsoleModel(CellCase):
             "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC), (), 1, clock=lambda: (statement_issued + issued) / 2e6 + 1).listing(),
             "expected": [[f"{thread8}-c1.bare.json", "certified", issued + 1_000_000], [f"{thread8}-c1.json", "expired", statement_issued + 1_000_000],
                          ["foreign.json", "expired", statement_issued + 1_000_000]]}
+        # And one that checks every signed file against the project's repository, with one more file for a result commit
+        # the repository does not hold.
+        unheld = dict(self.cert_payload, result=dict(self.cert_payload["result"], commit="e" * 40))
+        (self.cert_home / "certificates" / "unheld.json").write_text(json.dumps(sign_dsse(bare["payloadType"], jcs_bytes(unheld), SEED)), encoding="utf-8")
+        parity["certificates"]["repository"] = {
+            "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC), repository=shelf_module.CertificateRepository(self.cert_home.parent)).listing(),
+            "failures": list(shelf_module.REPOSITORY_FAILURES),
+            "expected": [[f"{thread8}-c1.bare.json", "certified", "ok"], [f"{thread8}-c1.json", "certified", "ok"], ["foreign.json", "certified", "ok"],
+                         ["unheld.json", "repository_differs", "commit_missing:result"]]}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -1967,6 +2193,11 @@ class ConsoleBrowser(CellCase):
         stale = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] - 2 * window * 1_000_000)
         (self.cert_home / "certificates" / "stale.json").write_text(json.dumps(sign_dsse(good["payloadType"], jcs_bytes(stale), OTHER_SEED)), encoding="utf-8")
         self.shelf.max_age = window
+        # And serve checks each signed file against the project's repository: one more certificate, under the new key, names
+        # a result commit the repository does not hold.
+        unheld = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] + 2, result=dict(self.cert_payload["result"], commit="e" * 40))
+        (self.cert_home / "certificates" / "unheld.json").write_text(json.dumps(sign_dsse(good["payloadType"], jcs_bytes(unheld), OTHER_SEED)), encoding="utf-8")
+        self.shelf.repository = shelf_module.CertificateRepository(self.cert_home.parent)
         env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens)}
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
@@ -1996,24 +2227,30 @@ class ConsoleBrowser(CellCase):
         self.assertIn("Nothing on this case is drawn as certified", report["certificate_text"])
         # Studio → Certificates: both genuine forms pass the signature and the journal under the old key, the rotated file
         # under the new one, and each row names its key; the revoked file reads revoked and the stale one expired, beside
-        # what each states and its digest. Each signed row says when it expires. The repository is named as not checked.
+        # what each states and its digest. Each signed row says when it expires. The repository is checked: the certified rows
+        # say it holds what they state, and the row for a commit it does not hold reads repository differs.
         thread8 = self.cert_payload["thread"][:8]
-        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified"] * 3 + ["expired", "revoked"], report["certificate_rows"])
-        for (_, row), name, key, verdict in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json", "rotated.json", "stale.json", "withdrawn.json"),
-                                                ("key 2 · " + PUBLIC.hex()[:16], "key 2 · " + PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16],
-                                                 "key 1 · " + OTHER_PUBLIC.hex()[:16], "key 1 · " + OTHER_PUBLIC.hex()[:16]),
-                                                ("certified", "certified", "certified", "expired", "revoked")):
-            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], verdict, "Add a CSV export", key, "digest ", "UTC"):
+        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified"] * 3 + ["expired", "repository_differs", "revoked"], report["certificate_rows"])
+        for (_, row), name, key, verdict, commit in zip(
+                report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json", "rotated.json", "stale.json", "unheld.json", "withdrawn.json"),
+                ("key 2 · " + PUBLIC.hex()[:16], "key 2 · " + PUBLIC.hex()[:16]) + ("key 1 · " + OTHER_PUBLIC.hex()[:16],) * 4,
+                ("certified", "certified", "certified", "expired", "repository differs", "revoked"),
+                (self.cert_payload["result"]["commit"][:10],) * 4 + ("e" * 10, self.cert_payload["result"]["commit"][:10])):
+            for text in (name, thread8, "c1", commit, verdict, "Add a CSV export", key, "digest ", "UTC"):
                 self.assertIn(text, row)
-        self.assertIn("digest " + revoked, report["certificate_rows"][4][1])
-        self.assertIn("serve's configuration revokes this certificate: do not treat it as certified", report["certificate_rows"][4][1])
+        self.assertIn("the configured repository holds the commits, trees and diff it states", report["certificate_rows"][0][1])
+        self.assertIn("commit_missing:result", report["certificate_rows"][4][1])
+        self.assertIn("the configured repository does not hold the commits, trees or diff it states: do not treat it as certified", report["certificate_rows"][4][1])
+        self.assertIn("digest " + revoked, report["certificate_rows"][5][1])
+        self.assertIn("serve's configuration revokes this certificate: do not treat it as certified", report["certificate_rows"][5][1])
         stale_end = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime((stale["issued_at"] // 1_000_000) + window))
         self.assertIn("expired " + stale_end + " UTC", report["certificate_rows"][3][1])
         self.assertIn("issued longer ago than serve's validity window: do not treat it as certified", report["certificate_rows"][3][1])
         self.assertIn("expires ", report["certificate_rows"][0][1])
-        for text in ("3 of 5 certificates certified", "2 keys 1 " + OTHER_PUBLIC.hex()[:16] + "…, 2 " + PUBLIC.hex()[:16] + "…",
-                     "1 certificate digest revoked", "valid for 30d after issue, by serve's clock at ", "Not checked: repository",
-                     "syberlabs verify FILE --public KEY --repo .", "SYBERWORK_CERTIFICATE_REVOKED lists reads revoked under every key. ",
+        for text in ("3 of 6 certificates certified", "2 keys 1 " + OTHER_PUBLIC.hex()[:16] + "…, 2 " + PUBLIC.hex()[:16] + "…",
+                     "1 certificate digest revoked", "valid for 30d after issue, by serve's clock at ", "Checked by serve: signature, repository and journal",
+                     "SYBERWORK_CERTIFICATE_REPOSITORY", "where the target ref points now is not judged",
+                     "SYBERWORK_CERTIFICATE_REVOKED lists reads revoked under every key. ",
                      "One issued more than 30d before serve's clock reads expired, and one dated more than 5m after it not yet valid",
                      "The .pub file beside each certificate is not read", "A SyberWork case has none"):
             self.assertIn(text, report["certificate_page"])
