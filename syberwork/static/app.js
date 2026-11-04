@@ -1015,7 +1015,7 @@ function witnessSummary(entry, info) {
   if (entry.error) return [readFailed(entry), witnessAsk(null, info)];
   const v = entry.witness;
   const signs = h('p', {class: 'hint'}, 'Verify history is the server recomputing its own chain. A witness is another process holding its own key: it signs a chain head (', mono('python -m syberlabs.witness'),
-    ') and appends it to its log. ', h('b', {}, 'Ask witness to sign'), ' has serve check the log, then send it this history (', mono('Work.request_witness'), '). A script can call ', mono('Work.submit_witness'), ' directly, without that check.');
+    ') and appends it to its log. ', h('b', {}, 'Ask witness to sign'), ' has serve check the log, then send it this history (', mono('Work.request_witness'), ').');
   if (v.state === 'off') return [h('p', {}, badge('idle', 'not configured'), ' ', h('span', {class: 'why'}, v.text)),
     h('p', {class: 'hint'}, 'Nothing on this page is witnessed.'), witnessAsk(v, info), signs];
   if (v.state === 'unknown') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text), witnessAsk(v, info)];

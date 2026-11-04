@@ -35,9 +35,10 @@ from pathlib import Path
 from urllib.parse import quote
 
 from syberlabs import critic, outcome
+from syberlabs.checks import _stop
 from syberlabs.errors import Rejected
 from syberlabs.session import NoWrite
-from syberlabs.targets import guard_request, trusted_origin
+from syberlabs.targets import credentialed_opener, guard_request, trusted_origin
 
 EFFECTS = ("git_push", "github_pull_request", "command", "intervention")
 _REMOTE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -52,7 +53,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-HTTP = urllib.request.build_opener(_NoRedirect)
+HTTP = credentialed_opener(_NoRedirect)
 
 
 def _line(value) -> str:
@@ -309,8 +310,9 @@ class Command(_Publisher):
             deadline = time.monotonic() + self.timeout
             while proc.poll() is None:
                 if time.monotonic() > deadline or os.fstat(out.fileno()).st_size > MAX_OUTPUT:
-                    proc.kill()
-                    proc.wait()
+                    # End the command and everything it started, as a check's timeout does: ``proc.kill`` ends
+                    # one process and leaves a deploy script's children running past the publish.
+                    _stop(proc)
                     return None, ""
                 time.sleep(0.02)
             out.seek(0)

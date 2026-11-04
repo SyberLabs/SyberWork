@@ -1,5 +1,7 @@
 # Build Thread
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 A Build Thread is one governed change to one local Git repository. It shows why a candidate was accepted or refused, what it changed, and what actually happened. It can be resumed from its record after a crash. It needs Python 3.11+ and `git`, and no account, model, or network.
 
 ## Ten minutes

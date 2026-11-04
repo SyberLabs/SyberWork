@@ -139,7 +139,12 @@ def acceptance_results(contract: dict, history: list) -> list[dict]:
                                   and e["body"]["action"] == clause.get("after_action")), 0)
             passed = any(e["kind"] == "signed" and e["body"]["role"] == clause["role"] and (not clause.get("after_action") or e["seq"] > completed_seq > 0) for e in history)
         elif clause["kind"] == "fact":
-            passed = any(e["kind"] == "observed" and e["body"]["key"] == clause["key"] and e["body"]["value"] == clause.get("equals") for e in history)
+            # The newest observation of the key decides, as admission reads facts; an older matching value does
+            # not. A clause that asks for ``verified`` (or names a ``source``) is held to it.
+            latest = next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == clause["key"]), None)
+            passed = (latest is not None and latest["body"]["value"] == clause.get("equals")
+                      and (not clause.get("verified") or latest["body"].get("verified") is True)
+                      and ("source" not in clause or latest["body"].get("source") == clause["source"]))
         else:
             passed = False
         results.append({"id": clause["id"], "passed": passed})

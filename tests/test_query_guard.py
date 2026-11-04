@@ -48,6 +48,26 @@ class Rules(unittest.TestCase):
         self.assertEqual(guard.judge("x" * 600, max_chars=700), "pass", "the threshold is the host's policy")
         self.assertEqual(guard.judge(CODE, max_lines=5), "pass")
 
+    def test_a_credential_after_a_word_ending_in_a_prefix_is_still_a_credential(self):
+        """hunt-fixes-1, INT-1: on dc69499491 ``task-ghp_...`` passed. The regex found ``sk-`` inside ``task-``, the
+        word-start rule rejected that match, and the scan resumed after the whole token, so the ``ghp_`` behind the
+        hyphen was never seen (likewise ``disk-sk-ant-``, ``see ask-AKIA``); ``key_sk-ant-`` failed on the ``_``. A
+        prefix now counts wherever it is not glued to a preceding letter or digit, and a rejected start resumes one
+        character on (``_patterns.credential_prefixes``). Ordinary words ending in ``sk`` are still not keys."""
+        hidden = [("task-ghp_" + "Z" * 30, "ghp_"), ("disk-sk-ant-api03-" + "a" * 24, "sk-ant-"),
+                  ("see ask-AKIA" + "Z" * 16, "AKIA"), ("key_sk-ant-api03-" + "a" * 24, "sk-ant-"),
+                  ("ghp_" + "Z" * 30, "ghp_"), ("token=xoxb-" + "1" * 12, "xoxb-")]
+        for text, prefix in hidden:
+            with self.subTest(text=text[:20]):
+                self.assertEqual(guard.judge(text), "secret")
+                self.assertEqual(_patterns.credential_prefixes(text), [prefix], "the prefix, never the key itself")
+        for text in ("risk-assessment library for python", "task-list-manager for teams", "disk-cleanup-tool for windows",
+                     "ask-anything-bot source", "the flask-sqlalchemy-utils package", "mask-generation-model weights",
+                     "the task-pricing-run12345678 ask-ant-x"):
+            with self.subTest(text=text):
+                self.assertEqual(guard.judge(text), "pass")
+                self.assertEqual(_patterns.credential_prefixes(text), [])
+
     def test_a_line_copied_from_a_tracked_file_is_blocked_by_its_digest(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -380,7 +400,6 @@ class Process(unittest.TestCase):
         self.assertTrue(guard.authentic(decision, KEY), "the hook's canonical JSON is the host's")
 
     def test_one_credential_pattern_object_and_the_same_policy(self):
-        self.assertIs(guard.CREDENTIAL, _patterns.SECRET)
         self.assertIs(metrics._SECRET, _patterns.SECRET)
         self.assertEqual(_patterns.SECRET.pattern,
                          r"(ghp_|gho_|ghs_|github_pat_|sk-ant-|sk-|xox[abprs]-|AKIA)[A-Za-z0-9_\-]{8,}")
