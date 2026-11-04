@@ -29,7 +29,7 @@ from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import acceptance_results, signer_is_effect_actor
 from syberlabs.evolution import candidate_record, candidate_views, evaluation_record, search_record
-from syberlabs.evidence import verified_reconciliation
+from syberlabs.evidence import record_id, verified_reconciliation
 from syberlabs.jcs import envelope_jcs
 from syberlabs import retention
 from syberlabs.planner import HttpPlanner, planning_context
@@ -425,6 +425,12 @@ class Session:
         the outcome. A proof that is an Attest artifact (``attest_artifact``) is
         recorded as ``unverified`` with reason ``attest_artifact_not_proof``
         whatever the state: Attest observed, the destination did not report.
+        An ``applied`` proof whose ``external_id`` is not a nonempty string (or
+        a proof that is not an object) is recorded as ``unverified`` with reason
+        ``external_id_missing``: a verified reconciliation must cite the
+        destination's record, so the effect stays unresolved. A blank ID, or one
+        with a control, format, separator or surrogate character, counts as
+        missing (``record_id``).
         An action that declares no ``effect`` has no executor and no destination:
         the record is the effect. A claim of such an action that commit left open
         (the process died between ``effect_started`` and ``effect_succeeded``) is
@@ -467,6 +473,13 @@ class Session:
                 "status": "unverified", "reason": "attest_artifact_not_proof", "actor": actor,
             })
             return {"status": "unverified", "reason": "attest_artifact_not_proof", "event": event}
+        if state == "applied" and not (isinstance(proof, dict) and record_id(proof.get("external_id"))):
+            # Without the destination's record id, ``applied`` names no record a verified reconciliation can cite.
+            event = self._append(case_id, "reconciliation_checked", {
+                "proposal_id": proposal_id, "action": proposal["action"],
+                "status": "unverified", "reason": "external_id_missing", "actor": actor,
+            })
+            return {"status": "unverified", "reason": "external_id_missing", "event": event}
         if state == "applied":
             event = self._append(case_id, "reconciled", {
                 "proposal_id": proposal_id, "action": proposal["action"], "success": True, "actor": actor,

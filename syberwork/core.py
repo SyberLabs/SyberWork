@@ -25,8 +25,8 @@ from syberlabs.dsse import CHAIN_HEAD_TYPE, head_payload, verified_payload
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
-from syberlabs.evidence import (AmbiguousRecord, acceptance_results, destination_record, signer_is_effect_actor,
-                                simulation_labeled, verified_reconciliation)
+from syberlabs.evidence import (AmbiguousRecord, acceptance_results, destination_record, record_id,
+                                signer_is_effect_actor, simulation_labeled, verified_reconciliation)
 from syberlabs.evolution import (AUTOMATION_ROLES, candidate_record, candidate_views, evaluation_record, registered,
                                  search_record)
 from syberlabs.jcs import envelope_jcs
@@ -742,7 +742,8 @@ class Work:
             elif (isinstance(record, dict) and record.get("state") == "committed"
                     and record.get("idempotency_key") == proposal_id
                     and record.get("request_digest") == digest(proposal["args"])
-                    and isinstance(record.get("external_id"), str) and record["external_id"]):
+                    and record_id(record.get("external_id"))):
+                # A blank ID, or one with an invisible character, names no record (``record_id``).
                 matched = True
             # A matching record that is an Attest artifact is an observation, not the destination's record (G6).
             if matched and attest_artifact(record):
