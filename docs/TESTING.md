@@ -15,6 +15,30 @@ python -m conformance.clean_install                      # wheel in a fresh venv
 Both unit commands run the same tests; the sharded one is described under
 "Sharded unit suite" below.
 
+## Simulation campaigns
+
+```sh
+PYTHONPATH=. python -m unittest tests.test_simulation -q
+```
+
+`tests/simulation` is one loopback world for every `syberlabs` and
+`syberwork` module except `__main__` and `_patterns`. Each module is named
+by exactly one campaign. A module with no campaign, or a campaign name that
+is not a module, fails `tests.test_simulation`. The peers bind `127.0.0.1`
+and speak HTTP, Git, and the worker the way the cell does. They open no
+external host. The processes are ordinary test processes with the caller's
+environment, the same way publish and provider commands run. The campaigns
+do not replace the unit suite or `conformance/run`.
+
+Two probes assert guards the source does not hold yet: an unverified fact
+hiding a verified one, and a backup that follows a symlink. They are marked
+`expectedFailure`. A fix that makes one pass shows up as an unexpected
+success; remove that marker in the same change. Four more (an encoded
+loopback host, a `{key}` in a source host, a query string on an action URL,
+an observer reading any case) began as expected failures and now pass since
+the security review (#171); they stay as regression tests. The `factory`
+campaign drives the factory package through its CLI and the autonomy loop.
+
 The package has no runtime dependencies and the unit suite needs none. Two
 modules, `tests/test_properties.py` and `tests/test_properties_journal.py`,
 need `hypothesis`; install it with the `test` extra and they run, otherwise
