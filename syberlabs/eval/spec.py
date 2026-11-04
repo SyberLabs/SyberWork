@@ -16,7 +16,11 @@ task_digests, task_set_digest, arm_digests, registered_at, git_commit, git_dirty
 does. A registration is written once: registering the same spec again returns it, and registering a changed spec
 over it is refused (``already_registered``); a changed question is a new eval id. ``registered(spec_path)`` is
 what ``run`` asks first: ``spec_unregistered``, ``spec_modified`` (the spec's digest is not the registered one) and
-``task_modified`` (a task's ``task.json`` or hidden file moved) are refusals, never warnings.
+``task_modified`` (a task's ``task.json`` or hidden file moved) are refusals, never warnings. ``clean_registration``
+is what a real run asks next: a registration whose ``git_dirty`` is not ``false`` or whose ``git_commit`` is not a
+commit id was written from a checkout that differed from its commit (or from no checkout git could read), so its
+digests were computed by code no commit holds, and ``run`` refuses it (``registration_dirty``). ``registered`` itself
+does not ask, so ``score`` and ``report`` still read such an eval's runs.
 
 The schema is JSON Schema (draft 2020-12 vocabulary) held here as a Python value; ``validate`` implements the
 subset it uses (``type``, ``const``, ``enum``, ``properties``, ``required``, ``additionalProperties: false``,
@@ -45,16 +49,21 @@ from typing import Any
 from syberlabs.canonical import canonical, digest
 from syberlabs.economic import check_prices
 from syberlabs.errors import Rejected
+from syberlabs.metrics import METRICS
 
 SPEC_SCHEMA_ID = "syberlabs.eval/spec.v1"
 REGISTRATION_SCHEMA_ID = "syberlabs.eval/registration.v1"
 HARNESS = Path(__file__).resolve().parents[2]  # the SyberWork checkout this package runs from
 NAME = r"^[a-z0-9][a-z0-9_.-]{0,63}$"
 HEX64 = r"^[0-9a-f]{64}$"
+COMMIT = r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"  # a git object id, SHA-1 or SHA-256
 ARM_KINDS = ("single", "repair", "evolve", "evolve_jev", "claude-code")
 HIDDEN_FEEDBACK = ("tails", "status", "none")  # what of a hidden check's result reaches the proposer (module docstring)
 LANES = ("api", "api-hooked", "subscription_local", "seat_team_enterprise", "provider_3p")  # claude_code.LANES
 MAX_TOTAL_DOLLARS = 1000.0
+RUN_METRICS = ("hidden_pass_rate", "hidden_parts_passed", "calls", "host_dollars", "evaluations", "refused_proposals",
+               "safety_gate")  # what score.run_metrics computes for one run, beside the nine of syberlabs.metrics
+METRIC_NAMES = RUN_METRICS + METRICS  # every name a primary_metric, secondary_metrics entry or decision_rule may use
 
 _TEXT = {"type": "string", "minLength": 1, "maxLength": 4000}
 _ARGV = {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 4096}}
@@ -222,6 +231,16 @@ def check(doc: Any) -> list[str]:
         errors.append("$.decision_rule: treatment and baseline must be different arms")
     if rule["metric"] != doc["primary_metric"]["name"]:
         errors.append("$.decision_rule.metric: the decision is taken on the primary metric")
+    named = [("$.primary_metric.name", doc["primary_metric"]["name"]), ("$.decision_rule.metric", rule["metric"])]
+    named += [(f"$.secondary_metrics[{i}].name", item["name"]) for i, item in enumerate(doc["secondary_metrics"])]
+    errors += [f"{where}: {name!r} is not a metric the scorer computes (known: {', '.join(METRIC_NAMES)})"
+               for where, name in named if name not in METRIC_NAMES]
+    try:
+        finite = math.isfinite(float(rule["threshold"]))
+    except OverflowError:
+        finite = False  # an integer beyond the largest float, such as 10**400
+    if not finite:
+        errors.append("$.decision_rule.threshold: must be a number a finite float can hold")
     from syberlabs.eval.runner import run_id
 
     shared = sorted(found for found, count in Counter(run_id(task, arm, seed) for task in doc["tasks"]["ids"]
@@ -363,3 +382,13 @@ def registered(spec_path: str | Path) -> tuple[dict, dict]:
     if arm_digests != registration.get("arm_digests"):
         raise Rejected("spec_modified", "an arm's digest differs from its registration")
     return doc, registration
+
+
+def clean_registration(registration: dict) -> dict:
+    """``registration`` when it was written from a clean checkout of a known commit; else ``registration_dirty``."""
+    commit, dirty = registration.get("git_commit"), registration.get("git_dirty")
+    if dirty is not False or not (isinstance(commit, str) and re.fullmatch(COMMIT, commit)):
+        raise Rejected("registration_dirty", f"{registration.get('eval')} was registered on {str(commit)[:10]} with "
+                       f"git_dirty {json.dumps(dirty)}: its digests were computed by code no commit holds. Before any "
+                       "run, delete its registration.json and register it again from a clean checkout")
+    return registration

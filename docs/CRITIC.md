@@ -1,5 +1,7 @@
 # The critic station
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 An independent reviewer runs as a host check on every candidate, its findings are recorded in the thread's hash chain, an admission rule refuses acceptance while a high finding stands, and the pull request's `Reviewed-by` line is written from that record. The review is evidence a verifier can re-read, not a comment someone remembers.
 
 ## A critic is a check with a schema

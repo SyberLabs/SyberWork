@@ -139,7 +139,7 @@ class Intervention:
             headers["Authorization"] = "Bearer " + token
         try:
             guard_request(self.url)
-        except Rejected:
+        except (Rejected, OSError):   # OSError: the guard could not resolve the host (URLError)
             raise MetricError("metric_unavailable") from None
         request = urllib.request.Request(self.url, headers=headers, method="GET")
         try:

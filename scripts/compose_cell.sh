@@ -4,6 +4,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# docker-compose.yml has no default database password. A throwaway cell gets a random one.
+if [ -z "${SYBERWORK_DB_PASSWORD:-}" ]; then
+  SYBERWORK_DB_PASSWORD="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+fi
+export SYBERWORK_DB_PASSWORD
+
 docker compose build
 docker compose up -d db --wait
 docker compose run --rm -T syberwork syberwork init

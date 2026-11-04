@@ -10,7 +10,7 @@ from typing import Any, Mapping, Protocol
 
 from syberlabs.canonical import canonical
 from syberlabs.errors import Rejected
-from syberlabs.targets import guard_request, trusted_origin
+from syberlabs.targets import credentialed_opener, guard_request, trusted_origin
 
 
 class PlannerRefusal(Rejected):
@@ -50,7 +50,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_HTTP = urllib.request.build_opener(_NoRedirect)
+_HTTP = credentialed_opener(_NoRedirect)
 
 
 class HttpPlanner:
@@ -59,6 +59,8 @@ class HttpPlanner:
     def ensure_configured(self) -> str:
         target = os.getenv("SYBERWORK_PLANNER_URL", "")
         try:
+            if "?" in target:   # a planner URL names an endpoint; a credential in its query would be logged and sent
+                raise Rejected("invalid_target", "planner URL takes no query string")
             trusted_origin(target)
         except Rejected:
             raise PlannerRefusal("planner_unconfigured", "configure an HTTPS or local planner endpoint") from None
@@ -66,12 +68,12 @@ class HttpPlanner:
 
     def propose(self, context: Mapping[str, Any]) -> dict[str, Any]:
         target = self.ensure_configured()
-        guard_request(target)
         headers = {"Content-Type": "application/json"}
         if os.getenv("SYBERWORK_PLANNER_TOKEN"):
             headers["Authorization"] = "Bearer " + os.environ["SYBERWORK_PLANNER_TOKEN"]
         request = urllib.request.Request(target, data=canonical(dict(context)).encode(), headers=headers, method="POST")
         try:
+            guard_request(target)   # a refused address raises Rejected; an unresolved name, URLError
             with _HTTP.open(request, timeout=30) as response:
                 raw = response.read(1024 * 1024 + 1)
             if len(raw) > 1024 * 1024:

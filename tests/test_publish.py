@@ -13,7 +13,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from spec.validate import validate_events
-from syberlabs import Rejected, critic
+from syberlabs import Rejected, critic, metrics
 from syberlabs.providers import PatchProvider
 from syberlabs.publish import GitPush, attribution, evidence, reviewed_by
 from tests.test_build_thread import GOOD, Crash, RepoCase, default_contract, git
@@ -229,6 +229,14 @@ class Publishing(RepoCase):
         self.github.mode = "ok"
         [receipt] = thread.recover()
         self.assertEqual((receipt.status, receipt.external_id), ("succeeded", "1"))
+        # hunt-fixes-1, F1: on dc69499491 the reconciled proof had no destination, so the receipt named the action,
+        # metrics read the thread as never opened, and delivered was false while #1 was open.
+        self.assertEqual(receipt.ref, "github:acme/shop")
+        proof = [e for e in thread.history() if e["kind"] == "reconciled"][-1]["body"]["proof"]
+        self.assertEqual((proof["verified"], proof["destination"], proof["external_id"]), (True, "github:acme/shop", "1"))
+        [item] = metrics.work_items(thread.history())
+        self.assertEqual((item.opened.value, item.pull_request, item.delivered.value), (True, "1", None))
+        self.assertIn("pull request open", item.delivered.note)
         self.assertEqual(len(self.github.pulls), 1)
         self.assertEqual(self.github.pulls[0]["title"], thread.objective)
         self.assertIn(f"thread `{thread.id}`", self.github.pulls[0]["body"])

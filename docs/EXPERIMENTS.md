@@ -1,5 +1,7 @@
 # Experiments: two arms compared from the journal
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 ```bash
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup   # right after start
 syberlabs experiment report --name githits-pilot                    # the arms compared, with every check that applies
@@ -145,12 +147,12 @@ The pilot itself runs a real model with a paid key: Class X (`AGENTS.md`). A nam
 ```bash
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
+syberlabs propose --claude-code --lane api-hooked --trusted-tree --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
 syberlabs run --once                     # one safe step per thread; here, accepting the passing candidate
 
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm on --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
+syberlabs propose --claude-code --lane api-hooked --trusted-tree --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
     --githits --githits-arm on           # the only difference between the arms: the launcher and the skill
 syberlabs run --once
 ```
