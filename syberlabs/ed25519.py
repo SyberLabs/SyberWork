@@ -128,7 +128,11 @@ def sign(seed: bytes, message: bytes) -> bytes:
 
 
 def verify(public: bytes, message: bytes, signature: bytes) -> bool:
-    """True when ``signature`` is an Ed25519 signature of ``message`` by ``public``."""
+    """True when ``signature`` is an Ed25519 signature of ``message`` by ``public``.
+
+    RFC 8032's check and only that: ``public`` may be any 32 bytes that decode, a small-order point included, under
+    which a signature verifies without a seed. ``dsse.verified_payload``, ``verify_chain_head`` and
+    ``verify_certificate`` refuse such a key first (``key_problem``); a caller of this function decides for itself."""
     if len(public) != 32 or len(signature) != 64:
         return False
     try:
@@ -150,9 +154,10 @@ def key_problem(public: object) -> str | None:
     """Why ``public`` is not a key only its seed's holder can sign under, or None when it is one.
 
     ``verify`` takes any 32 bytes, as RFC 8032 does. Under the identity point (``01 00 … 00``) the signature
-    ``R = B, s = 1`` verifies every message; under another point of small order, ``R = B + j·A`` for one of at most
-    eight ``j`` does. Whoever chooses such a key can sign without a seed, so a caller that takes a public key from
-    outside its process checks it here first. A key ``public_from_seed`` derives is a point of the prime-order subgroup: it decodes,
+    ``R = B, s = 1`` verifies every message; under another point of order ``n``, ``R = s·B + j·A`` verifies for
+    about one choice of ``(s, j)`` in ``n``. Whoever chooses such a key can sign without a seed, so a caller that
+    takes a public key from outside its process checks it here first; ``dsse.verified_payload`` and the verifiers
+    above it do. A key ``public_from_seed`` derives is a point of the prime-order subgroup: it decodes,
     ``8·A`` is not the identity, and ``L·A`` is. The answer is one of ``KEY_PROBLEMS``, and stays that word:
 
     - ``not_32_bytes``: not a ``bytes`` of length 32;
