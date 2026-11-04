@@ -1,10 +1,11 @@
-"""Three campaigns. Together they name every production module once.
+"""Four campaigns. Together they name every production module once.
 
 ``cell`` speaks to a real SyberWork HTTP server and its worker.
 ``kernel`` drives the SDK through Git, a journal, a witness log, and the
-same loopback origin. ``libraries`` calls the remaining modules and checks
-what they return. A name that is not a module, or a module named twice,
-fails ``tests.test_simulation``.
+same loopback origin. ``factory`` runs Space-Time Parsing and the autonomy
+slice on the fixture app (``tests.simulation.factory``). ``libraries`` calls
+the remaining modules and checks what they return. A name that is not a
+module, or a module named twice, fails ``tests.test_simulation``.
 """
 
 from __future__ import annotations
@@ -80,6 +81,21 @@ CAMPAIGNS = {
         "syberlabs.query_guard",
         "syberlabs.publish",
         "syberlabs.outcome",
+    ),
+    "factory": (
+        "syberlabs.factory",
+        "syberlabs.factory.attest",
+        "syberlabs.factory.autonomy_cli",
+        "syberlabs.factory.cli",
+        "syberlabs.factory.featuremap",
+        "syberlabs.factory.features",
+        "syberlabs.factory.harness",
+        "syberlabs.factory.independence",
+        "syberlabs.factory.ledger",
+        "syberlabs.factory.loop",
+        "syberlabs.factory.policy",
+        "syberlabs.factory.space",
+        "syberlabs.factory.spec",
     ),
     "libraries": (
         "syberlabs.mappings",

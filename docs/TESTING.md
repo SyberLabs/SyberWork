@@ -30,12 +30,14 @@ external host. The processes are ordinary test processes with the caller's
 environment, the same way publish and provider commands run. The campaigns
 do not replace the unit suite or `conformance/run`.
 
-Six probes assert guards the source does not hold yet: an encoded loopback
-host, a `{key}` in a source host, a query string on an action URL, an
-unverified fact hiding a verified one, an observer reading any case, and a
-backup that follows a symlink. They are marked `expectedFailure`. A fix that
-makes one pass shows up as an unexpected success; remove that marker in the
-same change.
+Two probes assert guards the source does not hold yet: an unverified fact
+hiding a verified one, and a backup that follows a symlink. They are marked
+`expectedFailure`. A fix that makes one pass shows up as an unexpected
+success; remove that marker in the same change. Four more (an encoded
+loopback host, a `{key}` in a source host, a query string on an action URL,
+an observer reading any case) began as expected failures and now pass since
+the security review (#171); they stay as regression tests. The `factory`
+campaign drives the factory package through its CLI and the autonomy loop.
 
 The package has no runtime dependencies and the unit suite needs none. Two
 modules, `tests/test_properties.py` and `tests/test_properties_journal.py`,

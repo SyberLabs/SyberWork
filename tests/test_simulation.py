@@ -18,6 +18,7 @@ from syberwork.core import Work
 
 from tests.simulation.campaigns import run_cell, run_kernel, run_libraries
 from tests.simulation.catalog import gaps
+from tests.simulation.factory import run_factory
 from tests.simulation.cell import Cell
 
 
@@ -38,14 +39,15 @@ class Campaigns(unittest.TestCase):
     def test_libraries(self):
         run_libraries()
 
+    def test_factory(self):
+        run_factory()
+
 
 class KnownDefects(unittest.TestCase):
-    @unittest.expectedFailure
     def test_encoded_loopback_host_is_rejected(self):
         with self.assertRaises(Rejected):
             guard_request("https://127%2e0%2e0%2e1/x")
 
-    @unittest.expectedFailure
     def test_source_host_placeholder_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             work = Work(Path(folder) / "work.sqlite3")
@@ -55,7 +57,6 @@ class KnownDefects(unittest.TestCase):
             finally:
                 work.close()
 
-    @unittest.expectedFailure
     def test_action_query_string_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             work = Work(Path(folder) / "work.sqlite3")
@@ -94,7 +95,6 @@ class KnownDefects(unittest.TestCase):
             finally:
                 work.close()
 
-    @unittest.expectedFailure
     def test_observer_cannot_read_a_case(self):
         with tempfile.TemporaryDirectory() as folder:
             cell = Cell(Path(folder))
