@@ -460,7 +460,7 @@ class HostileSchema(BridgeCase):
             "empty": (b"", "pending"),
             "oversized": (json.dumps({**record, "pad": "x" * 70000}).encode(), "pending"),
             "bad_bytes": (b"\xff\xfe\xfa", "pending"),
-            "nan_state": (b'{"state": NaN}', "unverified"),
+            "nan_state": (b'{"state": NaN}', "pending"),  # strict JSON: NaN is unparsable, like not_json
         }
         typed = {
             "null": None, "number": 0, "string_state": "committed", "wrapped": {"record": record},
@@ -488,7 +488,7 @@ class HostileSchema(BridgeCase):
             "list": (b"[]", "body_type"),
             "string": (b'"proposal"', "body_type"),
             "not_json": (b"{proposal_id:", "invalid_request"),
-            "missing_id": (b"{}", "invalid_request"),
+            "missing_id": (b"{}", "manual_reconciliation_disabled"),  # no proposal_id reads as a manual call, refused
             "null_id": ({"proposal_id": None}, "unknown_proposal"),
             "list_id": ({"proposal_id": [key]}, "unknown_proposal"),
             "object_id": ({"proposal_id": {"$ne": ""}}, "unknown_proposal"),
