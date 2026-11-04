@@ -1,0 +1,6 @@
+{
+  "_comment": "The host's hidden-check catalogue: name -> argv, run in the candidate's worktree. '{python}' is the interpreter. The map names these checks; the worktree never holds them.",
+  "hidden.f1.marker": ["{python}", "-c", "import sys, pathlib; sys.exit(0 if pathlib.Path('fxapp/rules.py').read_text().rstrip().endswith('# F1 delivered') else 1)"],
+  "hidden.f2.marker": ["{python}", "-c", "import sys, pathlib; t = pathlib.Path('fxapp/ingest.py').read_text(); r = pathlib.Path('fxapp/rules.py').read_text(); sys.exit(0 if t.rstrip().endswith('# F2 delivered') and '# F1 delivered' in r else 1)"],
+  "hidden.f3.marker": ["{python}", "-c", "import sys, pathlib; sys.exit(0 if pathlib.Path('fxapp/variants.py').read_text().rstrip().endswith('# F3 delivered') else 1)"]
+}

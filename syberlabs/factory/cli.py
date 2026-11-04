@@ -1027,3 +1027,9 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     populate(parser)
     return run(parser.parse_args(argv))
+
+
+# The autonomy thin slice (docs/FACTORY_AUTONOMY.md) registers its subcommands from its own module; this hook is the
+# only edit this file takes for it. ``main`` and ``syberlabs/cli.py`` look ``populate`` and ``run`` up at call time.
+from syberlabs.factory import autonomy_cli as _autonomy_cli  # noqa: E402
+populate, run = _autonomy_cli.extend(populate, run)
