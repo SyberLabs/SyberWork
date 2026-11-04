@@ -11,11 +11,9 @@ import unittest
 from pathlib import Path
 
 from adapters import anthropic_adapter as adapter
-from benchmarks import model_vs_patch as harness
 from benchmarks.fixtures import FIXTURES, V2, V3
 from benchmarks import simulated_model as simulated
-from benchmarks.fixtures import FIXTURES, V2
-from benchmarks.fixtures import FIXTURES, V2, V3, V4
+from benchmarks.fixtures import V4
 from syberlabs.evolve import CommandMutator, EvolutionaryProvider
 from syberlabs.providers import CommandProvider, model_usage
 from tests.test_build_thread import GOOD, RepoCase
@@ -159,22 +157,6 @@ class Accounting(RepoCase):
         self.assertEqual((provider.calls, provider.usage), (1, [USAGE]))
         self.assertEqual(candidate.signal["model_usage"]["output_tokens"], 300)
 
-    def test_the_harness_copies_the_adapters_tool_usage_into_the_signal(self):
-        """E4 finding 1: ``Patches.search`` passes ``tool_usage`` through beside ``model_usage``, bounded as the kernel does."""
-        script = self.root.parent / "looks.py"
-        tools = {"web_search": 1, "githits": 2, "other": {"Read": 3}, "ignored": 9}
-        script.write_text(textwrap.dedent(f'''\
-            import json, sys
-            json.load(sys.stdin)
-            print(json.dumps({{"candidates": [{{"changes": {json.dumps(GOOD)}, "message": "m"}}], "recommended": [0],
-                              "usage": {json.dumps(USAGE)}, "tool_usage": {json.dumps(tools)}}}))
-            '''))
-        kit = self.kit()
-        thread = kit.start("Add a CSV export")
-        [candidate] = thread.propose(harness.Patches([sys.executable, str(script)], 1, False, 1))
-        self.assertEqual(candidate.signal["tool_usage"], {"web_search": 1, "githits": 2, "other": {"Read": 3}})
-        self.assertEqual(candidate.signal["model_usage"]["output_tokens"], 300)
-
     def test_mutator_call_cap_and_duplicate_refusal(self):
         script = self.root.parent / "mutator.py"
         script.write_text("import json, sys\njson.load(sys.stdin)\nprint(json.dumps({'changes': {'src/n.py': 'x = 1\\n'}}))\n")
@@ -188,29 +170,6 @@ class Accounting(RepoCase):
         self.assertEqual(thread.propose(changes={"src/n.py": "x = 1\n"}), [])
         search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
         self.assertEqual((search["stopped"], search["error"]), ("error", "duplicate"))
-
-    def test_dollars_use_the_price_table(self):
-        self.assertAlmostEqual(harness.dollars([USAGE]), (1200 * 5 + 300 * 25) / 1e6)
-        self.assertAlmostEqual(harness.dollars([{**USAGE, "cache_read_input_tokens": 1000}]), (1200 * 5 + 300 * 25 + 1000 * 0.5) / 1e6)
-        self.assertIsNone(harness.dollars([{**USAGE, "model": "unknown-model"}]))
-
-
-class Harness(unittest.TestCase):
-    def test_every_arm_respects_the_call_budget_and_is_labelled_simulated(self):
-        with tempfile.TemporaryDirectory() as folder:
-            rows = [harness.run("slugify", arm, harness.SIMULATED, 3, seed, Path(folder)) for arm in harness.ARMS for seed in (1, 2)]
-            again = harness.run("slugify", "repair", harness.SIMULATED, 3, 1, Path(folder) / "again")
-        for row in rows:
-            self.assertLessEqual(row["calls"], 1 if row["arm"] == "single" else 3)
-            self.assertTrue(row["simulated"])
-            self.assertIsNone(row["dollars"])
-            self.assertGreater(row["input_tokens"], 0)
-        first = next(r for r in rows if r["arm"] == "repair" and r["seed"] == 1)
-        self.assertEqual({k: again[k] for k in ("solved", "calls", "candidates")}, {k: first[k] for k in ("solved", "calls", "candidates")})
-        report = harness.summarize(rows, 3)
-        self.assertTrue(report.startswith("SIMULATED MODEL"))
-        self.assertIn("best_of_k", report)
-
 
 REFERENCE_FIXES = {
     "crlf_export": {"src/fields.py": '''"""Field report export: render a table and compare it with the committed export."""
@@ -357,7 +316,6 @@ class FixturesV2(unittest.TestCase):
         self.assertEqual(sorted(V2), ["crlf_export", "oauth_state", "settlement", "tool_path"])
         for name in V2:
             self.assertEqual(len(FIXTURES[name]["checks"]), 3, name)
-            self.assertEqual(sorted(harness.contract(name)["evolution"]["evaluation"]["required"]), sorted(FIXTURES[name]["checks"]))
             for slot in FIXTURES[name]["slots"]:
                 self.assertEqual(slot["correct"], [], f"{name}: a v2 slot must hold no correct variant")
         self.assertIsInstance(FIXTURES["crlf_export"]["files"]["src/export.txt"], bytes)
@@ -383,44 +341,6 @@ class FixturesV2(unittest.TestCase):
         ending_in_x = [seed for seed in range(1, 201)
                        if "".join(random.Random(seed).choice(alphabet) for _ in range(24)).endswith("x")]
         self.assertTrue(ending_in_x, "no seed in 1..200 ends in x; the fixture would not flake")
-
-
-class HarnessV2(unittest.TestCase):
-    def test_single_does_not_solve_the_v2_fixtures_with_the_simulated_model_and_journals_sit_beside_rows(self):
-        with tempfile.TemporaryDirectory() as folder:
-            journals = Path(folder) / "out-journals"
-            rows = [harness.run(name, "single", harness.SIMULATED, 6, 1, Path(folder), journals) for name in V2]
-            for row in rows:
-                self.assertFalse(row["solved"], row)
-                self.assertEqual((row["calls"], row["candidates"], row["model"], row["provider_error"]),
-                                 (1, 1, "simulated", None), row)
-                self.assertEqual(row["journal"], f"out-journals/{row['fixture']}-single-1.json")
-                exported = json.loads((Path(folder) / row["journal"]).read_text(encoding="utf-8"))
-                self.assertTrue(exported["chain_valid"])
-                evaluated = [e for e in exported["events"] if e["kind"] == "candidate_evaluated"]
-                self.assertEqual(len(evaluated), 1)
-                self.assertIn("failed", {c["state"] for c in evaluated[0]["body"]["checks"]}, row["fixture"])
-            without = harness.run("tool_path", "single", harness.SIMULATED, 6, 2, Path(folder) / "none")
-        self.assertIsNone(without["journal"], "no --write, no journal")
-        report = harness.summarize(rows, 6)
-        self.assertIn("simulated", report)
-        self.assertIn("provider_error", report.splitlines()[1])
-        for name in V2:
-            self.assertRegex(report, rf"{name}\s+single\s+0/1")
-
-    def test_rows_name_the_served_model_and_the_summary_shows_provider_errors(self):
-        with tempfile.TemporaryDirectory() as folder:
-            missing = Path(folder) / "missing_adapter.py"
-            row = harness.run("pricing", "single", f"{sys.executable} {missing}", 3, 1, Path(folder))
-        self.assertEqual((row["provider_error"], row["model"], row["candidates"], row["solved"]), ("provider_failed", None, 0, False))
-        served = {**row, "seed": 2, "provider_error": None, "model": "claude-sonnet-5-5", "simulated": False,
-                  "input_tokens": 700, "output_tokens": 300, "dollars": 0.0044, "solved": True, "candidates": 1}
-        report = harness.summarize([row, served], 3)
-        line = next(l for l in report.splitlines() if l.startswith("pricing"))
-        self.assertIn("claude-sonnet-5-5", line)
-        self.assertIn("1/2 provider_failed", line)
-        clean = harness.summarize([served], 3)
-        self.assertIn("none", next(l for l in clean.splitlines() if l.startswith("pricing")))
 
 
 # ---- v3 ------------------------------------------------------------------------------------------
@@ -564,7 +484,6 @@ class FixturesV3(unittest.TestCase):
         self.assertEqual(sorted(V3), ["gaps_renumber", "journal_chain", "verify_layers", "worktree_order"])
         for name in V3:
             self.assertGreaterEqual(len(FIXTURES[name]["checks"]), 3, name)
-            self.assertEqual(sorted(harness.contract(name)["evolution"]["evaluation"]["required"]), sorted(FIXTURES[name]["checks"]))
             self.assertTrue(all(path.startswith("src/") for path in FIXTURES[name]["files"]), name)
             for slot in FIXTURES[name]["slots"]:
                 self.assertEqual(slot["correct"], [], f"{name}: a v3 slot must hold no correct variant")
@@ -614,17 +533,6 @@ class FixturesV3(unittest.TestCase):
         self.assertEqual(certificate.format_report(skipped)[-1], "verdict    pass (repository and journal not checked)")
 
 
-class HarnessV3(unittest.TestCase):
-    def test_single_does_not_solve_the_v3_fixtures_with_the_simulated_model(self):
-        with tempfile.TemporaryDirectory() as folder:
-            rows = [harness.run(name, "single", harness.SIMULATED, 6, 1, Path(folder)) for name in V3]
-        for row in rows:
-            self.assertFalse(row["solved"], row)
-            self.assertEqual((row["calls"], row["candidates"], row["evaluations"], row["model"], row["provider_error"]),
-                             (1, 1, 1, "simulated", None), row)
-        report = harness.summarize(rows, 6)
-        for name in V3:
-            self.assertRegex(report, rf"{name}\s+single\s+0/1")
 POLICY_ARMS = ("evolve", "evolve_empirical", "evolve_jev")
 
 
@@ -691,76 +599,6 @@ class SimulatedProfiles(unittest.TestCase):
         rows = self.mutate(None, "base")
         self.assertTrue(all(sum(right) <= 1 for right in rows.values()), rows)
         self.assertNotIn("SIM_PROFILE", os.environ)
-        with self.assertRaises(ValueError):
-            harness.run("pricing", "single", harness.SIMULATED, 1, 1, Path(tempfile.gettempdir()), profile="no_such_profile")
-
-
-class PolicyArms(unittest.TestCase):
-    """The three evolve arms told apart on the ``mutation_rare`` profile, K = 12, five seeds, through the real harness.
-
-    Simulated, so a statement about the harness and the profile, not about a model: where a
-    crossover combines what two mutations fixed, Jev buys crossovers early and both learning
-    policies reach a passing candidate in fewer model calls than the fixed schedule.
-    """
-
-    CALLS, SEEDS, PROFILE = 12, (1, 2, 3, 4, 5), "mutation_rare"
-
-    @classmethod
-    def setUpClass(cls):
-        cls.folder = tempfile.TemporaryDirectory()
-        cls.journals = Path(cls.folder.name) / "rows-journals"
-        cls.rows = [harness.run("pricing", arm, harness.SIMULATED, cls.CALLS, seed, Path(cls.folder.name), cls.journals, cls.PROFILE)
-                    for arm in POLICY_ARMS for seed in cls.SEEDS]
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.folder.cleanup()
-
-    def totals(self, key):
-        return {arm: sum(r[key] for r in self.rows if r["arm"] == arm) for arm in POLICY_ARMS}
-
-    def test_every_row_names_its_policy_and_the_profile_and_stays_within_the_budget(self):
-        expected = {"evolve": ("fixed", "2"), "evolve_empirical": ("empirical", "2"), "evolve_jev": ("jev", "1")}
-        for row in self.rows:
-            self.assertEqual((row["policy"]["name"], row["policy"]["revision"]), expected[row["arm"]], row)
-            self.assertEqual((row["profile"], row["simulated"], row["dollars"], row["model"]), (self.PROFILE, True, None, "simulated"))
-            self.assertLessEqual(row["calls"], self.CALLS)
-            self.assertGreater(row["host_dollars"], 0.0, "the priced contract makes the host observe the simulated usage")
-            exported = json.loads((Path(self.folder.name) / row["journal"]).read_text(encoding="utf-8"))
-            signals = [e["body"]["signal"]["policy"] for e in exported["events"] if e["kind"] == "candidate_registered"]
-            self.assertTrue(signals and all((s["name"], s["revision"]) == expected[row["arm"]] for s in signals), row["arm"])
-            spend = [e["body"]["spend"]["dollars"] for e in exported["events"] if e["kind"] == "candidate_registered"]
-            self.assertTrue(all(d is not None for d in spend), row["arm"])
-
-    def test_jev_needs_fewer_calls_and_fewer_simulated_dollars_than_the_fixed_schedule(self):
-        calls, dollars, solved = self.totals("calls"), self.totals("host_dollars"), self.totals("solved")
-        self.assertLess(calls["evolve_jev"], calls["evolve"], calls)
-        self.assertLess(dollars["evolve_jev"], dollars["evolve"], dollars)
-        self.assertGreaterEqual(solved["evolve_jev"], solved["evolve"], solved)
-
-    def test_empirical_needs_fewer_calls_than_the_fixed_schedule_where_crossover_pays(self):
-        calls = self.totals("calls")
-        self.assertLess(calls["evolve_empirical"], calls["evolve"], calls)
-
-    def test_the_summary_names_the_profile_and_the_policies(self):
-        report = harness.summarize(self.rows, self.CALLS)
-        self.assertIn("Simulated profile: mutation_rare.", report.splitlines()[0])
-        self.assertIn("policy", report.splitlines()[1])
-        for label in ("fixed/2", "empirical/2", "jev/1"):
-            self.assertIn(label, report)
-
-
-class JevPrices(unittest.TestCase):
-    def test_the_prior_comes_from_the_contract_or_is_none(self):
-        doc = harness.contract("pricing")
-        self.assertIsNone(harness.jev_prices(doc))
-        doc["evolution"]["budget"] = {**doc["evolution"]["budget"], "prices": harness.price_table(), "max_dollars": harness.MAX_DOLLARS}
-        prices = harness.jev_prices(doc)
-        self.assertEqual((prices["crossover"], prices["evaluate"]), (0.0, 0.0))
-        self.assertGreater(prices["mutate"], 0.0)
-        self.assertIn("simulated", harness.price_table())
-        self.assertEqual(set(harness.price_table()) - {"simulated"}, set(harness.PRICES))
-
 
 
 # ---- v4 ------------------------------------------------------------------------------------------
@@ -1016,9 +854,7 @@ class FixturesV4(unittest.TestCase):
             self.assertTrue(3 <= len(FIXTURES[name]["files"]) <= 5, (name, len(FIXTURES[name]["files"])))
             self.assertTrue(6 <= len(FIXTURES[name]["checks"]) <= 8, (name, len(FIXTURES[name]["checks"])))
             self.assertEqual(sorted(PARTS_V4[name]), sorted(FIXTURES[name]["checks"]), name)
-            self.assertEqual(sorted(harness.contract(name)["evolution"]["evaluation"]["required"]), sorted(FIXTURES[name]["checks"]))
             self.assertTrue(all(path.startswith("src/") for path in FIXTURES[name]["files"]), name)
-            self.assertLessEqual(len(FIXTURES[name]["files"]), harness.contract(name)["evolution"]["scope"]["max_files"])
             for slot in FIXTURES[name]["slots"]:
                 self.assertEqual(slot["correct"], [], f"{name}: a v4 slot must hold no correct variant")
                 self.assertIn(slot["check"], FIXTURES[name]["checks"])
@@ -1102,19 +938,6 @@ class FixturesV4(unittest.TestCase):
         self.assertEqual(PROMOTION_RANK, {"denied": 0, "not_applied": 1, "admitted": 2, "needs_approval": 2, "unresolved": 3, "promoted": 4})
         self.assertEqual(dashboard.TONE, TONE_EXPECTED)
         self.assertEqual(inspector.INCOMPLETE_REMEDY, "start again with the same objective, or forget")
-
-
-class HarnessV4(unittest.TestCase):
-    def test_single_does_not_solve_the_v4_fixtures_with_the_simulated_model(self):
-        with tempfile.TemporaryDirectory() as folder:
-            rows = [harness.run(name, "single", harness.SIMULATED, 6, 1, Path(folder)) for name in V4]
-        for row in rows:
-            self.assertFalse(row["solved"], row)
-            self.assertEqual((row["calls"], row["candidates"], row["evaluations"], row["model"], row["provider_error"]),
-                             (1, 1, 1, "simulated", None), row)
-        report = harness.summarize(rows, 6)
-        for name in V4:
-            self.assertRegex(report, rf"{name}\s+single\s+0/1")
 
 
 if __name__ == "__main__":

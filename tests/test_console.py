@@ -272,7 +272,7 @@ class ConsoleRoutes(CellCase):
                 self.assertEqual((status, body["error"]), (401, "unauthorized"))
 
     def test_console_reports_planner_configuration_without_disclosing_it(self):
-        url = "http://127.0.0.1:9/plan?secret=abc"
+        url = "http://127.0.0.1:9/plan/secret-abc"
         previous = os.environ.pop("SYBERWORK_PLANNER_URL", None)
         self.addCleanup(lambda: os.environ.__setitem__("SYBERWORK_PLANNER_URL", previous) if previous is not None else os.environ.pop("SYBERWORK_PLANNER_URL", None))
         status, body = self.cell.json("/api/console")
@@ -283,6 +283,8 @@ class ConsoleRoutes(CellCase):
         self.assertEqual(json.loads(raw)["planner_configured"], True)
         self.assertNotIn(b"127.0.0.1:9", raw)
         self.assertNotIn(b"secret", raw)
+        os.environ["SYBERWORK_PLANNER_URL"] = "http://127.0.0.1:9/plan?secret=abc"
+        self.assertFalse(self.cell.json("/api/console")[1]["planner_configured"], "a planner URL takes no query string")
         os.environ["SYBERWORK_PLANNER_URL"] = "http://planner.example.com/plan"
         self.assertFalse(self.cell.json("/api/console")[1]["planner_configured"], "plain HTTP off loopback is not a usable planner")
 
@@ -422,7 +424,9 @@ class ConsoleReadScope(CellCase):
 
     def test_work_item_summary_carries_what_the_top_bar_reads(self):
         case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
-        for who in ("operator", "manager", "supplier"):
+        # An observer-only credential (supplier) attests facts and reads no metric (security review, finding 4).
+        self.assertEqual(self.cell.json("/metrics/work_items", who="supplier")[0], 403)
+        for who in ("operator", "manager"):
             with self.subTest(who):
                 status, body = self.cell.json("/metrics/work_items", who=who)
                 self.assertEqual(status, 200)
@@ -579,7 +583,9 @@ class ConsoleSideRecords(CellCase):
         case = self.case_with_decision()
         events = self.cell.work.inspect(case)["events"]
         expected = self.cell.work.side_channel(case)
-        for who in ("operator", "manager", "supplier", "planner"):
+        # Any principal beyond an observer-only credential (security review, finding 4).
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/side", who="supplier")[0], 403)
+        for who in ("operator", "manager", "planner"):
             with self.subTest(who):
                 self.assertEqual(self.cell.json(f"/api/cases/{case}/side", who=who), (200, expected))
         self.assertEqual([row["seq"] for row in expected], [e["seq"] for e in events], "every new event has its row")
@@ -671,7 +677,8 @@ class ConsoleWitness(CellCase):
         self.attest(other_events)
         self.assertEqual(self.cell.json(f"/api/cases/{case}/witness")[1]["entries"], [], "another case's leaf is not this case's")
         self.attest(events)
-        for who in ("operator", "manager", "supplier", "planner"):
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", who="supplier")[0], 403)  # observer-only
+        for who in ("operator", "manager", "planner"):
             with self.subTest(who):
                 status, body = self.cell.json(f"/api/cases/{case}/witness", who=who)
                 self.assertEqual(status, 200)
@@ -1006,7 +1013,9 @@ class ConsoleCertificates(CellCase):
     def test_the_route_requires_a_token_and_is_read_by_any_principal(self):
         self.assertEqual(self.cell.json("/api/certificates", who=None)[0], 401)
         expected = self.listing()
-        for who in ("manager", "supplier", "planner", "admin"):
+        # Any principal beyond an observer-only credential (security review, finding 4).
+        self.assertEqual(self.cell.json("/api/certificates", who="supplier")[0], 403)
+        for who in ("manager", "planner", "admin"):
             with self.subTest(who):
                 self.assertEqual(self.listing(who), expected)
         self.assertEqual(self.cell.json("/api/console", who="supplier")[1]["certificates"], {"configured": True})
@@ -2293,6 +2302,11 @@ class ConsoleBrowser(CellCase):
         self.assertFalse(any("invented.rule" in row for row in report["mismatch_rules"]), "a rule that does not reproduce the decision is never shown")
         self.assertTrue(report["refused_rules"] and all("unavailable" in row and "unknown_case" in row for row in report["refused_rules"]), report["refused_rules"])
         self.assertIn("amount_exceeds_limit", report["replay"])
+        # The observer-only supplier is refused a key the contract reads from a verified source and cannot read the case.
+        self.assertEqual((report["quote_attest"]["status"], report["quote_attest"]["body"]["error"]), (409, "attestation_denied"))
+        self.assertEqual(report["note_attest"]["status"], 200, report["note_attest"])
+        self.assertEqual(report["receipt_attest"]["status"], 200, report["receipt_attest"])
+        self.assertEqual(report["supplier_case_read"], 403)
         self.assertEqual(len(report["manual"]), 2)
         self.assertTrue(all("unverified" in row for row in report["manual"]))
         self.assertIn("Attest claim", report["manual"][0])

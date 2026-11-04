@@ -14,6 +14,11 @@ An arm is an object in the spec's ``arms`` list (``spec.ARM_SCHEMA``). ``kind`` 
   ``max_turns``, ``mcp_config`` and ``executable`` (a stand-in ``claude`` for tests), and ``githits`` passed through
   by name to the provider's keyword of that name;
   a ``githits`` arm's lookups carry the run's thread and the arm's name (``X-GitHits-Session-ID``, ``-Agent``).
+  ``check`` refuses at spec validation what the provider would refuse when built: ``githits`` with ``bare`` (no
+  ``--settings`` hook runs under ``--bare``), ``bare`` with lane ``api-hooked`` (that lane is the API key without
+  ``--bare``), lane ``api`` without ``bare`` (use ``api-hooked``), and, as the spec has no override, ``bare`` with
+  ``WebSearch`` or ``WebFetch`` in ``tools`` or with any ``mcp_config`` (those lookups would leave unscreened; the
+  provider builds an ``mcp_config`` naming no server, which an arm has no use for).
   The runner does not set Claude Code's model: the arm's ``model`` and ``effort`` are the spec's declaration, and the
   model that served is in the candidate's ``signal.harness``.
 
@@ -52,7 +57,7 @@ EVOLVE_ONLY = ("population", "generations", "crossover_every")
 CLAUDE_ONLY = ("lane", "bare", "trusted_tree", "tools", "max_turns", "githits", "mcp_config", "executable")
 # Removed from the environment while an arm proposes; restored after (the certificate seed variable is added).
 WITHHELD_ENV = ("GITHUB_TOKEN", "GH_TOKEN")
-NOMINAL_CALL = (2000, 500)  # tokens in, out: Jev's prior price of one mutation (benchmarks/model_vs_patch.py)
+NOMINAL_CALL = (2000, 500)  # tokens in, out: Jev's prior price of one mutation
 HIDDEN_PREFIX = "hidden."  # tasks.HIDDEN_PREFIX: the contract names every hidden check hidden.<name>
 
 
@@ -70,10 +75,31 @@ def check(arm: dict, budget: dict) -> list[str]:
         errors += [f"{key}: only for evolve arms" for key in EVOLVE_ONLY if key in arm]
     if kind == "single" and arm.get("max_calls", 1) != 1:
         errors.append("max_calls: a single arm makes one call")
-    if kind == "claude-code" and arm.get("bare") and arm.get("lane") in ("subscription_local", "seat_team_enterprise"):
-        errors.append("lane: --bare never reads a Claude login")
+    if kind == "claude-code":
+        errors += claude_code_lane(arm)
     if "max_calls" in arm and arm["max_calls"] > budget["calls"]:
         errors.append(f"max_calls: above the spec's budget.calls ({budget['calls']})")
+    return errors
+
+
+def claude_code_lane(arm: dict) -> list[str]:
+    """The provider's lane refusals (``claude_code.ClaudeCodeProvider``) for a claude-code arm, as spec errors."""
+    from syberlabs.claude_code import HOOKED, web_tools
+    bare, lane, errors = arm.get("bare") is True, arm.get("lane"), []
+    if bare and lane in ("subscription_local", "seat_team_enterprise"):
+        errors.append("lane: --bare never reads a Claude login")
+    if bare and lane == HOOKED:
+        errors.append(f"lane: {HOOKED} is the API-key lane without --bare, so the query guard's hook runs; drop bare")
+    if not bare and lane == "api":
+        errors.append(f"lane: the api lane is --bare; for the API key without --bare use {HOOKED}")
+    if bare and arm.get("githits") is True:
+        errors.append(f"githits: refused with bare, where no --settings hook runs; use lane {HOOKED} with trusted_tree")
+    if bare and web_tools(arm.get("tools") or []):
+        errors.append(f"tools: {', '.join(web_tools(arm['tools']))} with bare would leave unscreened (no hook runs "
+                      f"under --bare); use lane {HOOKED} with trusted_tree")
+    if bare and "mcp_config" in arm:
+        errors.append(f"mcp_config: an MCP server's lookups with bare would leave unscreened (no hook runs under "
+                      f"--bare); use lane {HOOKED} with trusted_tree")
     return errors
 
 

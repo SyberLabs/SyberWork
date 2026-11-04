@@ -1,11 +1,14 @@
 # One organization, one database. Run `syberwork init` before `serve`.
 # The home directory is /home/syber/cell, owned by uid 10001, the same path the image creates.
+# SYBERWORK_DB_PASSWORD must be set (there is no default password); scripts/compose_cell.sh generates one.
+# The service listens on 0.0.0.0 inside its container so Docker can forward to it, and Docker publishes that
+# port on the host's loopback only. Widening the mapping is the operator's decision on the host (docs/DEPLOY.md).
 services:
   db:
     image: postgres:16
     environment:
       POSTGRES_USER: syber
-      POSTGRES_PASSWORD: syber
+      POSTGRES_PASSWORD: ${SYBERWORK_DB_PASSWORD:?set SYBERWORK_DB_PASSWORD for the cell database}
       POSTGRES_DB: syberwork
     volumes:
       - syberwork-db:/var/lib/postgresql/data
@@ -18,13 +21,13 @@ services:
     build: .
     environment: &cell
       SYBERWORK_HOME: /home/syber/cell
-      SYBERWORK_DATABASE: postgresql://syber:syber@db:5432/syberwork
+      SYBERWORK_DATABASE: postgresql://syber:${SYBERWORK_DB_PASSWORD:?set SYBERWORK_DB_PASSWORD for the cell database}@db:5432/syberwork
       SYBERWORK_ORGANIZATION: example
       SYBERWORK_BIND: 0.0.0.0
       SYBERWORK_EFFECTS: worker
       SYBERWORK_TRACE: "1"
     ports:
-      - "8766:8766"
+      - "127.0.0.1:8766:8766"
     depends_on:
       db:
         condition: service_healthy

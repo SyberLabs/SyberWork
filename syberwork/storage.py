@@ -27,7 +27,7 @@ def _statements(sql: str) -> list[str]:
     return [part.strip() for part in sql.split(";") if part.strip()]
 
 
-_MIGRATIONS: list[tuple[str, str]] = [
+_MIGRATIONS: list[tuple[str, str | dict[str, str]]] = [
     ("0001", f"""
         CREATE TABLE IF NOT EXISTS cell_lock (
             id INTEGER PRIMARY KEY,
@@ -273,6 +273,13 @@ _MIGRATIONS: list[tuple[str, str]] = [
             UNIQUE (evaluation_event_hash)
         );
     """),
+    # ``units`` admits amounts up to 2**63-1, but 0001 created ``amount_units`` as INTEGER, which PostgreSQL
+    # stores as int4: a reservation above 2147483647 aborted the commit before the adapter ran. SQLite's
+    # INTEGER is already 64-bit, so only PostgreSQL changes. A dialect-keyed script runs only on its dialect.
+    ("0006", {
+        "sqlite": "",
+        "postgres": "ALTER TABLE economic_reservations ALTER COLUMN amount_units TYPE BIGINT",
+    }),
 ]
 
 
@@ -409,6 +416,8 @@ def migrate(store) -> list[str]:
         for version, script in _MIGRATIONS:
             if version in applied:
                 continue
+            if isinstance(script, dict):
+                script = script.get(store.dialect, "")
             for statement in _statements(script):
                 store.execute(statement)
             store.execute(

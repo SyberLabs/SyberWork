@@ -1,5 +1,7 @@
 # Roadmap status
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 This file tracks the next-stage roadmap (27 September 2026) against what the repository actually does. Each row says whether a claim is **implemented** (code and tests in this repository), **measured** (a number from a named run), or **proposed** (not built). A passing unit test is not evidence that a developer outside SyberLabs can use the kit.
 
 ## Gate 0 — integrate the foundation

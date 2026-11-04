@@ -1,5 +1,7 @@
 # Operator console: UI walkthrough
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 The browser console served by `syberwork serve` at `http://127.0.0.1:8766/`. It is a client of the
 existing case API in `syberwork/server.py`. Every button calls a route that already existed before
 this change, except for the read-only routes listed under "Routes added". The server stays the
@@ -101,7 +103,7 @@ tab or choose **Forget all** to drop them.
 | 8 | scheduler | **Execute** (press twice) | A real POST to the reference system with `Idempotency-Key` and `If-Match`; *Applied · destination acknowledged HTTP 201*. Only the original proposer can execute; anyone else gets *only the original proposer (scheduler) may execute* with a switch link. |
 | 9 | manager | **Sign off as manager** | The sign-off is offered only after `issue_order` has applied, because the server accepts an earlier signature but it never satisfies the clause. The case becomes *Complete*. |
 | 10 | any | History (`5`), then `v` | The server's `/verify` result is recorded with the head it covered (`intact through #13 …`). It is marked stale when newer events arrive. |
-| 11 | manager | History → Witness → **Ask witness to sign** (press twice) | Before: *not witnessed*. Another credential sees the button disabled with *manager role required to ask the witness* and **⇄ switch to manager** (the role is `SYBERWORK_WITNESS_ROLE`). The armed note says the witness appends a leaf that cannot be removed and nothing is written to the case. After: *Witness signed #1–#13*, the panel reads *witnessed through #13* with the leaf, its signed head and *in the log*, and the button is disabled: *a signed head in the log already covers #1–#13*. An event added later is listed as *not witnessed*, and asking again signs the longer history. Without a configured log, **Witness** reads *not configured* and names the variables; a script can still call `Work.submit_witness`. |
+| 11 | manager | History → Witness → **Ask witness to sign** (press twice) | Before: *not witnessed*. Another credential sees the button disabled with *manager role required to ask the witness* and **⇄ switch to manager** (the role is `SYBERWORK_WITNESS_ROLE`). The armed note says the witness appends a leaf that cannot be removed and nothing is written to the case. After: *Witness signed #1–#13*, the panel reads *witnessed through #13* with the leaf, its signed head and *in the log*, and the button is disabled: *a signed head in the log already covers #1–#13*. An event added later is listed as *not witnessed*, and asking again signs the longer history. Without a configured log, **Witness** reads *not configured* and names the variables. |
 
 If the destination is down at step 8, the effect becomes *Outcome unknown · check destination*, the
 case list shows *effect unknown*, and the next move is a manager's **Check destination status**. A 404
@@ -369,7 +371,7 @@ Gaps from #95, closed or still open:
       the log's newest checkpoint covers it. `witness_unavailable` replaces a `500` in three cases, each with its
       own detail: nothing listens on the port; the answer is unreadable; or no answer came within the client's
       30 s. In the last case the witness may still have signed, and the detail says to read the log again (the
-      console does). `Work.submit_witness` is unchanged and still serves scripts. Requests run one at a time in a process, so four
+      console does). `Work.submit_witness` has since been removed. Requests run one at a time in a process, so four
       presses at once append one head (`test_presses_at_once_append_one_head`). Two `serve` processes over one
       database could still both append the same head; that costs a duplicate leaf, not a wrong verdict.
     - **Nothing is written to the case.** The test compares a full dump of the case database before and after. The

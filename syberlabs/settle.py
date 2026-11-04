@@ -148,6 +148,8 @@ def _get(target: Published, token: str, path: str, timeout: float):
         guard_request(url)
     except Rejected as exc:
         raise PollFailed(exc.code) from None
+    except urllib.error.URLError:   # the guard could not resolve the host; no request was made
+        raise PollFailed("network failure (unresolved)") from None
     request = urllib.request.Request(url, method="GET", headers={
         "Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"})
