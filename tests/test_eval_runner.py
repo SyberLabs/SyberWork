@@ -252,7 +252,8 @@ class HiddenChecks(CanaryPricing):
             self.assertEqual(path.parent.resolve(), self.host.resolve())
             self.assertRegex(path.name, r"^[0-9a-f]{32}$")
         self.assertEqual(sorted(p.name for p in work.iterdir()), ["repo"])
-        self.assertTrue(all(not os.access(p, os.W_OK) for p in staged.rglob("*") if p.is_file()), "read-only")
+        # The mode bits, not os.access: root may write a read-only file, and a container runs as root.
+        self.assertTrue(all(p.stat().st_mode & 0o222 == 0 for p in staged.rglob("*") if p.is_file()), "read-only")
         integrity = bundle["hidden_integrity"]
         self.assertEqual([(h["point"], h["match"]) for h in integrity["hashes"]],
                          [(point, True) for point in ("staged", "after_propose", "after_check", "before_accept")])
