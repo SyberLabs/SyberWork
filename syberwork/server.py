@@ -26,6 +26,12 @@ ASSETS = {"app.js": "text/javascript", "model.js": "text/javascript", "style.css
 # reader is an administrator or the approver role, and not an automation credential (model, compiled, search).
 # There is no separate policy-read role; model.js mirrors this to suggest an identity that can read them.
 POLICY_READERS = frozenset({"admin", "manager"})
+# Roles that only attest facts (``syberwork init`` gives the inventory and supplier credentials ``observer``).
+# A principal holding nothing else may post its own source's observations and read its own profile, but it
+# reads no case, contract, certificate or metric: those name every case's inputs, history and amounts.
+ATTEST_ONLY_ROLES = frozenset({"observer"})
+# The first path segments of the reads ``_case_reader`` guards.
+CASE_READS = (("metrics",), ("api", "cases"), ("api", "contracts"), ("api", "certificates"), ("api", "builder"))
 
 
 def _planner_configured() -> bool:
@@ -39,6 +45,11 @@ def _planner_configured() -> bool:
 
 def _policy_reader(roles) -> bool:
     return bool(POLICY_READERS.intersection(roles)) and not AUTOMATION_ROLES.intersection(roles)
+
+
+def _case_reader(roles) -> bool:
+    """Whether a principal may read cases, contracts, certificates and metrics: any role beyond attesting."""
+    return isinstance(roles, list) and bool({r for r in roles if isinstance(r, str)} - ATTEST_ONLY_ROLES)
 
 
 def _source_roles(work: Work) -> dict:
@@ -106,7 +117,37 @@ def _preview(work: Work, case_id: str, data: dict, name: str, roles: list) -> di
             "written": False, "note": "Admission now for a proposal not yet made; nothing was recorded and nothing is reserved"}
 
 
-def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
+class UserFile:
+    """``users.json`` read again whenever it changes, so a removed or rotated credential stops working without a
+    restart. Read on each request by ``stat``; parsed only when its size or modification time moves. A file that
+    is missing, unreadable or not a JSON object of users answers with no users: every bearer is refused (cell
+    principals registered in the database still authenticate)."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self._stamp = None
+        self._users: dict = {}
+
+    def __call__(self) -> dict:
+        try:
+            status = self.path.stat()
+            stamp = (status.st_mtime_ns, status.st_size, status.st_ino)
+        except OSError:
+            self._stamp, self._users = None, {}
+            return {}
+        if stamp != self._stamp:
+            try:
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
+                valid = isinstance(loaded, dict) and all(
+                    isinstance(info, dict) and isinstance(info.get("hash"), str) for info in loaded.values())
+            except (OSError, ValueError):
+                loaded, valid = {}, False
+            self._users = loaded if valid else {}
+            self._stamp = stamp
+        return self._users
+
+
+def serve(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
           witness_role=None, certificates=None):
     httpd = make_server(work, users, host, port, witness_log=witness_log, witness_client=witness_client, witness_role=witness_role,
                         certificates=certificates)
@@ -114,9 +155,12 @@ def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *,
     httpd.serve_forever()
 
 
-def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
+def make_server(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
                 witness_role=None, certificates=None) -> ThreadingHTTPServer:
     """Build the loopback server without starting it. Port 0 picks a free port.
+
+    ``users`` is a mapping of name to ``{hash, roles, sources}``, or a callable returning one on each request
+    (``UserFile``, which ``syberwork serve`` passes, so an edit to ``users.json`` applies without a restart).
 
     ``witness_log`` is a ``TransparencyLog.open_readonly`` reader of the witness's log, or None. It holds no seed and
     cannot append; ``GET /api/cases/{id}/witness`` reads it. ``witness_client`` is a ``WitnessClient`` on the witness's
@@ -124,12 +168,15 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
     both or neither, and only beside the log. Nothing in the code chooses that role; ``syberwork serve`` reads it from
     SYBERWORK_WITNESS_ROLE.
 
-    ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the one public key its certificates are
-    verified under, or None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from
-    SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC.
+    ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the public keys its certificates are
+    verified under (one, or a few during a rotation), with the certificate digests it revokes and its validity window, or
+    None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from SYBERWORK_CERTIFICATE_HOME,
+    SYBERWORK_CERTIFICATE_PUBLIC, SYBERWORK_CERTIFICATE_REVOKED and SYBERWORK_CERTIFICATE_MAX_AGE.
     """
     loopback = host in ("127.0.0.1", "::1", "localhost")
-    if not loopback and os.getenv("SYBERWORK_BIND", "") != host:
+    # An empty host binds every interface. SYBERWORK_BIND names a non-loopback address on purpose, so an empty or
+    # unset value never vouches for one, even when the host is empty too.
+    if not loopback and (not host or not isinstance(host, str) or os.getenv("SYBERWORK_BIND", "") != host):
         raise Rejected("unsafe_bind", "the operator service must bind to loopback")
     if (witness_client is None) != (witness_role is None) or (witness_client is not None and witness_log is None):
         raise Rejected("invalid_runtime", "a witness client needs a role and the witness log, and a role needs a client")
@@ -144,7 +191,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
         def _user(self):
             token = self.headers.get("Authorization", "").removeprefix("Bearer ")
             hashed = hashlib.sha256(token.encode()).hexdigest()
-            for name, info in users.items():
+            current = users() if callable(users) else users
+            for name, info in current.items():
                 if token and hmac.compare_digest(info["hash"], hashed):
                     return {"name": name, **info}
             principal = work.principal_for_token(token)
@@ -186,6 +234,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._static(parts[0], ASSETS[parts[0]])
                     return
                 user = self._user()
+                if any(tuple(parts[:len(prefix)]) == prefix for prefix in CASE_READS) and not _case_reader(user.get("roles", [])):
+                    raise Rejected("forbidden", "a role beyond observer is required to read cases, contracts, certificates, metrics and builder views")
                 if len(parts) in (2, 3) and parts[:2] == ["metrics", "work_items"]:
                     # Per-work-item metrics (docs/METRICS.md): every item, or one thread's, with each number's basis.
                     try:
@@ -208,7 +258,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                                 "witness": {"log": witness_log is not None, "request_role": witness_role},
                                 "certificates": {"configured": certificates is not None}})
                 elif parts == ["api", "certificates"]:
-                    # Admission certificates of Build Threads, each verified by serve under the configured key. A case
+                    # Admission certificates of Build Threads, each verified by serve under a configured key. A case
                     # has none, so there is no per-case route. Without a configured home the answer says so.
                     self._json(certificates.listing() if certificates is not None else certificates_not_configured())
                 elif parts == ["api", "cases"]:
@@ -286,7 +336,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
             self.send_header("Content-Type", mime + "; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'")
+            # default-src does not govern framing: frame-ancestors (and X-Frame-Options for older browsers) does.
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             self.wfile.write(body)
 
@@ -325,7 +377,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     if operation == "facts":
                         if data["source"] not in user.get("sources", []):
                             raise Rejected("source_denied", "actor cannot attest this source")
-                        result = work.observe(case_id, data["key"], data["value"], data["source"], data["version"], actor)
+                        result = work.attest(case_id, data["key"], data["value"], data["source"], data["version"], actor)
                     elif operation == "refresh":
                         result = work.refresh_fact(case_id, data["source"], data["key"], data["record_key"], actor, roles)
                     elif operation == "resolution-request":

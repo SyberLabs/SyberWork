@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -13,9 +14,9 @@ from syberlabs.tlog import TransparencyLog
 from syberlabs.witness import WitnessClient
 
 from .backup import export_cell, restore_cell
-from .certificates import CertificateShelf
+from .certificates import MAX_AGE_LIMIT, MAX_KEYS, MAX_REVOKED, CertificateRepository, CertificateShelf
 from .core import Work
-from .server import serve
+from .server import UserFile, serve
 from .trace import TraceLog
 from .worker import run_available, serve as serve_worker
 
@@ -23,8 +24,9 @@ from .worker import run_available, serve as serve_worker
 def _witness_log(parser):
     """The witness's transparency log, opened read-only, when SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC name one.
 
-    The public key is the hex ``python -m syberlabs.witness`` prints. Half a configuration stops serve rather than
-    serving a console that says no witness is configured.
+    The public key is the hex ``python -m syberlabs.witness`` prints; ``open_readonly`` refuses one no seed derives
+    (``ed25519.key_problem``). Half a configuration stops serve rather than serving a console that says no witness is
+    configured.
     """
     path, public = os.getenv("SYBERWORK_WITNESS_LOG"), os.getenv("SYBERWORK_WITNESS_PUBLIC")
     if not path and not public:
@@ -33,10 +35,10 @@ def _witness_log(parser):
         parser.error("set both SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC, or neither")
     try:
         return TransparencyLog.open_readonly(path, bytes.fromhex(public))
+    except Rejected as exc:  # a ValueError too, so before the one bytes.fromhex raises
+        parser.error(f"witness log: {exc.code}: {exc.detail}")
     except ValueError:
         parser.error("SYBERWORK_WITNESS_PUBLIC must be the witness public key in hex")
-    except Rejected as exc:
-        parser.error(f"witness log: {exc.code}: {exc.detail}")
 
 
 def _witness_request(parser, log):
@@ -66,23 +68,77 @@ def _witness_request(parser, log):
 def _certificates(parser):
     """The certificates under a Build Thread home, when SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC name one.
 
-    The home is the one ``syberlabs certify`` wrote under (``.syberlabs``); the key is the hex in the ``.pub`` file it
-    wrote. Which key to trust is the deployment's decision, so serve never reads it from beside the certificates. Half a
-    configuration stops serve.
+    The home is the one ``syberlabs certify`` wrote under (``.syberlabs``); a key is the hex in the ``.pub`` file it
+    wrote. During a rotation the variable lists the new key and the old ones, separated by commas, at most
+    ``MAX_KEYS``. Which keys to trust is the deployment's decision, so serve never reads one from beside the
+    certificates. Half a configuration, an empty entry or a key listed twice stops serve.
+
+    SYBERWORK_CERTIFICATE_REVOKED lists the digests of certificates no longer to be trusted (the ``digest`` each signed
+    row carries), separated by commas, at most ``MAX_REVOKED``. It is read only beside the other two: a revocation list
+    with no certificates to apply it to, an empty entry, a malformed digest or one listed twice stops serve.
+
+    SYBERWORK_CERTIFICATE_MAX_AGE is the validity window: a whole number of seconds, from 1 to ``MAX_AGE_LIMIT``. Unlike
+    the revocation list, setting it empty stops serve rather than meaning no window: an unset shell variable expanded
+    into it would otherwise turn the window off without a word. It too is read only beside the other two.
+
+    SYBERWORK_CERTIFICATE_REPOSITORY names the Git working tree the certified commits live in (the project
+    ``syberlabs certify`` ran in, or a clone of it). Every signed certificate is then checked against it as
+    ``syberlabs verify --repo`` checks, and one it does not hold fails. Like the window, setting it empty stops serve
+    rather than meaning no repository, and so does a path that is not inside a Git working tree, or git missing. It too
+    is read only beside the other two.
     """
     home, public = os.getenv("SYBERWORK_CERTIFICATE_HOME"), os.getenv("SYBERWORK_CERTIFICATE_PUBLIC")
+    listed = os.getenv("SYBERWORK_CERTIFICATE_REVOKED")
+    age = os.getenv("SYBERWORK_CERTIFICATE_MAX_AGE")
+    repository_path = os.getenv("SYBERWORK_CERTIFICATE_REPOSITORY")
     if not home and not public:
+        if listed:
+            parser.error("SYBERWORK_CERTIFICATE_REVOKED needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
+        if age is not None:
+            parser.error("SYBERWORK_CERTIFICATE_MAX_AGE needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
+        if repository_path is not None:
+            parser.error("SYBERWORK_CERTIFICATE_REPOSITORY needs SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC")
         return None
     if not home or not public:
         parser.error("set both SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC, or neither")
+    keys = []
+    for entry in public.split(","):
+        entry = entry.strip()
+        # bytes.fromhex would also take spaces between the pairs; a key is exactly 64 hex characters.
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", entry):
+            parser.error("SYBERWORK_CERTIFICATE_PUBLIC must be certificate public keys of 64 hex characters, separated by commas")
+        keys.append(bytes.fromhex(entry))
+    if len(keys) > MAX_KEYS:
+        parser.error(f"SYBERWORK_CERTIFICATE_PUBLIC lists more than {MAX_KEYS} keys")
+    if len(set(keys)) != len(keys):
+        parser.error("SYBERWORK_CERTIFICATE_PUBLIC lists a key twice")
+    revoked = []
+    for entry in listed.split(",") if listed else ():
+        entry = entry.strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", entry):
+            parser.error("SYBERWORK_CERTIFICATE_REVOKED must be certificate digests of 64 hex characters, separated by commas")
+        revoked.append(entry.lower())
+    if len(revoked) > MAX_REVOKED:
+        parser.error(f"SYBERWORK_CERTIFICATE_REVOKED lists more than {MAX_REVOKED} digests")
+    if len(set(revoked)) != len(revoked):
+        parser.error("SYBERWORK_CERTIFICATE_REVOKED lists a digest twice")
+    max_age = None
+    if age is not None:
+        # Digits only: int() would also take a sign, underscores and other Unicode digits.
+        if not re.fullmatch(r"[0-9]{1,10}", age.strip()) or not 1 <= int(age) <= MAX_AGE_LIMIT:
+            parser.error(f"SYBERWORK_CERTIFICATE_MAX_AGE must be a whole number of seconds from 1 to {MAX_AGE_LIMIT}")
+        max_age = int(age)
+    repository = None
+    if repository_path is not None:
+        # Empty is refused, not read as no repository: an unset shell variable expanded into it would turn the layer off.
+        if not repository_path.strip():
+            parser.error("SYBERWORK_CERTIFICATE_REPOSITORY must name a Git working tree")
+        try:
+            repository = CertificateRepository(repository_path)
+        except Rejected as exc:
+            parser.error(f"SYBERWORK_CERTIFICATE_REPOSITORY: {exc.code}: {exc.detail}")
     try:
-        key = bytes.fromhex(public.strip())
-    except ValueError:
-        key = b""
-    if len(key) != 32:
-        parser.error("SYBERWORK_CERTIFICATE_PUBLIC must be the certificate public key: 64 hex characters")
-    try:
-        return CertificateShelf(home, key)
+        return CertificateShelf(home, tuple(keys), tuple(revoked), max_age, repository=repository)
     except Rejected as exc:
         parser.error(f"certificates: {exc.code}: {exc.detail}")
 
@@ -155,7 +211,7 @@ def main():
         log = _witness_log(parser)
         client, role = _witness_request(parser, log)
         shelf = _certificates(parser)
-        serve(db, json.loads(userfile.read_text()), host=os.getenv("SYBERWORK_BIND", "127.0.0.1"), port=args.port,
+        serve(db, UserFile(userfile), host=os.getenv("SYBERWORK_BIND") or "127.0.0.1", port=args.port,
               witness_log=log, witness_client=client, witness_role=role, certificates=shelf)
     elif args.command == "backup":
         print(json.dumps(export_cell(db, args.directory)))

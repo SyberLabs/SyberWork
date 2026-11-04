@@ -105,3 +105,24 @@ The future Builder UI has a coordination, integrity, and projection backend. It 
 | Evaluation world identity and host binding | Implemented | [EVALUATION_WORLDS.md](EVALUATION_WORLDS.md) phase 1. Migration `0005`. Selection, admission, and `candidate_evaluated` are unchanged. Traces, providers, and runtimes are not built. |
 
 A coordination record is not a case event. A displayed comment, diversity score, agent claim, or architecture snapshot does not admit or promote anything. The command adapter does not attach to a process. Integrity digests are stored, not verified.
+
+## Factory: Space-Time Parsing (plan of 29 October 2026)
+
+| Item | Status | Where |
+| --- | --- | --- |
+| Space graph derived from Python sources, mapped to declared components, with a reflexion drift report | Implemented and tested | `syberlabs/factory/space.py`, `tests/test_factory.py::SpaceTests` |
+| Record a run at full speed with a logical clock; replay effects from the journal; detect divergence | Implemented and tested | `syberlabs/factory/harness.py`, `HarnessTests` |
+| Hash-chained ledger of graphs, runs and attestations with a SQLite projection of cells | Implemented and tested | `syberlabs/factory/ledger.py`, `LedgerTests` |
+| Spec lifecycle, footprint resolution, tickets from a promoted spec | Implemented and tested | `syberlabs/factory/spec.py`, `SpecTests` |
+| Trace diff over a footprint as an in-toto statement, DSSE-signed, with a promotion policy | Implemented and tested | `syberlabs/factory/attest.py`, `AttestTests` |
+| CLI and a self-contained replay viewer | Implemented and tested | `syberlabs factory ...`, `syberlabs/static/factory.html`, `CliTests` |
+| `factory check` as a host-run Build Thread check: a candidate's evaluation cites the trace diff and drift attestation | Implemented and tested | `syberlabs/factory/cli.py::_check`, `tests/test_factory.py::BuildThreadCheck` |
+| Drift opens tickets without a person | Implemented and tested | `factory drift --ticket`, `spec.tickets_from_drift` |
+| Component-level structural diff (refactors pass) with function level recorded beside it | Implemented and tested | `harness.project`, `attest.trace_diff`, `test_a_refactor_inside_a_component_is_not_a_change_at_component_level` |
+| Io observation (subprocess, socket) with masked keys; a weakened compare-and-swap in `gitspace.py` caught on this repository's own Build Thread example | Implemented and tested; one measured run per candidate | `harness.OBSERVERS`, `harness.mask`, `tests/test_factory.py::SelfHosting`, the table in [docs/FACTORY.md](FACTORY.md) |
+| Tests as evidence inside the attestation (`--tests-argv`, gate requires green); promoted specs open tickets (`spec promote --tickets`) | Implemented and tested | `syberlabs/factory/cli.py`, `tests/test_factory.py` |
+| Eleven-component declaration of this repository with zero drift; component-level resolution 78 to 1,075 transitions on the golden run | Implemented, one measured run | `docs/architecture.declared.json`, `test_repository_layering_has_no_drift` |
+| Multi-model spec variants: proposer and reviewer commands, independence and one-acceptance rules, accepted variant becomes the next version | Implemented and tested with stand-in commands; no real model run | `factory spec variants`, `spec.make_variant`, `spec.judge`, `tests/test_factory.py::Variants` |
+| Feature maps: hashed text features plus trace scalars per symbol and component; nearest, moved, impact; the third ticket source | Implemented and tested; one timing observation on this repository | `syberlabs/factory/features.py`, `factory map ...`, `tests/test_factory.py::FeatureMaps` |
+| Replay viewer at scale: grid layout past eight components, io in the panel; 40 scrubs in 39 ms on a 3,275-span run | Implemented; one measured run | `syberlabs/static/factory.html` |
+| Real model adapters behind the commands; a learned vectorizer; journal forking; change coupling | Proposed (v2) | [docs/FACTORY.md](FACTORY.md) |

@@ -47,7 +47,7 @@ from syberlabs.canonical import canonical
 from syberlabs.clock import stamp
 from syberlabs.contracts import prepare_contract
 from syberlabs.dsse import sign_dsse, verified_payload
-from syberlabs.ed25519 import public_from_seed
+from syberlabs.ed25519 import key_problem, public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import verified_reconciliation
@@ -386,7 +386,11 @@ def load_seed(env_name: str = DEFAULT_SEED_ENV) -> bytes:
 
 
 def read_public(path: str | Path) -> bytes:
-    """The 32-byte Ed25519 public key from a file of 64 hex characters (``<certificate>.pub``)."""
+    """The 32-byte Ed25519 public key from a file of 64 hex characters (``<certificate>.pub``).
+
+    A key ``ed25519.key_problem`` names a problem for (the identity, another small-order point, a mixed-order point,
+    or no point at all) is refused as ``public_key_invalid``, the problem's word last: under a small-order key anyone
+    can write a signature that verifies, with no seed."""
     try:
         text = Path(path).read_bytes().strip().decode("ascii", errors="replace")
     except (OSError, ValueError):
@@ -394,6 +398,9 @@ def read_public(path: str | Path) -> bytes:
     key = _hex32(text)
     if key is None:
         raise Rejected("public_key_invalid", f"{path} must hold 64 hex characters")
+    problem = key_problem(key)
+    if problem is not None:
+        raise Rejected("public_key_invalid", f"{path} is not a key only a seed's holder can sign under: {problem}")
     return key
 
 
@@ -498,13 +505,20 @@ def verify_certificate(envelope: object, public: bytes, *, repo: Repo | None = N
     links, and ``claims`` recomputed on that prefix equals the certificate leaf by leaf. The
     first failure stops the run. Nothing is executed and nothing is written: the journal is read
     without its lock, and a torn final record is ignored and reported, never truncated.
+
+    Before layer 1, ``public`` itself: one ``ed25519.key_problem`` names a problem for fails the
+    signature layer as ``public_key_invalid``, the problem's word last in the note, and the
+    envelope is not read. Under a small-order key anyone can sign without a seed.
     """
-    keyid = public.hex()
+    problem = key_problem(public)
+    keyid = public.hex() if problem != "not_32_bytes" else None
     states: list[str | None] = [None, None, None]
     notes = ["", "", ""]
     payload = None
     layer = 0
     try:
+        if problem is not None:
+            raise _Fail("public_key_invalid", f"not a key only a seed's holder can sign under: {problem}")
         payload = _layer_signature(envelope, public)
         states[0], notes[0] = "ok", _describe(payload, keyid)
         layer = 1

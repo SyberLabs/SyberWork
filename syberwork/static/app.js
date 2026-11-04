@@ -58,6 +58,8 @@ function ago(sec) {
   if (s < 86400) return Math.round(s / 3600) + 'h ago';
   return Math.round(s / 86400) + 'd ago';
 }
+// A certificate time (integer microseconds) in UTC, to the second, the same on every viewer's machine.
+const utc = us => new Date(Math.floor(us / 1000)).toISOString().slice(0, 19).replace('T', ' ') + ' UTC';
 const span = d => d >= 86400 ? Math.round(d / 86400) + 'd' : d >= 3600 ? Math.round(d / 3600) + 'h' : d >= 60 ? Math.round(d / 60) + 'm' : d + 's';
 
 // A status badge. The glyph and the words carry the meaning; the color repeats it.
@@ -1007,7 +1009,7 @@ function witnessPanel(info) {
           mono('<home>/certificates'), '; a case is not a Build Thread and has none. Nothing on this case is drawn as certified.'),
         configured
           ? h('div', {class: 'act'}, h('button', {type: 'button', class: 'btn', onclick: openCertificates}, 'Open certificates in Studio'),
-            h('span', {class: 'why'}, 'the Build Thread certificates serve reads, each verified by serve under the key it was given'))
+            h('span', {class: 'why'}, 'the Build Thread certificates serve reads, each verified by serve under the keys it was given'))
           : h('p', {class: 'muted'}, 'serve reads no certificates: set ', mono('SYBERWORK_CERTIFICATE_HOME'), ' and ', mono('SYBERWORK_CERTIFICATE_PUBLIC'), '.'))));
 }
 function witnessSummary(entry, info) {
@@ -1202,7 +1204,12 @@ function openCertificates() {
   go('studio');
 }
 // Admission certificates (docs/CERTIFICATE.md) of Build Threads, from GET /api/certificates. serve verifies each file under
-// the key it was given; the console checks no signature, and draws as certified only what M.certificateView reads so.
+// the keys it was given; the console checks no signature, and draws as certified only what M.certificateView reads so.
+// With more than one key (a rotation), each signed row names the key that verified it. Each signed row shows its digest,
+// which SYBERWORK_CERTIFICATE_REVOKED lists to revoke it; a revoked row reads revoked, beside what it states. With a
+// validity window (SYBERWORK_CERTIFICATE_MAX_AGE), each signed row says when it expires, as serve's clock reckons it. With a
+// repository (SYBERWORK_CERTIFICATE_REPOSITORY), the hint names it among the layers serve checked, and a row it fails reads
+// repository differs or unreadable.
 function studioCertificates() {
   if (!state.certificates) {
     const read = api('/api/certificates').then(body => ({view: M.certificateView(body)}), error => ({error}));
@@ -1222,7 +1229,10 @@ function certificatesView(entry) {
   if (v.state === 'unknown') return [badge('unknown', 'unknown'), ' ', h('span', {class: 'why'}, v.text)];
   const dash = h('span', {class: 'muted'}, '—');
   return [
-    h('p', {}, h('b', {}, v.certified), ' of ', v.shown, ' certificate', v.shown === 1 ? '' : 's', ' certified · key ', mono(M.short(v.publicKey, 16) + '…'),
+    h('p', {}, h('b', {}, v.certified), ' of ', v.shown, ' certificate', v.shown === 1 ? '' : 's', ' certified · ', v.publicKeys.length === 1 ? 'key ' : v.publicKeys.length + ' keys ',
+      v.publicKeys.map((k, i) => [i ? ', ' : '', mono((v.publicKeys.length === 1 ? '' : (i + 1) + ' ') + M.short(k, 16) + '…')]),
+      v.revoked.length ? h('span', {class: 'why'}, ' · ' + v.revoked.length + ' certificate digest' + (v.revoked.length === 1 ? '' : 's') + ' revoked') : null,
+      v.validity ? h('span', {class: 'why'}, ' · valid for ' + span(v.validity.max_age) + ' after issue, by serve\'s clock at ' + utc(v.validity.checked_at)) : null,
       v.truncated ? h('span', {class: 'why warn'}, ' · ' + v.total + ' files; only the first ' + v.shown + ' by name were verified') : null),
     v.rows.length ? h('table', {class: 'grid certificate-rows'}, h('thead', {}, h('tr', {}, ['File', 'Thread · candidate', 'Result', 'Contract', 'Checks', 'Chain', 'Verdict'].map(t => h('th', {}, t)))),
       h('tbody', {}, v.rows.map(r => {
@@ -1236,12 +1246,23 @@ function certificatesView(entry) {
           // is what the key signed, nothing more.
           h('td', {}, st ? st.checks.map(c => h('div', {}, badge(c.state !== 'passed' ? (r.certified ? 'denied' : 'idle') : r.certified ? 'verified' : r.state === 'signed' ? 'pending' : 'idle', c.name + ' ' + c.state))) : dash),
           h('td', {class: 'mono-s'}, st ? '#1–#' + st.chain.count + ' · ' + M.short(st.chain.head, 10) : dash),
-          h('td', {}, badge(r.tone, r.label), r.reason ? [' ', mono(r.reason)] : null, h('div', {class: 'why'}, r.text)));
+          h('td', {}, badge(r.tone, r.label), r.reason ? [' ', mono(r.reason)] : null, h('div', {class: 'why'}, r.text),
+            r.key ? h('div', {class: 'muted mono-s'}, 'key ' + (v.publicKeys.length === 1 ? '' : r.key + ' · ') + M.short(r.statement.keyid, 16) + '…') : null,
+            r.digest ? h('div', {class: 'muted mono-s digest'}, 'digest ' + r.digest) : null,
+            r.expiresAt !== null ? h('div', {class: 'muted mono-s'}, (r.state === 'expired' ? 'expired ' : 'expires ') + utc(r.expiresAt)) : null));
       })))
       : h('p', {class: 'muted'}, 'No certificate files under ', mono('<home>/certificates'), '.'),
-    h('p', {class: 'hint'}, 'Checked by serve: ', v.checked.join(' and ') || 'nothing', '. Not checked: ', v.notChecked.join(', ') || 'nothing',
-      ' (the commits, trees and diff in Git); run ', mono('syberlabs verify FILE --public KEY --repo .'), ' for it. The key is serve\'s configuration (',
-      mono('SYBERWORK_CERTIFICATE_PUBLIC'), '); the .pub file beside each certificate is not read. v0 certificates are signed in the certifying process, not witnessed. The console checks no signature.'),
+    h('p', {class: 'hint'}, ...(v.repository
+      ? ['Checked by serve: signature, repository and journal. The repository is ', mono('SYBERWORK_CERTIFICATE_REPOSITORY'),
+        ': each signed row\'s base and result commits are in it with the trees, changed paths and diff the certificate states; where the target ref points now is not judged.']
+      : ['Checked by serve: ', v.checked.join(' and ') || 'nothing', '. Not checked: ', v.notChecked.join(', ') || 'nothing',
+        ' (the commits, trees and diff in Git); run ', mono('syberlabs verify FILE --public KEY --repo .'), ' for it, or give serve ', mono('SYBERWORK_CERTIFICATE_REPOSITORY'), '.']),
+      ' The keys are serve\'s configuration (',
+      mono('SYBERWORK_CERTIFICATE_PUBLIC'), ', the current key and any still being rotated out; a listed key is trusted until it is removed). A certificate whose digest ',
+      mono('SYBERWORK_CERTIFICATE_REVOKED'), ' lists reads revoked under every key. ', v.validity
+        ? ['One issued more than ', span(v.validity.max_age), ' before serve\'s clock reads expired, and one dated more than ', span(v.validity.skew), ' after it not yet valid (', mono('SYBERWORK_CERTIFICATE_MAX_AGE'), '); the date is the signer\'s, so the window retires old certificates and does not stop a key holder from dating a new one.']
+        : ['There is no validity window (', mono('SYBERWORK_CERTIFICATE_MAX_AGE'), ' sets one).'],
+      ' The .pub file beside each certificate is not read. v0 certificates are signed in the certifying process, not witnessed. The console checks no signature.'),
   ];
 }
 function studioTabs(tabs) {

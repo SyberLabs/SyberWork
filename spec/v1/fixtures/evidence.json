@@ -1,0 +1,62 @@
+{
+  "schema": "evidence.schema.json",
+  "valid": [
+    {
+      "name": "tested, from a host evaluation of an exact tree",
+      "instance": {
+        "claim": "Admission refuses an out-of-menu Decision answer",
+        "grade": "tested",
+        "verified": true,
+        "sources": [{"kind": "evaluation", "ref": "case-42#seq-12"}]
+      }
+    },
+    {
+      "name": "implemented, no source required",
+      "instance": {
+        "claim": "spec/v1 schemas exist",
+        "grade": "implemented",
+        "verified": false,
+        "sources": []
+      }
+    },
+    {
+      "name": "sealed evidence package reopened offline (sectors scar pattern)",
+      "instance": {
+        "claim": "Sector scores and kill conditions as of the seal",
+        "grade": "measured",
+        "verified": true,
+        "sources": [{"kind": "file", "ref": "scar/fixtures/golden.json"}],
+        "sealed": {"schema": "scar.v0.1", "content_hash": "9b0f5c2e4d1a3b7c8e6f0a2d4c6b8e0f1a3c5e7d9b1f3a5c7e9d1b3f5a7c9e1d", "reopen": "offline"}
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a measured claim names its sources",
+      "instance": {
+        "claim": "Kev answers in 360 ms",
+        "grade": "measured",
+        "verified": false,
+        "sources": []
+      }
+    },
+    {
+      "name": "grades are never promoted by wording",
+      "instance": {
+        "claim": "Works in production",
+        "grade": "production-ready",
+        "verified": true,
+        "sources": [{"kind": "url", "ref": "https://rise.syberlabs.io/"}]
+      }
+    },
+    {
+      "name": "a model signal is not a source kind",
+      "instance": {
+        "claim": "The patch is correct",
+        "grade": "tested",
+        "verified": true,
+        "sources": [{"kind": "model_signal", "ref": "candidate c3"}]
+      }
+    }
+  ]
+}

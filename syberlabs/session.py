@@ -19,6 +19,7 @@ import uuid
 from typing import Any, Callable
 
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
+from syberlabs.attest_reconcile_map import attest_artifact
 from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
 from syberlabs.clock import as_seconds, stamp
@@ -28,7 +29,7 @@ from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
 from syberlabs.evidence import acceptance_results, signer_is_effect_actor
 from syberlabs.evolution import candidate_record, candidate_views, evaluation_record, search_record
-from syberlabs.evidence import verified_reconciliation
+from syberlabs.evidence import record_id, verified_reconciliation
 from syberlabs.jcs import envelope_jcs
 from syberlabs import retention
 from syberlabs.planner import HttpPlanner, planning_context
@@ -400,6 +401,12 @@ class Session:
                 self._append(case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"], "error": code})
                 return {"status": "unknown", "proposal_id": proposal_id,
                         "detail": "Check the destination with reconcile; the write might have happened"}
+        if attest_artifact(output):
+            # An Attest artifact is an observation, not the destination's report of this write (G6).
+            self._append(case_id, "effect_unknown", {"proposal_id": proposal_id, "action": proposal["action"],
+                                                     "error": "attest_artifact_not_proof"})
+            return {"status": "unknown", "proposal_id": proposal_id,
+                    "detail": "The executor reported an Attest artifact, not the destination's record; reconcile"}
         result = self._append(case_id, "effect_succeeded", {
             "proposal_id": proposal_id, "action": proposal["action"], "output": output, "claim_hash": claim["hash"],
         })
@@ -415,7 +422,15 @@ class Session:
         ``absent`` (a remote destination does not show the write: ``not_applied``
         only once the claim is older than the executor's ``settle_seconds``,
         pending before that), or anything else (pending). A caller cannot supply
-        the outcome.
+        the outcome. A proof that is an Attest artifact (``attest_artifact``) is
+        recorded as ``unverified`` with reason ``attest_artifact_not_proof``
+        whatever the state: Attest observed, the destination did not report.
+        An ``applied`` proof whose ``external_id`` is not a nonempty string (or
+        a proof that is not an object) is recorded as ``unverified`` with reason
+        ``external_id_missing``: a verified reconciliation must cite the
+        destination's record, so the effect stays unresolved. A blank ID, or one
+        with a control, format, separator or surrogate character, counts as
+        missing (``record_id``).
         An action that declares no ``effect`` has no executor and no destination:
         the record is the effect. A claim of such an action that commit left open
         (the process died between ``effect_started`` and ``effect_succeeded``) is
@@ -452,6 +467,19 @@ class Session:
             state, proof = executor.status(case_id, proposal["args"], proposal_id)
         except Exception as exc:
             state, proof = "unknown", {"error": exc.code if isinstance(exc, Rejected) else "status_unavailable"}
+        if attest_artifact(proof):
+            event = self._append(case_id, "reconciliation_checked", {
+                "proposal_id": proposal_id, "action": proposal["action"],
+                "status": "unverified", "reason": "attest_artifact_not_proof", "actor": actor,
+            })
+            return {"status": "unverified", "reason": "attest_artifact_not_proof", "event": event}
+        if state == "applied" and not (isinstance(proof, dict) and record_id(proof.get("external_id"))):
+            # Without the destination's record id, ``applied`` names no record a verified reconciliation can cite.
+            event = self._append(case_id, "reconciliation_checked", {
+                "proposal_id": proposal_id, "action": proposal["action"],
+                "status": "unverified", "reason": "external_id_missing", "actor": actor,
+            })
+            return {"status": "unverified", "reason": "external_id_missing", "event": event}
         if state == "applied":
             verified = {"verified": True, "external_id": proof["external_id"],
                         "request_digest": digest(proposal["args"]), "response_digest": digest(proof),
