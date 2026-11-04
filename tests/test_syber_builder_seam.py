@@ -158,8 +158,10 @@ class SyberBuilderDefaults(unittest.TestCase):
     ``--actor``, and the environment Syber builds (``syberwork-builder.mjs:350-364``: ``PATH``, a job ``HOME``,
     ``LANG``, ``TERM``, ``CI``, ``PYTHONDONTWRITEBYTECODE``, ``PYTHONPATH`` at SyberWork). The repository discovery,
     the default home and the default actor are then this repository's defaults, not a test's options. No git identity
-    is inherited: ``HOME``, ``USERPROFILE`` and the XDG directories are temporary, the global config is an empty
-    file and the system config is off, so the actor falls back as it does on a Syber host with no identity."""
+    is inherited: ``HOME``, ``USERPROFILE`` and the XDG directories are temporary, so no global config exists. The
+    test's own git calls also get an empty ``GIT_CONFIG_GLOBAL`` and ``GIT_CONFIG_NOSYSTEM``, but ``syberlabs`` drops
+    every ``GIT_*`` variable before it runs git (``gitspace.Repo._env``), so its view still includes the host's system
+    config, as a Syber host's does; the precondition below checks that view has no identity."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -202,8 +204,11 @@ class SyberBuilderDefaults(unittest.TestCase):
                       "-m", "syber: the worktree as this round starts"]):
             code, out, err = self.step(*args, cmd=["git"])
             self.assertEqual(code, 0, out + err)
-        code, identity, _ = self.step("config", "user.email", cmd=["git"])
-        self.assertEqual((code, identity.strip()), (1, ""), "no git identity reaches the job's steps")
+        seen_by_syberlabs = {k: v for k, v in self.env.items() if not k.startswith("GIT_")}  # gitspace.Repo._env
+        done = subprocess.run(["git", "config", "user.email"], cwd=self.worktree, env=seen_by_syberlabs,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        self.assertEqual((done.returncode, done.stdout.strip()), (1, ""),
+                         "no git identity in syberlabs' view (a host system gitconfig with user.email would set one)")
 
         self.assertEqual(self.step("init")[0], 0, "syberwork-builder.mjs:399")
         self.assertTrue((self.worktree / ".syberlabs").is_dir(), "the default home is the worktree's .syberlabs")
