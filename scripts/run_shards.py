@@ -28,7 +28,11 @@ Completeness, checked and never assumed:
 
 * before running, the union of the shards' ids equals the discovered set and no id is
   in two shards, and no discovered test takes the ``unittest`` machinery that starts
-  and reports it (``run``, ``__call__``, ``debug``, ``id``, ...) from outside ``unittest``;
+  and reports it (``run``, ``__call__``, ``debug``, ``id``, ...), or that runs its
+  cleanups and subtests (``doCleanups``, ``subTest``, ...), from outside ``unittest``;
+* while running, the method of every discovered test stays the one its module defined when
+  it was loaded: test code that replaces a test's method (on its class or its instance)
+  fails the shard when the next test starts or this one stops;
 * after running, every shard's stream is intact and finished, it started every id it
   was assigned (or names the class or module fixture that skipped or failed before it
   could start, as ``unittest`` itself does), and the totals add up;
@@ -94,6 +98,11 @@ MAX_CHANNEL_BYTES = 64 * 1024 * 1024
 # turns an expected failure that passed, which fails a run, into a pass).
 HARNESS_METHODS = ("run", "__call__", "debug", "id", "_callTestMethod", "_callSetUp", "_callTearDown",
                    "_callCleanup", "_addExpectedFailure", "_addUnexpectedSuccess")
+# The TestCase methods that register and run a test's cleanups and run its subtests, refused the same way. A
+# class that takes one can swallow its own failures and pass: a ``subTest`` that suppresses what its block
+# raises, a ``doCleanups`` that drops the cleanups, an ``addCleanup`` that never registers them.
+CLEANUP_METHODS = ("addCleanup", "enterContext", "doCleanups", "addClassCleanup", "enterClassContext",
+                   "doClassCleanups", "subTest")
 # What a shard's stream may say about a test, and which ``unittest`` count it adds to.
 OUTCOMES = {"success": None, "failure": "failures", "error": "errors", "skip": "skipped",
             "xfail": "expected_failures", "xpass": "unexpected", "subfailure": "failures", "suberror": "errors"}
@@ -103,11 +112,11 @@ RESULT_METHODS = ("startTest", "stopTest", "addSuccess", "addError", "addFailure
                   "addExpectedFailure", "addUnexpectedSuccess", "wasSuccessful", "stop")
 SUITE_METHODS = ("run", "__call__", "__iter__", "_handleClassSetUp", "_handleModuleFixture", "_tearDownPreviousClass",
                  "_handleModuleTearDown")
-# Also watched at run time, not refused in a test's class: the rest of a test's run (its cleanups and
-# subtests), and the functions of ``unittest.case`` through which ``TestCase.run`` reports a skip or an
-# error. A test that replaced ``_addError`` with a no-op would have every later failure vanish.
-RUN_METHODS = ("doCleanups", "subTest")
+# Also watched at run time: the functions of ``unittest.case`` through which ``TestCase.run`` reports a skip
+# or an error. A test that replaced ``_addError`` with a no-op would have every later failure vanish.
 CASE_FUNCTIONS = ("_addSkip", "_addError")
+# What a test's own method is, by identity: absent from the instance and the class (``_test_method``).
+_ABSENT = object()
 # Files Python could import: one of these, untracked, anywhere in the worktree, is a change a test run sees.
 IMPORTABLE = (".py", ".pyc", ".pyo", ".pyd", ".pth", ".so", ".dll")
 
@@ -123,14 +132,42 @@ def _flatten(suite):
             yield item
 
 
-def discover(start: str, pattern: str, top_level: str | None) -> list:
+def _test_method(test) -> tuple:
+    """Where ``test``'s own test method comes from now, by identity: the instance's attribute of that name, the
+    first class along the MRO that defines it, and what that class holds (each ``_ABSENT`` when there is none)."""
+    name = getattr(test, "_testMethodName", None)
+    if not isinstance(name, str):
+        return _ABSENT, _ABSENT, _ABSENT
+    owner = next((klass for klass in type(test).__mro__ if name in vars(klass)), None)
+    return (getattr(test, "__dict__", {}).get(name, _ABSENT), _ABSENT if owner is None else owner,
+            _ABSENT if owner is None else vars(owner)[name])
+
+
+class _Loader(unittest.TestLoader):
+    """A ``TestLoader`` that records each test's method (``_test_method``) as soon as its module is loaded.
+
+    Recorded per module, before the next test module is imported: a module imported later that replaces an
+    earlier module's test method at import is a change from what was loaded, not part of it.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.loaded: list = []  # (test, its _test_method when its module was loaded)
+
+    def loadTestsFromModule(self, module, *args, **kwargs):
+        suite = super().loadTestsFromModule(module, *args, **kwargs)
+        self.loaded += [(test, _test_method(test)) for test in _flatten(suite) if isinstance(test, unittest.TestCase)]
+        return suite
+
+
+def discover(start: str, pattern: str, top_level: str | None, loader: unittest.TestLoader | None = None) -> list:
     """The test cases ``python -m unittest discover -s START -p PATTERN [-t TOP]`` would run, in its order.
 
     A fresh ``TestLoader``, which is what ``unittest.defaultTestLoader`` is in a process that has not
     discovered before: on Python 3.11 the shared loader keeps the top-level directory of an earlier
     ``discover`` call, so a second call in the same process could resolve a different start directory.
     """
-    return list(_flatten(unittest.TestLoader().discover(start, pattern, top_level)))
+    return list(_flatten((loader or unittest.TestLoader()).discover(start, pattern, top_level)))
 
 
 def _fixture_key(test) -> str | None:
@@ -149,14 +186,19 @@ def _unittest_module(name) -> bool:
 
 
 def _overrides(test) -> list:
-    """The harness methods ``test`` takes from outside the ``unittest`` package (its class or the instance)."""
+    """The harness and cleanup methods ``test`` takes from outside ``unittest`` (its class or the instance)."""
     found = []
-    for name in HARNESS_METHODS:
-        if name in vars(test):
-            found.append(name)
-            continue
+    for name in HARNESS_METHODS + CLEANUP_METHODS:
         owner = next((klass for klass in type(test).__mro__ if name in vars(klass)), None)
-        if owner is not None and not _unittest_module(owner.__module__):
+        from_unittest = owner is not None and _unittest_module(owner.__module__)
+        if name in vars(test):
+            # ``unittest``'s own method bound to this very test is not taken from outside. Hypothesis's ``@given``
+            # replaces ``subTest`` on the instance while it runs, then puts back ``test.subTest`` that way.
+            held = vars(test)[name]
+            if not (from_unittest and getattr(held, "__self__", None) is test
+                    and getattr(held, "__func__", None) is vars(owner)[name]):
+                found.append(name)
+        elif owner is not None and not from_unittest:
             found.append(name)
     return found
 
@@ -441,7 +483,7 @@ class _Child:
 
 
 def _watched() -> dict:
-    return {unittest.TestCase: HARNESS_METHODS + RUN_METHODS, unittest.case: CASE_FUNCTIONS,
+    return {unittest.TestCase: HARNESS_METHODS + CLEANUP_METHODS, unittest.case: CASE_FUNCTIONS,
             unittest.TestSuite: SUITE_METHODS,
             unittest.suite.BaseTestSuite: SUITE_METHODS, unittest.TestResult: RESULT_METHODS,
             unittest.TextTestResult: RESULT_METHODS, _ShardResult: RESULT_METHODS + ("_send", "_report"),
@@ -455,25 +497,35 @@ def _harness_snapshot() -> dict:
 
 
 class _ShardResult(unittest.TextTestResult):
-    def __init__(self, *args, channel=None, pristine=None, **kwargs):
+    def __init__(self, *args, channel=None, pristine=None, loaded=(), **kwargs):
         super().__init__(*args, **kwargs)
         self.channel = channel
         self.pristine = pristine
+        # (test, _test_method) for every discovered test, as its module was loaded. Every one, not only this shard's:
+        # whether a replacement fails the run must not depend on which shard the replaced test was packed into.
+        self.loaded = list(loaded)
         self.changed = False
         self.durations: dict = {}
         self._mark = time.perf_counter()
 
-    def _check_harness(self, test):
-        """Report, once, a test that starts after test code changed how tests are run or reported."""
+    def _check_harness(self, test, at="start"):
+        """Report, once, a test that starts after test code changed how tests are run or reported, or replaced
+        a discovered test's method (by id: what ``unittest`` would call is no longer what its module defined).
+
+        Checked again when the test stops (``at``), which names the test that made the change: its ``setUp`` or
+        body can also give the instance a method that a class could not take (``self.subTest = ...``).
+        """
         if self.pristine is None or self.changed:
             return
         now = _harness_snapshot()
         what = sorted(f"{cls}.{name}" for (cls, name), value in now.items() if self.pristine.get((cls, name)) is not value)
         what += sorted(f"result.{name}" for name in RESULT_METHODS if name in vars(self))
         what += [f"{type(test).__qualname__}.{name}" for name in _overrides(test)]
+        what += sorted({case.id() for case, loaded in self.loaded
+                        if any(a is not b for a, b in zip(_test_method(case), loaded))})
         if what:
             self.changed = True
-            self._send("harness_changed", id=test.id(), what=what)
+            self._send("harness_changed", id=test.id(), what=what, at=at)
 
     def _send(self, event, **fields):
         if self.channel is not None:
@@ -492,6 +544,7 @@ class _ShardResult(unittest.TextTestResult):
         super().startTest(test)
 
     def stopTest(self, test):
+        self._check_harness(test, "stop")
         super().stopTest(test)
         now = time.perf_counter()
         # Time since the previous test ended: includes this test's class and module fixtures.
@@ -548,10 +601,11 @@ def run_child() -> int:
 
     wanted = set(spec["ids"])
     pristine = _harness_snapshot()  # before any test module is imported
-    tests = [t for t in discover(spec["start"], spec["pattern"], spec["top_level"]) if t.id() in wanted]
+    loader = _Loader()
+    tests = [t for t in discover(spec["start"], spec["pattern"], spec["top_level"], loader) if t.id() in wanted]
     runner = unittest.TextTestRunner(
         stream=sys.stderr, verbosity=2, warnings=None if sys.warnoptions else "default",
-        resultclass=lambda *a, **k: _ShardResult(*a, channel=channel, pristine=pristine, **k))
+        resultclass=lambda *a, **k: _ShardResult(*a, channel=channel, pristine=pristine, loaded=loader.loaded, **k))
     result = runner.run(unittest.TestSuite(tests))
 
     def described(pairs):
@@ -621,7 +675,11 @@ def account(messages: list, assigned: list, multiplicity: dict, records: dict) -
                 silent.append(test_id)
             open_id = None
         elif event == "harness_changed":
-            problems.append(f"ran {test_id} after test code changed {', '.join(map(str, message.get('what') or []))}")
+            what = ", ".join(map(str, message.get("what") or []))
+            if message.get("at") == "stop":
+                problems.append(f"test code changed {what} while {test_id} ran")
+            else:
+                problems.append(f"ran {test_id} after test code changed {what}")
         elif event == "done":
             done = message
         else:

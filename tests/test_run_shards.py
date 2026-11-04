@@ -402,6 +402,9 @@ class Stream(unittest.TestCase):
             "after test code changed TestCase.run":
                 [{"ev": "harness_changed", "id": "m.A.test_2", "what": ["TestCase.run"]}]
                 + _ran("m.A.test_1", "m.A.test_2") + done + [_done(2, skipped=1)],
+            "test code changed A.subTest while m.A.test_1 ran":
+                _ran("m.A.test_1") + [{"ev": "harness_changed", "id": "m.A.test_1", "what": ["A.subTest"], "at": "stop"}]
+                + _ran("m.A.test_2") + done + [_done(2, skipped=1)],
         }
         for expected, events in cases.items():
             with self.subTest(expected=expected):
@@ -511,6 +514,64 @@ DROPS_ITS_RESULT = """
             self._outcome.result = None
             raise AssertionError("must fail")
 """
+SWALLOWS_SUBTEST = """
+    import contextlib
+    import unittest
+
+    class Swallow(unittest.TestCase):
+        @contextlib.contextmanager
+        def subTest(self, msg=None, **params):
+            try:
+                yield
+            except Exception:
+                pass
+        def test_fails_in_a_subtest(self):
+            with self.subTest(i=0):
+                self.fail("must fail")
+"""
+DROPS_CLEANUPS = """
+    import unittest
+
+    class Drop(unittest.TestCase):
+        def doCleanups(self):
+            self._cleanups.clear()
+            return True
+        def test_cleanup_fails(self):
+            self.addCleanup(self.fail, "must fail")
+"""
+SWALLOWS_AT_SETUP = """
+    import contextlib
+    import unittest
+
+    class Swallow(unittest.TestCase):
+        def setUp(self):
+            self.subTest = lambda *args, **params: contextlib.suppress(Exception)
+        def test_fails_in_a_subtest(self):
+            with self.subTest(i=0):
+                self.fail("must fail")
+"""
+SWAPS_SUBTEST_LIKE_HYPOTHESIS = """
+    import contextlib
+    import types
+    import unittest
+
+    @contextlib.contextmanager
+    def quiet_subtest(self, msg=None, **params):
+        yield
+
+    class Given(unittest.TestCase):
+        def test_swaps_and_restores(self):  # what Hypothesis's @given does around its examples
+            subTest = self.subTest
+            try:
+                self.subTest = types.MethodType(quiet_subtest, self)
+                with self.subTest(i=0):
+                    pass
+            finally:
+                self.subTest = subTest
+        def test_fails_after(self):
+            with self.subTest(i=0):
+                self.fail("deliberate")
+"""
 PRINTS_PROTOCOL = """
     import unittest
 
@@ -586,6 +647,76 @@ FORGERY_CALLER = """
             raise AssertionError("must run")
 """
 
+# Test code that replaces another test's method, so that the replaced test reports whatever the replacement does.
+# Serial unittest reports OK for each; the runner records every test's method as its module is loaded.
+REPLACES_IN_A_TEST = """
+    import unittest
+
+    class Victim(unittest.TestCase):
+        def test_0_replace(self):
+            Victim.test_1_must_fail = lambda self: None
+        def test_1_must_fail(self):
+            self.fail("must fail")
+"""
+REPLACES_AT_IMPORT = """
+    import unittest
+    from test_r_victim import Victim
+
+    Victim.test_must_fail = lambda self: None
+
+    class Other(unittest.TestCase):
+        def test_ok(self): pass
+"""
+REPLACED_VICTIM = """
+    import unittest
+
+    class Victim(unittest.TestCase):
+        def test_must_fail(self):
+            self.fail("must fail")
+"""
+REPLACES_IN_A_CLASS_FIXTURE = """
+    import unittest
+
+    class Replacer(unittest.TestCase):
+        @classmethod
+        def setUpClass(cls):
+            setattr(Victim, "test_must_fail", lambda self: None)
+        def test_a(self): pass
+
+    class Victim(unittest.TestCase):
+        def test_must_fail(self):
+            self.fail("must fail")
+"""
+# The negative control: what looks like replacing a test method and is not one the loader found. Tests generated
+# at import before their module is loaded, an instance attribute of another name, and a TestCase a test builds and
+# runs itself, whose method it replaces. All pass under both runners.
+NOT_A_REPLACEMENT = """
+    import io, unittest
+
+    def make(n):
+        def test(self):
+            self.assertGreaterEqual(n, 0)
+        return test
+
+    class Generated(unittest.TestCase):
+        def setUp(self):
+            self.test_dir = "scratch"
+        def test_uses_an_attribute(self):
+            self.test_dir = None
+
+    for n in range(3):
+        setattr(Generated, f"test_generated_{n}", make(n))
+
+    class Builds(unittest.TestCase):
+        def test_runs_its_own_inner_case(self):
+            class Inner(unittest.TestCase):
+                def test_x(self):
+                    self.fail("replaced before it runs")
+            Inner.test_x = lambda self: None
+            result = unittest.TextTestRunner(stream=io.StringIO()).run(Inner("test_x"))
+            self.assertTrue(result.wasSuccessful())
+"""
+
 
 class Integrity(unittest.TestCase):
     """Test code runs in the shard's process; these are the ways it can try to lie, and what catches each."""
@@ -628,16 +759,15 @@ class Integrity(unittest.TestCase):
     def test_a_test_that_patches_unittest_while_the_shard_runs_fails_it(self):
         ran = self.run_suite({"test_patch.py": RUNTIME_PATCH})
         self.assertEqual(ran.returncode, 1, ran.stdout)
-        self.assertIn("ran test_patch.AAPatch.test_1_body_never_runs after test code changed "
-                      "TestCase._callTestMethod", ran.stdout)
+        self.assertIn("test code changed TestCase._callTestMethod while test_patch.AAPatch.test_0_patch ran",
+                      ran.stdout)
 
     def test_a_test_that_mutes_how_unittest_reports_an_error_fails_the_shard(self):
         """``TestCase.run`` reports errors and skips through functions of ``unittest.case``; a no-op there makes
         every later failure vanish, and serial ``unittest`` says OK."""
         ran = self.run_suite({"test_mute.py": MUTES_ERRORS})
         self.assertEqual(ran.returncode, 1, ran.stdout)
-        self.assertIn("ran test_mute.AAMute.test_1_failure_vanishes after test code changed "
-                      "unittest.case._addError", ran.stdout)
+        self.assertIn("test code changed unittest.case._addError while test_mute.AAMute.test_0_mute ran", ran.stdout)
         self.assertIn("stopped 1 tests that reported no outcome: test_mute.AAMute.test_1_failure_vanishes",
                       ran.stdout)
         self.assertTrue(_summary(_serial_suite({"test_mute.py": MUTES_ERRORS}))[1].startswith("OK"))  # serial unittest is fooled
@@ -667,6 +797,118 @@ class Integrity(unittest.TestCase):
                 findings = critic_rules.integrity_findings(f"tests/{name}", textwrap.dedent(body).lstrip(), None)
                 self.assertEqual({f["claim"].split("(")[1].split(")")[0] for f in findings}, {rule})
                 self.assertTrue(all(f["severity"] == "high" for f in findings))
+
+    def test_a_test_that_swallows_its_own_subtest_or_cleanup_failures_is_refused_before_anything_runs(self):
+        for name, body, method, test_id in (("test_swallow.py", SWALLOWS_SUBTEST, "subTest",
+                                             "test_swallow.Swallow.test_fails_in_a_subtest"),
+                                            ("test_cleanups.py", DROPS_CLEANUPS, "doCleanups",
+                                             "test_cleanups.Drop.test_cleanup_fails")):
+            with self.subTest(method=method):
+                ran = self.run_suite({name: body})
+                self.assertEqual(ran.returncode, 1, ran.stdout)
+                self.assertIn(f"run_shards: harness_override: {test_id} takes {method} from outside unittest",
+                              ran.stdout)
+                self.assertEqual(_summary(ran.stdout), (0, "FAILED (harness_override=1)"))
+                self.assertTrue(_summary(_serial_suite({name: body}))[1].startswith("OK"))  # serial unittest is fooled
+
+    def test_each_cleanup_and_subtest_method_is_refused_in_a_test_class_whatever_it_does(self):
+        """Refused by where the method comes from, not by what it does: even ``unittest``'s own function,
+        assigned in the class, is taken from outside ``unittest``."""
+        body = "import unittest\n\n" + "".join(
+            f"class T{i}(unittest.TestCase):\n    {name} = unittest.TestCase.{name}\n    def test_a(self): pass\n\n"
+            for i, name in enumerate(run_shards.CLEANUP_METHODS))
+        ran = self.run_suite({"test_takes.py": body})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        for i, name in enumerate(run_shards.CLEANUP_METHODS):
+            self.assertIn(f"harness_override: test_takes.T{i}.test_a takes {name} from outside unittest", ran.stdout)
+        self.assertEqual(_summary(ran.stdout),
+                         (0, f"FAILED (harness_override={len(run_shards.CLEANUP_METHODS)})"))
+
+    def test_a_test_that_swallows_its_subtests_from_set_up_fails_the_shard(self):
+        """The instance takes ``subTest`` in ``setUp``, after the check at the test's start; the check at its
+        stop sees it."""
+        ran = self.run_suite({"test_setup.py": SWALLOWS_AT_SETUP})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertIn("test code changed Swallow.subTest while test_setup.Swallow.test_fails_in_a_subtest ran",
+                      ran.stdout)
+        self.assertTrue(_summary(_serial_suite({"test_setup.py": SWALLOWS_AT_SETUP}))[1].startswith("OK"))  # serial unittest is fooled
+
+    def test_unittest_s_own_subtest_put_back_on_the_instance_is_not_an_override(self):
+        """Hypothesis's ``@given`` replaces ``subTest`` on the instance while it runs and puts back ``unittest``'s
+        own method, bound to the test: that is not taken from outside, and a later failure still counts."""
+        ran = self.run_suite({"test_given.py": SWAPS_SUBTEST_LIKE_HYPOTHESIS})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertNotIn("harness", ran.stdout)
+        self.assertNotIn("test code changed", ran.stdout)
+        self.assertIn("FAIL: test_fails_after (test_given.Given.test_fails_after)", ran.stdout)
+        self.assertRegex(ran.stdout, r"FAILED \((?:[^)]*, )?failures=1")
+
+    def test_the_critic_flags_each_way_of_swallowing_a_failure(self):
+        for name, body, rule in (("test_swallow.py", SWALLOWS_SUBTEST, "harness_override"),
+                                 ("test_cleanups.py", DROPS_CLEANUPS, "harness_override"),
+                                 ("test_setup.py", SWALLOWS_AT_SETUP, "unittest_patch")):
+            with self.subTest(name=name):
+                findings = critic_rules.integrity_findings(f"tests/{name}", textwrap.dedent(body).lstrip(), None)
+                self.assertEqual({f["claim"].split("(")[1].split(")")[0] for f in findings}, {rule})
+                self.assertTrue(all(f["severity"] == "high" for f in findings))
+
+    def test_a_test_that_replaces_another_test_s_method_fails_the_shard(self):
+        """Replaced in a test's body, at import by a module loaded later, or in a class fixture: what ``unittest``
+        would call is no longer the method its module defined when it was loaded. Every discovered test is compared,
+        so which shard the replaced test was packed into does not matter."""
+        rows = (({"test_replace.py": REPLACES_IN_A_TEST},
+                 "test code changed test_replace.Victim.test_1_must_fail while test_replace.Victim.test_0_replace ran"),
+                ({"test_r_victim.py": REPLACED_VICTIM, "test_s_replacer.py": REPLACES_AT_IMPORT},
+                 "after test code changed test_r_victim.Victim.test_must_fail"),
+                ({"test_fixture.py": REPLACES_IN_A_CLASS_FIXTURE},
+                 "ran test_fixture.Replacer.test_a after test code changed test_fixture.Victim.test_must_fail"))
+        for extra, says in rows:
+            with self.subTest(files=sorted(extra)):
+                self.assertTrue(_summary(_serial_suite(extra))[1].startswith("OK"))  # serial unittest is fooled
+                for shards in ("1", "2"):
+                    ran = self.run_suite(extra, "--shards", shards)
+                    self.assertEqual(ran.returncode, 1, ran.stdout)
+                    self.assertIn(says, ran.stdout)
+                    self.assertIn("shard_incomplete", _summary(ran.stdout)[1])
+
+    def test_a_test_that_replaces_its_own_method_on_its_instance_fails_the_shard(self):
+        """Conservative: the test has already fetched its own method, but the instance no longer holds what was
+        loaded, and the runner does not judge what a replacement could do."""
+        body = "import unittest\n\nclass Own(unittest.TestCase):\n    def test_a(self):\n        self.test_a = None\n"
+        ran = self.run_suite({"test_own.py": body})
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertIn("test code changed test_own.Own.test_a while test_own.Own.test_a ran", ran.stdout)
+
+    def test_what_only_looks_like_replacing_a_test_method_passes(self):
+        """The negative control: tests generated before their module is loaded, an instance attribute named
+        test..., and a test case a test builds and runs itself. The run is OK and counts what serial unittest
+        counts."""
+        base = _summary(_serial_suite({}))[0]
+        with tempfile.TemporaryDirectory() as folder:
+            _write_suite(Path(folder), {"test_lookalike.py": NOT_A_REPLACEMENT})
+            serial = _summary(_serial(Path(folder)).stderr)
+            self.assertEqual(serial[0], base + 5)  # the three generated tests are discovered and run
+            for shards in ("1", "2"):
+                ran = _shards(Path(folder), "--shards", shards)
+                self.assertEqual(ran.returncode, 0, ran.stdout)
+                self.assertNotIn("test code changed", ran.stdout)
+                self.assertEqual(_summary(ran.stdout), serial)
+        # The critic matches names, not objects: it flags the inner case's replaced method too (docs/CRITIC.md).
+        findings = critic_rules.integrity_findings("tests/test_lookalike.py",
+                                                   textwrap.dedent(NOT_A_REPLACEMENT).lstrip(), None)
+        self.assertEqual([f["claim"].split(": ")[1] for f in findings], ["assigns Inner.test_x"])
+
+    def test_the_critic_flags_each_replacement(self):
+        for name, body, line in (("test_replace.py", REPLACES_IN_A_TEST, 5),
+                                 ("test_s_replacer.py", REPLACES_AT_IMPORT, 4),
+                                 ("test_fixture.py", REPLACES_IN_A_CLASS_FIXTURE, 6)):
+            with self.subTest(name=name):
+                findings = critic_rules.integrity_findings(f"tests/{name}", textwrap.dedent(body).lstrip(), None)
+                self.assertEqual([(f["line"], f["claim"].split("(")[1].split(")")[0]) for f in findings],
+                                 [(line, "test_replaced")])
+                self.assertTrue(all(f["severity"] == "high" for f in findings))
+        self.assertEqual(critic_rules.integrity_findings("tests/test_r_victim.py",
+                                                         textwrap.dedent(REPLACED_VICTIM).lstrip(), None), [])
 
     def test_bytes_on_the_channel_without_the_nonce_discard_the_shard(self):
         ran = self.run_suite({"test_garbage.py": CHANNEL_GARBAGE})
