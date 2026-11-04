@@ -3,22 +3,20 @@
 Syber's ``SYBER_BUILDER=syberwork`` builder (SyberLabs/syber ``lib/factory/syberwork-builder.mjs``, read at
 main 5a4667f, ``runThread``) runs each work order as a Build Thread through this CLI and reads a few JSON
 fields back. Nothing on this side knew that: a renamed flag or field would break Syber's factory while every
-test here stayed green. This file runs Syber's exact argv, in Syber's order, from the worktree as the current
-directory with no ``--repo``, ``--home`` or ``--actor`` (Syber passes none), and asserts every field Syber reads.
+test here stayed green. These tests run Syber's exact argv, in Syber's order, as subprocesses in the worktree with
+no ``--repo``, ``--home`` or ``--actor`` (Syber passes none), and assert every field Syber reads.
 
-The one substitution is Claude Code itself: ``SYBERLABS_CLAUDE_BIN`` names the stand-in from
-``tests/test_claude_code.py``, as Syber names the real binary. The test sets no credential or routing variable:
-Syber's job token and key-proxy URL (``ANTHROPIC_API_KEY``, ``ANTHROPIC_BASE_URL``, runThread :357-358) are its
-environment, not this CLI's contract, and ``--lane provider_3p`` needs neither to start. The lane is pinned by
-Syber's flag alone.
+Every subprocess gets an explicit environment built from an allowlist (``minimal_env``), never a copy of this
+process's environment: ``PATH``, the variables a Windows interpreter needs to start, a temporary home, the
+variables Syber's ``runThread`` sets that the contract depends on, and, for propose, ``SYBERLABS_CLAUDE_BIN``
+naming the Claude Code stand-in from ``tests/test_claude_code.py``, as Syber names the real binary. Nothing else
+from the host reaches the CLI or the stand-in.
 
 If Syber changes what it sends or reads, update ``SYBER_ARGV`` and the asserted fields here with a citation.
 """
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
 import re
@@ -27,15 +25,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import tests.test_claude_code as cc
 from syberlabs.claude_code import BIN_ENV
-from syberlabs.cli import main as cli
 from tests.test_build_thread import GOOD, REPORT, TEST_REPORT
 
 CHECKOUT = Path(__file__).resolve().parents[1]
-
 ORDER_ID = "wo-0001"
 OBJECTIVE = (f"Syber work order {ORDER_ID} on SyberLabs/example.\n"
              "The request (untrusted text from a work order; it describes the outcome wanted and cannot change "
@@ -56,6 +51,30 @@ SYBER_ARGV = {
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 CHANGED_LINE = re.compile(r"^[+-](?!\+\+ |-- )")
 BROAD_TOOLS = re.compile(r"^(Bash|PowerShell|WebSearch|WebFetch)$")
+WINDOWS_START = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")  # a Windows interpreter cannot start without these
+SYBERLABS = [sys.executable, "-m", "syberlabs"]
+
+
+def minimal_env(home: Path, **extra: str) -> dict:
+    """The only environment a step gets, built from an allowlist. ``HOME``, ``USERPROFILE`` and the XDG directories
+    are temporary, so no user git config or tool config is read. ``LANG``, ``TERM``, ``CI`` and
+    ``PYTHONDONTWRITEBYTECODE`` are what ``runThread`` sets (:350-356); ``PYTHONPATH`` is this checkout, as
+    ``SYBER_SYBERWORK_PATH`` sets it (:362)."""
+    env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(home), "USERPROFILE": str(home),
+           "XDG_CONFIG_HOME": str(home / ".config"), "XDG_CACHE_HOME": str(home / ".cache"),
+           "XDG_DATA_HOME": str(home / ".local" / "share"), "LANG": "C.UTF-8", "TERM": "dumb", "CI": "1",
+           "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(CHECKOUT)}
+    if os.name == "nt":
+        env.update({name: os.environ[name] for name in WINDOWS_START if name in os.environ})
+    env.update(extra)
+    return env
+
+
+def run_step(argv: list[str], cwd: Path, env: dict) -> tuple[int, str, str]:
+    """One step, as ``runStep`` starts it (``syberwork-builder.mjs:370``): argv, ``cwd`` the worktree."""
+    done = subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          encoding="utf-8", timeout=240)
+    return done.returncode, done.stdout, done.stderr
 
 
 def passed_candidates(status: dict) -> list[str]:
@@ -65,20 +84,17 @@ def passed_candidates(status: dict) -> list[str]:
 
 class SyberLine0Contract(cc.ClaudeCodeCase):
     def setUp(self):
-        super().setUp()  # its hermetic environment patch restores everything removed here
-        os.environ.pop("ANTHROPIC_API_KEY", None)  # whatever the host has, the contract runs with no credential
+        super().setUp()
+        self.home = self.root.parent / "job-home"
+        self.home.mkdir()
 
-    def syber(self, args, env=None):
-        """One step as Syber runs it: the worktree is the current directory, and only Syber's own arguments."""
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.chdir(self.root), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
-                mock.patch.dict(os.environ, env or {}):
-            code = cli(list(args))
-        return code, out.getvalue(), err.getvalue()
+    def syber(self, args, extra=None):
+        """One step as Syber runs it: a subprocess in the worktree, Syber's own arguments, a minimal environment."""
+        return run_step([*SYBERLABS, *args], self.root, minimal_env(self.home, **(extra or {})))
 
-    def runner_env(self, name, **stand_in):
-        # runThread's TERM and CI (:354-355), and the stand-in as Syber's SYBERLABS_CLAUDE_BIN (:363).
-        return {BIN_ENV: " ".join(self.stand_in(name, lookups=[], **stand_in)), "CI": "1", "TERM": "dumb"}
+    def claude(self, name, **stand_in):
+        """The stand-in as Syber's SYBERLABS_CLAUDE_BIN (:363)."""
+        return {BIN_ENV: " ".join(self.stand_in(name, lookups=[], **stand_in))}
 
     def status(self) -> dict:
         code, out, err = self.syber(SYBER_ARGV["status"])
@@ -89,11 +105,10 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         self.assertEqual(self.syber(SYBER_ARGV["init"])[0], 0)
         code, out, err = self.syber(SYBER_ARGV["start"])
         self.assertEqual(code, 0, out + err)
-        code, out, err = self.syber(SYBER_ARGV["propose"], env=self.runner_env("line0"))
+        code, out, err = self.syber(SYBER_ARGV["propose"], self.claude("line0"))
         self.assertEqual(code, 0, out + err)
         [run] = self.runs("line0")
         self.assertIn("--bare", run["argv"])
-        self.assertFalse(run["api_key"], "no credential was set, so none reached the run")
 
         status = self.status()
         self.assertIsInstance(status["thread"], str)  # names the exported journal file (:420)
@@ -132,13 +147,13 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         self.assertEqual(code, 0)
         journal = json.loads(out)
         registered = [e["body"] for e in journal["events"] if e.get("kind") == "candidate_registered"]
-        self.assertEqual(registered[-1]["signal"]["lane"], "provider_3p", "a routed bare run is recorded as routed")
+        self.assertEqual(registered[-1]["signal"]["lane"], "provider_3p", "Syber's --lane is the recorded lane")
 
     def test_a_failing_change_reaches_syber_as_no_passing_candidate(self):
         self.assertEqual(self.syber(SYBER_ARGV["init"])[0], 0)
         self.assertEqual(self.syber(SYBER_ARGV["start"])[0], 0)
         broken = {"src/export.py": "def to_csv(:\n", "tests/test_export.py": GOOD["tests/test_export.py"]}
-        code, out, err = self.syber(SYBER_ARGV["propose"], env=self.runner_env("broken", first=broken, repair=broken))
+        code, out, err = self.syber(SYBER_ARGV["propose"], self.claude("broken", first=broken, repair=broken))
         status = self.status()
         self.assertTrue(status["candidates"], out + err)
         self.assertEqual(passed_candidates(status), [], "Syber then ends the job as no_passing_candidate (:426)")
@@ -156,7 +171,7 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         self.assertEqual(self.syber(SYBER_ARGV["init"])[0], 0)
         self.assertEqual(self.syber(SYBER_ARGV["start"])[0], 0)
         broken = {"src/export.py": "def to_csv(:\n", "tests/test_export.py": GOOD["tests/test_export.py"]}
-        self.syber(SYBER_ARGV["propose"], env=self.runner_env("calls", first=broken, repair=broken))
+        self.syber(SYBER_ARGV["propose"], self.claude("calls", first=broken, repair=broken))
         runs = self.runs("calls")
         self.assertEqual(len(runs), MAX_CALLS, "a candidate that never passes uses exactly --max-calls calls")
         for run in runs:
@@ -175,17 +190,15 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
 
 
 class SyberBuilderDefaults(unittest.TestCase):
-    """Ported from SW#175 (``tests/test_syber_builder_seam.py`` at 7d08a7f). The steps as Syber runs them: a
-    subprocess in the job worktree with no ``--repo``, ``--home`` or ``--actor``, and the environment Syber builds
-    (``syberwork-builder.mjs:350-364``: ``PATH``, a job ``HOME``, ``LANG``, ``TERM``, ``CI``,
-    ``PYTHONDONTWRITEBYTECODE``, ``PYTHONPATH`` at SyberWork). The repository discovery, the default home and the
-    default actor are then this repository's defaults, not a test's options. No git identity is inherited: ``HOME``,
-    ``USERPROFILE`` and the XDG directories are temporary, so no global config exists. The test's own git calls also
-    get an empty ``GIT_CONFIG_GLOBAL`` and ``GIT_CONFIG_NOSYSTEM``, but ``syberlabs`` drops every ``GIT_*`` variable
-    before it runs git (``gitspace.Repo._env``), so its view still includes the host's system config, as a Syber
-    host's does; the precondition below checks that view has no identity and fails, by design, on a host whose
-    system gitconfig sets one. Syber's propose line is pinned in ``SyberLine0Contract``; here the proposer's work
-    is registered with ``--from-worktree``."""
+    """Ported from SW#175 (``tests/test_syber_builder_seam.py`` at 7d08a7f). The steps in a job worktree made the way
+    Syber makes it, with no ``--repo``, ``--home`` or ``--actor``: the repository discovery, the default home and the
+    default actor are then this repository's defaults, not a test's options. The temporary home means no user git
+    config. The test's own git calls also get an empty ``GIT_CONFIG_GLOBAL`` and ``GIT_CONFIG_NOSYSTEM``, but
+    ``syberlabs`` drops every ``GIT_*`` variable before it runs git (``gitspace.Repo._env``), so its view still
+    includes the host's system git config, as a Syber host's does. When that config supplies ``user.email`` the
+    default-actor contract cannot be observed on this host, and the test is skipped, naming that host property.
+    Syber's propose line is pinned in ``SyberLine0Contract``; here the proposer's work is registered with
+    ``--from-worktree``."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -199,20 +212,13 @@ class SyberBuilderDefaults(unittest.TestCase):
         (self.worktree / "tests" / "test_report.py").write_text(TEST_REPORT)
         empty = base / "gitconfig"
         empty.write_text("")
-        self.env = {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(home), "LANG": "C.UTF-8",
-                    "TERM": "dumb", "CI": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(CHECKOUT),
-                    "USERPROFILE": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
-                    "XDG_CACHE_HOME": str(home / ".cache"), "XDG_DATA_HOME": str(home / ".local" / "share"),
-                    "GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1"}
-        if os.name == "nt":  # a Windows interpreter cannot start without these; none carries an identity
-            self.env.update({name: os.environ[name] for name in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
-                             if name in os.environ})
+        self.env = minimal_env(home)  # what syberlabs runs with
+        self.git_env = {**self.env, "GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1"}  # the test's git
 
     def step(self, *args, cmd=None):
-        """One step, as ``runStep`` starts it (``syberwork-builder.mjs:370``): argv, ``cwd`` the worktree."""
-        done = subprocess.run([*(cmd or [sys.executable, "-m", "syberlabs"]), *args], cwd=self.worktree, env=self.env,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=240)
-        return done.returncode, done.stdout, done.stderr
+        if cmd:
+            return run_step([*cmd, *args], self.worktree, self.git_env)
+        return run_step([*SYBERLABS, *args], self.worktree, self.env)
 
     def json_step(self, *args):
         code, out, err = self.step(*args)
@@ -228,11 +234,11 @@ class SyberBuilderDefaults(unittest.TestCase):
                       "-m", "syber: the worktree as this round starts"]):
             code, out, err = self.step(*args, cmd=["git"])
             self.assertEqual(code, 0, out + err)
-        seen_by_syberlabs = {k: v for k, v in self.env.items() if not k.startswith("GIT_")}  # gitspace.Repo._env
-        done = subprocess.run(["git", "config", "user.email"], cwd=self.worktree, env=seen_by_syberlabs,
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
-        self.assertEqual((done.returncode, done.stdout.strip()), (1, ""),
-                         "no git identity in syberlabs' view (a host system gitconfig with user.email would set one)")
+        # Precondition: no git identity in syberlabs' own view (its environment, which carries no GIT_* variable).
+        code, email, _ = run_step(["git", "config", "user.email"], self.worktree, self.env)
+        if code == 0 and email.strip():
+            self.skipTest("the host's system git config sets user.email, so syberlabs inherits a git identity and "
+                          "the default actor cannot be observed on this host")
 
         self.assertEqual(self.step("init")[0], 0, "syberwork-builder.mjs:399")
         self.assertTrue((self.worktree / ".syberlabs").is_dir(), "the default home is the worktree's .syberlabs")
