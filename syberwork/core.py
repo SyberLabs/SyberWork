@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -80,22 +81,92 @@ def _destination_code(exc: BaseException) -> str:
     return "destination_error"
 
 
+WRITE_IDENTITY = ("idempotency_key", "request_digest")
+_BLANK = re.compile(r"[ \t\n\r]*")
+_LENIENT = json.JSONDecoder(strict=False)
+
+
+def _object_fields(text: str, index: int) -> tuple[list, int | None]:
+    """The fields of the JSON object that opens at ``text[index]``, in order, up to the first one that cannot be read,
+    and the index just after the object, or None when a field could not be read or the object does not close.
+
+    Values are read Python's lenient way (``NaN``, control characters in strings, any depth the stack allows).
+    """
+    fields = []
+    index = _BLANK.match(text, index + 1).end()
+    if text[index:index + 1] == "}":
+        return fields, index + 1
+    while True:
+        if text[index:index + 1] != '"':
+            return fields, None
+        try:
+            name, index = json.decoder.scanstring(text, index + 1, False)
+            index = _BLANK.match(text, index).end()
+            if text[index:index + 1] != ":":
+                return fields, None
+            value, index = _LENIENT.raw_decode(text, _BLANK.match(text, index + 1).end())
+        except (ValueError, RecursionError):
+            return fields, None
+        fields.append((name, value))
+        index = _BLANK.match(text, index).end()
+        if text[index:index + 1] == "}":
+            return fields, index + 1
+        if text[index:index + 1] != ",":
+            return fields, None
+        index = _BLANK.match(text, index + 1).end()
+
+
+def _leading_records(raw: bytes) -> list:
+    """The top-level fields of each JSON object in a body that opens a JSON object, up to the first unreadable field.
+
+    A body the strict parser refuses (a ``NaN``, too deep, cut off at the read limit) still shows what its first
+    object names before its first unreadable field. A body that carries further JSON values after that object,
+    separated by JSON whitespace or by nothing (concatenated or NDJSON-style records), shows each further object's
+    fields the same way; a value that is not an object is passed over, and anything that is not JSON ends the read.
+    """
+    text = raw.decode(json.detect_encoding(raw), errors="replace")
+    index = _BLANK.match(text).end()
+    if text[index:index + 1] != "{":
+        return []
+    records = []
+    while index < len(text):
+        if text[index:index + 1] == "{":
+            fields, index = _object_fields(text, index)
+            records.append(fields)
+            if index is None:
+                break
+        else:
+            try:
+                _, index = _LENIENT.raw_decode(text, index)
+            except (ValueError, RecursionError):
+                break
+        index = _BLANK.match(text, index).end()
+    return records
+
+
 def _acknowledged_other_write(raw: bytes, key: str, request_digest: str) -> str | None:
     """Code for a write acknowledgement whose body names another write, or None.
 
     A body that names ``idempotency_key`` or ``request_digest`` at its top level must name this write's.
-    A body with no single meaning is ambiguous; a body that is not strict JSON or not an object names nothing.
+    A body with no single meaning is ambiguous. A body that opens a JSON object but is not strict JSON is
+    judged on the identity fields each of its top-level objects names before the first unreadable field; an
+    object that names one of them twice is ambiguous. Any other body names nothing.
     """
     try:
         record = destination_record(raw)
     except AmbiguousRecord:
         return "destination_record_ambiguous"
     except ValueError:
-        return None
-    if not isinstance(record, dict):
-        return None
-    if (("idempotency_key" in record and record["idempotency_key"] != key) or
-            ("request_digest" in record and record["request_digest"] != request_digest)):
+        records = [[(name, value) for name, value in fields if name in WRITE_IDENTITY] for fields in _leading_records(raw)]
+        if any(len({name for name, _ in named}) < len(named) for named in records):
+            return "destination_record_ambiguous"
+        named = [field for fields in records for field in fields]
+    else:
+        if not isinstance(record, dict):
+            return None
+        named = [(name, record[name]) for name in WRITE_IDENTITY if name in record]
+    expected = {"idempotency_key": key, "request_digest": request_digest}
+    if any(value != expected[name] for name, value in named):
         return "destination_record_mismatch"
     return None
 
