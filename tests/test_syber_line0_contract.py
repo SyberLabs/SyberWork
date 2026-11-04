@@ -154,6 +154,11 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         self.assertEqual(self.syber(SYBER_ARGV["start"])[0], 0)
         broken = {"src/export.py": "def to_csv(:\n", "tests/test_export.py": GOOD["tests/test_export.py"]}
         code, out, err = self.syber(SYBER_ARGV["propose"], self.claude("broken", first=broken, repair=broken))
+        # A search whose candidates all fail still exits 0: the propose branch prints them and falls through to
+        # `return 0` (syberlabs/cli.py:604-666, :778); only a Rejected exits 2 (:356-361). Syber reads no exit code
+        # here, only a timeout or signal (:409), then judges candidates from status.
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("search s1 ", out, "the search's outcome line is printed")
         status = self.status()
         self.assertTrue(status["candidates"], out + err)
         self.assertEqual(passed_candidates(status), [], "Syber then ends the job as no_passing_candidate (:426)")
