@@ -23,8 +23,9 @@ from .worker import run_available, serve as serve_worker
 def _witness_log(parser):
     """The witness's transparency log, opened read-only, when SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC name one.
 
-    The public key is the hex ``python -m syberlabs.witness`` prints. Half a configuration stops serve rather than
-    serving a console that says no witness is configured.
+    The public key is the hex ``python -m syberlabs.witness`` prints; ``open_readonly`` refuses one no seed derives
+    (``ed25519.key_problem``). Half a configuration stops serve rather than serving a console that says no witness is
+    configured.
     """
     path, public = os.getenv("SYBERWORK_WITNESS_LOG"), os.getenv("SYBERWORK_WITNESS_PUBLIC")
     if not path and not public:
@@ -33,10 +34,10 @@ def _witness_log(parser):
         parser.error("set both SYBERWORK_WITNESS_LOG and SYBERWORK_WITNESS_PUBLIC, or neither")
     try:
         return TransparencyLog.open_readonly(path, bytes.fromhex(public))
+    except Rejected as exc:  # a ValueError too, so before the one bytes.fromhex raises
+        parser.error(f"witness log: {exc.code}: {exc.detail}")
     except ValueError:
         parser.error("SYBERWORK_WITNESS_PUBLIC must be the witness public key in hex")
-    except Rejected as exc:
-        parser.error(f"witness log: {exc.code}: {exc.detail}")
 
 
 def _witness_request(parser, log):
