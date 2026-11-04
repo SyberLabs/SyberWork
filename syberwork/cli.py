@@ -225,7 +225,7 @@ def main():
     elif args.command == "inspect":
         print(json.dumps(db.inspect(args.case_id), indent=2))
     elif args.command == "verify":
-        print(json.dumps({"valid": db.verify_chain(args.case_id)}))
+        print(json.dumps(db.verify_history(args.case_id, _witness_log(parser))))
 
 
 if __name__ == "__main__":
