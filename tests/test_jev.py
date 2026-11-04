@@ -27,9 +27,8 @@ from examples.evolve import PRICING, contract, make_repository
 from syberlabs import Kit, Rejected
 from syberlabs.build import SpendBudget
 from syberlabs.canonical import canonical
-from syberlabs.evolve import CommandMutator, EmpiricalPolicy, EvolutionaryProvider, FixedPolicy, JevPolicy
-from syberlabs.search import (BranchPolicy, Budget, Candidate, CheckResult, Evaluation, MergeResult, OperatorStats,
-                              SearchSpace)
+from syberlabs.evolve import CommandMutator, EmpiricalPolicy, EvolutionaryProvider, JevPolicy
+from syberlabs.search import (BranchPolicy, Budget, Candidate, CheckResult, Evaluation, MergeResult, OperatorStats)
 
 PATH = "src/pricing.py"
 RULES = ("discount", "tax", "shipping")

@@ -374,6 +374,44 @@ class Arms(unittest.TestCase):
         self.assertTrue(arms.check(dict(arm, adapter=SIM), self.BUDGET))
         self.assertTrue(arms.check(dict(arm, bare=True), self.BUDGET), "--bare with a login lane")
 
+    def test_claude_code_lane_refusals_are_the_providers_at_spec_validation(self):
+        """guard-lane-2, L2 of #155's verification: a spec whose claude-code arm the provider would refuse when
+        built (githits with bare, bare with api-hooked, api without bare; and M1's unscreened lookups on bare) is
+        refused by ``arms.check``, before any run starts. On f466967 each passed validation."""
+        from unittest import mock
+
+        from syberlabs import githits
+        from syberlabs.claude_code import THIRD_PARTY_SWITCHES
+
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        git(repo, "init", "-q")
+        config = repo.parent / f"{repo.name}-githits.json"
+        config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
+        self.addCleanup(config.unlink)
+        base = {"name": "cc", "kind": "claude-code", "model": "claude-sonnet-5-5", "effort": "medium",
+                "executable": ["{python}", "-c", "print('2.1.309 (Claude Code)')"]}
+        env = {k: v for k, v in os.environ.items() if k not in THIRD_PARTY_SWITCHES}
+        env.update({githits.TOKEN_ENV: "test-not-a-token", "ANTHROPIC_API_KEY": "test-placeholder"})
+        for extra, key in (({"bare": True, "lane": "api", "githits": True}, "githits"),
+                           ({"bare": True, "lane": "api-hooked"}, "lane"),
+                           ({"lane": "api", "trusted_tree": True}, "lane"),
+                           ({"bare": True, "tools": ["Read", "WebSearch"]}, "tools"),
+                           ({"bare": True, "lane": "api", "tools": ["Read", "WebFetch"]}, "tools"),
+                           ({"bare": True, "mcp_config": str(config)}, "mcp_config")):
+            arm = {**base, **extra}
+            with self.subTest(arm=extra):
+                errors = arms.check(arm, self.BUDGET)
+                self.assertTrue(errors and all(e.startswith(key + ":") for e in errors), errors)
+                with mock.patch.dict(os.environ, env, clear=True), self.assertRaises(Rejected) as caught:
+                    arms.build(arm, repo=repo, budget=self.BUDGET, prices=PRICES)
+                self.assertEqual(caught.exception.code, "invalid_provider", "the provider refuses it too")
+        for extra in ({"bare": True, "lane": "api", "tools": ["Read", "Edit"]},
+                      {"lane": "api-hooked", "trusted_tree": True, "githits": True, "tools": ["Read", "WebSearch"]},
+                      {"lane": "subscription_local", "trusted_tree": True, "mcp_config": str(config)}):
+            with self.subTest(allowed=extra):
+                self.assertEqual(arms.check({**base, **extra}, self.BUDGET), [])
+
     def test_the_environment_names_the_model_and_withholds_the_seed_and_tokens(self):
         arm = {"name": "single", "kind": "single", "model": "simulated", "effort": "low", "adapter": SIM}
         task = {"source": "fixture:pricing"}
@@ -409,7 +447,8 @@ class Preflight(Workspace):
         (self.harness / "README").write_text("harness\n", encoding="utf-8")
         git(self.harness, "add", "README")
         git(self.harness, "commit", "-qm", "one")
-        spec.register(self.write_spec(tiny_spec(self.ids, self.digests)))
+        # registered against the clean harness, so the run gate reads a clean registration whatever this checkout is
+        spec.register(self.write_spec(tiny_spec(self.ids, self.digests)), harness=self.harness)
 
     def gate(self):
         with self.assertRaises(Rejected) as caught:
@@ -449,6 +488,24 @@ class Preflight(Workspace):
         (self.root / "tiny" / "runs").mkdir(parents=True)
         (self.root / "tiny" / "runs" / "note.txt").write_text("evals/ is where runs write\n", encoding="utf-8")
         runner.preflight_gate(self.root, "tiny", self.harness)  # untracked files under evals/ are not dirt
+
+    def test_a_registration_written_from_a_dirty_tree_refuses_to_run(self):
+        runner.preflight(self.root, "tiny", harness=self.harness, commands=self.PASS)
+        self.assertEqual(runner.run_eval(self.root, "tiny", harness=self.harness, dry=True)["preflight"], "passed")
+        path = self.root / "tiny" / "registration.json"
+        clean = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIs(spec.clean_registration(clean), clean)
+        for change in ({"git_dirty": True}, {"git_dirty": None}, {"git_commit": None}, {"git_commit": "abc123"}):
+            spec.write_json(path, dict(clean, **change))
+            spec.registered(self.root / "tiny" / "spec.json")  # the digests still hold: only the origin is refused
+            with self.assertRaises(Rejected) as caught:
+                runner.run_eval(self.root, "tiny", harness=self.harness, only="v1-pricing,single,1")
+            self.assertEqual(caught.exception.code, "registration_dirty", change)
+            self.assertFalse((self.root / "tiny" / "runs").exists(), "nothing ran")
+            dry = runner.run_eval(self.root, "tiny", harness=self.harness, dry=True)
+            self.assertEqual((dry["preflight"], len(dry["runs"])), ("registration_dirty", 8), change)
+        self.assertEqual(len(runner.run_eval(self.root, "tiny", require_preflight=False, dry=True)["runs"]), 8,
+                         "a run told no gate applies does not ask")
 
     def test_the_default_preflight_names_the_four_suites(self):
         argv = {name: " ".join(argv) for name, argv in runner.PREFLIGHT}
@@ -509,10 +566,13 @@ class Terminal(unittest.TestCase):
         self.assertEqual(found["set_digest"], doc["tasks"]["set_digest"])
         with tempfile.TemporaryDirectory() as folder:  # the committed registration, on a copy: nothing written here
             evals = Path(folder) / "evals"
-            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns("runs", "spend.jsonl", "index.json"))
+            artifacts = ("runs", "spend.jsonl", "index.json", "preflight.json", "report*")  # as the score test
+            shutil.copytree(EVALS, evals, ignore=shutil.ignore_patterns(*artifacts))
             code, out = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry", "--json")
             found = json.loads(out)
             self.assertEqual((code, found["planned"], found["dry"]), (0, 48, True))
+            # a local preflight.json is not copied, and the committed registration passes the clean-origin check
+            self.assertEqual(found["preflight"], "preflight_missing")
             self.assertEqual([row["order_index"] for row in found["runs"]], list(range(48)))
             self.assertEqual([row["run_id"] for row in found["runs"]], [p.run_id for p in runner.plan(doc)])
             code, _ = self.cli("eval", "--evals", str(evals), "run", "e5-single-vs-repair", "--dry", "--only",

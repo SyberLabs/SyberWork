@@ -702,7 +702,10 @@ class WithClaudeCode(ClaudeCodeCase):
                                actor="runner@example.test")
             thread.record_experiment(NAME, item="LIB-1", arm=arm, by="owner@example.test", tags=["needs_lookup"])
             with self.api_lane():
-                [candidate] = thread.propose(ClaudeCodeProvider(kit.repo, bare=True, max_calls=1, **kwargs))
+                # guard-lane-2: WebSearch and an MCP server on --bare are unscreened; the historical MCP A/B ran
+                # there, so both arms carry the operator's recorded override.
+                [candidate] = thread.propose(ClaudeCodeProvider(kit.repo, bare=True, max_calls=1,
+                                                                allow_unscreened_bare=True, **kwargs))
             receipt = thread.accept(candidate.id, actor="runner@example.test")
             self.assertEqual(receipt.status, "succeeded", receipt.reason)
         events = [e for case in kit.journal.thread_ids() for e in kit.session.history(case)]

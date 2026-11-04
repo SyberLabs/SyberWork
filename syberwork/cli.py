@@ -15,7 +15,7 @@ from syberlabs.witness import WitnessClient
 from .backup import export_cell, restore_cell
 from .certificates import CertificateShelf
 from .core import Work
-from .server import serve
+from .server import UserFile, serve
 from .trace import TraceLog
 from .worker import run_available, serve as serve_worker
 
@@ -156,7 +156,7 @@ def main():
         log = _witness_log(parser)
         client, role = _witness_request(parser, log)
         shelf = _certificates(parser)
-        serve(db, json.loads(userfile.read_text()), host=os.getenv("SYBERWORK_BIND", "127.0.0.1"), port=args.port,
+        serve(db, UserFile(userfile), host=os.getenv("SYBERWORK_BIND") or "127.0.0.1", port=args.port,
               witness_log=log, witness_client=client, witness_role=role, certificates=shelf)
     elif args.command == "backup":
         print(json.dumps(export_cell(db, args.directory)))

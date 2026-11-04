@@ -1,5 +1,7 @@
 # GitHits API client
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 ```bash
 export GITHITS_API_TOKEN=...            # from the environment only; never in a file in this repository
 syberlabs githits search "retry with backoff" --target pypi:urllib3@2.2.1 --source code

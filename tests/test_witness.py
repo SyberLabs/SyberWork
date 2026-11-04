@@ -10,6 +10,7 @@ import socket
 import sqlite3
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -273,8 +274,10 @@ class HttpsHosts(unittest.TestCase):
             guard_request("https://example.com/path")
         with patch("syberlabs.targets.socket.getaddrinfo", side_effect=AssertionError("dns")):
             guard_request("http://127.0.0.1:9/items/1")
+        # A name the guard cannot resolve is refused (URLError, so callers keep their unreachable codes).
         with patch("syberlabs.targets.socket.getaddrinfo", side_effect=socket.gaierror()):
-            guard_request("https://example.com/path")
+            with self.assertRaises(urllib.error.URLError):
+                guard_request("https://example.com/path")
 
 
 
