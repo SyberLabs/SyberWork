@@ -19,6 +19,10 @@ A body that opens a JSON object but is not strict JSON (a ``NaN``, nesting deepe
 off at the 32 KB read, a raw control character in a string) is judged on the identity fields it names at its
 top level before its first field that cannot be read, so none of those alone hides another write's key or digest.
 The same body that names nothing else still counts from its status.
+
+A body that opens a JSON object and carries further JSON values after it (concatenated or NDJSON-style records) is
+judged on every top-level object in that sequence, read the same way, so a second record cannot hide another
+write's key or digest behind a first record that names nothing else.
 """
 
 import io
@@ -488,6 +492,33 @@ NOT_STRICT_NAMES_NOTHING_ELSE = {
 }
 
 
+# Write replies that carry more than one JSON value and name another write in an object after the first.
+SEQUENCE_OTHER_WRITE = {
+    "NDJSON, this record then another key": text('{"id": "SHIP-1", "idempotency_key": "{key}", "request_digest": '
+                                                 '"{digest}"}\n{"id": "SHIP-2", "idempotency_key": "other-{key}"}\n'),
+    "concatenated, nothing then another digest": text('{"status": "ok"}{"request_digest": "%s"}' % ("0" * 64)),
+    "empty objects, then another key": text('{}{} {"idempotency_key": "other-{key}"}'),
+    "a string and an array between, then another key": text('{"id": "SHIP-1"} "ok" [1] {"idempotency_key": "other-{key}"}'),
+    "CRLF records, NaN before another key": text('{"id": "SHIP-1"}\r\n{"weight": NaN, "idempotency_key": "other-{key}"}'),
+    "second record cut off after another key": text('{"id": "SHIP-1"}\n{"idempotency_key": "other-{key}", ' + CUT),
+    "this key, then the key as null": text('{"idempotency_key": "{key}"}\n{"idempotency_key": null}'),
+}
+
+# The same sequences naming nothing else, plus the limits: a record after text that is not JSON, after a record that
+# cannot be read to its end, after an RFC 7464 record separator, and a field nested in a later record are not read.
+SEQUENCE_NAMES_NOTHING_ELSE = {
+    "NDJSON, no identity": text('{"id": "SHIP-1"}\n{"status": "written"}\n'),
+    "NDJSON, this key on every record": text('{"idempotency_key": "{key}", "step": 1}\n{"idempotency_key": "{key}", '
+                                             '"step": 2}\n'),
+    "concatenated, this digest": text('{"id": "SHIP-1"}{"request_digest": "{digest}"}'),
+    "an array after the record": text('{"id": "SHIP-1"} [{"idempotency_key": "other-{key}"}]'),
+    "another key after text that is not JSON": text('{"id": "SHIP-1"} written {"idempotency_key": "other-{key}"}'),
+    "another key after an unreadable record": text('{"id": undefined}\n{"idempotency_key": "other-{key}"}'),
+    "another key after a record separator": text('{"id": "SHIP-1"}\x1e{"idempotency_key": "other-{key}"}'),
+    "another key nested in a later record": text('{"id": "SHIP-1"}\n{"data": {"idempotency_key": "other-{key}"}}'),
+}
+
+
 class WriteAckIdentity(Ship):
     """A completed write whose own body names another key or digest did not acknowledge this write."""
 
@@ -556,6 +587,42 @@ class WriteAckIdentity(Ship):
 
     def test_positive_control_not_strict_write_ack_naming_nothing_else_succeeds(self):
         for index, (name, ack) in enumerate(NOT_STRICT_NAMES_NOTHING_ELSE.items()):
+            code = (200, 201)[index % 2]
+            with self.subTest(ack=name, code=code):
+                self.fresh()
+                case, key, result = self.committed_with(ack, code)
+                self.assertEqual(result["status"], "succeeded")
+                self.assertTrue(self.work.inspect(case)["complete"])
+                self.assertEqual(self.work.metric("effects_settled_applied_total"), 1)
+                self.assertEqual(self.dest.posts, 1)
+
+    def test_write_ack_sequence_naming_another_write_is_unknown(self):
+        for index, (name, ack) in enumerate(SEQUENCE_OTHER_WRITE.items()):
+            code = (200, 201)[index % 2]
+            with self.subTest(ack=name, code=code):
+                self.fresh()
+                case, key, result = self.committed_with(ack, code)
+                self.assert_unknown(case, key, result, "destination_record_mismatch")
+                self.resolved_only_by_lookup(case, key)
+
+    def test_write_ack_sequence_naming_the_key_twice_in_one_record_is_ambiguous(self):
+        # The first record names nothing; the second reads as this write's key under last-wins and another's under
+        # first-wins.
+        case, key, result = self.committed_with(
+            text('{"id": "SHIP-1"}\n{"idempotency_key": "other-{key}", "idempotency_key": "{key}"}'))
+        self.assert_unknown(case, key, result, "destination_record_ambiguous")
+        self.resolved_only_by_lookup(case, key)
+
+    def test_worker_settles_a_write_ack_sequence_naming_another_write_as_unknown(self):
+        self.fresh(effects="worker")
+        case, key = self.proposed()
+        self.dest.ack = SEQUENCE_OTHER_WRITE["NDJSON, this record then another key"]
+        self.assertEqual(self.work.commit(case, key, "operator")["status"], "queued")
+        self.assert_unknown(case, key, run_once(self.work), "destination_record_mismatch")
+        self.assertEqual(self.work.metric("queue_depth"), 0)
+
+    def test_positive_control_write_ack_sequence_naming_nothing_else_succeeds(self):
+        for index, (name, ack) in enumerate(SEQUENCE_NAMES_NOTHING_ELSE.items()):
             code = (200, 201)[index % 2]
             with self.subTest(ack=name, code=code):
                 self.fresh()
