@@ -93,6 +93,7 @@ class SyberLine0Contract(cc.ClaudeCodeCase):
         self.assertEqual(status["candidates"][0]["provider"], "syber-line0@1", "--name is the recorded platform")
 
         code, out, err = self.syber(SYBER_ARGV["check"]("c1"))
+        self.assertEqual(code, 0, out + err)  # an acceptable verdict exits 0, as the refusal test pins nonzero
         verdict = json.loads(out)
         self.assertIs(verdict["acceptable"], True, out + err)  # :436, only `acceptable` true is admitted
         self.assertIsInstance(verdict["reason"], str)  # quoted in the PR summary (:479)
