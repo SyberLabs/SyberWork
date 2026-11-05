@@ -323,6 +323,13 @@ class ConsoleRefusals(CellCase):
                 # On every platform, not only where the reset shows: the refusal waits for the body it then reads.
                 self.assertFalse(result[0], "the server read the body before answering")
 
+    def test_an_unexpected_failure_resolving_the_token_drains_a_late_body_and_answers_500_whole(self):
+        handler = self.cell.server.RequestHandlerClass
+        with unittest.mock.patch.object(handler, "_user", side_effect=RuntimeError("principal lookup failed")):
+            result = self.post({"Content-Type": "application/json", "Content-Length": str(len(self.BODY))}, self.BODY)
+        self.assert_whole(result, 500, "internal_error")
+        self.assertFalse(result[0], "the server read the body before answering")
+
     def test_a_refused_body_too_large_or_of_unknown_length_is_not_read_and_the_connection_is_closed(self):
         too_large, operator = str(1024 * 1024 + 1), {"Authorization": "Bearer " + self.cell.tokens["operator"]}
         cases = (({}, too_large, "unauthorized"), ({}, "abc", "unauthorized"), ({}, None, "unauthorized"),
