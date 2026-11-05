@@ -320,18 +320,37 @@ class ConsoleRefusals(CellCase):
             with self.subTest(who):
                 result = self.post({"Content-Type": "application/json", "Content-Length": str(len(self.BODY)), **headers}, self.BODY)
                 self.assert_whole(result, 409, "unauthorized")
+                # On every platform, not only where the reset shows: the refusal waits for the body it then reads.
+                self.assertFalse(result[0], "the server read the body before answering")
 
     def test_a_refused_body_too_large_or_of_unknown_length_is_not_read_and_the_connection_is_closed(self):
-        too_large = str(1024 * 1024 + 1)
+        too_large, operator = str(1024 * 1024 + 1), {"Authorization": "Bearer " + self.cell.tokens["operator"]}
         cases = (({}, too_large, "unauthorized"), ({}, "abc", "unauthorized"), ({}, None, "unauthorized"),
-                 ({"Authorization": "Bearer " + self.cell.tokens["operator"]}, too_large, "payload_size"),
-                 ({"Authorization": "Bearer " + self.cell.tokens["operator"]}, "abc", "invalid_request"))
-        for auth, length, error in cases:
-            with self.subTest(auth=bool(auth), length=length):
-                headers = {**auth, **({} if length is None else {"Content-Length": length})}
+                 ({"Expect": "100-continue"}, str(len(self.BODY)), "unauthorized"),
+                 (operator, too_large, "payload_size"), (operator, "abc", "invalid_request"), (operator, None, "invalid_request"))
+        for extra, length, error in cases:
+            with self.subTest(headers=sorted(extra), length=length):
+                headers = {**extra, **({} if length is None else {"Content-Length": length})}
                 result = self.post(headers)
                 self.assertTrue(result[0], "answered at once, without waiting for a body it will not read")
                 self.assertEqual(self.assert_whole(result, 409, error).get("connection"), "close")
+
+    def test_a_refused_body_that_never_arrives_is_waited_for_a_bounded_time(self):
+        with unittest.mock.patch("syberwork.server.REFUSED_BODY_SECONDS", 0.3):
+            result = self.post({"Content-Length": "100"}, wait=5)
+        self.assertTrue(result[0], "answered once the wait for the body ran out, not after the client gave up")
+        self.assertEqual(self.assert_whole(result, 409, "unauthorized").get("connection"), "close")
+
+    def test_a_refused_body_sent_a_byte_at_a_time_is_waited_for_in_total_not_per_byte(self):
+        with unittest.mock.patch("syberwork.server.REFUSED_BODY_SECONDS", 0.5), \
+                socket.create_connection(("127.0.0.1", self.cell.server.server_port), timeout=10) as sock:
+            sock.sendall(b"POST /api/cases/any/preview HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\n")
+            started, answered = time.monotonic(), False
+            while not answered and time.monotonic() - started < 5:
+                sock.sendall(b" ")
+                answered = bool(select.select([sock], [], [], 0.2)[0])
+            self.assertTrue(answered, "a trickling client does not hold the refusal past the total wait")
+            self.assertLess(time.monotonic() - started, 2.5)
 
 
 class ConsoleRoutes(CellCase):

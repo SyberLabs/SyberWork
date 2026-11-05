@@ -32,6 +32,9 @@ POLICY_READERS = frozenset({"admin", "manager"})
 ATTEST_ONLY_ROLES = frozenset({"observer"})
 # The first path segments of the reads ``_case_reader`` guards.
 CASE_READS = (("metrics",), ("api", "cases"), ("api", "contracts"), ("api", "certificates"), ("api", "builder"))
+# The largest request body read, and how long a POST refused before its body was read may take to send that body.
+MAX_BODY = 1024 * 1024
+REFUSED_BODY_SECONDS = 5
 
 
 def _planner_configured() -> bool:
@@ -209,17 +212,61 @@ def make_server(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *,
             self.send_header("X-Content-Type-Options", "nosniff")
             for name, value in (headers or {}).items():
                 self.send_header(name, value)
+            if self.unread_body:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 
+        # True when a POST is answered with its body unread: the answer then says Connection: close.
+        unread_body = False
+
         def _body(self):
-            length = int(self.headers.get("Content-Length", "0"))
-            if length > 1024 * 1024 or length < 0:
+            if "Content-Length" not in self.headers:
+                self.unread_body = True   # a body of unknown length (chunked, say) is never read
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self.unread_body = True
+                raise
+            if length > MAX_BODY or length < 0:
+                self.unread_body = True
                 raise Rejected("payload_size", "maximum body is 1 MB")
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise Rejected("body_type", "JSON object required")
             return data
+
+        def _discard_body(self):
+            """Read and drop the body of a POST refused before its body was read.
+
+            Closing a socket with request bytes unread resets the connection, and on Windows the reset discards the
+            refusal the client has not read yet (WinError 10053). So the body is read first, up to MAX_BODY and for at
+            most REFUSED_BODY_SECONDS in all. A length that is missing, malformed or over MAX_BODY is not read, nor is
+            a body the client holds back for ``Expect: 100-continue`` (this server never sends 100): the refusal says
+            Connection: close instead.
+            """
+            raw = self.headers.get("Content-Length", "").strip()
+            length = int(raw) if raw.isascii() and raw.isdigit() else -1
+            if not 0 <= length <= MAX_BODY or self.headers.get("Expect", "").strip().lower() == "100-continue":
+                self.unread_body = True
+                return
+            previous = self.connection.gettimeout()
+            deadline = time.monotonic() + REFUSED_BODY_SECONDS
+            try:
+                while length > 0:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        self.unread_body = True
+                        break
+                    self.connection.settimeout(left)
+                    chunk = self.rfile.read1(min(length, 65536))   # at most one receive, so the deadline holds
+                    if not chunk:
+                        break
+                    length -= len(chunk)
+            except OSError:   # the client stopped sending or went away: answer anyway and close
+                self.unread_body = True
+            finally:
+                self.connection.settimeout(previous)
 
         def _parts(self):
             return [p for p in urlsplit(self.path).path.split("/") if p]
@@ -359,7 +406,12 @@ def make_server(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *,
 
         def do_POST(self):
             try:
-                user, parts, data = self._user(), self._parts(), self._body()
+                try:
+                    user = self._user()
+                except Exception:
+                    self._discard_body()   # refused before the body is read (FM-49)
+                    raise
+                parts, data = self._parts(), self._body()
                 actor, roles = actor_of(user), user.get("roles", [])  # the principal id, never the display name
                 if parts == ["api", "contracts"] and "admin" in roles:
                     work.install_contract(data); result = {"installed": True}
