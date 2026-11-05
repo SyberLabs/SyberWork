@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+import select
 import shutil
 import socket
 import sqlite3
@@ -120,6 +121,37 @@ def wait_until_listening(port: int, proc: subprocess.Popen, timeout: float = 10)
             time.sleep(0.05)
     stop_process(proc)
     raise RuntimeError("reference system did not accept connections")
+
+
+def late_body_post(port: int, path: str, headers: dict, body: bytes = b"", wait: float = 1.0):
+    """POST over a raw socket, holding the body back until the server answers or ``wait`` seconds pass.
+
+    ``http.client`` writes the header block and the body in two sends. Under load the server can read the headers and
+    answer before the body lands; a server that then closes with the body unread resets the connection, and on Windows
+    the reset discards the answer the client had not read yet (WinError 10053). Here that gap is forced on every run.
+
+    Returns ``(answered_early, status, headers, body, error)``: whether an answer arrived before the body was sent, the
+    response read to the end of the stream, and the ``OSError`` that broke the exchange, or None.
+    """
+    lines = [f"POST {path} HTTP/1.1", "Host: 127.0.0.1", "Connection: close", *(f"{k}: {v}" for k, v in headers.items())]
+    received, error = b"", None
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+        answered_early = bool(select.select([sock], [], [], wait)[0])
+        if answered_early:
+            time.sleep(0.2)  # let the server finish answering and close, as it has under load by the time the body lands
+        try:
+            if body:
+                sock.sendall(body)
+            while chunk := sock.recv(65536):
+                received += chunk
+        except OSError as exc:
+            error = exc
+    head, _, payload = received.partition(b"\r\n\r\n")
+    status_line, *header_lines = head.decode("latin-1").split("\r\n") if head else [""]
+    status = int(status_line.split()[1]) if len(status_line.split()) > 1 else None
+    response_headers = {name.strip().lower(): value.strip() for name, _, value in (h.partition(":") for h in header_lines)}
+    return answered_early, status, response_headers, payload, error
 
 
 def certified_home(folder: Path, seed: bytes = SEED) -> tuple[Path, dict]:
@@ -262,6 +294,70 @@ class CellCase(unittest.TestCase):
             shelf = self.shelf = CertificateShelf(self.cert_home, self.certificate_keys, self.certificate_revoked)
         self.cell = Cell(Path(folder.name), port, reader, client, self.witness_role if client else None, shelf)
         self.addCleanup(self.cell.close)
+
+
+class ConsoleRefusals(CellCase):
+    """A POST refused before its body is read still delivers the refusal whole (FM-49).
+
+    The server answers an unauthenticated POST without reading the body. If the body lands after the answer, closing the
+    socket with it unread resets the connection, and on Windows the reset throws away the refusal the client had not read.
+    """
+
+    BODY = json.dumps({"action": "record_review"}).encode()
+
+    def post(self, headers, body=b"", wait=1.0):
+        return late_body_post(self.cell.server.server_port, "/api/cases/any/preview", headers, body, wait)
+
+    def assert_whole(self, result, status, error):
+        _, got_status, headers, payload, broke = result
+        self.assertIsNone(broke, "the connection broke before the refusal was read")
+        self.assertEqual(int(headers.get("content-length", -1)), len(payload), "the refusal arrived whole")
+        self.assertEqual((got_status, json.loads(payload)["error"]), (status, error))
+        return headers
+
+    def test_an_unauthenticated_post_whose_body_arrives_late_still_gets_its_refusal(self):
+        for who, headers in (("no token", {}), ("a wrong token", {"Authorization": "Bearer not-a-token"})):
+            with self.subTest(who):
+                result = self.post({"Content-Type": "application/json", "Content-Length": str(len(self.BODY)), **headers}, self.BODY)
+                self.assert_whole(result, 409, "unauthorized")
+                # On every platform, not only where the reset shows: the refusal waits for the body it then reads.
+                self.assertFalse(result[0], "the server read the body before answering")
+
+    def test_an_unexpected_failure_resolving_the_token_drains_a_late_body_and_answers_500_whole(self):
+        handler = self.cell.server.RequestHandlerClass
+        with unittest.mock.patch.object(handler, "_user", side_effect=RuntimeError("principal lookup failed")):
+            result = self.post({"Content-Type": "application/json", "Content-Length": str(len(self.BODY))}, self.BODY)
+        self.assert_whole(result, 500, "internal_error")
+        self.assertFalse(result[0], "the server read the body before answering")
+
+    def test_a_refused_body_too_large_or_of_unknown_length_is_not_read_and_the_connection_is_closed(self):
+        too_large, operator = str(1024 * 1024 + 1), {"Authorization": "Bearer " + self.cell.tokens["operator"]}
+        cases = (({}, too_large, "unauthorized"), ({}, "abc", "unauthorized"), ({}, None, "unauthorized"),
+                 ({"Expect": "100-continue"}, str(len(self.BODY)), "unauthorized"),
+                 (operator, too_large, "payload_size"), (operator, "abc", "invalid_request"), (operator, None, "invalid_request"))
+        for extra, length, error in cases:
+            with self.subTest(headers=sorted(extra), length=length):
+                headers = {**extra, **({} if length is None else {"Content-Length": length})}
+                result = self.post(headers)
+                self.assertTrue(result[0], "answered at once, without waiting for a body it will not read")
+                self.assertEqual(self.assert_whole(result, 409, error).get("connection"), "close")
+
+    def test_a_refused_body_that_never_arrives_is_waited_for_a_bounded_time(self):
+        with unittest.mock.patch("syberwork.server.REFUSED_BODY_SECONDS", 0.3):
+            result = self.post({"Content-Length": "100"}, wait=5)
+        self.assertTrue(result[0], "answered once the wait for the body ran out, not after the client gave up")
+        self.assertEqual(self.assert_whole(result, 409, "unauthorized").get("connection"), "close")
+
+    def test_a_refused_body_sent_a_byte_at_a_time_is_waited_for_in_total_not_per_byte(self):
+        with unittest.mock.patch("syberwork.server.REFUSED_BODY_SECONDS", 0.5), \
+                socket.create_connection(("127.0.0.1", self.cell.server.server_port), timeout=10) as sock:
+            sock.sendall(b"POST /api/cases/any/preview HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\n")
+            started, answered = time.monotonic(), False
+            while not answered and time.monotonic() - started < 5:
+                sock.sendall(b" ")
+                answered = bool(select.select([sock], [], [], 0.2)[0])
+            self.assertTrue(answered, "a trickling client does not hold the refusal past the total wait")
+            self.assertLess(time.monotonic() - started, 2.5)
 
 
 class ConsoleRoutes(CellCase):
@@ -1971,7 +2067,16 @@ class ConsolePreview(CellCase):
                   {"action": "absent", "args": {}}, {"action": "absent"}, {"args": {}}, {"action": "record_review", "args": []})
         for body in bodies:
             for who in ("operator", "scheduler", "manager", "planner", "supplier", None):
-                self.cell.call(f"/api/cases/{case}/preview", body, who=who)
+                try:
+                    status, _, raw = self.cell.call(f"/api/cases/{case}/preview", body, who=who)
+                except OSError as exc:
+                    self.fail(f"preview {body} as {who}: the connection broke before the answer was read ({exc!r})")
+                answer = json.loads(raw)
+                if who is None:
+                    self.assertEqual((status, answer["error"]), (409, "unauthorized"), body)
+                else:
+                    self.assertIn(status, (200, 409), (body, who, answer))
+                    self.assertNotEqual(answer.get("error"), "internal_error", (body, who))
         self.assertEqual(self.cell.work.inspect(case)["events"], events)
         self.assertEqual(self.dump(), before, "no table changed, including event_side and reservations")
         self.assertTrue(self.cell.work.verify_chain(case))
