@@ -7,16 +7,20 @@ API route's record: first synthetic journals, ``tests.test_experiment.run`` thre
 ``claude_code`` writes on that route, so each check can be read off the events that make it; then both arms of the pilot
 end to end through the real ``ClaudeCodeProvider`` (the stand-in ``claude`` of ``tests/test_claude_code.py``, whose Bash
 tool runs the real launcher behind the real query guard, and the host's own GitHits client against a loopback fake),
-labelled with ``syberlabs experiment label`` and compared with ``syberlabs experiment report``. No model is called and nothing reaches the real GitHits API.
+labelled with ``syberlabs experiment label`` and compared with ``syberlabs experiment report``; and last the rehearsal,
+``examples/githits_ab.py``, on that route. No model is called and nothing reaches the real GitHits API.
 """
 
 import contextlib
 import copy
+import importlib.util
 import io
 import json
 import os
 import secrets
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from spec.validate import validate_events
@@ -401,6 +405,42 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         self.assertEqual(code, 1)
         self.assertIn("check arm_conflict (excluded): X, Y", text)
         self.assertIn("nothing was compared", text)
+
+
+def load_rehearsal():
+    path = Path(__file__).resolve().parents[1] / "examples" / "githits_ab.py"
+    spec = importlib.util.spec_from_file_location("githits_ab", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Rehearsal(unittest.TestCase):
+    """``examples/githits_ab.py`` on its default route, the API launcher: seven items through both arms of the real
+    ``ClaudeCodeProvider``, with its own stand-in ``claude`` and loopback GitHits."""
+
+    def test_the_api_route_rehearsal_compares_six_items_and_excludes_the_misconfigured_one(self):
+        rehearsal, said = load_rehearsal(), []
+        with tempfile.TemporaryDirectory() as folder:
+            before = dict(os.environ)
+            events, contracts = rehearsal.rehearse(Path(folder), "api", log=said.append)
+            self.assertEqual(dict(os.environ), before, "the rehearsal puts the environment back")
+        found = experiment.report(events, rehearsal.NAME, contracts, delivered_by="review")
+        self.assertEqual(found["items"], {"labelled": 7, "compared": 6, "excluded": 1})
+        self.assertEqual(found["checks"], {"arm_conflict": ["LIB-4"], "unused": ["LIB-4"]},
+                         "the treatment that ran without --githits, and nothing else")
+        self.assertEqual((found["rule"]["met"], found["by_tag"]["needs_lookup"]["rule"]["met"]), (False, True),
+                         "docs/EXPERIMENTS.md: the rehearsal's rule is not met overall and met on needs_lookup")
+        self.assertIn("The loopback GitHits received 9 requests; the real API received none.", said)
+        runs = experiment.runs(events, rehearsal.NAME)
+        self.assertEqual({(r.arm, r.server) for r in runs if r.item != "LIB-4"}, {("off", False), ("on", True)})
+        lookups = {r.item: r.value("githits_lookups") for r in runs if r.arm == "on" and r.item != "LIB-4"}
+        self.assertEqual({item: metric.value for item, metric in lookups.items()},
+                         {"LIB-1": 2, "LIB-2": 2, "LIB-3": 2, "ROUTINE-1": 1, "ROUTINE-2": 1, "ROUTINE-3": 1})
+        self.assertTrue(all("host-observed" in metric.note for metric in lookups.values()),
+                        "counted from the host's lookup facts, not from what the stand-in declared")
+        with self.assertRaises(ValueError):
+            rehearsal.rehearse(Path("unused"), "carrier-pigeon")
 
 
 if __name__ == "__main__":
