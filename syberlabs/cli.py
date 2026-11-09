@@ -20,6 +20,8 @@
     syberlabs experiment label --name githits-pilot --item ITEM-14 --arm on --tag needs_lookup
     syberlabs experiment report --name githits-pilot [--json|--csv|--markdown]   # the arms compared, from the journal
     syberlabs githits search "retry with backoff" --target pypi:urllib3@2.2.1   # GitHits API, SyberLabs excluded
+    syberlabs eval run e5-single-vs-repair --dry  # a registered evaluation's order and progress (docs/EVAL.md)
+    syberlabs factory index --declared arch.json  # Space-Time Parsing: index, record, replay, attest (docs/FACTORY.md)
 
 The current thread is remembered in ``.syberlabs/current``. Every command
 reads the journal fresh, so a thread can be resumed from any terminal.
@@ -39,6 +41,8 @@ from syberlabs import metrics
 from syberlabs.build import ACT_CLASSES, Kit, hint
 from syberlabs.ed25519 import public_from_seed
 from syberlabs.errors import Rejected
+from syberlabs.eval import cli as eval_cli
+from syberlabs.factory import cli as factory_cli
 from syberlabs.gitspace import Repo
 from syberlabs.providers import CommandProvider, PatchProvider, RepairProvider, split_command
 
@@ -103,8 +107,9 @@ def _print_receipt(receipt) -> None:
         print("next: " + receipt.hint)
 
 
-def _survive_unicode() -> None:
-    """Never crash on a console that cannot encode a check's output (cp1252 and a vitest tick, say)."""
+def survive_unicode() -> None:
+    """Never crash on a console that cannot encode a check's output (cp1252 and a vitest tick, say). Public because
+    the GitHits launcher's entry (``githits_cli_entry.py``) runs it too, before it prints anything."""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
@@ -115,7 +120,7 @@ def _survive_unicode() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _survive_unicode()
+    survive_unicode()
     parser = argparse.ArgumentParser(prog="syberlabs", description="Governed, Git-lineaged changes to this repository.")
     parser.add_argument("--home", default=".syberlabs")
     parser.add_argument("--repo", default=".")
@@ -159,7 +164,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="for --repair and --claude-code: the most calls in this search (default: the search's "
                               "candidate budget; 1 is one shot)")
     propose.add_argument("--bare", action="store_true",
-                         help="for --claude-code: claude --bare, API key from the environment (lane api, billed)")
+                         help="for --claude-code: claude --bare, API key from the environment (lane api, billed); "
+                              "Claude Code 2.1.312 runs no --settings hook under --bare, so --githits refuses it")
     propose.add_argument("--trusted-tree", action="store_true",
                          help="for --claude-code without --bare: declare this repository trusted; a non-bare claude -p "
                               "runs project hooks and .mcp.json servers with no trust prompt")
@@ -172,16 +178,25 @@ def main(argv: list[str] | None = None) -> int:
                          help="for --claude-code: allow Bash or PowerShell in --allowed-tools although --mcp-config "
                               "names an MCP server (refused otherwise: the guard's key is in Claude Code's "
                               "environment); recorded in signal.guard")
+    propose.add_argument("--allow-unscreened-bare", action="store_true",
+                         help="for --claude-code --bare: allow WebSearch or WebFetch in --allowed-tools, or an "
+                              "--mcp-config naming an MCP server (refused otherwise: no --settings hook runs under "
+                              "--bare, so those lookups leave unscreened; use --lane api-hooked); recorded in "
+                              "signal.guard")
     propose.add_argument("--githits", action="store_true",
                          help="for --claude-code: GitHits through the API client (arm B of the pilot): a per-call "
                               "launcher as the only Bash command, guarded, its records journaled as lookups, and the "
-                              "adapted GitHits skill appended (docs/CLAUDE_CODE.md); needs GITHITS_API_TOKEN")
+                              "adapted GitHits skill appended (docs/CLAUDE_CODE.md); needs GITHITS_API_TOKEN; "
+                              "refused with --bare (no hook runs there): use --lane api-hooked --trusted-tree")
     propose.add_argument("--githits-arm", default="b", metavar="NAME",
                          help="for --githits: the arm's name in X-GitHits-Session-ID <thread>-<arm> and "
                               "X-GitHits-Agent syberfactory/<arm> (default b)")
     propose.add_argument("--max-turns", type=int, help="for --claude-code: claude --max-turns")
-    propose.add_argument("--lane", choices=("api", "subscription_local", "seat_team_enterprise", "provider_3p"),
-                         help="for --claude-code: the credential lane (default api with --bare, else subscription_local)")
+    propose.add_argument("--lane", choices=("api", "api-hooked", "subscription_local", "seat_team_enterprise",
+                                            "provider_3p"),
+                         help="for --claude-code: the credential lane (default api with --bare, else subscription_local); "
+                              "api-hooked: ANTHROPIC_API_KEY without --bare, so the query guard's hook runs, with an "
+                              "empty config directory and home per call (needs --trusted-tree)")
     propose.add_argument("--guard-max-lines", type=int, metavar="N",
                          help="for --claude-code: the query guard blocks a lookup with more than N non-blank lines "
                               "(default $SYBERLABS_GUARD_MAX_LINES, else 3)")
@@ -316,11 +331,17 @@ def main(argv: list[str] | None = None) -> int:
     compare.add_argument("a")
     compare.add_argument("b")
     githits.add_parser(commands)
+    factory_cli.add_parser(commands)
+    eval_cli.add_parser(commands)
     args = parser.parse_args(argv)
 
     try:
         if args.command == "githits":
             return githits.run(args)  # no Kit: a lookup needs no repository or journal
+        if args.command == "factory":
+            return factory_cli.run(args)  # no Kit: the factory keeps its own ledger under --home
+        if args.command == "eval":
+            return eval_cli.run(args)  # no Kit here: each run builds its own, in its own repository
         if args.command == "verify":
             return _verify(args)  # no Kit: works outside any repository and has none of Kit.local's side effects
         if args.command == "metrics" and args.exports:
@@ -627,6 +648,7 @@ def _run(kit: Kit, args) -> int:
                                           max_calls=args.max_calls, guard_max_lines=args.guard_max_lines,
                                           guard_max_chars=args.guard_max_chars,
                                           allow_code_tools_with_mcp=args.allow_code_tools_with_mcp,
+                                          allow_unscreened_bare=args.allow_unscreened_bare,
                                           githits=args.githits, arm=args.githits_arm,
                                           thread_label=thread.id if args.githits else None)
             found = thread.propose(provider, seed=args.seed)

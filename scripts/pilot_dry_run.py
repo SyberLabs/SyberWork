@@ -15,9 +15,9 @@ How Mateo runs it
    and stops if ``HEAD`` moves during the run.
 2. Put both credentials in the shell's environment, never in a file::
 
-       export ANTHROPIC_API_KEY=...          # your own key: the api lane (claude -p --bare)
+       export ANTHROPIC_API_KEY=...          # your own key: the api-hooked lane (claude -p, not --bare)
        export GITHITS_API_TOKEN=...
-       unset ANTHROPIC_BASE_URL              # and any CLAUDE_CODE_USE_* switch: the api lane refuses them
+       unset ANTHROPIC_BASE_URL              # and any CLAUDE_CODE_USE_* switch: the lane refuses them
 
    (PowerShell: ``$env:ANTHROPIC_API_KEY = "..."``; ``Remove-Item Env:ANTHROPIC_BASE_URL``.)
 3. Write the plan: ``python scripts/pilot_dry_run.py --template > plan.json``, then fill in 3 to 5 items (id, tags,
@@ -25,7 +25,7 @@ How Mateo runs it
    write, in dollars per million tokens (the canary names the model if it is not the one priced).
 4. Run ``python scripts/pilot_dry_run.py --plan plan.json`` from the SyberWork checkout (Windows:
    ``py scripts/pilot_dry_run.py --plan plan.json``; ``--repo PATH`` when the items change another repository;
-   ``--budget 8`` is the default hard cap in dollars; ``--seed N`` repeats an order). It prints the preflight, asks to
+   ``--budget 8`` is the default scheduling budget in dollars; ``--seed N`` repeats an order). It prints the preflight, asks to
    start, runs the canary and then every run, asks for the blind review of each accepted change (shown as R1, R2, ...
    in a shuffled order, without its arm: hand the keyboard to the reviewer, or answer yourself without looking up the
    mapping), prints the paired report and the PASS/FAIL table, and writes ``receipt.json``. Exit 0 is PASS, 1 FAIL,
@@ -45,23 +45,25 @@ The sequence
 ------------
 
 Preflight refuses to start on any failure: the repository and its base commit; Claude Code ``2.1.295`` or newer
-(``claude_code.MIN_VERSION``: ``onFailure: "block"`` on the guard's hook); the api lane on the operator's own
+(``claude_code.MIN_VERSION``: ``onFailure: "block"`` on the guard's hook); the api-hooked lane on the operator's own
 ``ANTHROPIC_API_KEY`` with no third-party routing switch (``claude_code.third_party``: ``ANTHROPIC_BASE_URL``,
 ``CLAUDE_CODE_USE_*``, ``CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST``); ``GITHITS_API_TOKEN`` in the environment and in no
 file the run touches (the repository's tracked and untracked files, its ``.env*``, ``.mcp.json`` and local Claude
 settings, the plan); ``syberlabs githits doctor`` ``ok``, with its call record verifying under a key the host set;
 the query guard's key reaching the hook (``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`` off, and the host's own hook, run as
-Claude Code runs it, signing a block and a pass that verify under a key the host set); the hard budget cap; and the
+Claude Code runs it, signing a block and a pass that verify under a key the host set); the scheduling budget; and the
 contracts the run installs.
 
-The canary is one cheap call in the treatment's mode (``propose --claude-code --bare --githits``, one call, a few
+The canary is one cheap call in the treatment's mode (``propose --claude-code --lane api-hooked --trusted-tree
+--githits``: not ``--bare``, under which Claude Code 2.1.312 runs no ``--settings`` hook; one call, a few
 turns, without the web tools so the launcher is its only way to look anything up) whose objective asks for two
 launcher lookups, one the guard must refuse (it holds an email address). It passes when the guard refused a lookup
 for what it says and passed one that GitHits answered (an authentic client record), every decision verified and none
 ``unguarded``, and every model the call used is priced; a call that shows only one of the two is inconclusive and
 fails, since it proves either no refusal or no GitHits. Then each item runs in both arms from the same ``HEAD``,
 both arms back to back, the items and which arm goes first set by a seeded shuffle: ``start --unattended``,
-``experiment label`` (before the first candidate), ``propose --claude-code --bare [--githits]``, ``run --once``
+``experiment label`` (before the first candidate), ``propose --claude-code --lane api-hooked --trusted-tree
+[--githits]``, ``run --once``
 (accepts on the host's checks), ``export``. Then the blind review (``review --record``), ``experiment report --items
 FILE --delivered review [--json | --markdown]``, and the bar.
 
@@ -122,7 +124,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -171,6 +172,10 @@ LABELS = {"cost": "cost", "turns": "turns", "agent_time": "agent time", "fix_rou
 PASS, FAIL, WARN = "PASS", "FAIL", "WARN"
 SCRUB_ENV = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"
 API_KEY_ENV = "ANTHROPIC_API_KEY"
+# Both arms' lane: the API key with Claude Code not in bare mode, so the query guard's --settings hook runs (Claude
+# Code 2.1.312 runs none under --bare, and the provider refuses --githits there); an empty config directory and home
+# per call keep the machine's own configuration out (docs/CLAUDE_CODE.md, the hooked API lane).
+LANE = claude_code.HOOKED
 # Files beside the code where a credential tends to be written; scanned whether or not git ignores them.
 SECRET_FILES = (".env", ".mcp.json", ".claude/settings.json", ".claude/settings.local.json", "CLAUDE.local.md")
 MAX_SCAN_BYTES = 20 * 1024 * 1024
@@ -461,15 +466,22 @@ class Syberlabs:
 
     def __call__(self, *args: str, env: dict | None = None, timeout: float | None = 900) -> Done:
         args = tuple(map(str, args))
+        credentials = [os.environ.get(name) for name in (githits.TOKEN_ENV, API_KEY_ENV)]
+        def scrub(text):
+            for value in credentials:
+                if value:
+                    text = text.replace(value, "[credential redacted]")
+            return text
         argv = ["--home", str(self.home), "--repo", str(self.repo), "--actor", self.actor, *args]
         try:
             done = self.runner(argv, env or {}, timeout)
         except subprocess.TimeoutExpired:
             done = Done(124, "", f"timed out after {timeout} seconds")
-        self.commands.append({"argv": [self.shown(arg) for arg in args], "code": done.code})
+        done = Done(done.code, scrub(done.out), scrub(done.err))
+        self.commands.append({"argv": [scrub(self.shown(arg)) for arg in args], "code": done.code})
         if self.log is not None:
             with open(self.log, "a", encoding="utf-8") as handle:
-                handle.write(f"$ syberlabs {' '.join(args)}\n[exit {done.code}]\n{done.out}{done.err}\n")
+                handle.write(f"$ syberlabs {scrub(' '.join(args))}\n[exit {done.code}]\n{done.out}{done.err}\n")
         return done
 
     def current(self) -> str:
@@ -547,14 +559,15 @@ def check_lane(env) -> Check:
     problems = []
     switches = claude_code.third_party(env)
     if switches:
-        problems.append(", ".join(switches) + " set: a --bare run would go to another endpoint or provider, not "
-                        "Anthropic's API under your key; unset it (this dry run runs the api lane only)")
+        problems.append(", ".join(switches) + " set: the run would go to another endpoint or provider, not "
+                        f"Anthropic's API under your key; unset it (this dry run runs the {LANE} lane only)")
     if not str(env.get(API_KEY_ENV, "")).strip():
-        problems.append(f"{API_KEY_ENV} is not set: the api lane (--bare) runs on your own key from the environment")
+        problems.append(f"{API_KEY_ENV} is not set: the {LANE} lane runs on your own key from the environment")
     if problems:
         return Check("credential lane", FAIL, "; ".join(problems))
-    return Check("credential lane", PASS, f"api (--bare, billed) on {API_KEY_ENV} from this environment; no "
-                                          "third-party routing switch set", {"lane": "api", "cost_basis": "billed"})
+    return Check("credential lane", PASS, f"{LANE} (the API key without --bare, so the guard's hook runs; billed) on "
+                                          f"{API_KEY_ENV} from this environment; no third-party routing switch set",
+                 {"lane": LANE, "cost_basis": "billed"})
 
 
 def scan_paths(repo: Path, extra: list) -> tuple[list[Path], bool]:
@@ -664,7 +677,8 @@ def check_doctor(sy: Syberlabs) -> Check:
 def check_guard_key(env) -> Check:
     """The query guard's per-call key reaches its hook: Claude Code's subprocess scrub is off, and the host's own hook
     (``query_guard.hook_command``, the exec form Claude Code runs) signs a block and a pass under a key the host put in
-    its environment, both verifying. Claude Code itself running the hook under ``--bare`` is the canary's to show."""
+    its environment, both verifying. Claude Code itself running the hook (on the api-hooked lane) is the canary's to
+    show."""
     problems = []
     if truthy(env.get(SCRUB_ENV)):
         problems.append(f"{SCRUB_ENV} is set: Claude Code would strip the guard's key and the GitHits token from the "
@@ -724,7 +738,8 @@ def check_budget(cap, contract: dict, runs: int) -> Check:
     if budget.get("strict") is not True:
         return Check("budget cap", FAIL, "the arms' contract needs budget.strict true: usage of a model its prices do "
                                          "not name must refuse promotion, or cost turns unknown")
-    return Check("budget cap", PASS, f"${cap:.2f} hard cap for the canary and {runs} runs; each thread's contract "
+    return Check("budget cap", PASS, f"${cap:.2f} token-cost dispatch threshold for the canary and {runs} runs; "
+                                     "one-call overshoot and server fees are not covered; each thread's contract "
                                      f"max_dollars ${share:.4f}; a run starts only while spent + ${share:.4f} <= "
                                      f"${cap:.2f}; priced: {', '.join(sorted(budget['prices']))}",
                  {"cap": cap, "thread_budget": share})
@@ -834,9 +849,10 @@ def harness_of(events: list) -> dict:
 # ----------------------------------------------------------------------------------------------------------- canary
 
 def claude_flags(plan: dict, arm: str, max_calls: int, max_turns: int, tools: str | None = None) -> list[str]:
-    """``propose`` flags: the same in both arms but for ``--githits`` (and its arm name) in the treatment."""
-    flags = ["propose", "--claude-code", "--bare", "--max-calls", str(max_calls), "--max-turns", str(max_turns),
-             "--allowed-tools", tools or plan["allowed_tools"]]
+    """``propose`` flags: the same in both arms (the api-hooked lane, never --bare) but for ``--githits`` (and its arm
+    name) in the treatment."""
+    flags = ["propose", "--claude-code", "--lane", LANE, "--trusted-tree", "--max-calls", str(max_calls),
+             "--max-turns", str(max_turns), "--allowed-tools", tools or plan["allowed_tools"]]
     if plan["guard_max_lines"] is not None:
         flags += ["--guard-max-lines", str(plan["guard_max_lines"])]
     if plan["guard_max_chars"] is not None:
@@ -868,7 +884,7 @@ def judge_canary(events: list, contracts: dict) -> tuple[str, str, dict]:
             "harness": harness_of(events)}
     if finished.get("error") == "provider_guard_inactive" or unguarded:
         return FAIL, (f"the query guard did not fire: {len(unguarded)} lookup(s) ran with no verified decision "
-                      "(unguarded): under this Claude Code and --bare the --settings hook did not run, or its record "
+                      f"(unguarded): under this Claude Code on {LANE} the --settings hook did not run, or its record "
                       "was not the hook's. Do not run the pilot in this mode"), data
     if not refused or not reached:
         missing = ([] if refused else ["no lookup the guard refused for what it says (the canary asks for one "
@@ -898,7 +914,7 @@ def gate(spent: float | None, reserve: float, cap: float) -> str | None:
         return ("the spend so far is unknown (a model the prices do not name, a call the meter missed, or a thread "
                 "whose record could not be read), so the cap cannot be enforced")
     if spent + reserve > cap + 1e-9:
-        return (f"${spent:.4f} spent; another run may cost up to ${reserve:.4f} (a thread's max_dollars), which the "
+        return (f"${spent:.4f} spent; another run reserves ${reserve:.4f} (a thread's max_dollars), which the "
                 f"${cap:.2f} cap cannot cover")
     return None
 
@@ -1118,13 +1134,10 @@ def exclude_from_git(repo: Path, folder: Path) -> None:
 
 
 def versions(claude: str | None) -> dict:
+    from importlib.metadata import PackageNotFoundError, version
     try:
-        from importlib.metadata import PackageNotFoundError, version
-        try:
-            syberwork = version("syberwork")
-        except PackageNotFoundError:
-            syberwork = "source"
-    except ImportError:  # pragma: no cover
+        syberwork = version("syberwork")
+    except PackageNotFoundError:
         syberwork = "source"
     try:
         git_version = subprocess.run(["git", "--version"], capture_output=True, timeout=30).stdout.decode().strip()
@@ -1147,7 +1160,8 @@ def parse_args(argv):
     parser.add_argument("--repo", default=".", help="the repository the items change (default: here)")
     parser.add_argument("--base", help="the commit every thread starts from; must be HEAD (default: HEAD)")
     parser.add_argument("--budget", type=float, default=DEFAULT_BUDGET,
-                        help=f"hard cap in dollars for the whole run, canary included (default {DEFAULT_BUDGET:g})")
+                        help=f"token-cost scheduling budget, canary included (default {DEFAULT_BUDGET:g}); "
+                             "may overshoot by one call and excludes server-side search fees")
     parser.add_argument("--thread-budget", type=float,
                         help="each thread's contract max_dollars (default: the cap over the runs plus the canary)")
     parser.add_argument("--seed", type=int, help="the shuffle's seed (default: drawn, and printed)")
@@ -1281,7 +1295,7 @@ class DryRun:
             receipt["plan"] = {"sha256": digest(plan_path.read_text(encoding="utf-8")),
                                "items": [{"id": i["id"], "tags": i["tags"], "paths": i["paths"],
                                           "objective_sha256": digest(i["objective"])} for i in plan["items"]]}
-            receipt["settings"] = {"lane": "api", "max_calls": plan["max_calls"], "max_turns": plan["max_turns"],
+            receipt["settings"] = {"lane": LANE, "max_calls": plan["max_calls"], "max_turns": plan["max_turns"],
                                    "allowed_tools": plan["allowed_tools"], "canary_turns": CANARY_TURNS,
                                    "guard": {"max_lines": plan["guard_max_lines"],
                                              "max_chars": plan["guard_max_chars"]},
@@ -1309,8 +1323,8 @@ class DryRun:
         (self.out / "plan.json").write_text(Path(self.args.plan).read_text(encoding="utf-8"), encoding="utf-8")
         self.receipt["files"]["items"] = "items.txt"
         say(f"\nready: the canary, then {len(self.order)} runs ({len(plan['items'])} items x 2 arms) from "
-            f"{self.base[:10]} in the order of seed {self.seed}; up to ${self.cap:.2f} on your Anthropic key (each "
-            f"thread ${self.share:.4f}) and a few GitHits lookups")
+            f"{self.base[:10]} in the order of seed {self.seed}; token-cost dispatch threshold ${self.cap:.2f} "
+            f"(each thread ${self.share:.4f}); one call can overshoot, and GitHits/search fees are extra")
         if self.args.yes:
             return True
         try:
@@ -1323,7 +1337,7 @@ class DryRun:
 
     def canary(self) -> bool:
         plan, repo = self.plan, self.repo
-        say("\ncanary: one call with --bare --githits; the guard must refuse one lookup and pass one to GitHits")
+        say(f"\ncanary: one call on {LANE} with --githits; the guard must refuse one lookup and pass one to GitHits")
         stop = gate(self.spent(), self.share, self.cap)
         if stop:
             return self.fail(f"budget: {stop}")
@@ -1454,10 +1468,10 @@ class DryRun:
         rows += report_rows(found, len(plan["items"]), reasons)
         lanes = sorted({lane for entry in self.entries for lane in entry["harness"].get("lane", [])})
         bases = sorted({basis for entry in self.entries for basis in entry["harness"].get("cost_basis", [])})
-        if lanes and (lanes != ["api"] or bases != ["billed"]):
+        if lanes and (lanes != [LANE] or bases != ["billed"]):
             rows.append({"status": FAIL, "name": "lane", "detail": f"the candidates recorded lane {lanes}, cost basis "
-                         f"{bases}; the dry run runs the api lane only"})
-            reasons.append("a candidate ran outside the api lane")
+                         f"{bases}; the dry run runs the {LANE} lane only"})
+            reasons.append(f"a candidate ran outside the {LANE} lane")
         total = receipt["spend"]["total"]
         receipt["spend"]["within_cap"] = within = total is not None and total <= self.cap + 1e-9
         rows.append({"status": PASS if within else FAIL, "name": "spend",
@@ -1501,15 +1515,15 @@ class DryRun:
         credentials = [(name, os.environ.get(name, "")) for name in (githits.TOKEN_ENV, API_KEY_ENV)]
         credentials = [(name, value) for name, value in credentials if len(value) >= MIN_SECRET_CHARS]
         files = [path for path in out.rglob("*") if path.is_file()]
-        written, read, unread = [], 0, 0
+        written, unread = [], 0
         for name, value in credentials:  # every file, whatever its size
-            found, read, unread = files_holding(value, files, limit=None)
+            found, _read, missed = files_holding(value, files, limit=None)
+            unread += missed
             written += [f"{name} in {path.relative_to(out).as_posix()}" for path in found]
-        receipt["credential_scan"] = {"files": read, "unread": unread, "found": written}
+        receipt["credential_scan"] = {"files": len(files), "unread": unread, "found": written}
         if unread:
             receipt["verdict"] = FAIL
-            receipt["reasons"].append(f"{unread} file(s) of the run's directory could not be read for the credential "
-                                      "scan")
+            receipt["reasons"].append(f"{unread} credential-scan file read(s) failed")
         if written:  # never expected: nothing in the factory writes a credential
             receipt["verdict"] = FAIL
             receipt["reasons"].append("a credential was written in the run's directory: " + "; ".join(written))
@@ -1524,7 +1538,7 @@ class DryRun:
             self.receipt = receipt = json.loads(text)  # the table prints what the file holds, never the credential
         (out / "receipt.json").write_text(text + "\n", encoding="utf-8")
         say("")
-        say(render(receipt, out))
+        say(render(json.loads(text), out))
 
 
 def report_rows(found: dict | None, expected: int, reasons: list) -> list[dict]:
@@ -1590,21 +1604,18 @@ def main(argv: list | None = None, *, ask: Ask | None = None, runner: Runner | N
     exclude_from_git(repo, out if args.out else runs_dir)
     dry = DryRun(args, out, seed, ask or input, runner or subprocess_runner)
     try:
-        code = dry.run()
+        status = dry.run()
     except KeyboardInterrupt:
         dry.receipt["verdict"] = "ABORTED"
         dry.receipt["reasons"].append("interrupted by the operator")
-        code = 1
-    except Exception as exc:  # a fault here or in a command: the receipt says so, the traceback follows on stderr
-        traceback.print_exc()
+        status = 1
+    except Exception as exc:  # exception text and tracebacks can contain credentials or private output
         dry.receipt["verdict"] = FAIL
-        dry.receipt["reasons"].append(f"internal error: {type(exc).__name__}: {tail(str(exc), 200)}")
-        code = 1
+        dry.receipt["reasons"].append(f"internal error: {type(exc).__name__}")
+        status = 1
     finally:
         dry.finish()
-    if code == 0 and dry.receipt.get("verdict") != PASS:  # finish's credential scan can still fail a passing run
-        code = 1
-    return code
+    return 1 if dry.receipt["verdict"] == FAIL else status
 
 
 if __name__ == "__main__":

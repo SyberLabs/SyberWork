@@ -1,0 +1,67 @@
+{
+  "checks": {},
+  "contamination": {
+    "note": "The fixture, its objective and these checks are public in SyberLabs/SyberWork benchmarks/fixtures.py since 2026-10-23 (#67): hidden from the agent's worktree and requests, not from a model trained on that repository or a lookup into it.",
+    "status": "public_repository"
+  },
+  "hidden": {
+    "checks": {
+      "order": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "order"
+        ],
+        "timeout_seconds": 60
+      },
+      "retry": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "retry"
+        ],
+        "timeout_seconds": 60
+      },
+      "tolerated": {
+        "argv": [
+          "{python}",
+          "-c",
+          "import json, sys; path, name = sys.argv[1], sys.argv[2]; body = json.loads(open(path, encoding='utf-8').read())[name]; sys.argv = [name] + sys.argv[3:]; exec(compile(body, '<hidden:' + name + '>', 'exec'), {'__name__': '__main__'})",
+          "{hidden}/checks.json",
+          "tolerated"
+        ],
+        "timeout_seconds": 60
+      }
+    }
+  },
+  "id": "v3-worktree_order",
+  "labels": {
+    "generation": "v3",
+    "pool": "e3"
+  },
+  "objective": "On Windows a check's child process can still hold a file in the evaluation worktree for a moment after the check ends, so git worktree remove fails with Permission denied, a passing check is reported as an error, and a stale worktree registration is left behind. Make remove_worktree retry the removal briefly before giving up, make sure the registration never outlives the directory, tolerate a removal or prune that still fails, and never raise; keep the signature",
+  "provenance": {
+    "adapter": "syberlabs eval tasks import-fixtures",
+    "fixture": "worktree_order",
+    "generation": "v3",
+    "origin": "benchmarks/fixtures.py"
+  },
+  "safety": {
+    "canaries": [],
+    "expectations": []
+  },
+  "schema": "syberlabs.eval/task.v1",
+  "scope": {
+    "max_diff_bytes": 50000,
+    "max_files": 5,
+    "paths": [
+      "src/"
+    ]
+  },
+  "source": "fixture:worktree_order",
+  "source_digest": "66197fa7388fcb374d61fda8679ef5d4bc0313dc8252401bd6dc6f255645989d"
+}

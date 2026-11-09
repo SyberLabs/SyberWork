@@ -1,0 +1,387 @@
+# The factory: Space-Time Parsing on one ledger
+
+The factory is a ledger indexed by component, execution step and commit, and a set of operations over
+that grid. The architecture graph derived from the source tree (Space) gives the component axis. A
+recorded execution (Time) gives the step axis. Git gives the commit axis. A cell is one component at one
+step at one commit; a worldline is one run's path through cells. Specs claim footprints of cells, tickets
+name a delta between two commits over a footprint, and an attestation is a trace diff over that
+footprint, signed with the same Ed25519 and DSSE code the chain head uses.
+
+The design, its prior art (record and replay, durable execution, trace standards, code graphs,
+architecture conformance, spec-driven development, attestation, ledger storage) and the three-phase plan
+are in the architecture plan this slice was built from. This page is what the repository does today.
+
+Package: `syberlabs/factory/`. Standard library only. `syberlabs` still does not import `syberwork`.
+Claim ceiling for this page: **implemented** and **tested** (`tests/test_factory.py`, 51 tests, and the
+CLI run below). Nothing here is measured, deployed or externally validated.
+
+## The v0 slice
+
+| Layer | Module | What it does |
+| --- | --- | --- |
+| Space | `space.py` | Reads the Python sources under a root with `ast`: files, symbols (functions, classes, methods with a signature digest), `IMPORTS` edges resolved to repository files, `CALLS` edges resolved to symbols with a confidence. Maps files to declared components by path glob (last match wins), rolls edges up to `DEPENDS_ON` between components, and computes the reflexion report: convergence, divergence (observed, not declared, with the symbol-level `via` edges), absence (declared, not observed), unmapped files, and a drift score per component (divergent out-weight over total out-weight). `diff` compares two graphs by file hash and symbol signature. |
+| Time | `harness.py` | `record` runs an entrypoint in a child interpreter whose bootstrap installs `Recorder.hook`, a profile function, and journals every call and return under the root as JSON lines with `seq`, a logical clock, and `ns` since the run started. The hook is installed only in that child: the repository's integrity rule (`examples/critic_rules.py`, `runner_reach`) refuses a trace or profile hook in any file a test can import, so the bootstrap is a string and the parent only reads the journal. `Context.run(name, fn, *args)` is the effect boundary: recording calls `fn` and journals its JSON result (large payloads go to a content-addressed blob); replay returns the journaled result without calling `fn` and raises `Diverged` when the program asks for a different effect, or ends with `status: diverged` when it asks for fewer. `Context.marker` does the same for time, random and environment reads. `spans`, `active_at`, `worldline`, `compare` and `chrome_trace` read a journal back. |
+| Ledger | `ledger.py` | An append-only JSONL event log with a `previous`/`hash` chain (`verify` walks it; `append` refuses an edited log), content-addressed artifacts (Space graphs, run journals, blobs, attestations), and a rebuildable SQLite projection with `components`, `edges`, `runs`, `steps`, `effects` and `cells`. Queries: `worldline(run)`, `active_at(run, seq)`, `cells_for(component)` across revisions, `components_at(revision)`. |
+| Spec | `spec.py` | A spec is one capability's requirements, each with a clause id, text, scenarios and evidence kinds, plus a footprint hint. Operations (revise, mutate, validate, promote, canonize, retire) are checked against a state table and recorded on the spec's history with actor and input digest. `resolve_footprint` pins the hint to a Space graph's revision and lists the files it owns. `ticket_from_spec` opens one ticket per requirement with the resolved footprint, the scenarios as acceptance criteria, and one exit criterion per evidence kind. |
+| Attestation | `attest.py` | `trace_diff` compares two runs over a footprint's components, projecting each to (component, fn) per call and (effect, result digest) per effect, and reports whether they are equal and where they first part. `statement` wraps the evidence, spec reference, footprint, builder and verdicts in an in-toto Statement v1 with predicate type `https://syberlabs.space/attestation/spec-satisfied/v1`; `policy` is the gate (empty diff, or a non-empty diff with the behavior-change label, then optional full-suite tests and a mutation threshold); `sign` and `verify` are DSSE over the canonical statement. |
+| Feature maps | `features.py` | A vector per symbol and per component: feature hashing over identifier subwords, keywords, strings, docstrings and subword bigrams (512 dimensions, TF-weighted, unit length) with six scaled trace scalars from the ledger (runs, calls, effects, io, callers, callees) appended, so symbols that read alike but behave differently sit apart. Component vectors are the caller-weighted mean of their symbols. `nearest` answers a spec clause with symbols or components; `moved` lists what changed between two revisions' maps and is the third ticket source (`map moved --ticket`: a moved region no ticket or promoted spec claims gets a ticket asking for a spec or a revert); `impact` reports transitive dependents and referencing symbols. No learned model and no vector store: `vectorize` is the one function a model replaces, and the vectors live in the SQLite projection. On this repository (1,568 symbols) a build takes under two seconds and free-text queries land the right symbol in the top two for the cases tried (`update_ref`, `sign_chain_head`, `post_order`); one observation, not a benchmark. |
+| CLI | `cli.py` | `syberlabs factory ...` or `python -m syberlabs.factory ...`; every command reads the ledger fresh. |
+| Viewer | `static/factory.html` | A self-contained page `export --view` fills with one run: the component graph with declared, divergent and absent edges, a slider over `seq` that lights the active components and edges, the active span stack, and the effects so far. Play at 0.2x to 5x paces `seq`, not wall time. |
+
+## Running it
+
+The repository's own fixture (`tests/fixtures/factory_app`, four components with one planted undeclared
+import and one declared edge nothing uses) is the worked example:
+
+```sh
+cd tests/fixtures/factory_app
+echo '{"part": "p-104", "quantity": 2}' > fixture.json
+python -m syberlabs.factory index --declared architecture.json           # Space; drift report; ledger seq 1
+python -m syberlabs.factory drift --declared architecture.json --max 0.5  # exit 1: effects -> rules is undeclared
+python -m syberlabs.factory record --entry fxapp.main:run --fixture fixture.json
+python -m syberlabs.factory show RUN_A                                    # the worldline, one line per step
+python -m syberlabs.factory at RUN_A --seq 10                             # main.run and effects.submit are open
+python -m syberlabs.factory replay RUN_A --entry fxapp.main:run --fixture fixture.json   # effects come from the journal
+python -m syberlabs.factory spec validate spec.json
+python -m syberlabs.factory variants spec.json --proposer claude=CMD --reviewer gpt=CMD   # writes spec.v2.json, prints the verdict id
+python -m syberlabs.factory owner --public owner.pub                      # pin the owner key, once; the gate trusts no other
+python -m syberlabs.factory approve spec.v2.json --verdict VERDICT --actor human:mateo --seed-env SYBERLABS_FACTORY_OWNER_SEED --out approval.json
+python -m syberlabs.factory spec promote spec.v2.json --verdict VERDICT --actor human:mateo --approval approval.json
+python -m syberlabs.factory ticket spec.v2.json --req R1 --baseline RUN_A --owner mateo --out ticket.json
+python -m syberlabs.factory record --entry fxapp.main:run --fixture fixture.json --revision candidate1
+python -m syberlabs.factory attest --baseline RUN_A --candidate RUN_B --ticket ticket.json --commit candidate1 \
+    --seed-env SYBERLABS_FACTORY_SEED --out attestation.json             # exit 0: diff empty, promote True
+python -m syberlabs.factory verify attestation.json --public key.pub
+python -m syberlabs.factory export RUN_A --chrome trace.json --view run.html
+python -m syberlabs.factory status                                        # 9 events, chain verified
+```
+
+An entrypoint is `module:function`, imported from the root and called as `function(ctx, fixture)` with the
+hook installed after the import so the import is not part of the run, or a script run as `__main__` whose
+own body is its first span and which takes its context from `syberlabs.factory.harness.current()`. Effects
+go through `ctx.run(name, fn, ...)`; that is the only instrumentation a program needs, and the only part
+replay cannot do without. The child runs under the Build Thread's scrubbed environment
+(`checks.scrubbed_environment`: `PATH`, the locale, the package managers' cache variables, a temporary `HOME`
+and `TMP` inside the host-owned scratch directory, `SYBERLABS_CANDIDATE` and `SYBERLABS_BASE` as the host has
+them), not the caller's whole environment, and `-I` drops the `PYTHON*` variables besides; the host's signing
+seed (`SYBERLABS_CERTIFICATE_SEED`) and a check's `--seed-env` variable are never in it. It is not a sandbox.
+The signing seed is read from the named environment variable the way `syberlabs certify` reads it; only the
+name is recorded.
+
+## The goal gate
+
+The factory may propose a spec at any level; it may promote none. `spec promote`, `canonize` and `retire`
+take a human `--actor` (`kind:id`, resolved to a principal; free text is refused) and an approval that
+verifies: `factory approve` signs, with the owner's seed, a payload naming the spec (id, version and its
+content digest: the parsed document without `history`, so a re-serialized file is the same spec), the
+operation and the verdict ids; `spec promote` verifies it under the owner key the ledger pins, requires the
+approver to be the actor, and resolves each `--verdict` on the ledger to a `review` event that accepted the
+very variant the file is (the `validate` event's digest must match, so a spec edited after review is
+refused), whose proposers and reviewer the approver is not. The approval is stored under `approvals/` and
+logged as `approval_recorded`; the `spec_changed` cites that event's hash. A model actor, a missing
+approval, a verdict that is a string rather than a review, or an approval under another key each refuse, and
+the variant loop no longer suggests that the reviewer promote what it reviewed.
+
+**The trust model.** Promotion is bound to the owner key the ledger pins, not to whoever runs the host
+command. The key lives on the ledger as an `owner_key_set` event: `factory owner --public KEY` (or the first
+`--owner-public` a `spec promote` sees) pins it once, and that bootstrap is the one unsigned act, done by the
+operator by hand on a ledger that pins none (a Class C act: whoever pins first owns that ledger). From then on
+`spec.gate` reads the pinned key from the ledger's events and verifies under it only: a ledger with no pinned
+key refuses (`owner_key_unset`), an approval signed under any other key refuses (`owner_key_mismatch`), and
+`--owner-public` naming a different key refuses the same way rather than being believed. Rotation is
+`factory owner --public NEW --seed-env OLD`: the key pinned now signs the handover, the ledger stores that
+signature under `approvals/` and cites it from the new `owner_key_set`, and `verify` checks it like any
+artifact; a rotation the pinned key did not sign is refused (`owner_key_rotation`). The verifier's repro of
+#164 (generate a keypair, approve with it, promote with `--owner-public mine.pub`) is refused at
+`owner_key_mismatch`, and `tests/test_factory.py::CliTests::test_the_owner_key_is_pinned_and_rotates_only_under_the_old_key`
+pins that.
+
+**The lineage rule.** The pinned key is read through the ledger's verified lineage, never from the newest
+`owner_key_set` alone (`spec.owner_key_lineage`, `Ledger.owner_key_lineage`). Walking every `owner_key_set` in
+order: the first is the one bare bootstrap (`previous` null, no `rotation_digest`); every later one is a
+rotation whose `previous` is exactly the key pinned before it, whose `rotation_digest` names a stored envelope
+under `approvals/` and is cited by no other `owner_key_set`, and whose envelope verifies (`verify_rotation`)
+under that previous key for this very position; every keyid is a 64-hex public key. The envelope
+(`syberlabs.space/factory/owner-key/v1`; a `v0` envelope, bound to nothing, is refused) is signed over
+`previous`, `next`, `replaces_seq` (the `seq` of the `owner_key_set` it replaces) and `head` (the ledger head
+when it was signed, which is the `previous` hash of the event it lands as), and the walk checks the last two
+against the chain, so an honest handover cannot be appended a second time after the owner rotated that key
+away (`rotation replayed`), and an envelope signed for one position, or signed and stored but never appended
+there, fails at any other. Any violation is named by `problems` as `owner_key_lineage`, `verify` is false, and the
+ledger pins nothing: `spec.gate`, `factory owner` and `set_owner_key` refuse with `owner_key_lineage` rather
+than falling back to the last or an earlier key, so a second bare bootstrap is a violation, not a re-pin. The
+delta verification's four shapes (an `owner_key_set` appended through the public `append` with an attacker's
+key; a rotation signed by the new key instead of the pinned one; a rotation whose `previous` is a key rotated
+out earlier; a malformed keyid as the last event) each leave the hash chain intact and each are refused this
+way, in `CliTests::test_the_owner_key_is_the_verified_lineage_not_the_newest_event`; the replay of an honest
+`A -> B` envelope after `B -> A` (the second verification's M4) and an envelope moved to another position are
+refused the same way, in `CliTests::test_a_rotation_binds_to_its_position_and_a_replayed_envelope_is_refused`.
+`spec promote|canonize|retire`
+verify the ledger before the gate reads it (`ledger_corrupt`), and `factory check` verifies it once more after
+the candidate's test suite ran and before anything is attested, against the head its own run record left, so a
+line a candidate manages to append during its suite refuses the check (`ledger_corrupt`;
+`BuildThreadCheck::test_a_ledger_that_changes_under_the_test_suite_refuses_the_check`). `set_owner_key` reads
+the pinned key and appends under one acquisition of the journal lock, so two bootstraps racing on an empty
+ledger cannot both land. What the lineage does not cover is an attacker who rewrites the whole chain
+consistently from the rotation they want undone; an append, with any seed the owner ever held, buys nothing.
+That is the unanchored write boundary of `spec/GAPS.md` 67 (3), and anchoring the head in `tlog`/`witness` is
+the deferred fix. `Approved`, the record `transition` takes for a gated operation, is made by `verify_approval` only:
+its constructor demands a module-private token, and `transition` checks the token, so neither a dictionary nor
+an instance made around the constructor passes the gate.
+
+The approval covers the spec's **content** digest, parsed and with `history` excluded, not the file's bytes;
+both sides digest the same way, so a re-indented or re-keyed file still promotes, and an edit to the file's
+`history` between signing and promotion is invisible to the approval. That is deliberate: the ledger's
+`spec_changed` events are the history of record, the file's copy is a convenience the promotion rewrites
+anyway, and binding the bytes would refuse the re-serialized file for nothing gained. The intended source of
+the approval is a kernel `approved` event on a goal case (approver not proposer, `session.py`); until the
+factory has a case to hang it on, the owner's signature stands in (`spec/GAPS.md`).
+
+## The candidate is not trusted
+
+The candidate's program runs in a child the parent does not believe. The child runs `python -I` in a
+host-owned scratch directory outside the worktree and outside the ledger, and is never told where the
+ledger is; the parent moves the journal into `runs/` afterwards. Every journal record carries a seal, an
+HMAC chained from the previous record under a per-run key the parent generated, and the parent refuses a
+journal with a line written around the recorder, a line edited afterwards, a torn tail, or no `end`. The
+child's report travels over a private pipe and must carry the run's nonce; a line printed to stdout is
+output, never a report, and the status it claims must agree with the `end` record the parent reads itself.
+`factory check` verifies the ledger, chain and artifacts, before the candidate runs and again after it
+exits, and refuses if anything moved in between. A run stopped at its timeout has no `end` record, and its
+journal is not delivered either. The child's environment is the Build Thread's scrubbed one, without the
+host's signing seed or the check's `--seed-env` variable, so the recorded program and the test suite it is
+followed by cannot read the seed that signs the attestation; the same scrubbed environment runs the suite. Every artifact load checks the file against the digest the
+ledger recorded, so an edited golden journal cannot become a baseline (`load_run` refuses it, `verify`
+names it). The residual is memory: code in the child can reach the recorder and its key through
+`sys.modules`, because io observation has to run in the candidate's process. That is recorded in
+`spec/GAPS.md`, and this is still not a sandbox.
+
+The repository checks itself the same way. `docs/architecture.declared.json` declares four components
+(`syberlabs`, `syberlabs.eval`, `syberlabs.factory`, `syberwork`) and the edges allowed between them;
+`tests/test_factory.py::test_repository_layering_has_no_drift` derives the graph from the checkout and
+requires zero divergence, which is `tests/test_package.py`'s "syberlabs never imports syberwork" read from
+the code rather than from `sys.modules`. The same check runs from a terminal:
+
+```sh
+python -m syberlabs.factory drift --declared docs/architecture.declared.json --paths syberlabs syberwork --max 0
+```
+
+Recording the repository's own Build Thread example under the harness (`python -m syberlabs.factory record
+--entry examples/build_thread.py`) journals about 6,000 spans over 266 functions, all in `syberlabs`, in about a
+second on the container the tests ran in, and `export --view` renders it. Indexing `syberlabs` and
+`syberwork` (84 files, about 1,500 symbols, 3,200 edges) takes under a second there. Both numbers are single
+observations, not measurements.
+
+## The seam: `factory check` as a Build Thread check
+
+The factory does not decide anything about a candidate; the Build Thread's admission does. The seam between
+them is one host-run check. A contract names it like any other check:
+
+```json
+"checks": {"factory": {"argv": ["/abs/python", "-m", "syberlabs.factory", "--home", "/abs/.syberlabs/factory",
+                                "check", "--declared", "architecture.json", "--entry", "app.main:run",
+                                "--fixture", "fixture.json", "--max-drift", "0"], "timeout_seconds": 300}},
+"required": ["factory"]
+```
+
+Before the thread starts, the operator records the golden run on the base commit and names it. One
+command does all of it and publishes the contract:
+
+```sh
+python -m syberlabs.factory bootstrap --declared architecture.json --entry app.main:run --fixture fixture.json --max-drift 0
+```
+
+It indexes, records the golden, sets the `golden` baseline, and writes `repo-change.v<N+1>.json` with
+`factory` added to `evaluation.checks` and `required`; threads started afterwards use the newest version.
+By hand it is `factory record ...` then `factory baseline RUN`. For each candidate, `syberlabs check` runs the argv in the
+candidate's detached worktree under the scrubbed environment, and the check: indexes the worktree and logs
+the Space graph; records the fixture run at the candidate's commit; diffs it against the baseline over the
+ticket's footprint (or the whole run); computes the reflexion report; writes an attestation whose predicate
+carries the trace diff, the drift evidence, the gate parameters and the policy's reasons; and exits 0 only
+when the policy promotes and the program ended cleanly. The evaluation record then carries the check's
+output digest and tail, which name the attestation digest, so `candidate_evaluated` cites the trace diff
+without any change to the frozen event vocabulary. `candidate.promotable` still requires a human-origin
+proposal from a promotion role; the factory's verdict is the host's own evaluation of the exact tree, which
+is what invariant 2 asks for, and nothing more.
+
+`tests/test_factory.py::BuildThreadCheck` runs this through the Kit: a comment-only change to `rules.py`
+passes (trace diff empty, drift within bound) and is accepted; a change to a threshold in `decide` is
+refused with `candidate_check_failed:factory` and the attestation says where the worldlines part; with
+`--max-drift 0` the fixture's planted undeclared import refuses every candidate until the declaration or the
+code changes. The ledger names everything by absolute path on argv, since the check's working directory is
+the worktree and its environment is scrubbed; it refuses a relative `--home`.
+
+## What the diff compares, and what it saw on this repository
+
+The trace diff has two levels. At `component` level (the default) a run is the sequence of component
+transitions plus every effect, marker and io observation; consecutive calls inside one component collapse,
+so a helper added, a function renamed, or two calls reordered inside a component is not a change, while code
+crossing a boundary or an effect changing is. At `function` level every call must match. The attestation
+records the verdict at both levels, and the first divergence is described (the io's masked argv, or the
+call's component and function) so a reviewer reads what changed, not an index.
+
+Io observations are what make this work on a program nobody instrumented. The child installs wrappers before
+the run (`harness.OBSERVERS`: `subprocess.Popen`, `socket.connect`) that journal each reach outside the
+program as an `io` record. Its digest is of a masked key (paths to their basename, hex ids and UUIDs to
+`<hex>`, temporary names to `<tmp>`) so two runs that shell out the same way share a key; the payload keeps
+the real arguments. Io is observed, never replayed.
+
+Measured on this repository with `examples/build_thread.py` as the recorded program (about 6,200 spans, 72
+subprocesses) and `docs/architecture.declared.json` as the declaration, in the container the tests ran in:
+
+| Candidate | Component level | Function level | Verdict |
+| --- | --- | --- | --- |
+| A comment added to `metrics.py` | equal | equal | promote |
+| `digest` split into a helper (`canonical.py`) | equal | differs | promote |
+| `Thread.check` reruns by default (`build.py`) | equal | differs | promote: the example never re-checks, so nothing observed it |
+| `update_ref` without the expected old value (`gitspace.py`) | differs at the `update-ref` io | differs | refuse: the io lost one argument |
+
+The third row is the honest limit: a gate sees what the recorded program exercises, as a test suite does.
+`examples/factory_self_check.py` closes that gap for this case: it checks one candidate three times (plain,
+plain again, with `rerun`), so a rerun-by-default change starts extra check processes on the second call
+and the io observation refuses it (`SelfHosting::test_the_self_check_program_sees_a_rerun_policy_change`).
+That program is the one to record as this repository's golden. The fourth row is the point: an invariant from `AGENTS.md` (acceptance is a compare-and-swap) is caught from the
+outside, with no edit to the code under test. `tests/test_factory.py::SelfHosting` pins both.
+
+`docs/architecture.declared.json` now declares eleven components (inside `syberlabs`: primitives, signing,
+admission, git, build-thread, agents, cli, builder; plus eval, factory and the `syberwork` app) and the 37
+edges observed between them, so the base tree has zero drift and any new cross-component import is a
+refusal. Two declared edges are worth a note: `admission -> build-thread` is debt (`critic.parse` reads
+`providers.model_usage`), and `factory -> build-thread` is deliberate (the variant loop reuses
+`providers.run_json`, the repository's one process boundary for models) and was caught by the drift check
+the moment it was written, before it was declared. The finer declaration raised the component-level projection of the golden run from
+78 transitions over 2 components to 1,075 over 7; the four candidates above keep their verdicts, which says
+the third row is a coverage limit of the recorded program, not a resolution limit of the diff.
+
+On this repository the check runs the host's factory, never the candidate's: the published argv carries
+`-P` so the worktree is not on `sys.path`, and the child loads the host's harness by file under a private
+module name before the program under test imports its own `syberlabs`. A candidate therefore cannot edit the
+code that judges it.
+
+## Tests as evidence, in the same attestation
+
+`factory check --tests-argv '["python", "-m", "unittest", ...]'` runs the suite in the worktree after the
+recording and records its outcome as `tests` evidence (exit code as the verdict, output digest, tail); the
+gate then requires it green. `bootstrap --tests-argv contract` copies the contract's existing `tests` check
+into the factory check and drops the separate one, so the suite runs once and one attestation says: trace
+diff empty, drift within bound, suite green.
+
+## Tickets open without a person
+
+All three of the plan's automatic ticket sources are live. `factory drift --max 0 --ticket DIR` writes one
+ticket per component over the threshold (footprint: the component and the targets of its undeclared edges;
+acceptance: a clean reflexion report; exit criterion: drift evidence; `repro` lists the symbol-level edges)
+and one for unmapped files. `factory spec promote spec.json --tickets DIR --baseline golden` resolves the
+spec's footprint against the latest Space graph and opens one ticket per requirement with the scenarios as
+acceptance criteria and the golden run as the baseline. `factory map moved --before A --after B --ticket DIR`
+is the third: a component whose symbols' vectors moved past the threshold, with no open ticket or promoted
+spec claiming it, gets a ticket asking for a spec or a revert. All three log `ticket_opened` with a `source`.
+
+`factory drift --declared arch.json --max 0 --ticket tickets/` writes one ticket per component over the
+threshold (footprint: the component and the targets of its undeclared edges; acceptance: a clean reflexion
+report; exit criterion: drift evidence; `repro` lists the symbol-level edges) and one for unmapped files,
+and logs each as `ticket_opened` with `source: drift`. This is the first of the plan's three automatic
+ticket sources; spec promotion and feature-map drift are v1.
+
+## The variant loop
+
+`factory spec variants parent.json --proposer claude=CMD --proposer grok=CMD --proposer cursor=CMD --reviewer gpt=CMD`
+is SyberWork's provider arrangement applied to specs. Each proposer is a command that reads the parent spec,
+the components it may claim and the objective as JSON on stdin and answers one delta (added, modified,
+removed, footprint hint, rationale). Each delta becomes a variant through `mutate`, is validated against
+the latest Space graph (findings stay on the variant rather than hiding it), and is logged as
+`spec_changed` with the proposer as actor; a proposer that returns no JSON is logged as a failed mutate
+and the loop continues. The reviewer is one command that sees every variant with its findings and answers
+a verdict per variant. `judge` enforces three rules: the reviewer is independent of every proposer by
+provider family (`factory/independence.py`: the family is read from the model the command declared in its
+answer, `model` or `signal.harness.model`; two names on one family are not independent, and a party whose
+family is not recorded refuses rather than passes), a variant with findings cannot be accepted, and at most
+one variant is accepted. The accepted variant is validated to candidate and written as the spec's next
+version; the owner then approves and promotes it (the goal gate above) and the promotion opens its tickets.
+`tests/fixtures/factory_app/proposers.py` stands in for the models, and `tests/test_factory.py::Variants`
+runs the loop with one sound proposer, one that overreaches, and one that breaks. Nothing here imports a
+model SDK; the adapter for a real model is the command. `independence()` is small and importable so that
+`critic.independent` can adopt it; `critic` is unchanged here.
+
+## Where this departs from the plan, and why
+
+- **`ast`, not tree-sitter and SCIP.** The plan chose tree-sitter for structure and SCIP for precise
+  references. This repository has no runtime dependencies and keeps it that way, so v0 reads Python with
+  the standard library. Calls resolve to module-level symbols and to names imported from repository
+  modules; attribute chains deeper than one level and dynamic dispatch are counted as unresolved. A
+  TypeScript indexer is a second module behind the same graph shape, not a change to the ledger.
+- **A profile hook in a child, not `ctx.run` everywhere.** The plan bound every component boundary with
+  `ctx.run`. The recorder uses a profile hook for the Space-Time binding (which component ran at which step)
+  so an existing program records with no edits, and reserves `ctx.run` for effects, which is the only place
+  replay needs a journal. The hook lives in the child the harness starts, never in the test process, which
+  is what the integrity rule requires. The cost is that the hook sees one thread and nothing from threads the
+  program starts, and that every recording is a process start.
+- **SQLite and JSONL, not Neo4j, Parquet and LanceDB.** The plan's storage table stands; the event log is the
+  system of record and the projection is rebuilt from it, so a later Neo4j or DuckDB projection is an
+  addition. Feature vectors are 518 floats per symbol in a SQLite table and are scanned linearly; at this
+  repository's size that is milliseconds, and a vector store is the change to make when it is not.
+- **Hashed features, not a learned embedding.** The plan named jina-code-embeddings or voyage-code-3. Neither
+  can enter a dependency-free core, so the map is feature hashing with trace scalars, which is enough for
+  the three queries and keeps `vectorize` as the single seam a model replaces.
+- **Declared architecture in the builder's shape.** The plan proposed Structurizr DSL. The repository
+  already has an `ArchitectureSnapshot` schema (`spec/builder/architecture-snapshot.schema.json`: nodes
+  with `paths`, edges with `from` and `to`), so the declaration is that JSON, and a Structurizr export can
+  be converted to it later.
+- **Spec variants are commands.** The plan had Claude, Grok and Cursor propose and GPT review. They do, as
+  commands at a process boundary, which is how this repository treats every model; the `--proposer` and
+  `--reviewer` names are what the ledger records as actors, beside the model and provider family each
+  command declared.
+
+## What a cell is, exactly
+
+A step is one span of one run: a Python function that ran under the recorded root. Its component is the
+one owning the function's file in the Space graph the run was recorded against (`space_digest` in the run
+header). A cell is that span, keyed by `(component, run_id, span)` and carrying the run's revision, so
+`cells_for("rules")` returns every time anything in `rules` ran, across commits. The grid is sparse: a
+component nothing called at a revision has no cells there, and that absence is itself a query.
+
+## Limits
+
+- One thread. Threads, `multiprocessing` and subprocesses are not recorded; a subprocess's output comes back
+  through `ctx.run` as an effect result, which is the right boundary anyway.
+- Python only. A function call is a span; a module's import runs as one `<module>` span; statements
+  outside any function in an already-imported module are not visible.
+- Replay re-executes the program's own code. It is not a sandbox and nothing here is; the trust boundary
+  above raises the cost of a forged run, and the residual (the recorder shares the candidate's memory) is
+  in `spec/GAPS.md`.
+- Ledger appends go through the kernel journal's writer (lock, fsync, torn-tail repair), so two factory
+  commands on one home serialize; the harness journal is written by the recorder in the child and sealed
+  under the parent's per-run key.
+- Subprocess argv and cwd, socket addresses and the test runner's output tail are scrubbed of credential
+  shapes (the kernel's shared pattern, bearer tokens, PEM keys, `KEY=value` with a credential key, the value
+  after a credential flag) before they are journaled or attested; a credential in some other shape is not.
+- The behavior-change label is a flag on the check's argv, so it is per contract, not per ticket; a ticket
+  that intends a behavior change cannot yet say so on its own.
+- The trace diff compares component transitions (or function names), effect result digests and masked io
+  keys. It does not compare arguments or return values of ordinary calls, or timing, so two runs that
+  differ only in what a pure function returned diff empty. The spec's scenarios and the tests evidence kind
+  are where those claims go. Coarse declarations give a coarse component level: with four components, a
+  change inside `syberlabs` that reaches nothing outside is invisible at that level and visible only at
+  function level.
+- Io observation covers subprocesses and socket connections. File writes, HTTP through a library that does
+  not open a socket per request in this process, and anything a subprocess does are not observed.
+- A `CALLS` edge carries a confidence (0.6 to 0.9) and `source: ast`. The reflexion report counts edges
+  without weighting by confidence.
+
+## Next work package
+
+What remains of v1: this repository's own contract naming `factory check` (the bootstrap command exists; the
+contract lives in the operator's `.syberlabs/`, which is not tracked), and real model adapters behind the
+proposer and reviewer commands (a Class X act when they spend money). v2 as planned: forking a journal at a
+step, mutation score in the gate, change coupling from git history in `impact`, a learned vectorizer, and
+Barn reading attestations. The open decision upstream of all of it is
+whether a host-run trace diff over a declared footprint counts as independent review for MasterMind's auto
+class; if it does, the loop closes without changing who promotes.
+
+Deferred from the consolidation packet, explicitly, so the next packet picks them up rather than rediscovers
+them: `serves`, `mission_ref` and `done_when` on specs; a mandatory `human_owner` on tickets; `promote`
+renamed `pass`; `tickets.py` and `codemap.py` as modules of their own; the kernel approval seam (an `approved`
+event on a goal case in place of the owner's signature); the behavior-change label moving from the check's
+argv to the ticket (today it is per contract, `spec/GAPS.md` 67); and signing the ledger's chain head through
+`witness`/`tlog` so a consistent forged chain is distinguishable from an honest one across runs (D1,
+`spec/GAPS.md` 67).

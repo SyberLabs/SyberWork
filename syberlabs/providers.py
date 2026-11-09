@@ -36,6 +36,7 @@ import random
 import shlex
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -209,11 +210,29 @@ def with_usage(signal, usage: dict | None, tools: dict | None) -> dict | None:
     return found or (None if not isinstance(signal, dict) else found)
 
 
+def feed_stdin(proc: subprocess.Popen, data: bytes) -> threading.Thread:
+    """Write ``data`` to ``proc``'s stdin and close it, on a daemon thread, so the caller's deadline loop starts at
+    once: a child that does not read its input leaves the write blocked once the pipe is full, and a blocked host
+    would miss its own timeout. The thread ends when the child has read everything or has gone."""
+    def write() -> None:
+        try:
+            proc.stdin.write(data)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    thread = threading.Thread(target=write, daemon=True, name="syberlabs-provider-stdin")
+    thread.start()
+    return thread
+
+
 def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Path | None = None):
     """Run a command with ``payload`` as JSON on stdin; return its stdout parsed as JSON.
 
-    Bounded by ``timeout`` seconds and 4 MB of output. The command inherits the
-    caller's environment. Failures are ``Rejected`` with a ``provider_*`` code.
+    Bounded by ``timeout`` seconds and 4 MB of output; the payload is written under the same deadline
+    (``feed_stdin``), and a timeout ends the command with everything it started (``checks._stop``: the session on
+    POSIX, the process tree on Windows). The command inherits the caller's environment. Failures are ``Rejected``
+    with a ``provider_*`` code.
     """
     meter = _METER.get()
     if meter is not None:
@@ -225,18 +244,17 @@ def run_json(argv: Sequence[str], payload: dict, *, timeout: int, cwd: str | Pat
                                     env=dict(os.environ), start_new_session=hasattr(os, "setsid"))
         except OSError as exc:
             raise Rejected("provider_unavailable", f"could not start {argv[0]!r}: {exc.strerror}") from None
-        try:
-            proc.stdin.write(request)
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
+        writer = feed_stdin(proc, request)
         deadline = time.monotonic() + timeout
         while proc.poll() is None:
             if time.monotonic() > deadline or os.fstat(out.fileno()).st_size > MAX_RESPONSE_BYTES:
-                proc.kill()
-                proc.wait()
+                from syberlabs.checks import _stop  # here, not at the top: checks imports critic, which imports this module
+
+                _stop(proc)
+                writer.join(5)
                 raise Rejected("provider_timeout", "the provider command exceeded its time or output limit")
             time.sleep(0.02)
+        writer.join(5)
         if proc.returncode != 0:
             err.seek(0)
             raise Rejected("provider_failed", f"exit {proc.returncode}: {err.read(400).decode(errors='replace')}")
@@ -258,7 +276,7 @@ def repair_feedback(space: SearchSpace, candidate: str) -> dict | None:
     """The host's evaluation of ``candidate`` and its current file texts as a search request's ``feedback``, or None.
 
     ``{"candidate": id, "files": {path: text}, "checks": [{name, state, exit_code, duration_ms, output_tail}, ...]}``:
-    the object the repair arm of ``benchmarks/model_vs_patch.py`` (``Patches.search``) puts on its next request after
+    the object a repair loop puts on its next request after
     a failed attempt and ``adapters/anthropic_adapter.py: build_prompt`` reads under the search protocol. ``checks``
     is ``syberlabs.evolve.mutation_feedback``'s: the check results exactly as the host recorded them in
     ``candidate_evaluated``. ``files`` is the text of every path the candidate changed against the base, read from the
@@ -281,7 +299,7 @@ def repair_feedback(space: SearchSpace, candidate: str) -> dict | None:
 class RepairProvider:
     """One proposal, then repairs directed by the host's check results, until one passes or the budget stops it.
 
-    The repair loop of ``benchmarks/model_vs_patch.py`` (``Patches.search``) as a kernel provider, and the factory's
+    A repair loop as a kernel provider, and the factory's
     default proposer path since the owner's decision of 2026-10-23 (E3 v3 and v4, Claude Sonnet 5.5, K = 6 and 12:
     it beat every evolve arm on solves and on parts per dollar at every budget tested, and ``single`` on solves).
 
@@ -306,18 +324,25 @@ class RepairProvider:
     and ends the search with its code, as for ``CommandProvider``. ``trace`` holds one entry per call,
     ``{call, parent, feedback, outcome, candidate, score}`` (``outcome``: ``passed``, ``failed``, ``out_of_scope``,
     ``unevaluated``, ``refused:<reason>`` or ``provider_error``), then ``{stopped, calls, refused}``.
+
+    ``feedback_filter`` is an optional host hook: a callable that receives each ``feedback`` object before it is
+    put on a request and returns the object to send, or None to send no ``feedback`` at all. The default, None,
+    sends ``repair_feedback`` unchanged, so every caller that does not set it gets the requests it always got.
+    ``syberlabs.eval`` sets it to enforce an eval's ``hidden_feedback`` mode (``docs/EVAL.md``).
     """
 
     operators = ("patch",)
 
     def __init__(self, argv: Sequence[str], *, name: str = "repair", revision: str = "1", timeout: int = 300,
-                 cwd: str | Path | None = None, max_calls: int | None = None):
+                 cwd: str | Path | None = None, max_calls: int | None = None,
+                 feedback_filter: Callable[[dict], dict | None] | None = None):
         if not argv or any(not isinstance(arg, str) for arg in argv):
             raise Rejected("invalid_provider", "argv must be a non-empty list of strings")
         if max_calls is not None and (type(max_calls) is not int or max_calls < 1):
             raise Rejected("invalid_provider", "max_calls must be a positive integer, or None for the candidate budget")
         self.argv, self.name, self.revision, self.timeout, self.cwd = list(argv), name, revision, timeout, cwd
         self.max_calls = max_calls
+        self.feedback_filter = feedback_filter
         self.calls, self.usage = 0, []
         self.trace: list[dict] = []
 
@@ -345,6 +370,8 @@ class RepairProvider:
             "seed": rng.randrange(2**31),
         }
         feedback = repair_feedback(space, previous) if previous is not None else None
+        if feedback is not None and self.feedback_filter is not None:
+            feedback = self.feedback_filter(feedback)
         if feedback is not None:
             request["feedback"] = feedback
         return request

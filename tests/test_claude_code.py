@@ -32,17 +32,18 @@ from types import SimpleNamespace
 from unittest import mock
 
 from spec.validate import validate_events
-from syberlabs import Rejected, claude_code, githits, metrics, query_guard
+from syberlabs import Rejected, claude_code, githits, githits_pace, metrics, query_guard
 from syberlabs.canonical import canonical
-from syberlabs.claude_code import (BIN_ENV, CODE_TOOLS, DEFAULT_TOOLS, GITHITS_ENTRY, LOGIN_LANE_DROPPED_ENV, LOOKUP,
-                                   SKILL_PATH, ClaudeCodeProvider, Transcript, code_tools, githits_skill,
-                                   instruction_file, parse_tools, query_text, version_tuple, write_launcher)
+from syberlabs.claude_code import (BIN_ENV, CODE_TOOLS, DEFAULT_TOOLS, GITHITS_ENTRY, HOOKED, LOGIN_LANE_DROPPED_ENV, LOOKUP,
+                                   SKILL_PATH, THIRD_PARTY_SWITCHES, ClaudeCodeProvider, Transcript, code_tools,
+                                   githits_skill, instruction_file, parse_tools, query_text, version_tuple,
+                                   web_tools, write_launcher)
 from syberlabs.cli import main as cli
 from syberlabs.events import verify_events
 from syberlabs.gitspace import IDENTITY
 from syberlabs.providers import RepairProvider
 from tests.test_build_thread import GOOD, REPORT, RepoCase
-from tests.test_githits import FakeGitHits
+from tests.test_githits import FakeGitHits, launch_guard
 
 PY = sys.executable
 BROKEN = {**GOOD, "src/report.py": "def rows():\n    return []\n"}  # tests fail: the report rows are gone
@@ -77,7 +78,9 @@ if "--settings" in sys.argv:
     settings, guard_dir = json.loads(settings_path.read_text(encoding="utf-8")), settings_path.parent
 hook_errors = []
 key = os.environ.get("SYBERLABS_GUARD_KEY", "")
-seen = {"guard_key": len(key), "policy_writable": None, "key_in_files": None}
+seen = {"guard_key": len(key), "policy_writable": None, "key_in_files": None,
+        "config_dir": None if "CLAUDE_CONFIG_DIR" not in os.environ else sorted(os.listdir(os.environ["CLAUDE_CONFIG_DIR"])),
+        "home": None if "HOME" not in os.environ or not os.path.isdir(os.environ["HOME"]) else os.environ["HOME"]}
 if guard_dir is not None:
     policy = guard_dir / "policy.json"
     seen["policy_writable"] = bool(stat.S_IMODE(os.stat(policy).st_mode) & stat.S_IWUSR)
@@ -206,6 +209,18 @@ VERSION_ONLY = [PY, "-c", "print('2.1.309 (Claude Code)')"]  # a stand-in that o
 
 
 class ClaudeCodeCase(RepoCase):
+    def setUp(self):
+        super().setUp()
+        # A test's lane comes from the test, never from the environment the suite happens to run in. A Claude Code
+        # cloud session sets ANTHROPIC_BASE_URL and CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST, which the provider rightly
+        # reads as provider_3p and refuses for api (THIRD_PARTY_SWITCHES); a test that wants a switch sets it itself
+        # with mock.patch.dict. The whole environment is restored afterwards.
+        hermetic = mock.patch.dict(os.environ)
+        hermetic.start()
+        self.addCleanup(hermetic.stop)
+        for name in THIRD_PARTY_SWITCHES:
+            os.environ.pop(name, None)
+
     def stand_in(self, name, *, first=None, repair=None, exit=0, lookups=None, hooks=True, no_tool_use_id=False,
                  version=None, forge=None, tamper_policy=False, fail_after_lookups=0, hang_after_lookups=False,
                  log_env=False, records_written=()):
@@ -273,7 +288,8 @@ class OneShot(ClaudeCodeCase):
         self.assertEqual(signal["tool_usage"], {"web_search": 1, "web_fetch": 0, "githits": 1, "other": {"Edit": 1}})
         self.assertEqual((signal["lane"], signal["cost_basis"], signal["estimated_usd"]), ("subscription_local", "none", 0.0421))
         self.assertEqual(signal["harness"], {"name": "claude-code", "version": "2.1.309", "model": "claude-opus-5",
-                                             "effort": "high", "auth_source": "none", "installed_version": "2.1.309"})
+                                             "effort": "high", "auth_source": "none", "installed_version": "2.1.309",
+                                             "lane": "subscription_local"})
         self.assertNotIn("model_usage_by_model", signal, "one model served the run")
         self.assertEqual(signal["guard"], {**POLICY, "policy_digest": POLICY_DIGEST},
                          "the guard's thresholds are host policy, recorded on the candidate with the policy file's digest")
@@ -436,6 +452,78 @@ class Lanes(ClaudeCodeCase):
                 api.environment()
             self.assertEqual(caught.exception.code, "provider_lane_mismatch", "checked again at each call")
 
+    def test_api_hooked_runs_without_bare_on_the_key_with_an_empty_config_directory_and_home(self):
+        """guard-lane, item 2: Claude Code 2.1.312 runs no --settings hook under --bare, so the API key needs a lane
+        without it: no --bare, --disable-slash-commands, a fresh empty CLAUDE_CONFIG_DIR and HOME per call, the key
+        kept, every other credential, login and routing variable removed, billed like api."""
+        budget = {"max_candidates": 6, "max_evaluations": 6, "max_seconds": 600, "prices": PRICES, "max_dollars": 1.0}
+        kit = self.kit(self.contract(**{"evolution.budget": budget}))
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        ambient = {"ANTHROPIC_API_KEY": "test-placeholder", "CLAUDE_CODE_OAUTH_TOKEN": "login",
+                   "ANTHROPIC_AUTH_TOKEN": "t", "CLAUDE_CONFIG_DIR": str(self.root.parent / "operator-claude"),
+                   "HTTPS_PROXY": "http://proxy.example.test:3128", "AWS_PROFILE": "x", "ANTHROPIC_MODEL": "claude-opus-5",
+                   "SYBERLABS_CERTIFICATE_SEED": "00"}
+        with mock.patch.dict(os.environ, ambient):
+            provider = ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=self.stand_in(
+                "hooked", log_env=True), max_calls=1)
+            [candidate] = thread.propose(provider)
+        [run] = self.runs("hooked")
+        argv, env = run["argv"], run["env"]
+        self.assertNotIn("--bare", argv)
+        self.assertEqual(argv[:2], ["-p", "--disable-slash-commands"])
+        for flag in ("--restricted", "--strict-mcp-config", "--settings"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "user")
+        self.assertEqual((env["ANTHROPIC_API_KEY"], env.get("ANTHROPIC_MODEL")), ("test-placeholder", "claude-opus-5"))
+        for name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "HTTPS_PROXY", "AWS_PROFILE",
+                     "SYBERLABS_CERTIFICATE_SEED"):
+            self.assertNotIn(name, env)
+        config, home = Path(env["CLAUDE_CONFIG_DIR"]), Path(env["HOME"])
+        self.assertNotEqual(config, Path(ambient["CLAUDE_CONFIG_DIR"]), "not the operator's configuration")
+        self.assertEqual(run["config_dir"], [], "empty when Claude Code started")
+        self.assertEqual(run["home"], env["HOME"], "a directory of its own")
+        self.assertEqual(config.parent, home.parent, "both in the call's guard directory")
+        self.assertEqual(config.parent, Path(argv[argv.index("--settings") + 1]).parent)
+        self.assertNotIn(Path(run["cwd"]).resolve(), config.resolve().parents, "outside the worktree")
+        self.assertFalse(config.parent.exists(), "removed after the call")
+        if os.name == "nt":
+            self.assertEqual(env["USERPROFILE"], env["HOME"])
+        self.assertEqual((candidate.signal["lane"], candidate.signal["cost_basis"], candidate.signal["harness"]["lane"]),
+                         (HOOKED, "billed", HOOKED))
+        body = [e["body"] for e in thread.history() if e["kind"] == "candidate_registered"][-1]
+        self.assertEqual((body["spend"]["dollars"], body["spend"]["host_observed"]), (COST, True), "priced as api")
+
+    def test_api_hooked_refuses_bare_a_routed_environment_and_a_missing_key(self):
+        kit = self.kit()
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-placeholder"}):
+            for kwargs, code, words in (
+                    ({"bare": True, "lane": HOOKED}, "invalid_provider", "drop --bare"),
+                    ({"lane": "api", "trusted_tree": True}, "invalid_provider", f"use --lane {HOOKED}"),
+                    ({"lane": HOOKED}, "untrusted_tree", "--trusted-tree")):
+                with self.subTest(kwargs=kwargs), self.assertRaises(Rejected) as caught:
+                    ClaudeCodeProvider(kit.repo, executable=VERSION_ONLY, **kwargs)
+                self.assertEqual(caught.exception.code, code)
+                self.assertIn(words, caught.exception.detail)
+            for name, value in (("ANTHROPIC_BASE_URL", "https://gw.example.test"), ("CLAUDE_CODE_USE_BEDROCK", "1")):
+                with self.subTest(name=name), mock.patch.dict(os.environ, {name: value}), \
+                        self.assertRaises(Rejected) as caught:
+                    ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=VERSION_ONLY)
+                self.assertEqual(caught.exception.code, "invalid_provider")
+                self.assertIn(name, caught.exception.detail)
+            hooked = ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=VERSION_ONLY)
+            with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "https://gw.example.test"}), \
+                    self.assertRaises(Rejected) as caught:
+                hooked.environment()
+            self.assertEqual(caught.exception.code, "provider_lane_mismatch", "checked again at each call")
+            os.environ.pop("ANTHROPIC_API_KEY")
+            with self.assertRaises(Rejected) as caught:
+                hooked.environment()
+            self.assertEqual(caught.exception.code, "provider_lane_mismatch")
+            with self.assertRaises(Rejected) as caught:
+                ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=VERSION_ONLY)
+            self.assertEqual(caught.exception.code, "invalid_provider")
+            self.assertIn("ANTHROPIC_API_KEY", caught.exception.detail)
+
     def test_a_non_bare_run_on_an_undeclared_tree_is_refused_and_says_why(self):
         kit = self.kit()
         with self.assertRaises(Rejected) as caught:
@@ -554,6 +642,19 @@ class Timeout(ClaudeCodeCase):
         before = beat.read_text(encoding="utf-8")
         time.sleep(1.5)
         self.assertEqual(beat.read_text(encoding="utf-8"), before, "the child was killed with its parent")
+
+    def test_a_prompt_the_stand_in_never_reads_does_not_hold_the_host_past_its_deadline(self):
+        """hunt-fixes-1, F2: on dc69499491 ``run_stream`` wrote the whole prompt before its deadline loop started, so
+        a Claude Code that did not read stdin held the host in ``write`` for as long as it lived."""
+        script = self.root.parent / "deaf.py"
+        script.write_text("import sys, time\nif '--version' in sys.argv:\n    print('2.1.309 (Claude Code)')\n"
+                          "    sys.exit(0)\ntime.sleep(8)\n", encoding="utf-8")
+        started, lines = time.monotonic(), []
+        with self.assertRaises(Rejected) as refused:
+            claude_code.run_stream([PY, str(script)], "x" * 200_000, cwd=self.root, env=dict(os.environ), timeout=1,
+                                   lines=lines)
+        self.assertEqual(refused.exception.code, "provider_timeout")
+        self.assertLess(time.monotonic() - started, 5)
 
     def test_a_timeout_ends_a_child_and_the_grandchild_it_started(self):
         """guard-hardening, finding 7: Claude Code starts a child that starts a grandchild; after provider_timeout
@@ -751,8 +852,9 @@ class GitHitsAB(ClaudeCodeCase):
         config = self.root.parent / "githits.json"
         config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
         claude = self.stand_in("ab")
-        off = ClaudeCodeProvider(kit.repo, bare=True, executable=claude)
-        on = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, mcp_config=config)
+        # guard-lane-2: an MCP server on --bare is unscreened, so this A/B needs the operator's recorded override.
+        off = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, allow_unscreened_bare=True)
+        on = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, mcp_config=config, allow_unscreened_bare=True)
         self.assertEqual(on.command(), off.command() + ["--mcp-config", str(config.resolve())])
         command = off.command()
         for flag in ("-p", "--strict-mcp-config", "--no-session-persistence"):
@@ -795,7 +897,7 @@ class Confinement(ClaudeCodeCase):
         self.assertEqual(command[command.index("--tools") + 1], ",".join(DEFAULT_TOOLS))
         self.assertNotIn("Bash", DEFAULT_TOOLS, "no shell by default: a shell could read the guard's key")
         self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
-        wide = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY,
+        wide = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, allow_unscreened_bare=True,  # WebFetch
                                   allowed_tools=["Read", "Edit", "WebFetch", "Bash(git log *)", "mcp__githits"]).command()
         self.assertEqual(wide[wide.index("--tools") + 1], "Read,Edit,WebFetch,Bash",
                          "built-ins only (--tools does not affect MCP tools), a rule's specifier dropped")
@@ -859,7 +961,8 @@ class CodeToolsWithMcp(ClaudeCodeCase):
         # No server named, or no code-running tool: built as before.
         for config, tools in ((None, ["Read", "Bash"]), (self.mcp_file("empty.json", {}), ["Read", "Bash"]),
                               (githits, ["Read", "Edit", "WebFetch", "mcp__githits"])):
-            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config, allowed_tools=tools)
+            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config, allowed_tools=tools,
+                               allow_unscreened_bare=True)  # guard-lane-2's refusal is tested in UnscreenedBare
 
     def test_the_override_builds_it_and_is_recorded_in_signal_guard(self):
         kit = self.kit()
@@ -867,7 +970,8 @@ class CodeToolsWithMcp(ClaudeCodeCase):
         claude = self.stand_in("override")
         thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
         provider = self.provider(kit, thread, claude, bare=True, mcp_config=githits, max_calls=1,
-                                 allowed_tools=["Read", "Edit", "Bash", "mcp__githits"], allow_code_tools_with_mcp=True)
+                                 allowed_tools=["Read", "Edit", "Bash", "mcp__githits"], allow_code_tools_with_mcp=True,
+                                 allow_unscreened_bare=True)
         [candidate] = thread.propose(provider)
         self.assertIs(candidate.signal["guard"]["allow_code_tools_with_mcp"], True)
         self.assertEqual(candidate.signal["guard"]["policy_digest"], POLICY_DIGEST, "policy.json itself is unchanged")
@@ -876,6 +980,83 @@ class CodeToolsWithMcp(ClaudeCodeCase):
         other = kit.start("Add a CSV export (no override)", paths=["src/", "tests/"])
         [plain] = other.propose(self.provider(kit, other, claude, bare=True, max_calls=1))
         self.assertNotIn("allow_code_tools_with_mcp", plain.signal["guard"], "recorded only when the operator overrides")
+
+
+class UnscreenedBare(ClaudeCodeCase):
+    """guard-lane-2, M1 of #155's verification: Claude Code 2.1.312 runs no ``--settings`` hook under ``--bare``, so
+    a ``WebSearch`` or ``WebFetch`` lookup, or a call to a server ``--mcp-config`` names, leaves unscreened and is
+    flagged ``unguarded`` only afterwards. A ``--bare`` provider allowing any of them is refused when built, unless
+    the operator passes the recorded override; ``--lane api-hooked`` is where they are guarded. On f466967 each of
+    these providers was built without a word."""
+
+    def mcp_file(self, name, servers):
+        path = self.root.parent / name
+        path.write_text(json.dumps({"mcpServers": servers}) if servers is not None else "{not json", encoding="utf-8")
+        return path
+
+    def test_bare_refuses_web_tools_and_an_mcp_server_and_points_to_api_hooked(self):
+        kit = self.kit()
+        githits_mcp = self.mcp_file("githits.json", {"githits": {"command": "githits-stand-in"}})
+        broken = self.mcp_file("broken.json", None)
+        for kwargs in ({"allowed_tools": ["Read", "Edit", "WebSearch"]}, {"allowed_tools": ["Read", "WebFetch"]},
+                       {"allowed_tools": ["Read", "websearch"]}, {"allowed_tools": ["Read", "WebFetch(domain:pypi.org)"]},
+                       {"mcp_config": githits_mcp}, {"mcp_config": broken},
+                       {"mcp_config": githits_mcp, "allowed_tools": ["Read", "Edit", "mcp__githits"]},
+                       {"lane": "provider_3p", "allowed_tools": ["Read", "WebSearch"]}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(Rejected) as caught:
+                ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, **kwargs)
+            self.assertEqual(caught.exception.code, "invalid_provider")
+            for words in ("with --bare", "does not run --settings PreToolUse hooks under --bare",
+                          "flagged unguarded only afterwards", f"--lane {HOOKED} --trusted-tree",
+                          "--allow-unscreened-bare"):
+                self.assertIn(words, caught.exception.detail, kwargs)
+        self.assertEqual(web_tools(["Read", "WebSearch", "webfetch(x)", "WebSearchX", "mcp__githits__search", "Bash"]),
+                         ["WebSearch", "webfetch"])
+        # No web tool and no server named: --bare is built as before. On api-hooked the hook screens them.
+        for kwargs in ({}, {"allowed_tools": ["Read", "Edit", "mcp__githits"]}, {"mcp_config": self.mcp_file("e.json", {})}):
+            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, **kwargs)
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-placeholder"}):
+            for name in THIRD_PARTY_SWITCHES:
+                os.environ.pop(name, None)
+            hooked = ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=VERSION_ONLY,
+                                        mcp_config=githits_mcp, allowed_tools=["Read", "WebSearch", "WebFetch"])
+        self.assertFalse(hooked.bare)
+        self.assertFalse(hooked.allow_unscreened_bare)
+
+    def test_the_override_builds_it_and_is_recorded_in_signal_guard(self):
+        kit = self.kit()
+        githits_mcp = self.mcp_file("githits.json", {"githits": {"command": "githits-stand-in"}})
+        claude = self.stand_in("unscreened")
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        provider = self.provider(kit, thread, claude, bare=True, mcp_config=githits_mcp, max_calls=1,
+                                 allowed_tools=["Read", "Edit", "WebSearch", "mcp__githits"], allow_unscreened_bare=True)
+        [candidate] = thread.propose(provider)
+        self.assertIs(candidate.signal["guard"]["allow_unscreened_bare"], True)
+        [run] = self.runs("unscreened")
+        self.assertIn("--bare", run["argv"])
+        self.assertNotIn("--allow-unscreened-bare", run["argv"], "the host's switch, never Claude Code's")
+        other = kit.start("Add a CSV export (no override)", paths=["src/", "tests/"])
+        [plain] = other.propose(self.provider(kit, other, claude, bare=True, max_calls=1))
+        self.assertNotIn("allow_unscreened_bare", plain.signal["guard"], "recorded only when the operator overrides")
+
+    def test_no_documented_bare_invocation_runs_unscreened_lookups_without_the_override(self):
+        """docs/CLAUDE_CODE.md (:7 and the MCP A/B block) and docs/EXPERIMENTS.md showed ``--bare`` with
+        ``--mcp-config`` or ``WebSearch,WebFetch`` as plain usage. Every documented ``syberlabs propose`` line (a
+        continuation joined) that combines ``--bare`` with either must carry the override."""
+        root = Path(claude_code.__file__).resolve().parents[1]
+        sources = {path: path.read_text(encoding="utf-8") for path in sorted((root / "docs").glob("*.md"))}
+        sources[Path(claude_code.__file__)] = claude_code.__doc__
+        seen = 0
+        for path, text in sources.items():
+            for line in re.sub(r"\\\n\s*", " ", text).splitlines():
+                command = line.split(" #", 1)[0].strip()  # a trailing shell comment is prose
+                if not command.startswith("syberlabs propose --claude-code") or not re.search(r"--bare\b", command):
+                    continue
+                seen += 1
+                unscreened = "--mcp-config" in command or re.search(r"\bWeb(Search|Fetch)\b", command)
+                if unscreened:
+                    self.assertIn("--allow-unscreened-bare", command, f"{path.name}: {command.strip()}")
+        self.assertGreater(seen, 3, "the docs still show --bare invocations to check")
 
 
 def launcher_lookup(command: str) -> list:
@@ -888,7 +1069,7 @@ SEARCH = 'search "requests retry backoff zq71" --target pypi:requests@2.32.3'
 EXAMPLE = 'example "retry an HTTP call with backoff zq72" --language python'
 # The committed blob's SHA-256 (``git cat-file blob HEAD:skills/githits/SKILL.md``): what signal.harness.skill
 # records on every platform, a Windows checkout with core.autocrlf included (githits-pilot-hardening, item 3).
-SKILL_SHA256 = "24c150e4bf1d2b6e05bd7d2a1fe243452b08ac2fe22047bde6a0f19860306508"
+SKILL_SHA256 = "59e25c0197550bb83e5ecf98d5b08ca6631842cb2c521f305f02c1a373b3a409"
 # An operator's own GitHits variable, beside the token and the base URL the fixture sets: arm A drops it too.
 OPERATOR_GITHITS = {"GITHITS_OPERATOR_SETTING": "kept-only-in-arm-b"}
 # What a provider built today passes; githits=False must keep its argv byte-identical (githits-wiring, item 2).
@@ -905,30 +1086,45 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.fake = FakeGitHits()
         self.addCleanup(self.fake.close)
         self.token = "ghtest_" + secrets.token_hex(16)
-        patcher = mock.patch.dict(os.environ, {githits.TOKEN_ENV: self.token, githits.URL_ENV: self.fake.url})
+        env = {k: v for k, v in os.environ.items() if not claude_code.githits_variable(k)}
+        env.update({githits.TOKEN_ENV: self.token, githits.URL_ENV: self.fake.url,
+                    "ANTHROPIC_API_KEY": "test-placeholder"})
+        patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in (githits.EXCLUDE_ENV, githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.SESSION_ENV,
-                     githits.AGENT_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV):
-            os.environ.pop(name, None)
+
+    def arm_a(self, kit, claude, **kwargs):
+        """Arm A on the treatment's lane: api-hooked, no --githits."""
+        kwargs.setdefault("max_calls", 1)
+        return ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=claude, **kwargs)
 
     def arm_b(self, kit, claude, **kwargs):
-        kwargs.setdefault("max_calls", 1)
-        return ClaudeCodeProvider(kit.repo, bare=True, executable=claude, githits=True, **kwargs)
+        """Arm B: the same lane with --githits (never --bare: no hook runs there)."""
+        return self.arm_a(kit, claude, githits=True, **kwargs)
 
     def test_arm_a_is_unchanged_and_arm_b_differs_only_in_the_githits_additions_and_the_skill(self):
-        """Arm A's argv is byte-identical to before. Its environment is the caller's minus every GitHits variable
-        (githits-pilot-hardening, item 2: least privilege over a byte-identical environment), plus the guard's three."""
+        """A bare arm A's argv is byte-identical to before. Both pilot arms now run api-hooked (guard-lane, item 2),
+        and there they differ only in the GitHits additions. Arm A's environment is the caller's minus every GitHits
+        variable (githits-pilot-hardening, item 2: least privilege over a byte-identical environment) and the lane's
+        dropped variables, plus the guard's three and the lane's fresh config directory and home."""
         self.enterContext(mock.patch.dict(os.environ, OPERATOR_GITHITS))
         kit = self.kit()
         claude = self.stand_in("arms", lookups=[launcher_lookup(SEARCH)], log_env=True)
-        arm_a = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=1)
-        self.assertEqual(arm_a.command("S"), [*claude, "-p", "--bare", "--output-format", "stream-json", "--verbose",
-                                              "--permission-mode", "dontAsk", "--restricted", "--tools",
-                                              "Read,Edit,Write,Glob,Grep", "--allowedTools", "Read,Edit,Write,Glob,Grep",
-                                              "--setting-sources", "user", "--strict-mcp-config",
-                                              "--no-session-persistence", "--append-system-prompt", TODAY_NOTE,
-                                              "--settings", "S"], "arm A's argv is what main built before this packet")
+        bare = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=1)
+        self.assertEqual(bare.command("S"), [*claude, "-p", "--bare", "--output-format", "stream-json", "--verbose",
+                                             "--permission-mode", "dontAsk", "--restricted", "--tools",
+                                             "Read,Edit,Write,Glob,Grep", "--allowedTools", "Read,Edit,Write,Glob,Grep",
+                                             "--setting-sources", "user", "--strict-mcp-config",
+                                             "--no-session-persistence", "--append-system-prompt", TODAY_NOTE,
+                                             "--settings", "S"], "a bare arm A's argv is what main built before")
+        arm_a = self.arm_a(kit, claude)
+        self.assertEqual(arm_a.command("S"), [*claude, "-p", "--disable-slash-commands", "--output-format",
+                                              "stream-json", "--verbose", "--permission-mode", "dontAsk", "--restricted",
+                                              "--tools", "Read,Edit,Write,Glob,Grep", "--allowedTools",
+                                              "Read,Edit,Write,Glob,Grep", "--setting-sources", "user",
+                                              "--strict-mcp-config", "--no-session-persistence",
+                                              "--append-system-prompt", TODAY_NOTE, "--settings", "S"],
+                         "api-hooked: no --bare, and no skill or command loads")
         arm_b = self.arm_b(kit, claude, thread_label="thread-ab")
         for name, provider in (("a", arm_a), ("b", arm_b)):
             thread = kit.start(f"Add a CSV export ({name})", paths=["src/", "tests/"])
@@ -954,21 +1150,30 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertTrue(launcher.endswith("/githits") and Path(launcher).is_absolute() and "\\" not in launcher)
         self.assertNotIn(Path(run_b["cwd"]).resolve(), Path(launcher).resolve().parents, "outside the worktree")
         env_a, env_b = run_a["env"], run_b["env"]
-        per_call = {query_guard.KEY_ENV}  # a fresh MAC key per call
+        isolation = {"CLAUDE_CONFIG_DIR", "HOME"} | ({"USERPROFILE"} if os.name == "nt" else set())
+        per_call = {query_guard.KEY_ENV} | isolation  # a fresh MAC key, config directory and home per call
         dropped = {k for k in os.environ if k.upper().startswith(("GITHITS_", "SYBERLABS_GITHITS_"))}
         self.assertEqual(dropped, {githits.TOKEN_ENV, githits.URL_ENV, *OPERATOR_GITHITS})
-        self.assertEqual({k for k in env_a if k not in os.environ}, {query_guard.KEY_ENV, query_guard.POLICY_DIGEST_ENV,
-                                                                    query_guard.TREE_DIGEST_ENV},
-                         "arm A: the caller's environment plus the guard's three")
-        self.assertEqual({k: v for k, v in env_a.items() if k in os.environ}, {
-            k: v for k, v in os.environ.items() if k not in ("SYBERLABS_CERTIFICATE_SEED",) and k not in dropped},
-            "minus every GITHITS_* and SYBERLABS_GITHITS_* variable, the token included")
+        lane_dropped = {k for k in os.environ if k != "ANTHROPIC_API_KEY" and (
+            claude_code._dropped(k) or k in claude_code.HOOKED_DROPPED_ENV)}
+        self.assertEqual({k for k in env_a if k not in os.environ},
+                         {query_guard.KEY_ENV, query_guard.POLICY_DIGEST_ENV, query_guard.TREE_DIGEST_ENV}
+                         | (isolation - set(os.environ)),
+                         "arm A: the caller's environment plus the guard's three and the lane's config and home")
+        self.assertEqual({k: v for k, v in env_a.items() if k in os.environ and k not in isolation}, {
+            k: v for k, v in os.environ.items() if k not in ("SYBERLABS_CERTIFICATE_SEED",) and k not in dropped
+            and k not in lane_dropped and k not in isolation},
+            "minus every GITHITS_* and SYBERLABS_GITHITS_* variable, the token included, and the lane's dropped ones")
+        self.assertEqual(env_a["ANTHROPIC_API_KEY"], env_b["ANTHROPIC_API_KEY"], "the key, in both arms")
         self.assertFalse([k for k in env_a if k.upper().startswith(("GITHITS_", "SYBERLABS_GITHITS_"))])
         self.assertTrue(all(claude_code.githits_variable(k) for k in dropped))
         added = {k: env_b[k] for k in env_b if k not in env_a}
         self.assertEqual(set(added), {query_guard.LAUNCHER_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV,
                                       githits.SESSION_ENV, githits.AGENT_ENV, githits.LICENSES_ENV,
-                                      githits.EXCLUDE_ENV, githits.TOKEN_ENV, githits.URL_ENV, *OPERATOR_GITHITS})
+                                      githits.EXCLUDE_ENV, githits_pace.PACE_DIR_ENV, githits.TOKEN_ENV,
+                                      githits.URL_ENV, *OPERATOR_GITHITS})
+        self.assertEqual(added[githits_pace.PACE_DIR_ENV], str(githits_pace.directory(os.environ)),
+                         "the host's pacing directory, pinned for the launcher")
         self.assertEqual({k: env_b[k] for k in dropped}, {k: os.environ[k] for k in dropped},
                          "arm B as before: the operator's GitHits variables pass through unchanged")
         self.assertEqual({k for k in env_a if k not in env_b}, set())
@@ -976,7 +1181,7 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertEqual((added[query_guard.LAUNCHER_ENV], added[githits.SESSION_ENV], added[githits.AGENT_ENV],
                           added[githits.LICENSES_ENV], added[githits.EXCLUDE_ENV]),
                          (launcher, "thread-ab-b", "syberfactory/b", ",".join(githits.LicensePolicy().allowed),
-                          "syberlabs"))
+                          "syberlabs,sykosyber,pypi:syberwork,deepwiki.com,deepwiki.org"))
         self.assertEqual(len(added[githits.RECORD_KEY_ENV]), 64)
         self.assertEqual(env_b[githits.TOKEN_ENV], self.token, "the operator's token, passed through")
         self.assertNotIn(Path(run_b["cwd"]).resolve(), Path(added[githits.RECORD_DIR_ENV]).resolve().parents)
@@ -986,6 +1191,56 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertEqual(group_a["hooks"][0]["args"][:2], group_b["hooks"][0]["args"][:2], "the same hook")
         self.assertEqual(len(self.fake.requests), 1, "only arm B's launcher call reached GitHits")
         self.assertIn("Permission to use Bash", run_a["bash"][0], "in arm A the same Bash call is denied")
+
+    def test_githits_refuses_bare_where_no_hook_runs(self):
+        """guard-lane, item 2: the live canary (Claude Code 2.1.312, 2026-10-30) ran the launcher under --bare with no
+        hook, and the lookup left. --githits is refused with --bare, in Python and from the terminal."""
+        kit = self.kit()
+        for lane in ("api", "provider_3p"):
+            with self.subTest(lane=lane), self.assertRaises(Rejected) as caught:
+                ClaudeCodeProvider(kit.repo, bare=True, lane=lane, executable=VERSION_ONLY, githits=True)
+            self.assertEqual(caught.exception.code, "invalid_provider")
+            for words in ("--bare", "2.1.312", "--settings", f"--lane {HOOKED}"):
+                self.assertIn(words, caught.exception.detail)
+        ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY)  # arm A may still run bare
+        self.arm_b(kit, VERSION_ONLY)  # and the treatment builds where its guard runs
+
+    def test_a_launcher_claude_code_runs_without_the_hook_sends_nothing(self):
+        """guard-lane, item 1, the canary's case through the provider: a Claude Code that skips the --settings hook
+        runs the launcher; the launcher finds no decision and refuses before the network. The fake sees no request,
+        the record says unguarded and sent false, and the search stops provider_guard_inactive."""
+        kit = self.kit()
+        thread = kit.start("Add a CSV export", paths=["src/", "tests/"])
+        claude = self.stand_in("no-hook", hooks=False, lookups=[launcher_lookup(SEARCH)])
+        self.assertEqual(thread.propose(self.arm_b(kit, claude)), [])
+        self.assertEqual(self.fake.requests, [], "nothing reached GitHits")
+        [run] = self.runs("no-hook")
+        self.assertIn("refused: unguarded: no_decision", run["bash"][0])
+        search = [e["body"] for e in thread.history() if e["kind"] == "search_finished"][-1]
+        self.assertEqual((search["stopped"], search["error"]), ("error", "provider_guard_inactive"))
+        values = [b["value"] for b in self.lookup_facts(thread)]
+        self.assertEqual([(v["tool"], v["guard"]) for v in values], [("Bash", "unguarded"), ("githits.search", "unguarded")])
+        self.assertEqual((values[1]["status"], values[1]["sent"], values[1]["ok"]), (githits.UNGUARDED, False, False))
+
+    def test_an_mcp_config_run_without_githits_keeps_the_operators_githits_variables(self):
+        """launcher-unicode-and-docs, item 2 (#135's verification): the GitHits route is ``githits=True`` or an
+        ``--mcp-config``. A GitHits MCP server is Claude Code's child and may read its token from that environment,
+        so an ``--mcp-config`` run without ``--githits`` keeps every GitHits variable, and only arm A (neither) drops
+        them. Narrowing the route to ``githits`` alone fails here."""
+        self.enterContext(mock.patch.dict(os.environ, {**OPERATOR_GITHITS, githits.LICENSES_ENV: "MIT"}))
+        kit = self.kit()
+        config = self.root.parent / "githits-mcp-keep.json"
+        config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
+        operator = {k: v for k, v in os.environ.items() if claude_code.githits_variable(k)}
+        self.assertEqual(set(operator), {githits.TOKEN_ENV, githits.URL_ENV, githits.LICENSES_ENV, *OPERATOR_GITHITS})
+        mcp_only = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, mcp_config=config,
+                                      allow_unscreened_bare=True)
+        self.assertFalse(mcp_only.githits, "no --githits: the MCP route only")
+        kept = {k: v for k, v in mcp_only.environment().items() if claude_code.githits_variable(k)}
+        self.assertEqual(kept, operator, "the operator's GitHits variables, the token included, unchanged")
+        arm_a = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY)
+        self.assertEqual([k for k in arm_a.environment() if claude_code.githits_variable(k)], [],
+                         "arm A, with neither route, holds none")
 
     def test_launcher_lookups_become_host_observed_lookup_facts_and_metrics_read_them(self):
         kit = self.kit()
@@ -1025,6 +1280,31 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.assertTrue(run["bash"][0].startswith("search: 1 results"), "the model read the client's compact text")
         self.assertEqual(validate_events(thread.history(), "claude-code"), [])
         self.assertTrue(verify_events(thread.history()))
+
+    def test_the_skills_commands_run_end_to_end_in_arm_b(self):
+        """The commands skills/githits/SKILL.md teaches, typed by the stand-in exactly as the skill shows them, pass
+        the guard's hook, run through the launcher and the host's client, and each becomes one verified lookup fact:
+        none refused, unrecorded or unguarded (tests/test_githits_skill.py checks each against the guard and the
+        contract on its own)."""
+        shown = [line.strip()[len("{launcher} "):] for line in githits_skill()[0].splitlines()
+                 if line.strip().startswith("{launcher} ")]
+        kit = self.kit()
+        thread = kit.start("Fix the retry configuration", paths=["src/", "tests/"])
+        claude = self.stand_in("skill", lookups=[launcher_lookup(command) for command in shown])
+        [candidate] = thread.propose(self.arm_b(kit, claude, thread_label=thread.id))
+        values = [b["value"] for b in self.lookup_facts(thread)]
+        self.assertEqual([(v["tool"], v["status"], v["ok"], v["guard"]) for v in values],
+                         [("githits.search", "ok", True, "pass"), ("githits.read", "ok", True, "pass"),
+                          ("githits.grep", "ok", True, "pass")])
+        self.assertEqual([r["path"] for r in self.fake.requests], ["/v1/searches", "/v1/read", "/v1/grep"])
+        self.assertEqual(candidate.signal["githits"], {"arm": "b", "launcher_calls": 3, "launcher_passed": 3,
+                                                       "records": 3, "records_ignored": 0, "bash_refused": 0,
+                                                       "license_policy": githits.LicensePolicy().digest})
+        self.assertEqual(candidate.signal["harness"]["skill"], {"path": "skills/githits/SKILL.md",
+                                                                "sha256": SKILL_SHA256})
+        [run] = self.runs("skill")
+        self.assertEqual([text.split(":", 1)[0] for text in run["bash"]], ["search", "read", "grep"])
+        self.assertTrue(all(hook.get("passed") for hook in run["hooks"]), "the guard's hook passed every command")
 
     def test_other_commands_metacharacters_and_secrets_are_blocked_and_recorded(self):
         kit = self.kit()
@@ -1085,27 +1365,32 @@ class GitHitsLauncher(ClaudeCodeCase):
         for tools, mcp in ((["Read", "Bash"], None), (["Read", "PowerShell"], None), (["Edit", "Bash(git log *)"], None),
                            (["Read", "bash"], config), (["Read", "Bash(/tmp/githits:*)"], None)):
             with self.subTest(tools=tools), self.assertRaises(Rejected) as caught:
-                ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, allowed_tools=tools,
-                                   mcp_config=mcp)
+                ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=VERSION_ONLY, githits=True,
+                                   allowed_tools=tools, mcp_config=mcp)
             self.assertEqual(caught.exception.code, "invalid_provider")
             self.assertIn("launcher", caught.exception.detail)
             self.assertIn("the guard still blocks every Bash and PowerShell command but the launcher",
                           caught.exception.detail)
         for mcp in (None, config):
-            provider = ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, mcp_config=mcp)
+            provider = ClaudeCodeProvider(kit.repo, lane=HOOKED, trusted_tree=True, executable=VERSION_ONLY,
+                                          githits=True, mcp_config=mcp)
             command = provider.command("S", "C:/tmp/syberlabs-guard-1/githits")
             tools = command[command.index("--allowedTools") + 1].split(",")
             self.assertEqual(tools, list(DEFAULT_TOOLS) + ["Bash(C:/tmp/syberlabs-guard-1/githits:*)"])
             self.assertEqual(code_tools(tools), ["Bash"], "the launcher's entry is the only code-running one")
             self.assertEqual(command[command.index("--tools") + 1], ",".join(DEFAULT_TOOLS) + ",Bash")
-        ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, allowed_tools=["Read", "Bash"],
-                           allow_code_tools_with_mcp=True)  # the operator's recorded override still builds it
+        self.arm_b(kit, VERSION_ONLY, allowed_tools=["Read", "Bash"],
+                   allow_code_tools_with_mcp=True)  # the operator's recorded override still builds it
         with mock.patch.dict(os.environ, {githits.TOKEN_ENV: ""}), self.assertRaises(Rejected) as caught:
-            ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True)
+            self.arm_b(kit, VERSION_ONLY)
         self.assertIn(githits.TOKEN_ENV, caught.exception.detail)
         for arm in ("", "a/b", "x" * 17):
             with self.assertRaises(Rejected):
-                ClaudeCodeProvider(kit.repo, bare=True, executable=VERSION_ONLY, githits=True, arm=arm)
+                self.arm_b(kit, VERSION_ONLY, arm=arm)
+        with mock.patch.dict(os.environ, {githits_pace.PACE_DIR_ENV: "relative/pace"}), \
+                self.assertRaises(Rejected) as caught:
+            self.arm_b(kit, VERSION_ONLY)
+        self.assertIn(githits_pace.PACE_DIR_ENV, caught.exception.detail, "an unusable pacing directory, at build")
 
     def test_the_launcher_is_read_only_outside_the_worktree_and_runs_the_host_client(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1123,6 +1408,8 @@ class GitHitsLauncher(ClaudeCodeCase):
             env = {**os.environ, "PYTHONPATH": str(decoy), githits.RECORD_DIR_ENV: str(records),
                    githits.RECORD_KEY_ENV: "k" * 64}
             lookup = ["search", "retry backoff", "--target", "pypi:requests@2.32.3"]
+            guard = self.enterContext(launch_guard(lookup, ["search", "retry", "--target", "pypi:requests@2.32.3"]))
+            env.update(guard)  # the query guard's hook passed both lookups below
             done = subprocess.run([sys.executable, "-I", str(GITHITS_ENTRY), *lookup], cwd=decoy, env=env,
                                   capture_output=True, timeout=120)
             self.assertEqual(done.returncode, 0, done.stderr[-400:])
@@ -1150,14 +1437,42 @@ class GitHitsLauncher(ClaudeCodeCase):
         with tempfile.TemporaryDirectory(prefix="with space ") as folder, self.assertRaises(Rejected):
             write_launcher(Path(folder))
 
+    def test_the_launcher_hands_words_starting_with_a_slash_over_unchanged(self):
+        """guard-lane-2, L1 of #155's verification: Git Bash rewrites an argument that starts with ``/`` when it
+        starts a Windows program (``/api/v1`` became ``C:/Program Files/Git/api/v1``), so the launcher's argv and
+        the hook's digest differed and an honest lookup was refused. The launcher now exports MSYS_NO_PATHCONV=1
+        and MSYS2_ARG_CONV_EXCL='*' before its exec. Run under a real ``sh`` when one is on PATH (Git Bash's on
+        Windows, where the conversion happens)."""
+        text = claude_code.launcher_text(sys.executable, GITHITS_ENTRY)
+        lines = text.splitlines()
+        export = lines.index("export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'")
+        self.assertLess(export, next(i for i, line in enumerate(lines) if line.startswith("exec ")), "before the exec")
+        sh = shutil.which("sh")
+        if not sh:
+            self.skipTest("no sh on PATH")
+        with tempfile.TemporaryDirectory() as folder:
+            entry = Path(folder) / "argv_entry.py"
+            entry.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+            launcher = write_launcher(Path(folder), entry=entry)
+            words = ["grep", "/api/v1", "--target", "pypi:requests@2.32.3", "/usr/lib"]
+            env = {k: v for k, v in os.environ.items() if k not in ("MSYS_NO_PATHCONV", "MSYS2_ARG_CONV_EXCL")}
+            done = subprocess.run([sh, "-c", launcher + " " + " ".join(words)], capture_output=True, timeout=120,
+                                  env=env)
+            os.chmod(launcher, stat.S_IREAD | stat.S_IWRITE)  # so the temporary directory can be removed on Windows
+            self.assertEqual(done.returncode, 0, done.stderr[-400:])
+            self.assertEqual(json.loads(done.stdout.decode("utf-8")), words, "the words the hook digested, unchanged")
+
     def test_the_skill_is_the_adapted_apache_text_and_carries_its_license(self):
         template, digest = githits_skill()
         self.assertEqual(digest, hashlib.sha256(SKILL_PATH.read_bytes().replace(b"\r\n", b"\n")).hexdigest())
         self.assertEqual(digest, SKILL_SHA256, "the committed blob's digest")
+        docs = (Path(claude_code.__file__).resolve().parents[1] / "docs" / "CLAUDE_CODE.md").read_text(encoding="utf-8")
+        self.assertIn(f"`{SKILL_SHA256[:8]}…{SKILL_SHA256[-4:]}`", docs, "guard-lane-2: docs quote today's digest")
         self.assertFalse(template.startswith("---"), "the front matter stays out of the prompt")
         self.assertIn("{launcher}", template)
-        for words in ("Targets first", "untrusted", "No code, no line copied from this repository", "Cite what you used",
-                      "search", "grep", "list", "read"):
+        for words in ("Look up only when a failing check", "Never before a check has failed", "installed version",
+                      "nothing from this repository", "At most three launcher commands", "untrusted", "Apply and cite",
+                      "search", "grep", "read"):
             self.assertIn(words, template)
         self.assertLess(len(SKILL_PATH.read_bytes()), 12000, "it rides in argv; keep it well under Windows' limit")
         front = SKILL_PATH.read_text(encoding="utf-8").split("---")[1]
@@ -1202,8 +1517,7 @@ class GitHitsLauncher(ClaudeCodeCase):
         self.enterContext(mock.patch.dict(os.environ, {githits.EXCLUDE_ENV: "acme", githits.EXCLUDE_REPLACE_ENV: "1"}))
         kit = self.kit()
         claude = self.stand_in("replace", lookups=[launcher_lookup("list github:SyberLabs/SyberWork")], log_env=True)
-        for name, provider in (("a", ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=1)),
-                               ("b", self.arm_b(kit, claude))):
+        for name, provider in (("a", self.arm_a(kit, claude)), ("b", self.arm_b(kit, claude))):
             thread = kit.start(f"Add a CSV export ({name})", paths=["src/", "tests/"])
             thread.propose(provider)
             if name == "b":
@@ -1213,7 +1527,9 @@ class GitHitsLauncher(ClaudeCodeCase):
         for run in (run_a, run_b):
             self.assertNotIn(githits.EXCLUDE_REPLACE_ENV, run["env"])
         self.assertNotIn(githits.EXCLUDE_ENV, run_a["env"], "arm A holds no GitHits variable")
-        self.assertEqual(run_b["env"][githits.EXCLUDE_ENV], "syberlabs,acme", "SyberLabs first, the operator's added")
+        self.assertEqual(run_b["env"][githits.EXCLUDE_ENV],
+                         "syberlabs,sykosyber,pypi:syberwork,deepwiki.com,deepwiki.org,acme",
+                         "the default deny-list first, the operator's added")
         self.assertEqual(self.fake.requests, [], "the SyberLabs target was refused before any request")
 
     def test_powershell_is_judged_by_the_launcher_rule_under_the_override(self):
@@ -1262,6 +1578,11 @@ class GitHitsLauncher(ClaudeCodeCase):
         env = {BIN_ENV: " ".join(self.stand_in("cli-githits", lookups=[launcher_lookup(SEARCH)]))}
         code, text, problem = run_cli("propose", "--claude-code", "--bare", "--max-calls", "1", "--githits",
                                       "--githits-arm", "on", env=env)
+        self.assertNotEqual(code, 0, "--githits refuses --bare from the terminal too")
+        self.assertIn("refusing --githits with --bare", text + problem)
+        self.assertEqual(self.fake.requests, [])
+        code, text, problem = run_cli("propose", "--claude-code", "--lane", HOOKED, "--trusted-tree", "--max-calls",
+                                      "1", "--githits", "--githits-arm", "on", env=env)
         self.assertEqual(code, 0, text + problem)
         thread = (self.root / ".syberlabs" / "current").read_text().strip()
         self.assertEqual(self.fake.requests[0]["headers"]["x-githits-session-id"], f"{thread}-on")
@@ -1361,6 +1682,27 @@ class CommandLine(ClaudeCodeCase):
         events = json.loads(exported.read_text(encoding="utf-8"))["events"]
         [registered] = [e["body"] for e in events if e.get("kind") == "candidate_registered"]
         self.assertIs(registered["signal"]["guard"]["allow_code_tools_with_mcp"], True)
+
+    def test_the_unscreened_bare_refusal_and_its_override_from_the_terminal(self):
+        """guard-lane-2, M1: ``--bare`` with WebSearch is refused before anything runs; ``--allow-unscreened-bare``
+        builds it and the candidate records the override."""
+        self.assertEqual(self.run_cli("init")[0], 0)
+        self.assertEqual(self.run_cli("start", "Add a CSV export for report rows", "--paths", "src", "tests")[0], 0)
+        env = {BIN_ENV: " ".join(self.stand_in("cli-bare-web"))}
+        flags = ("propose", "--claude-code", "--bare", "--max-calls", "1", "--allowed-tools", "Read,Edit,WebSearch")
+        code, _, err = self.run_cli(*flags, env=env)
+        self.assertEqual(code, 2)
+        self.assertIn("invalid_provider", err)
+        self.assertIn("--allow-unscreened-bare", err)
+        self.assertIn(f"--lane {HOOKED}", err)
+        self.assertEqual(self.runs("cli-bare-web"), [], "refused before anything ran")
+        code, out, err = self.run_cli(*flags, "--allow-unscreened-bare", env=env)
+        self.assertEqual(code, 0, out + err)
+        exported = self.root.parent / "cli-bare-web-export.json"
+        self.assertEqual(self.run_cli("export", "--out", str(exported))[0], 0)
+        events = json.loads(exported.read_text(encoding="utf-8"))["events"]
+        [registered] = [e["body"] for e in events if e.get("kind") == "candidate_registered"]
+        self.assertIs(registered["signal"]["guard"]["allow_unscreened_bare"], True)
 
 
 if __name__ == "__main__":

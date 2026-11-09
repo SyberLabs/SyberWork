@@ -216,6 +216,19 @@ class Arguments(unittest.TestCase):
 class Pieces(unittest.TestCase):
     """The budget, the contracts, the gate and the report's exclusions, one by one."""
 
+    def test_failed_command_output_is_scrubbed_before_logging_or_returning(self):
+        credentials = {githits.TOKEN_ENV: "fake-githits-credential", pilot.API_KEY_ENV: "fake-anthropic-credential"}
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, credentials):
+            root = Path(folder)
+            echoed = " ".join(credentials.values())
+            command = pilot.Syberlabs(root / "home", root, "operator", lambda *args: pilot.Done(1, echoed, echoed),
+                                     root / "commands.log")
+            done = command("status")
+            logged = (root / "commands.log").read_text(encoding="utf-8")
+            self.assertEqual(done.code, 1)
+            for value in credentials.values():
+                self.assertNotIn(value, done.out + done.err + logged + json.dumps(command.commands))
+
     def plan(self, **changes):
         doc = {"items": [{"id": f"A-{n}", "objective": f"change {n}"} for n in range(3)], "prices": PRICES}
         return pilot.validate_plan({**doc, **changes})
@@ -349,7 +362,7 @@ class DryRun(DryRunCase):
             on = entry["arm"] == "on"
             self.assertEqual(entry["metrics"]["githits_lookups"]["value"], 1 if on else 0)
             self.assertEqual(entry["lookups_blocked"]["value"], 1 if on else 0)
-            self.assertEqual(entry["harness"]["lane"], ["api"])
+            self.assertEqual(entry["harness"]["lane"], ["api-hooked"])
             self.assertEqual(entry["harness"].get("githits_route"), ["api"] if on else None)
             self.assertEqual(len(entry["harness"].get("license_policy", [])), 1 if on else 0,
                              "the treatment's license policy, as the host recorded it (a digest)")
@@ -364,7 +377,9 @@ class DryRun(DryRunCase):
         self.assertEqual(len(proposals), 7, "the canary and six runs")
         for argv in proposals:
             start = argv.index("propose")
-            self.assertEqual(argv[start:start + 3], ["propose", "--claude-code", "--bare"])
+            self.assertEqual(argv[start:start + 5], ["propose", "--claude-code", "--lane", "api-hooked",
+                                                     "--trusted-tree"])
+            self.assertNotIn("--bare", argv, "never --bare: no hook runs there")
         tools = [argv[argv.index("--allowed-tools") + 1] for argv in proposals]
         self.assertEqual(tools, ["Read,Edit,Write,Glob,Grep"] + ["Read,Edit,Write,Glob,Grep,WebSearch,WebFetch"] * 6,
                          "the pilot's tools in both arms; the canary without the web, so it can only use the launcher")
@@ -650,6 +665,51 @@ class Preflight(DryRunCase):
         self.assertEqual(self.runs(self.bin), [])
 
 
+class Finalization(DryRunCase):
+    def test_final_scan_verdict_print_and_process_status_agree(self):
+        # Inject only the work stage: exercise the real main, finish, receipt, console
+        # and process exit without spending or contacting any service.
+        script = '''
+import os, sys
+from unittest import mock
+from tests.test_pilot_dry_run import pilot
+mode, repo, out = sys.argv[1:]
+def run(self):
+    self.receipt["verdict"] = pilot.PASS
+    if mode == "exception":
+        raise RuntimeError(os.environ[pilot.API_KEY_ENV])
+    if mode == "secret":
+        token = os.environ[pilot.githits.TOKEN_ENV]
+        (self.out / token).write_text(token)
+    return 0
+with mock.patch.object(pilot.DryRun, "run", run):
+    if mode == "first-unreadable":
+        with mock.patch.object(pilot, "files_holding", side_effect=[([], 0, 1), ([], 1, 0)]):
+            code = pilot.main(["--plan", "unused.json", "--repo", repo, "--out", out])
+    elif mode == "unreadable":
+        with mock.patch.object(pilot, "files_holding", return_value=([], 0, 1)):
+            code = pilot.main(["--plan", "unused.json", "--repo", repo, "--out", out])
+    else:
+        code = pilot.main(["--plan", "unused.json", "--repo", repo, "--out", out])
+sys.exit(code)
+'''
+        for mode in ("pass", "secret", "unreadable", "first-unreadable", "exception"):
+            with self.subTest(mode=mode):
+                out = self.root.parent / ("final-" + mode)
+                done = subprocess.run([sys.executable, "-c", script, mode, str(self.root), str(out)],
+                                      cwd=ROOT, capture_output=True, timeout=30)
+                printed = (done.stdout + done.stderr).decode("utf-8", "replace")
+                text = (out / "receipt.json").read_text(encoding="utf-8")
+                verdict = "PASS" if mode == "pass" else "FAIL"
+                self.assertEqual(done.returncode, 0 if mode == "pass" else 1, printed)
+                self.assertEqual(json.loads(text)["verdict"], verdict)
+                self.assertIn("pilot dry run: " + verdict, printed)
+                self.assertNotIn("Traceback", printed)
+                for secret in (self.token, self.api_key):
+                    self.assertNotIn(secret, printed)
+                    self.assertNotIn(secret, text)
+
+
 class ReviewFindings(DryRunCase):
     """The six findings of the 2026-11-07 review of #143, each pinned."""
 
@@ -726,7 +786,8 @@ class OneCommand(DryRunCase):
             self.assertNotIn(secret, printed)
         log = (out / "commands.log").read_text(encoding="utf-8")
         self.assertIn("$ syberlabs githits doctor --json", log)
-        self.assertEqual(log.count(" propose --claude-code --bare "), 7, "the canary and six runs")
+        self.assertEqual(log.count(" propose --claude-code --lane api-hooked --trusted-tree "), 7,
+                         "the canary and six runs")
         self.assertEqual(len(self.fake.requests), 5, "the doctor, the canary's clean lookup, three treatment runs")
 
 

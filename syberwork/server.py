@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from syberlabs.evolution import AUTOMATION_ROLES
 from syberlabs.planner import HttpPlanner
 
-from .builder_http import dispatch_get, dispatch_post
+from .builder_http import actor_of, dispatch_get, dispatch_post
 from .certificates import not_configured as certificates_not_configured
 from .core import Rejected, Work, digest
 
@@ -26,6 +26,15 @@ ASSETS = {"app.js": "text/javascript", "model.js": "text/javascript", "style.css
 # reader is an administrator or the approver role, and not an automation credential (model, compiled, search).
 # There is no separate policy-read role; model.js mirrors this to suggest an identity that can read them.
 POLICY_READERS = frozenset({"admin", "manager"})
+# Roles that only attest facts (``syberwork init`` gives the inventory and supplier credentials ``observer``).
+# A principal holding nothing else may post its own source's observations and read its own profile, but it
+# reads no case, contract, certificate or metric: those name every case's inputs, history and amounts.
+ATTEST_ONLY_ROLES = frozenset({"observer"})
+# The first path segments of the reads ``_case_reader`` guards.
+CASE_READS = (("metrics",), ("api", "cases"), ("api", "contracts"), ("api", "certificates"), ("api", "builder"))
+# The largest request body read, and how long a POST refused before its body was read may take to send that body.
+MAX_BODY = 1024 * 1024
+REFUSED_BODY_SECONDS = 5
 
 
 def _planner_configured() -> bool:
@@ -39,6 +48,11 @@ def _planner_configured() -> bool:
 
 def _policy_reader(roles) -> bool:
     return bool(POLICY_READERS.intersection(roles)) and not AUTOMATION_ROLES.intersection(roles)
+
+
+def _case_reader(roles) -> bool:
+    """Whether a principal may read cases, contracts, certificates and metrics: any role beyond attesting."""
+    return isinstance(roles, list) and bool({r for r in roles if isinstance(r, str)} - ATTEST_ONLY_ROLES)
 
 
 def _source_roles(work: Work) -> dict:
@@ -106,7 +120,37 @@ def _preview(work: Work, case_id: str, data: dict, name: str, roles: list) -> di
             "written": False, "note": "Admission now for a proposal not yet made; nothing was recorded and nothing is reserved"}
 
 
-def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
+class UserFile:
+    """``users.json`` read again whenever it changes, so a removed or rotated credential stops working without a
+    restart. Read on each request by ``stat``; parsed only when its size or modification time moves. A file that
+    is missing, unreadable or not a JSON object of users answers with no users: every bearer is refused (cell
+    principals registered in the database still authenticate)."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self._stamp = None
+        self._users: dict = {}
+
+    def __call__(self) -> dict:
+        try:
+            status = self.path.stat()
+            stamp = (status.st_mtime_ns, status.st_size, status.st_ino)
+        except OSError:
+            self._stamp, self._users = None, {}
+            return {}
+        if stamp != self._stamp:
+            try:
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
+                valid = isinstance(loaded, dict) and all(
+                    isinstance(info, dict) and isinstance(info.get("hash"), str) for info in loaded.values())
+            except (OSError, ValueError):
+                loaded, valid = {}, False
+            self._users = loaded if valid else {}
+            self._stamp = stamp
+        return self._users
+
+
+def serve(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
           witness_role=None, certificates=None):
     httpd = make_server(work, users, host, port, witness_log=witness_log, witness_client=witness_client, witness_role=witness_role,
                         certificates=certificates)
@@ -114,9 +158,12 @@ def serve(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *,
     httpd.serve_forever()
 
 
-def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
+def make_server(work: Work, users, host: str = "127.0.0.1", port: int = 8766, *, witness_log=None, witness_client=None,
                 witness_role=None, certificates=None) -> ThreadingHTTPServer:
     """Build the loopback server without starting it. Port 0 picks a free port.
+
+    ``users`` is a mapping of name to ``{hash, roles, sources}``, or a callable returning one on each request
+    (``UserFile``, which ``syberwork serve`` passes, so an edit to ``users.json`` applies without a restart).
 
     ``witness_log`` is a ``TransparencyLog.open_readonly`` reader of the witness's log, or None. It holds no seed and
     cannot append; ``GET /api/cases/{id}/witness`` reads it. ``witness_client`` is a ``WitnessClient`` on the witness's
@@ -124,12 +171,15 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
     both or neither, and only beside the log. Nothing in the code chooses that role; ``syberwork serve`` reads it from
     SYBERWORK_WITNESS_ROLE.
 
-    ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the one public key its certificates are
-    verified under, or None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from
-    SYBERWORK_CERTIFICATE_HOME and SYBERWORK_CERTIFICATE_PUBLIC.
+    ``certificates`` is a ``CertificateShelf`` over a Build Thread home and the public keys its certificates are
+    verified under (one, or a few during a rotation), with the certificate digests it revokes and its validity window, or
+    None; ``GET /api/certificates`` reads it. ``syberwork serve`` builds it from SYBERWORK_CERTIFICATE_HOME,
+    SYBERWORK_CERTIFICATE_PUBLIC, SYBERWORK_CERTIFICATE_REVOKED and SYBERWORK_CERTIFICATE_MAX_AGE.
     """
     loopback = host in ("127.0.0.1", "::1", "localhost")
-    if not loopback and os.getenv("SYBERWORK_BIND", "") != host:
+    # An empty host binds every interface. SYBERWORK_BIND names a non-loopback address on purpose, so an empty or
+    # unset value never vouches for one, even when the host is empty too.
+    if not loopback and (not host or not isinstance(host, str) or os.getenv("SYBERWORK_BIND", "") != host):
         raise Rejected("unsafe_bind", "the operator service must bind to loopback")
     if (witness_client is None) != (witness_role is None) or (witness_client is not None and witness_log is None):
         raise Rejected("invalid_runtime", "a witness client needs a role and the witness log, and a role needs a client")
@@ -144,7 +194,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
         def _user(self):
             token = self.headers.get("Authorization", "").removeprefix("Bearer ")
             hashed = hashlib.sha256(token.encode()).hexdigest()
-            for name, info in users.items():
+            current = users() if callable(users) else users
+            for name, info in current.items():
                 if token and hmac.compare_digest(info["hash"], hashed):
                     return {"name": name, **info}
             principal = work.principal_for_token(token)
@@ -161,17 +212,61 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
             self.send_header("X-Content-Type-Options", "nosniff")
             for name, value in (headers or {}).items():
                 self.send_header(name, value)
+            if self.unread_body:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
 
+        # True when a POST is answered with its body unread: the answer then says Connection: close.
+        unread_body = False
+
         def _body(self):
-            length = int(self.headers.get("Content-Length", "0"))
-            if length > 1024 * 1024 or length < 0:
+            if "Content-Length" not in self.headers:
+                self.unread_body = True   # a body of unknown length (chunked, say) is never read
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self.unread_body = True
+                raise
+            if length > MAX_BODY or length < 0:
+                self.unread_body = True
                 raise Rejected("payload_size", "maximum body is 1 MB")
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
                 raise Rejected("body_type", "JSON object required")
             return data
+
+        def _discard_body(self):
+            """Read and drop the body of a POST refused before its body was read.
+
+            Closing a socket with request bytes unread resets the connection, and on Windows the reset discards the
+            refusal the client has not read yet (WinError 10053). So the body is read first, up to MAX_BODY and for at
+            most REFUSED_BODY_SECONDS in all. A length that is missing, malformed or over MAX_BODY is not read, nor is
+            a body the client holds back for ``Expect: 100-continue`` (this server never sends 100): the refusal says
+            Connection: close instead.
+            """
+            raw = self.headers.get("Content-Length", "").strip()
+            length = int(raw) if raw.isascii() and raw.isdigit() else -1
+            if not 0 <= length <= MAX_BODY or self.headers.get("Expect", "").strip().lower() == "100-continue":
+                self.unread_body = True
+                return
+            previous = self.connection.gettimeout()
+            deadline = time.monotonic() + REFUSED_BODY_SECONDS
+            try:
+                while length > 0:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        self.unread_body = True
+                        break
+                    self.connection.settimeout(left)
+                    chunk = self.rfile.read1(min(length, 65536))   # at most one receive, so the deadline holds
+                    if not chunk:
+                        break
+                    length -= len(chunk)
+            except OSError:   # the client stopped sending or went away: answer anyway and close
+                self.unread_body = True
+            finally:
+                self.connection.settimeout(previous)
 
         def _parts(self):
             return [p for p in urlsplit(self.path).path.split("/") if p]
@@ -186,6 +281,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                     self._static(parts[0], ASSETS[parts[0]])
                     return
                 user = self._user()
+                if any(tuple(parts[:len(prefix)]) == prefix for prefix in CASE_READS) and not _case_reader(user.get("roles", [])):
+                    raise Rejected("forbidden", "a role beyond observer is required to read cases, contracts, certificates, metrics and builder views")
                 if len(parts) in (2, 3) and parts[:2] == ["metrics", "work_items"]:
                     # Per-work-item metrics (docs/METRICS.md): every item, or one thread's, with each number's basis.
                     try:
@@ -208,7 +305,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                                 "witness": {"log": witness_log is not None, "request_role": witness_role},
                                 "certificates": {"configured": certificates is not None}})
                 elif parts == ["api", "certificates"]:
-                    # Admission certificates of Build Threads, each verified by serve under the configured key. A case
+                    # Admission certificates of Build Threads, each verified by serve under a configured key. A case
                     # has none, so there is no per-case route. Without a configured home the answer says so.
                     self._json(certificates.listing() if certificates is not None else certificates_not_configured())
                 elif parts == ["api", "cases"]:
@@ -235,7 +332,8 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "candidates":
                     self._json(work.candidates(parts[2]))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "verify":
-                    self._json({"valid": work.verify_chain(parts[2])})
+                    # The chain, and the witness's signed heads when serve reads its log (Work.verify_history).
+                    self._json(work.verify_history(parts[2], witness_log))
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"] and parts[3] == "side":
                     # Work.side_channel: the JCS digest and deciding rule id stored beside each event. Neither is
                     # in the event hash; events written before that table existed have no row.
@@ -286,7 +384,9 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
             self.send_header("Content-Type", mime + "; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'")
+            # default-src does not govern framing: frame-ancestors (and X-Frame-Options for older browsers) does.
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             self.wfile.write(body)
 
@@ -306,8 +406,13 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
 
         def do_POST(self):
             try:
-                user, parts, data = self._user(), self._parts(), self._body()
-                name, roles = user["name"], user.get("roles", [])
+                try:
+                    user = self._user()
+                except Exception:
+                    self._discard_body()   # refused before the body is read (FM-49)
+                    raise
+                parts, data = self._parts(), self._body()
+                actor, roles = actor_of(user), user.get("roles", [])  # the principal id, never the display name
                 if parts == ["api", "contracts"] and "admin" in roles:
                     work.install_contract(data); result = {"installed": True}
                 elif parts == ["api", "policies"] and "admin" in roles:
@@ -319,49 +424,49 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                 elif parts == ["api", "cases"]:
                     if "operator" not in roles:
                         raise Rejected("forbidden", "operator role required")
-                    result = {"id": work.create_case(data["contract_id"], data["version"], data["inputs"], name)}
+                    result = {"id": work.create_case(data["contract_id"], data["version"], data["inputs"], actor)}
                 elif len(parts) == 4 and parts[:2] == ["api", "cases"]:
                     case_id, operation = parts[2:]
                     if operation == "facts":
                         if data["source"] not in user.get("sources", []):
                             raise Rejected("source_denied", "actor cannot attest this source")
-                        result = work.observe(case_id, data["key"], data["value"], data["source"], data["version"], name)
+                        result = work.attest(case_id, data["key"], data["value"], data["source"], data["version"], actor)
                     elif operation == "refresh":
-                        result = work.refresh_fact(case_id, data["source"], data["key"], data["record_key"], name, roles)
+                        result = work.refresh_fact(case_id, data["source"], data["key"], data["record_key"], actor, roles)
                     elif operation == "resolution-request":
-                        result = work.request_resolution(case_id, data["key"], name, roles)
+                        result = work.request_resolution(case_id, data["key"], actor, roles)
                     elif operation == "resolution-resolve":
-                        result = work.resolve_resolution(case_id, data["task_id"], name, roles)
+                        result = work.resolve_resolution(case_id, data["task_id"], actor, roles)
                     elif operation == "resolution-escalate":
-                        result = work.escalate_resolution(case_id, data["task_id"], name, roles)
+                        result = work.escalate_resolution(case_id, data["task_id"], actor, roles)
                     elif operation == "cancel":
-                        result = work.cancel_case(case_id, data["reason"], name, roles)
+                        result = work.cancel_case(case_id, data["reason"], actor, roles)
                     elif operation == "proposals":
-                        result = work.propose(case_id, data["action"], data["args"], name, roles, data.get("origin", "human"))
+                        result = work.propose(case_id, data["action"], data["args"], actor, roles, data.get("origin", "human"))
                     elif operation == "compiled":
-                        result = work.compiled_propose(case_id, name, roles)
+                        result = work.compiled_propose(case_id, actor, roles)
                     elif operation == "suggest":
-                        result = work.model_propose(case_id, name, roles)
+                        result = work.model_propose(case_id, actor, roles)
                     elif operation == "approve":
-                        result = work.approve(case_id, data["proposal_id"], name, roles)
+                        result = work.approve(case_id, data["proposal_id"], actor, roles)
                     elif operation == "commit":
-                        result = work.commit(case_id, data["proposal_id"], name)
+                        result = work.commit(case_id, data["proposal_id"], actor)
                     elif operation == "signoff":
-                        result = work.signoff(case_id, name, roles, data["role"])
+                        result = work.signoff(case_id, actor, roles, data["role"])
                     elif operation == "reconcile":
                         # Only the proposal is named. Any outcome-shaped field (success, evidence,
                         # proof, an Attest receipt, ...) is refused rather than ignored.
                         if set(data) != {"proposal_id"}:
                             raise Rejected("manual_reconciliation_disabled", "the destination must report the outcome")
-                        result = work.reconcile(case_id, data["proposal_id"], name, roles)
+                        result = work.reconcile(case_id, data["proposal_id"], actor, roles)
                     elif operation == "candidates":
-                        result = work.record_candidate(case_id, data, name, roles)
+                        result = work.record_candidate(case_id, data, actor, roles)
                     elif operation == "evaluations":
-                        result = work.record_evaluation(case_id, data, name, roles)
+                        result = work.record_evaluation(case_id, data, actor, roles)
                     elif operation == "searches":
-                        result = work.record_search(case_id, data["phase"], data["search"], name, roles)
+                        result = work.record_search(case_id, data["phase"], data["search"], actor, roles)
                     elif operation == "preview":
-                        result = _preview(work, case_id, data, name, roles)
+                        result = _preview(work, case_id, data, actor, roles)
                     elif operation == "witness":
                         # Ask the witness to sign this head. It appends to its own log; the case gets nothing.
                         if witness_client is None:
@@ -369,7 +474,7 @@ def make_server(work: Work, users: dict, host: str = "127.0.0.1", port: int = 87
                         # An automation credential never asks, as it never reads policies: a leaf cannot be removed.
                         if witness_role not in roles or AUTOMATION_ROLES.intersection(roles):
                             raise Rejected("forbidden", f"{witness_role} role required to ask the witness, without an automation role")
-                        result = work.request_witness(unquote(case_id), witness_client, witness_log, name, user.get("principal_id"))
+                        result = work.request_witness(unquote(case_id), witness_client, witness_log, user["name"], user.get("principal_id"))  # a trace label beside the principal id, not a compared identity
                     elif operation == "replay":
                         result = work.replay(case_id, data["contract_version"], data["policy_version"])
                     else:

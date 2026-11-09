@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+import select
 import shutil
 import socket
 import sqlite3
@@ -26,18 +27,20 @@ import urllib.error
 import urllib.request
 from contextlib import closing
 from pathlib import Path
-from urllib.parse import unquote
 
 from syberlabs.admission import approval_roles
 from syberlabs.build import Kit
 from syberlabs.canonical import canonical
+from syberlabs.events import GENESIS, event_digest
 from syberlabs.certificate import certify, write_certificate
 from syberlabs.dsse import CHAIN_HEAD_TYPE, CHECKPOINT_TYPE, sign_chain_head, sign_dsse
+from syberlabs import ed25519
 from syberlabs.ed25519 import generate, public_from_seed
 from syberlabs.errors import Rejected
 from syberlabs.evidence import verified_reconciliation
 from syberlabs.evolution import AUTOMATION_ROLES
-from syberlabs.jcs import envelope_jcs
+from syberlabs.gitspace import Repo
+from syberlabs.jcs import envelope_jcs, jcs_bytes
 from syberlabs.metrics import METRICS, UNKNOWN, Metric, _cell
 from syberlabs.tlog import TransparencyLog, merkle_root
 from syberlabs.witness import Witness, WitnessClient, WitnessServer
@@ -47,8 +50,12 @@ from syberwork.cli import _certificates, _witness_log, _witness_request
 from syberwork.core import Work
 from syberwork.server import POLICY_READERS, make_server
 from syberwork.trace import TraceLog
-from tests.test_build_thread import GOOD, REPORT, TEST_REPORT, git
+from tests.test_build_thread import GOOD, REPORT, TEST_REPORT, git, git_ref
 from tests.test_certificate import OTHER_PUBLIC, OTHER_SEED, PUBLIC, SEED
+
+# A third key that no test configures: a certificate signed under it is never trusted.
+THIRD_SEED = hashlib.sha256(b"syberwork console third certificate key").digest()
+THIRD_PUBLIC = public_from_seed(THIRD_SEED)
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "syberwork" / "examples"
@@ -114,6 +121,37 @@ def wait_until_listening(port: int, proc: subprocess.Popen, timeout: float = 10)
             time.sleep(0.05)
     stop_process(proc)
     raise RuntimeError("reference system did not accept connections")
+
+
+def late_body_post(port: int, path: str, headers: dict, body: bytes = b"", wait: float = 1.0):
+    """POST over a raw socket, holding the body back until the server answers or ``wait`` seconds pass.
+
+    ``http.client`` writes the header block and the body in two sends. Under load the server can read the headers and
+    answer before the body lands; a server that then closes with the body unread resets the connection, and on Windows
+    the reset discards the answer the client had not read yet (WinError 10053). Here that gap is forced on every run.
+
+    Returns ``(answered_early, status, headers, body, error)``: whether an answer arrived before the body was sent, the
+    response read to the end of the stream, and the ``OSError`` that broke the exchange, or None.
+    """
+    lines = [f"POST {path} HTTP/1.1", "Host: 127.0.0.1", "Connection: close", *(f"{k}: {v}" for k, v in headers.items())]
+    received, error = b"", None
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+        answered_early = bool(select.select([sock], [], [], wait)[0])
+        if answered_early:
+            time.sleep(0.2)  # let the server finish answering and close, as it has under load by the time the body lands
+        try:
+            if body:
+                sock.sendall(body)
+            while chunk := sock.recv(65536):
+                received += chunk
+        except OSError as exc:
+            error = exc
+    head, _, payload = received.partition(b"\r\n\r\n")
+    status_line, *header_lines = head.decode("latin-1").split("\r\n") if head else [""]
+    status = int(status_line.split()[1]) if len(status_line.split()) > 1 else None
+    response_headers = {name.strip().lower(): value.strip() for name, _, value in (h.partition(":") for h in header_lines)}
+    return answered_early, status, response_headers, payload, error
 
 
 def certified_home(folder: Path, seed: bytes = SEED) -> tuple[Path, dict]:
@@ -212,8 +250,11 @@ class CellCase(unittest.TestCase):
     # serve may ask to sign for witness_role.
     witness = False
     witness_role = "manager"
-    # True: serve reads a Build Thread home holding one certified candidate (certified_home), under PUBLIC.
+    # True: serve reads a Build Thread home holding one certified candidate (certified_home), signed under PUBLIC, and
+    # trusts certificate_keys and revokes the digests in certificate_revoked.
     certificates = False
+    certificate_keys = (PUBLIC,)
+    certificate_revoked = ()
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -250,9 +291,73 @@ class CellCase(unittest.TestCase):
         shelf = None
         if self.certificates:
             self.cert_home, self.cert_payload = certified_home(Path(folder.name) / "build")
-            shelf = self.shelf = CertificateShelf(self.cert_home, PUBLIC)
+            shelf = self.shelf = CertificateShelf(self.cert_home, self.certificate_keys, self.certificate_revoked)
         self.cell = Cell(Path(folder.name), port, reader, client, self.witness_role if client else None, shelf)
         self.addCleanup(self.cell.close)
+
+
+class ConsoleRefusals(CellCase):
+    """A POST refused before its body is read still delivers the refusal whole (FM-49).
+
+    The server answers an unauthenticated POST without reading the body. If the body lands after the answer, closing the
+    socket with it unread resets the connection, and on Windows the reset throws away the refusal the client had not read.
+    """
+
+    BODY = json.dumps({"action": "record_review"}).encode()
+
+    def post(self, headers, body=b"", wait=1.0):
+        return late_body_post(self.cell.server.server_port, "/api/cases/any/preview", headers, body, wait)
+
+    def assert_whole(self, result, status, error):
+        _, got_status, headers, payload, broke = result
+        self.assertIsNone(broke, "the connection broke before the refusal was read")
+        self.assertEqual(int(headers.get("content-length", -1)), len(payload), "the refusal arrived whole")
+        self.assertEqual((got_status, json.loads(payload)["error"]), (status, error))
+        return headers
+
+    def test_an_unauthenticated_post_whose_body_arrives_late_still_gets_its_refusal(self):
+        for who, headers in (("no token", {}), ("a wrong token", {"Authorization": "Bearer not-a-token"})):
+            with self.subTest(who):
+                result = self.post({"Content-Type": "application/json", "Content-Length": str(len(self.BODY)), **headers}, self.BODY)
+                self.assert_whole(result, 409, "unauthorized")
+                # On every platform, not only where the reset shows: the refusal waits for the body it then reads.
+                self.assertFalse(result[0], "the server read the body before answering")
+
+    def test_an_unexpected_failure_resolving_the_token_drains_a_late_body_and_answers_500_whole(self):
+        handler = self.cell.server.RequestHandlerClass
+        with unittest.mock.patch.object(handler, "_user", side_effect=RuntimeError("principal lookup failed")):
+            result = self.post({"Content-Type": "application/json", "Content-Length": str(len(self.BODY))}, self.BODY)
+        self.assert_whole(result, 500, "internal_error")
+        self.assertFalse(result[0], "the server read the body before answering")
+
+    def test_a_refused_body_too_large_or_of_unknown_length_is_not_read_and_the_connection_is_closed(self):
+        too_large, operator = str(1024 * 1024 + 1), {"Authorization": "Bearer " + self.cell.tokens["operator"]}
+        cases = (({}, too_large, "unauthorized"), ({}, "abc", "unauthorized"), ({}, None, "unauthorized"),
+                 ({"Expect": "100-continue"}, str(len(self.BODY)), "unauthorized"),
+                 (operator, too_large, "payload_size"), (operator, "abc", "invalid_request"), (operator, None, "invalid_request"))
+        for extra, length, error in cases:
+            with self.subTest(headers=sorted(extra), length=length):
+                headers = {**extra, **({} if length is None else {"Content-Length": length})}
+                result = self.post(headers)
+                self.assertTrue(result[0], "answered at once, without waiting for a body it will not read")
+                self.assertEqual(self.assert_whole(result, 409, error).get("connection"), "close")
+
+    def test_a_refused_body_that_never_arrives_is_waited_for_a_bounded_time(self):
+        with unittest.mock.patch("syberwork.server.REFUSED_BODY_SECONDS", 0.3):
+            result = self.post({"Content-Length": "100"}, wait=5)
+        self.assertTrue(result[0], "answered once the wait for the body ran out, not after the client gave up")
+        self.assertEqual(self.assert_whole(result, 409, "unauthorized").get("connection"), "close")
+
+    def test_a_refused_body_sent_a_byte_at_a_time_is_waited_for_in_total_not_per_byte(self):
+        with unittest.mock.patch("syberwork.server.REFUSED_BODY_SECONDS", 0.5), \
+                socket.create_connection(("127.0.0.1", self.cell.server.server_port), timeout=10) as sock:
+            sock.sendall(b"POST /api/cases/any/preview HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\n")
+            started, answered = time.monotonic(), False
+            while not answered and time.monotonic() - started < 5:
+                sock.sendall(b" ")
+                answered = bool(select.select([sock], [], [], 0.2)[0])
+            self.assertTrue(answered, "a trickling client does not hold the refusal past the total wait")
+            self.assertLess(time.monotonic() - started, 2.5)
 
 
 class ConsoleRoutes(CellCase):
@@ -264,7 +369,7 @@ class ConsoleRoutes(CellCase):
                 self.assertEqual((status, body["error"]), (401, "unauthorized"))
 
     def test_console_reports_planner_configuration_without_disclosing_it(self):
-        url = "http://127.0.0.1:9/plan?secret=abc"
+        url = "http://127.0.0.1:9/plan/secret-abc"
         previous = os.environ.pop("SYBERWORK_PLANNER_URL", None)
         self.addCleanup(lambda: os.environ.__setitem__("SYBERWORK_PLANNER_URL", previous) if previous is not None else os.environ.pop("SYBERWORK_PLANNER_URL", None))
         status, body = self.cell.json("/api/console")
@@ -275,6 +380,8 @@ class ConsoleRoutes(CellCase):
         self.assertEqual(json.loads(raw)["planner_configured"], True)
         self.assertNotIn(b"127.0.0.1:9", raw)
         self.assertNotIn(b"secret", raw)
+        os.environ["SYBERWORK_PLANNER_URL"] = "http://127.0.0.1:9/plan?secret=abc"
+        self.assertFalse(self.cell.json("/api/console")[1]["planner_configured"], "a planner URL takes no query string")
         os.environ["SYBERWORK_PLANNER_URL"] = "http://planner.example.com/plan"
         self.assertFalse(self.cell.json("/api/console")[1]["planner_configured"], "plain HTTP off loopback is not a usable planner")
 
@@ -414,7 +521,9 @@ class ConsoleReadScope(CellCase):
 
     def test_work_item_summary_carries_what_the_top_bar_reads(self):
         case = self.cell.json("/api/cases", {"contract_id": "purchase-order", "version": 1, "inputs": {"part_number": "P-104", "quantity": 2}})[1]["id"]
-        for who in ("operator", "manager", "supplier"):
+        # An observer-only credential (supplier) attests facts and reads no metric (security review, finding 4).
+        self.assertEqual(self.cell.json("/metrics/work_items", who="supplier")[0], 403)
+        for who in ("operator", "manager"):
             with self.subTest(who):
                 status, body = self.cell.json("/metrics/work_items", who=who)
                 self.assertEqual(status, 200)
@@ -571,7 +680,9 @@ class ConsoleSideRecords(CellCase):
         case = self.case_with_decision()
         events = self.cell.work.inspect(case)["events"]
         expected = self.cell.work.side_channel(case)
-        for who in ("operator", "manager", "supplier", "planner"):
+        # Any principal beyond an observer-only credential (security review, finding 4).
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/side", who="supplier")[0], 403)
+        for who in ("operator", "manager", "planner"):
             with self.subTest(who):
                 self.assertEqual(self.cell.json(f"/api/cases/{case}/side", who=who), (200, expected))
         self.assertEqual([row["seq"] for row in expected], [e["seq"] for e in events], "every new event has its row")
@@ -601,19 +712,20 @@ class ConsoleSideRecords(CellCase):
             db.execute("UPDATE event_side SET jcs=? WHERE case_id=? AND seq=1", ("0" * 64, case))
         rows = self.cell.json(f"/api/cases/{case}/side")[1]
         self.assertEqual(rows[0]["jcs"], "0" * 64)
-        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify"), (200, {"valid": False}))
+        status, body = self.cell.json(f"/api/cases/{case}/verify")
+        self.assertEqual((status, body["valid"], body["chain"]), (200, False, False))
         with connect_db(self.cell.database) as db:
             db.execute("DELETE FROM event_side WHERE case_id=? AND seq=1", (case,))
         self.assertEqual([row["seq"] for row in self.cell.json(f"/api/cases/{case}/side")[1]][:1], [2])
-        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True},
-                         "verify cannot notice a missing row, which is why the console says so instead of calling it legacy")
+        self.assertTrue(self.cell.json(f"/api/cases/{case}/verify")[1]["valid"],
+                        "verify cannot notice a missing row, which is why the console says so instead of calling it legacy")
         # Nor does verify check a row with no digest, or a rule id: the console presents neither as checked.
         decision = next(e["seq"] for e in self.cell.work.inspect(case)["events"] if e["kind"] == "decision")
         with connect_db(self.cell.database) as db:
             db.execute("UPDATE event_side SET jcs=NULL, rule='invented.rule' WHERE case_id=? AND seq=?", (case, decision))
         row = next(r for r in self.cell.json(f"/api/cases/{case}/side")[1] if r["seq"] == decision)
         self.assertEqual((row["jcs"], row["rule"]), (None, "invented.rule"))
-        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": True})
+        self.assertTrue(self.cell.json(f"/api/cases/{case}/verify")[1]["valid"])
         app = read_text(STATIC / "app.js")
         for wording in ("it cannot notice a missing row", "Verify history does not check a row without a digest",
                         "the rule ids are in no hash and nothing checks them", "only Verify history tells them apart"):
@@ -663,7 +775,8 @@ class ConsoleWitness(CellCase):
         self.attest(other_events)
         self.assertEqual(self.cell.json(f"/api/cases/{case}/witness")[1]["entries"], [], "another case's leaf is not this case's")
         self.attest(events)
-        for who in ("operator", "manager", "supplier", "planner"):
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/witness", who="supplier")[0], 403)  # observer-only
+        for who in ("operator", "manager", "planner"):
             with self.subTest(who):
                 status, body = self.cell.json(f"/api/cases/{case}/witness", who=who)
                 self.assertEqual(status, 200)
@@ -703,9 +816,32 @@ class ConsoleWitness(CellCase):
         self.assertEqual(self.cell.json(f"/api/cases/{case}/witness")[1]["witnessed_through"], len(events))
         with closing(sqlite3.connect(self.cell.database)) as db, db:
             db.execute("UPDATE events SET body=? WHERE case_id=? AND seq=1", (canonical({"tampered": True}), case))
-        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1], {"valid": False})
+        verify = self.cell.json(f"/api/cases/{case}/verify")[1]
+        self.assertEqual((verify["valid"], verify["chain"], [c["verdict"] for c in verify["witness"]["conflicts"]]),
+                         (False, False, ["chain_broken"]))
         body = self.cell.json(f"/api/cases/{case}/witness")[1]
         self.assertEqual(([e["verdict"] for e in body["entries"]], body["witnessed_through"]), (["chain_broken"], None))
+
+    def test_a_rehashed_history_passes_the_chain_but_not_verify(self):
+        """Security review follow-up: the database owner rewrites event #1 and rehashes every event after it. The
+        chain verifies, which is the limit of a hash chain; Verify history reads the witness's log and refuses it."""
+        case, events = self.case_events()
+        self.attest(events)
+        self.assertEqual(self.cell.json(f"/api/cases/{case}/verify")[1]["witness"]["witnessed_through"], len(events))
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            db.execute("UPDATE events SET body=? WHERE case_id=? AND seq=1", (canonical({"tampered": True}), case))
+            db.execute("DELETE FROM event_side WHERE case_id=?", (case,))
+        previous = GENESIS
+        with closing(sqlite3.connect(self.cell.database)) as db, db:
+            for event in self.cell.work.inspect(case)["events"]:
+                event = dict(event, previous=previous)
+                previous = event_digest(event)
+                db.execute("UPDATE events SET previous=?, hash=? WHERE case_id=? AND seq=?", (event["previous"], previous, case, event["seq"]))
+        self.assertTrue(self.cell.work.verify_chain(case), "a rehashed chain verifies on its own")
+        status, body = self.cell.json(f"/api/cases/{case}/verify")
+        self.assertEqual((status, body["valid"], body["chain"]), (200, False, True))
+        self.assertEqual([c["verdict"] for c in body["witness"]["conflicts"]], ["head_differs"])
+        self.assertIsNone(body["witness"]["witnessed_through"])
 
     def test_an_unreadable_leaf_is_skipped_not_a_crash(self):
         case, events = self.case_events()
@@ -924,13 +1060,13 @@ class ConsoleWitnessRequest(CellCase):
         self.cell.work.register_principal("person-1", "human", "lead", "local", ["manager"], token="token-lead")
         self.cell.tokens["lead"] = "token-lead"
         self.cell.json(f"/api/cases/{case}/witness", {}, who="lead")
-        rows = [r for r in self.cell.work.trace.read() if r["name"] == "witness_request"]
+        lines = (self.log_path.parent / "traces.jsonl").read_text(encoding="utf-8").splitlines()
+        rows = [r for r in map(json.loads, filter(str.strip, lines)) if r["name"] == "witness_request"]
         self.assertEqual([(r["case_id"], r["actor"], r["principal"], r["status"]) for r in rows],
                          [(case, "manager", None, "signed"), (case, "manager", None, "already_witnessed"),
                           ("no-such-case", "manager", None, "unknown_case"), (case, "lead", "person-1", "already_witnessed")],
                          "a role refusal never reaches Work")
         self.assertEqual(rows[0]["head"], self.cell.work.inspect(case)["events"][-1]["hash"])
-        self.assertEqual(self.cell.work.metrics["witness_request"], 4)
 
     def test_the_console_is_told_who_may_ask(self):
         self.assertEqual(self.cell.json("/api/console", who="supplier")[1]["witness"], {"log": True, "request_role": "manager"})
@@ -998,14 +1134,16 @@ class ConsoleCertificates(CellCase):
     def test_the_route_requires_a_token_and_is_read_by_any_principal(self):
         self.assertEqual(self.cell.json("/api/certificates", who=None)[0], 401)
         expected = self.listing()
-        for who in ("manager", "supplier", "planner", "admin"):
+        # Any principal beyond an observer-only credential (security review, finding 4).
+        self.assertEqual(self.cell.json("/api/certificates", who="supplier")[0], 403)
+        for who in ("manager", "planner", "admin"):
             with self.subTest(who):
                 self.assertEqual(self.listing(who), expected)
         self.assertEqual(self.cell.json("/api/console", who="supplier")[1]["certificates"], {"configured": True})
 
     def test_a_certificate_signed_under_the_key_and_matching_its_journal_passes_both_layers(self):
         body = self.listing()
-        self.assertEqual((body["configured"], body["public_key"], body["total"], body["shown"]), (True, PUBLIC.hex(), 2, 2))
+        self.assertEqual((body["configured"], body["public_keys"], body["total"], body["shown"]), (True, [PUBLIC.hex()], 2, 2))
         self.assertEqual((body["checked"], body["not_checked"]), (["signature", "journal"], ["repository"]))
         self.assertIn("syberlabs verify FILE --public KEY --repo PATH", body["note"])
         payload = self.cert_payload
@@ -1180,7 +1318,665 @@ class ConsoleCertificates(CellCase):
             with self.subTest(sorted(names)), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
                 configured(**names)
         shelf = configured(SYBERWORK_CERTIFICATE_HOME=home, SYBERWORK_CERTIFICATE_PUBLIC=PUBLIC.hex() + "\n")
-        self.assertEqual((shelf.home, shelf.public), (self.cert_home, PUBLIC))
+        self.assertEqual((shelf.home, shelf.keys), (self.cert_home, (PUBLIC,)))
+
+
+class ConsoleCertificateKeys(CellCase):
+    """More than one trusted key: the new key and the old ones during a rotation. Each file passes under the key that
+    signed it, is tried only under the keys its signatures could match, and the row names that key."""
+
+    certificates = True
+    certificate_keys = (OTHER_PUBLIC, PUBLIC)   # OTHER_PUBLIC the new key; the fixture's certificates are under the old one
+
+    def folder(self) -> Path:
+        return self.cert_home / "certificates"
+
+    def rows(self):
+        status, body = self.cell.json("/api/certificates")
+        self.assertEqual(status, 200, body)
+        return body, {row["file"]: row for row in body["certificates"]}
+
+    def envelope(self, seed=OTHER_SEED, payload=None):
+        good = json.loads((self.folder() / f"{self.cert_payload['thread'][:8]}-c1.bare.json").read_text(encoding="utf-8"))
+        data = base64.standard_b64decode(good["payload"]) if payload is None else canonical(payload).encode()
+        return sign_dsse(good["payloadType"], data, seed)
+
+    def put(self, name, envelope):
+        (self.folder() / name).write_text(json.dumps(envelope), encoding="utf-8")
+
+    def test_each_listed_key_verifies_what_it_signed_and_the_row_names_it(self):
+        self.put("rotated.json", self.envelope(OTHER_SEED))
+        self.put("untrusted.json", self.envelope(THIRD_SEED))
+        body, rows = self.rows()
+        self.assertEqual(body["public_keys"], [OTHER_PUBLIC.hex(), PUBLIC.hex()], "in configured order")
+        thread8 = self.cert_payload["thread"][:8]
+        for name, key in ((f"{thread8}-c1.json", PUBLIC), (f"{thread8}-c1.bare.json", PUBLIC), ("rotated.json", OTHER_PUBLIC)):
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["signature"], row["journal"], row["journal_present"]), ("pass", "ok", "ok", True))
+                self.assertEqual(row["statement"]["keyid"], key.hex())
+        row = rows["untrusted.json"]
+        self.assertEqual((row["verdict"], row["reason"], row["statement"]), ("fail", "signature_invalid", None))
+        self.assertNotIn(THIRD_PUBLIC.hex(), json.dumps(body), "a key nobody configured is never named")
+
+    def test_a_file_is_tried_only_under_the_keys_its_signatures_could_match(self):
+        """verified_payload tries a signature only under the key its keyid names, or under every key when it names none."""
+        unnamed = self.envelope(SEED)                    # the old key, keyid removed: tried under the new key, then the old
+        del unnamed["signatures"][0]["keyid"]
+        self.put("unnamed.json", unnamed)
+        misnamed = self.envelope(OTHER_SEED)             # signed by the new key but naming the old: the old key only, so it fails
+        misnamed["signatures"][0]["keyid"] = PUBLIC.hex()
+        self.put("misnamed.json", misnamed)
+        self.put("untrusted.json", self.envelope(THIRD_SEED))
+        (self.folder() / "notjson.json").write_text("{not json", encoding="utf-8")
+        shaped = {k: v for k, v in self.cert_payload.items() if k != "objective"}
+        # A malformed payload, keyid removed: the failure is the signer's. Under the old key, the new key is tried first and
+        # fails on the signature; under the new key, the run stops there and the old key is not tried.
+        for name, seed in (("shape-old.json", SEED), ("shape-new.json", OTHER_SEED)):
+            bad = self.envelope(seed, shaped)
+            del bad["signatures"][0]["keyid"]
+            self.put(name, bad)
+        names = {path.read_bytes(): path.name for path in self.folder().glob("*.json")}
+        tried = {}
+        real = shelf_module.verify_certificate
+        def spy(data, key, **kwargs):
+            tried.setdefault(names[data], []).append(key)
+            return real(data, key, **kwargs)
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", side_effect=spy):
+            _, rows = self.rows()
+        thread8 = self.cert_payload["thread"][:8]
+        expected = {f"{thread8}-c1.json": ([PUBLIC], "pass", None), f"{thread8}-c1.bare.json": ([PUBLIC], "pass", None),
+                    "unnamed.json": ([OTHER_PUBLIC, PUBLIC], "pass", None),
+                    "misnamed.json": ([PUBLIC], "fail", "signature_invalid"),
+                    "untrusted.json": ([OTHER_PUBLIC], "fail", "signature_invalid"),
+                    "notjson.json": ([OTHER_PUBLIC], "fail", "certificate_unreadable")}
+        for name, (keys, verdict, reason) in expected.items():
+            with self.subTest(name):
+                self.assertEqual(tried[name], keys)
+                self.assertEqual((rows[name]["verdict"], rows[name]["reason"]), (verdict, reason))
+        self.assertEqual(rows["unnamed.json"]["statement"]["keyid"], PUBLIC.hex())
+        for name, keys in (("shape-old.json", [OTHER_PUBLIC, PUBLIC]), ("shape-new.json", [OTHER_PUBLIC])):
+            with self.subTest(name):
+                self.assertEqual(tried[name], keys)
+                self.assertTrue(rows[name]["reason"].startswith("payload_shape"), rows[name])
+                self.assertIsNone(rows[name]["statement"])
+
+    def test_removing_a_key_stops_trusting_what_it_signed(self):
+        """There is no revocation: a key is trusted until the deployment takes it off the list and restarts serve."""
+        self.put("rotated.json", self.envelope(OTHER_SEED))
+        verdicts = lambda shelf: {row["file"]: row["verdict"] for row in shelf.listing()["certificates"]}
+        thread8 = self.cert_payload["thread"][:8]
+        self.assertEqual(verdicts(CertificateShelf(self.cert_home, (OTHER_PUBLIC,))),
+                         {f"{thread8}-c1.bare.json": "fail", f"{thread8}-c1.json": "fail", "rotated.json": "pass"})
+        self.assertEqual(verdicts(CertificateShelf(self.cert_home, PUBLIC)),
+                         {f"{thread8}-c1.bare.json": "pass", f"{thread8}-c1.json": "pass", "rotated.json": "fail"})
+
+    def test_the_shelf_takes_one_to_eight_distinct_keys(self):
+        self.assertEqual(CertificateShelf(self.cert_home, PUBLIC).keys, (PUBLIC,))
+        eight = tuple(public_from_seed(hashlib.sha256(bytes([i])).digest()) for i in range(shelf_module.MAX_KEYS))
+        self.assertEqual(CertificateShelf(self.cert_home, eight).keys, eight, "exactly MAX_KEYS keys are accepted")
+        nine = (*eight, PUBLIC)
+        for keys in ((), nine, (PUBLIC, PUBLIC), (PUBLIC, b"\0" * 31), (PUBLIC, PUBLIC.hex())):
+            with self.subTest(len(keys)), self.assertRaises(Rejected):
+                CertificateShelf(self.cert_home, keys)
+
+    def test_a_key_anyone_could_sign_under_is_refused(self):
+        """syberlabs.ed25519.verify takes any 32 bytes: under the identity point, R = B and s = 1 verify any message."""
+        identity, order4 = bytes([1]) + bytes(31), bytes(32)
+        forged = base64.standard_b64encode(ed25519._encode(ed25519._B) + (1).to_bytes(32, "little")).decode("ascii")
+        self.assertTrue(ed25519.verify(identity, b"any statement", base64.standard_b64decode(forged)), "the forgery the check exists for")
+        mixed = ed25519._encode(ed25519._decode(PUBLIC) + ed25519._decode(order4))     # a real key plus a point of order 4
+        not_a_point = bytes([2]) + bytes(31)
+        for name, key in (("identity", identity), ("order 4", order4), ("mixed order", mixed), ("not a point", not_a_point)):
+            with self.subTest(name):
+                self.assertFalse(shelf_module.usable_key(key))
+                with self.assertRaises(Rejected):
+                    CertificateShelf(self.cert_home, (PUBLIC, key))
+        self.assertTrue(all(shelf_module.usable_key(key) for key in (PUBLIC, OTHER_PUBLIC, THIRD_PUBLIC)))
+
+    def test_a_file_with_more_signatures_than_allowed_is_refused_unverified(self):
+        """A key-less signature is tried under every key, so the count of signatures bounds what one file costs."""
+        envelope = self.envelope(SEED)
+        unnamed = dict(envelope["signatures"][0])
+        del unnamed["keyid"]
+        envelope["signatures"] = [unnamed] * (shelf_module.MAX_SIGNATURES + 1)
+        self.put("many.json", envelope)
+        envelope["signatures"] = [unnamed] * shelf_module.MAX_SIGNATURES
+        self.put("two.json", envelope)
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", wraps=shelf_module.verify_certificate) as spy:
+            _, rows = self.rows()
+        self.assertEqual((rows["many.json"]["verdict"], rows["many.json"]["reason"], rows["many.json"]["statement"]),
+                         ("fail", "too_many_signatures", None))
+        self.assertEqual((rows["two.json"]["verdict"], rows["two.json"]["statement"]["keyid"]), ("pass", PUBLIC.hex()))
+        self.assertEqual(spy.call_count, 2 + 2, "the two fixture files once each, two.json under both keys, many.json never")
+
+    def test_narrowing_gives_the_verdict_of_trying_every_key(self):
+        """Odd envelopes: the shelf's answer is the one trying every configured key in order would give."""
+        good = self.envelope(SEED)
+        sig = good["signatures"][0]
+        bare = {k: v for k, v in sig.items() if k != "keyid"}
+        odd = {
+            "nondict.json": {**good, "signatures": [3, sig]},
+            "null.json": {**good, "signatures": [{**sig, "keyid": None}]},
+            "intkeyid.json": {**good, "signatures": [{**sig, "keyid": 7}]},
+            "upper.json": {**good, "signatures": [{**sig, "keyid": PUBLIC.hex().upper()}]},
+            "listkeyid.json": {**good, "signatures": [{**sig, "keyid": [PUBLIC.hex()]}]},
+            "badsig.json": {**good, "signatures": [{**bare, "sig": "AAAA"}, {**sig, "keyid": OTHER_PUBLIC.hex()}]},
+            "sigdict.json": {**good, "signatures": {"keyid": PUBLIC.hex(), "sig": sig["sig"]}},
+            "sigstring.json": {**good, "signatures": "x"},
+            "array.json": [good],
+        }
+        for name, envelope in odd.items():
+            self.put(name, envelope)
+        _, rows = self.rows()
+        for name in odd:
+            with self.subTest(name):
+                data = (self.folder() / name).read_bytes()
+                for key in self.certificate_keys:
+                    report = shelf_module.verify_certificate(data, key, home=self.cert_home)
+                    if report.reason != "signature_invalid":
+                        break
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["statement"]["keyid"] if row["statement"] else None),
+                                 ("pass" if report.passed else "fail", report.reason, report.keyid if report.signature == "ok" else None))
+        self.assertEqual({name for name in odd if rows[name]["verdict"] == "pass"}, {"nondict.json", "null.json"})
+
+    def test_serve_reads_a_comma_separated_list_and_refuses_a_malformed_one(self):
+        parser = argparse.ArgumentParser()
+        def configured(public):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            names = {"SYBERWORK_CERTIFICATE_HOME": str(self.cert_home), "SYBERWORK_CERTIFICATE_PUBLIC": public}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertEqual(configured(f" {OTHER_PUBLIC.hex().upper()} , {PUBLIC.hex()}\n").keys, (OTHER_PUBLIC, PUBLIC))
+        eight = [public_from_seed(hashlib.sha256(bytes([i])).digest()) for i in range(8)]
+        self.assertEqual(configured(",".join(key.hex() for key in eight)).keys, tuple(eight), "exactly eight keys are accepted")
+        nine = ",".join((bytes([i]) * 32).hex() for i in range(9))
+        spaced = PUBLIC.hex()[:32] + " " + PUBLIC.hex()[32:]
+        for public in (spaced, (bytes([1]) + bytes(31)).hex(), f"{PUBLIC.hex()},{bytes(32).hex()}", f"{PUBLIC.hex()},", f",{PUBLIC.hex()}", f"{PUBLIC.hex()},,{OTHER_PUBLIC.hex()}", f"{PUBLIC.hex()};{OTHER_PUBLIC.hex()}",
+                       f"{PUBLIC.hex()} {OTHER_PUBLIC.hex()}", f"{PUBLIC.hex()},{PUBLIC.hex()}", f"{PUBLIC.hex()},{PUBLIC.hex().upper()}",
+                       f"{PUBLIC.hex()},00", nine):
+            with self.subTest(public[:20]), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(public)
+
+
+class ConsoleCertificateRevocation(CellCase):
+    """SYBERWORK_CERTIFICATE_REVOKED: a certificate whose digest the deployment lists fails as revoked under every key,
+    and still shows what it states. The digest is of the signed payload, so no rewrite of the file escapes it."""
+
+    certificates = True
+    certificate_keys = (OTHER_PUBLIC, PUBLIC)
+
+    def folder(self) -> Path:
+        return self.cert_home / "certificates"
+
+    def good(self) -> dict:
+        return json.loads((self.folder() / f"{self.cert_payload['thread'][:8]}-c1.bare.json").read_text(encoding="utf-8"))
+
+    def put(self, name, envelope, **dump):
+        (self.folder() / name).write_text(json.dumps(envelope, **dump), encoding="utf-8")
+
+    def reissued(self) -> dict:
+        """The same candidate certified again, later: another certificate, under the new key."""
+        payload = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] + 1)
+        return sign_dsse(self.good()["payloadType"], jcs_bytes(payload), OTHER_SEED)
+
+    def digest(self, name=None) -> str:
+        """The SHA-256 of the payload as signed: the bare form's payload bytes, or the JCS bytes of a statement's predicate."""
+        if name is None:
+            return hashlib.sha256(base64.standard_b64decode(self.good()["payload"])).hexdigest()
+        statement = json.loads(base64.standard_b64decode(json.loads((self.folder() / name).read_text(encoding="utf-8"))["payload"]))
+        return hashlib.sha256(jcs_bytes(statement["predicate"])).hexdigest()
+
+    def statement(self) -> str:
+        return f"{self.cert_payload['thread'][:8]}-c1.json"
+
+    def rows(self, shelf):
+        body = shelf.listing()
+        return body, {row["file"]: row for row in body["certificates"]}
+
+    def test_the_digest_is_of_the_signed_payload_whatever_key_or_form_signed_it(self):
+        good = self.good()
+        self.put("rotated.json", sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), OTHER_SEED))
+        self.put("reissued.json", self.reissued())
+        self.put("untrusted.json", sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), THIRD_SEED))
+        status, body = self.cell.json("/api/certificates")
+        self.assertEqual((status, body["revoked"]), (200, []))
+        rows = {row["file"]: row for row in body["certificates"]}
+        thread8 = self.cert_payload["thread"][:8]
+        digest = self.digest()
+        self.assertEqual(digest, shelf_module.certificate_digest(self.cert_payload))
+        for name in (f"{thread8}-c1.bare.json", "rotated.json"):
+            with self.subTest(name):
+                self.assertEqual((rows[name]["verdict"], rows[name]["digest"]), ("pass", digest))
+        # The statement form signs a wrapper; its digest is its predicate's. The fixture certified it in a second run of
+        # certify, at another issued_at, so it is another certificate.
+        self.assertEqual((rows[self.statement()]["verdict"], rows[self.statement()]["digest"]), ("pass", self.digest(self.statement())))
+        self.assertNotEqual(self.digest(self.statement()), digest)
+        self.assertEqual(rows["reissued.json"]["verdict"], "pass")
+        self.assertNotEqual(rows["reissued.json"]["digest"], digest, "another issued_at is another certificate")
+        self.assertIsNone(rows["untrusted.json"]["digest"], "a file no configured key signed has no digest")
+
+    def test_a_listed_digest_fails_as_revoked_under_every_key_however_the_file_is_written(self):
+        good = self.good()
+        signed = base64.standard_b64decode(good["payload"])
+        self.put("rotated.json", sign_dsse(good["payloadType"], signed, OTHER_SEED))
+        self.put("reissued.json", self.reissued())
+        # A folder writer rewrites a revoked file: indented, keys reordered, the keyid dropped. The signed bytes are the same.
+        unnamed = {k: v for k, v in good["signatures"][0].items() if k != "keyid"}
+        self.put("rewritten.json", {"signatures": [unnamed], "payloadType": good["payloadType"], "payload": good["payload"]}, indent=2)
+        # The statement's predicate signed in the bare form: another file and another form, the same certificate.
+        predicate = json.loads(base64.standard_b64decode(json.loads((self.folder() / self.statement()).read_text(encoding="utf-8"))["payload"]))["predicate"]
+        self.put("unwrapped.json", sign_dsse(good["payloadType"], jcs_bytes(predicate), SEED))
+        digest, statement = self.digest(), self.digest(self.statement())
+        shelf = CertificateShelf(self.cert_home, self.certificate_keys, (bytes(32).hex(), digest, statement))
+        body, rows = self.rows(shelf)
+        self.assertEqual(body["revoked"], [bytes(32).hex(), digest, statement], "in configured order")
+        thread8 = self.cert_payload["thread"][:8]
+        for name, key, listed in ((self.statement(), PUBLIC, statement), (f"{thread8}-c1.bare.json", PUBLIC, digest),
+                                  ("rotated.json", OTHER_PUBLIC, digest), ("rewritten.json", PUBLIC, digest),
+                                  ("unwrapped.json", PUBLIC, statement)):
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["signature"], row["journal"], row["journal_present"], row["digest"]),
+                                 ("fail", "revoked", "ok", "ok", True, listed))
+                self.assertEqual((row["statement"]["keyid"], row["statement"]["candidate"]), (key.hex(), "c1"), "what was revoked is shown")
+        self.assertEqual((rows["reissued.json"]["verdict"], rows["reissued.json"]["reason"]), ("pass", None),
+                         "revoking a certificate is not revoking its key or its candidate")
+        # Revocation wins over a journal failure too: the row names revoked, not the journal.
+        journal = self.cert_home / "journal" / "threads" / f"{self.cert_payload['thread']}.jsonl"
+        journal.write_bytes(b"\n".join(journal.read_bytes().splitlines()[:2]) + b"\n")
+        _, rows = self.rows(shelf)
+        self.assertEqual((rows["rotated.json"]["reason"], rows["rotated.json"]["journal"]), ("revoked", "chain_truncated"))
+        self.assertEqual(rows["reissued.json"]["reason"], "chain_truncated")
+
+    def test_revocation_holds_on_a_verdict_read_from_the_cache(self):
+        shelf = CertificateShelf(self.cert_home, self.certificate_keys, (self.digest(), self.digest(self.statement())))
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", wraps=shelf_module.verify_certificate) as spy:
+            first = self.rows(shelf)[1]
+            calls = spy.call_count
+            again = self.rows(shelf)[1]
+            self.assertEqual(spy.call_count, calls, "the second read is served from the cache")
+        self.assertEqual(again, first)
+        self.assertTrue(all(row["reason"] == "revoked" for row in again.values()), again)
+
+    def test_the_route_answers_the_configured_list(self):
+        self.assertEqual(self.shelf.revoked, (), "nothing is revoked unless the deployment lists it")
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.cert_home.parent)), 8999, certificates=CertificateShelf(self.cert_home, PUBLIC, (self.digest(),)))
+        self.addCleanup(cell.close)
+        # An observer-only credential reads no certificate (security review, finding 4); any principal beyond it does.
+        self.assertEqual(cell.json("/api/certificates", who="supplier")[0], 403)
+        status, body = cell.json("/api/certificates", who="manager")
+        self.assertEqual((status, body["revoked"], body["public_keys"]), (200, [self.digest()], [PUBLIC.hex()]))
+        rows = {row["file"]: row["reason"] for row in body["certificates"]}
+        self.assertEqual(rows, {f"{self.cert_payload['thread'][:8]}-c1.bare.json": "revoked", self.statement(): None})
+
+    def test_the_shelf_takes_up_to_the_limit_of_distinct_lowercase_digests(self):
+        many = tuple(hashlib.sha256(bytes([i % 256, i // 256])).hexdigest() for i in range(shelf_module.MAX_REVOKED))
+        self.assertEqual(CertificateShelf(self.cert_home, PUBLIC, many).revoked, many, "exactly MAX_REVOKED digests are accepted")
+        digest = self.digest()
+        for revoked in ((*many, digest), (digest, digest), (digest.upper(),), (digest[:63],), (digest + "0",), (" " + digest,),
+                        (bytes.fromhex(digest),), ("",)):
+            with self.subTest(repr(revoked[-1])[:20]), self.assertRaises(Rejected):
+                CertificateShelf(self.cert_home, PUBLIC, revoked)
+
+    def test_serve_reads_a_comma_separated_revocation_list_and_refuses_a_malformed_one(self):
+        parser = argparse.ArgumentParser()
+        digest, other = self.digest(), hashlib.sha256(b"another certificate").hexdigest()
+        def configured(revoked=None, home=str(self.cert_home), public=PUBLIC.hex()):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            names = {k: v for k, v in (("SYBERWORK_CERTIFICATE_HOME", home), ("SYBERWORK_CERTIFICATE_PUBLIC", public),
+                                       ("SYBERWORK_CERTIFICATE_REVOKED", revoked)) if v is not None}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertEqual(configured().revoked, ())
+        self.assertEqual(configured("").revoked, ())
+        self.assertEqual(configured(f" {digest.upper()} , {other}\n").revoked, (digest, other))
+        many = ",".join(hashlib.sha256(bytes([i % 256, i // 256])).hexdigest() for i in range(shelf_module.MAX_REVOKED + 1))
+        for revoked in (" ", f"{digest},", f",{digest}", f"{digest},,{other}", f"{digest};{other}", f"{digest} {other}",
+                        f"{digest},{digest}", f"{digest},{digest.upper()}", digest[:63], digest[:32] + " " + digest[32:], many):
+            with self.subTest(revoked[:20]), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(revoked)
+        # A revocation list with no certificates to apply it to is a mistake, not a configuration.
+        with self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+            configured(digest, home=None, public=None)
+
+
+class ConsoleCertificateValidity(CellCase):
+    """SYBERWORK_CERTIFICATE_MAX_AGE: a signed certificate issued longer ago than the window, by serve's clock, fails as
+    expired, and one dated more than SKEW after it as not yet valid. Each still shows what it states."""
+
+    certificates = True
+    AGE = 3600
+
+    def setUp(self):
+        super().setUp()
+        # serve's clock, in whole seconds, a little after the fixture certified its candidate; NOW in microseconds.
+        self.seconds = self.cert_payload["issued_at"] // 1_000_000 + 1000
+        self.now = self.seconds * 1_000_000
+
+    def dated(self, name, issued_at, seed=SEED):
+        """The fixture's candidate certified again at ``issued_at`` (microseconds), in the bare form."""
+        payload = dict(self.cert_payload, issued_at=issued_at)
+        envelope = sign_dsse("application/vnd.syberlabs.admission-certificate+json", jcs_bytes(payload), seed)
+        (self.cert_home / "certificates" / name).write_text(json.dumps(envelope), encoding="utf-8")
+        return payload
+
+    def shelf_at(self, *revoked, max_age=AGE):
+        return CertificateShelf(self.cert_home, PUBLIC, revoked, max_age, clock=lambda: self.seconds)
+
+    def rows(self, shelf):
+        body = shelf.listing()
+        return body, {row["file"]: row for row in body["certificates"]}
+
+    def test_without_a_window_nothing_expires(self):
+        self.dated("ancient.json", self.now - 20 * 366 * 24 * 3600 * 1_000_000)
+        self.dated("future.json", self.now + 366 * 24 * 3600 * 1_000_000)
+        status, body = self.cell.json("/api/certificates")
+        self.assertEqual((status, body["validity"]), (200, None))
+        self.assertEqual({row["file"]: (row["verdict"], row["expires_at"]) for row in body["certificates"]},
+                         {row["file"]: ("pass", None) for row in body["certificates"]})
+        self.assertIsNone(self.shelf.max_age, "no window unless the deployment sets one")
+
+    def test_a_certificate_outside_the_window_fails_and_still_states_what_it_says(self):
+        window, skew = self.AGE * 1_000_000, shelf_module.SKEW * 1_000_000
+        cases = {"old.json": (self.now - window - 1, "expired"), "edge.json": (self.now - window, None),
+                 "early.json": (self.now + skew + 1, "not_yet_valid"), "skewed.json": (self.now + skew, None)}
+        for name, (issued, _) in cases.items():
+            self.dated(name, issued)
+        body, rows = self.rows(self.shelf_at())
+        self.assertEqual(body["validity"], {"max_age": self.AGE, "skew": shelf_module.SKEW, "checked_at": self.now})
+        for name, (issued, reason) in cases.items():
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["signature"], row["journal"], row["expires_at"]),
+                                 ("fail" if reason else "pass", reason, "ok", "ok", issued + window))
+                self.assertEqual((row["statement"]["issued_at"], row["statement"]["candidate"]), (issued, "c1"), "what failed is shown")
+                self.assertEqual(row["digest"], shelf_module.certificate_digest(dict(self.cert_payload, issued_at=issued)))
+        thread8 = self.cert_payload["thread"][:8]
+        self.assertEqual(rows[f"{thread8}-c1.bare.json"]["reason"], None, "the fixture's own certificates are inside the window")
+        self.assertEqual(rows[f"{thread8}-c1.bare.json"]["expires_at"], self.cert_payload["issued_at"] + window)
+        # A file no configured key signed states no issued_at, so it has no expiry; it fails as before.
+        self.dated("untrusted.json", self.now - window - 1, THIRD_SEED)
+        _, rows = self.rows(self.shelf_at())
+        self.assertEqual((rows["untrusted.json"]["reason"], rows["untrusted.json"]["expires_at"]), ("signature_invalid", None))
+
+    def test_revocation_names_the_failure_first_and_expiry_comes_before_the_journal(self):
+        old = self.dated("old.json", self.now - self.AGE * 1_000_000 - 1)
+        self.dated("current.json", self.now)
+        shelf = self.shelf_at(shelf_module.certificate_digest(old))
+        self.assertEqual(self.rows(shelf)[1]["old.json"]["reason"], "revoked")
+        journal = self.cert_home / "journal" / "threads" / f"{self.cert_payload['thread']}.jsonl"
+        journal.write_bytes(b"\n".join(journal.read_bytes().splitlines()[:2]) + b"\n")
+        _, rows = self.rows(self.shelf_at())
+        self.assertEqual((rows["old.json"]["reason"], rows["old.json"]["journal"]), ("expired", "chain_truncated"))
+        self.assertEqual(rows["current.json"]["reason"], "chain_truncated")
+
+    def test_a_cached_verdict_expires_when_the_clock_passes_the_window(self):
+        self.dated("aging.json", self.now - self.AGE * 1_000_000)
+        shelf = self.shelf_at()
+        with unittest.mock.patch.object(shelf_module, "verify_certificate", wraps=shelf_module.verify_certificate) as spy:
+            first = self.rows(shelf)[1]["aging.json"]
+            calls = spy.call_count
+            self.seconds += 1
+            later = self.rows(shelf)[1]["aging.json"]
+            self.assertEqual(spy.call_count, calls, "the second read is served from the cache")
+        self.assertEqual((first["verdict"], later["verdict"], later["reason"]), ("pass", "fail", "expired"))
+
+    def test_the_route_answers_the_window_to_any_principal(self):
+        self.dated("old.json", self.now - self.AGE * 1_000_000 - 1)
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.cert_home.parent)), 8999, certificates=self.shelf_at())
+        self.addCleanup(cell.close)
+        # An observer-only credential reads no certificate (security review, finding 4); any principal beyond it does.
+        self.assertEqual(cell.json("/api/certificates", who="supplier")[0], 403)
+        status, body = cell.json("/api/certificates", who="manager")
+        self.assertEqual((status, body["validity"]["max_age"], body["validity"]["checked_at"]), (200, self.AGE, self.now))
+        self.assertEqual({row["file"]: row["reason"] for row in body["certificates"]}["old.json"], "expired")
+
+    def test_the_shelf_takes_a_whole_number_of_seconds_up_to_the_limit(self):
+        for age in (1, shelf_module.MAX_AGE_LIMIT):
+            self.assertEqual(CertificateShelf(self.cert_home, PUBLIC, (), age).max_age, age)
+        for age in (0, -1, True, 1.0, 1.5, "3600", shelf_module.MAX_AGE_LIMIT + 1):
+            with self.subTest(repr(age)), self.assertRaises(Rejected):
+                CertificateShelf(self.cert_home, PUBLIC, (), age)
+
+    def test_serve_reads_the_window_in_seconds_and_refuses_anything_else(self):
+        parser = argparse.ArgumentParser()
+        def configured(age=None, home=str(self.cert_home), public=PUBLIC.hex()):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            names = {k: v for k, v in (("SYBERWORK_CERTIFICATE_HOME", home), ("SYBERWORK_CERTIFICATE_PUBLIC", public),
+                                       ("SYBERWORK_CERTIFICATE_MAX_AGE", age)) if v is not None}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertIsNone(configured().max_age)
+        self.assertEqual(configured("2592000").max_age, 30 * 24 * 3600)
+        self.assertEqual(configured(" 60\n").max_age, 60)
+        self.assertEqual(configured(str(shelf_module.MAX_AGE_LIMIT)).max_age, shelf_module.MAX_AGE_LIMIT)
+        # Empty is refused, not read as no window: an unset shell variable expanded into it would turn the window off.
+        for age in ("", " ", "0", "-1", "+60", "1_000", "1e3", "60.0", "60s", "\u0663", "0x10", str(shelf_module.MAX_AGE_LIMIT + 1),
+                    "99999999999"):
+            with self.subTest(age), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(age)
+        with self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+            configured("3600", home=None, public=None)
+
+
+class ConsoleCertificateRepository(CellCase):
+    """SYBERWORK_CERTIFICATE_REPOSITORY: every signed certificate is checked against a Git working tree as
+    ``syberlabs verify --repo`` checks it (both commits present, their trees, the changed paths and the diff), and one the
+    repository does not hold fails with that layer's reason. It still shows what it states."""
+
+    certificates = True
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.cert_home.parent
+        # A clone of the project holds the same commits, and can lose them or go away without touching the home inside it.
+        self.clone = self.project.parent / "clone"
+        git(self.project.parent, "clone", "-q", "--no-hardlinks", str(self.project), str(self.clone))
+
+    def folder(self) -> Path:
+        return self.cert_home / "certificates"
+
+    def signed(self, name, seed=SEED, **changes):
+        """The fixture's payload with ``changes`` to its result (or top-level fields), signed in the bare form."""
+        result = {k: changes.pop(k) for k in list(changes) if k in self.cert_payload["result"]}
+        payload = dict(self.cert_payload, **changes)
+        payload["result"] = dict(payload["result"], **result)
+        envelope = sign_dsse("application/vnd.syberlabs.admission-certificate+json", jcs_bytes(payload), seed)
+        (self.folder() / name).write_text(json.dumps(envelope), encoding="utf-8")
+        return payload
+
+    def shelf_over(self, path=None, *revoked, max_age=None, clock=time.time):
+        repository = shelf_module.CertificateRepository(self.clone if path is None else path)
+        return CertificateShelf(self.cert_home, PUBLIC, revoked, max_age, clock, repository=repository)
+
+    def rows(self, shelf):
+        body = shelf.listing()
+        return body, {row["file"]: row for row in body["certificates"]}
+
+    def fixture_files(self):
+        thread8 = self.cert_payload["thread"][:8]
+        return f"{thread8}-c1.bare.json", f"{thread8}-c1.json"
+
+    def prune(self, commit):
+        """Drop every ref of the clone that reaches ``commit``, then the object itself."""
+        for ref in git(self.clone, "for-each-ref", "--format=%(refname)", "--contains", commit).split():
+            git(self.clone, "update-ref", "-d", ref)
+        git(self.clone, "reflog", "expire", "--expire=now", "--all")
+        git(self.clone, "gc", "-q", "--prune=now")
+        self.assertIsNone(git_ref(self.clone, commit + "^{commit}"), "the commit is gone from the clone")
+
+    def test_without_a_repository_the_layer_is_not_run(self):
+        """The negative control: unset, the answer names the repository as not checked and no row carries a state."""
+        self.assertIsNone(self.shelf.repository)
+        self.signed("unheld.json", commit="e" * 40)
+        status, body = self.cell.json("/api/certificates")
+        self.assertEqual((status, body["checked"], body["not_checked"]), (200, ["signature", "journal"], ["repository"]))
+        self.assertIn("syberlabs verify FILE --public KEY --repo PATH", body["note"])
+        rows = {row["file"]: row for row in body["certificates"]}
+        self.assertEqual({name: row["repository"] for name, row in rows.items()}, dict.fromkeys(rows))
+        for name in self.fixture_files():
+            self.assertEqual(rows[name]["verdict"], "pass")
+        # A certificate naming a commit no repository holds fails only on its journal here, never on the repository.
+        self.assertNotIn(rows["unheld.json"]["reason"], shelf_module.REPOSITORY_FAILURES)
+
+    def test_the_genuine_certificates_hold_in_their_repository_and_an_unrelated_one_holds_neither(self):
+        body, rows = self.rows(self.shelf_over(self.project))
+        self.assertEqual((body["checked"], body["not_checked"], body["note"]),
+                         (["signature", "repository", "journal"], [], shelf_module.REPOSITORY_NOTE))
+        for name in self.fixture_files():
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["signature"], row["repository"], row["journal"]),
+                                 ("pass", None, "ok", "ok", "ok"))
+        self.assertEqual({row["repository"] for row in self.rows(self.shelf_over())[1].values()}, {"ok"}, "a clone holds them too")
+        # Another repository, with other commits: the same genuine certificates fail, and still state what they say.
+        other = self.project.parent / "other"
+        (other / "src").mkdir(parents=True)
+        (other / "src" / "report.py").write_text("print('another project')\n")
+        git(self.project.parent, "init", "-q", "-b", "main", str(other))
+        git(other, "add", ".")
+        git(other, "commit", "-qm", "another")
+        _, rows = self.rows(self.shelf_over(other))
+        for name in self.fixture_files():
+            with self.subTest(name):
+                row = rows[name]
+                self.assertEqual((row["verdict"], row["reason"], row["repository"], row["journal"]),
+                                 ("fail", "commit_missing:base", "commit_missing:base", "ok"))
+                self.assertEqual(row["statement"]["candidate"], "c1", "what failed is shown")
+
+    def test_each_difference_from_the_repository_is_named_before_the_journal(self):
+        result = self.cert_payload["result"]
+        base = self.cert_payload["base"]
+        # Sorted after the fixture's files, so the genuine pair is held first: a hold never answers for other trees or
+        # another diff under the same two commits.
+        cases = {
+            "a-result.json": ({"commit": "e" * 40}, "commit_missing:result"),
+            "b-base.json": ({"base": dict(base, commit="d" * 40)}, "commit_missing:base"),
+            "c-base-tree.json": ({"base": dict(base, tree=result["tree"])}, "tree_mismatch:base"),
+            "d-result-tree.json": ({"tree": base["tree"]}, "tree_mismatch:result"),
+            "e-paths.json": ({"changed_paths": result["changed_paths"][:1], "files": 1}, "changed_paths_mismatch"),
+            "f-digest.json": ({"diff_digest": "0" * 64}, "diff_mismatch:digest"),
+            "g-bytes.json": ({"diff_bytes": result["diff_bytes"] + 1}, "diff_mismatch:bytes"),
+        }
+        for name, (changes, _) in cases.items():
+            self.signed(name, **changes)
+        shelf = self.shelf_over()
+        # Read twice: a failure is never kept as a hold, so the second read, its commits all present, fails the same.
+        for read in ("first", "again"):
+            _, rows = self.rows(shelf)
+            for name in self.fixture_files():
+                self.assertEqual((rows[name]["verdict"], rows[name]["repository"]), ("pass", "ok"))
+            for name, (_, reason) in cases.items():
+                with self.subTest(name, read=read):
+                    row = rows[name]
+                    self.assertIn(reason, shelf_module.REPOSITORY_FAILURES)
+                    self.assertEqual((row["verdict"], row["reason"], row["signature"], row["repository"]), ("fail", reason, "ok", reason))
+                    # The journal says otherwise too, and its field still names that; the repository is named first.
+                    self.assertNotIn(row["journal"], (None, "ok"))
+                    self.assertEqual(row["statement"]["candidate"], "c1")
+
+    def test_revocation_and_the_window_name_the_failure_before_the_repository(self):
+        unheld = self.signed("unheld.json", commit="e" * 40)
+        stale = self.signed("stale.json", commit="e" * 40, issued_at=self.cert_payload["issued_at"] - 7200 * 1_000_000)
+        _, rows = self.rows(self.shelf_over(None, shelf_module.certificate_digest(unheld), max_age=3600,
+                                            clock=lambda: self.cert_payload["issued_at"] / 1e6 + 60))
+        self.assertEqual((rows["unheld.json"]["reason"], rows["unheld.json"]["repository"]), ("revoked", "commit_missing:result"))
+        self.assertEqual((rows["stale.json"]["reason"], rows["stale.json"]["repository"]), ("expired", "commit_missing:result"))
+        self.assertEqual(stale["result"]["commit"], "e" * 40)
+
+    def test_a_hold_is_confirmed_on_every_read_and_a_failure_is_not_kept(self):
+        shelf = self.shelf_over()
+        result = self.cert_payload["result"]["commit"]
+        with unittest.mock.patch.object(shelf_module, "_layer_repository", wraps=shelf_module._layer_repository) as spy:
+            self.assertEqual({row["repository"] for row in self.rows(shelf)[1].values()}, {"ok"})
+            # The fixture's two certificates state the same commits, trees and diff: the second is held from the first.
+            self.assertEqual(spy.call_count, 1, "one check for what both files state")
+            self.assertEqual({row["repository"] for row in self.rows(shelf)[1].values()}, {"ok"})
+            self.assertEqual(spy.call_count, 1, "a hold is served while both commits are there")
+            # The result commit leaves the repository: the next read fails, though the file and its journal did not change.
+            self.prune(result)
+            _, rows = self.rows(shelf)
+            self.assertEqual({(row["verdict"], row["reason"], row["journal"]) for row in rows.values()},
+                             {("fail", "commit_missing:result", "ok")})
+            self.assertEqual(spy.call_count, 3, "checked again for each file: a failure is not held")
+            # Fetched back: the failure was not kept, so the same process reads a pass again.
+            git(self.clone, "fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*")
+            self.assertEqual({(row["verdict"], row["repository"]) for row in self.rows(shelf)[1].values()}, {("pass", "ok")})
+
+    def test_a_repository_git_cannot_read_is_unreadable_and_never_a_pass(self):
+        shelf = self.shelf_over()
+        self.assertEqual({row["repository"] for row in self.rows(shelf)[1].values()}, {"ok"})
+        moved = self.clone.with_name("moved")
+        self.clone.rename(moved)
+        self.addCleanup(lambda: moved.exists() and moved.rename(self.clone))
+        _, rows = self.rows(shelf)
+        self.assertEqual({(row["verdict"], row["reason"], row["repository"], row["journal"]) for row in rows.values()},
+                         {("fail", "repository_unreadable", "repository_unreadable", "ok")}, "a hold is not served without git's word")
+        moved.rename(self.clone)
+        self.assertEqual({row["verdict"] for row in self.rows(shelf)[1].values()}, {"pass"})
+
+    def test_a_replacement_never_answers_for_a_commit(self):
+        """A refs/replace entry makes plain git read another object for a name. serve reads the objects themselves."""
+        base, result = self.cert_payload["base"], self.cert_payload["result"]
+        # A certificate for a commit the repository does not hold, and a replacement that names it after the real result.
+        self.signed("replaced.json", commit="e" * 40)
+        git(self.clone, "update-ref", "refs/replace/" + "e" * 40, result["commit"])
+        # And the real result replaced by the base, whose tree is another.
+        git(self.clone, "replace", result["commit"], base["commit"])
+        plain = Repo(self.clone)
+        self.assertEqual(plain.rev("e" * 40), "e" * 40, "the control: plain git takes the replacement for the commit")
+        self.assertEqual(plain.tree(result["commit"]), base["tree"], "and reads another tree for the real one")
+        _, rows = self.rows(self.shelf_over())
+        self.assertEqual((rows["replaced.json"]["verdict"], rows["replaced.json"]["reason"]), ("fail", "commit_missing:result"))
+        for name in self.fixture_files():
+            self.assertEqual((rows[name]["verdict"], rows[name]["repository"]), ("pass", "ok"))
+
+    def test_the_route_answers_the_layer_to_any_principal_and_names_no_path(self):
+        self.signed("unheld.json", commit="e" * 40)
+        cell = Cell(Path(tempfile.mkdtemp(dir=self.project.parent)), 8999, certificates=self.shelf_over())
+        self.addCleanup(cell.close)
+        # An observer-only credential reads no certificate (security review, finding 4); any principal beyond it does.
+        self.assertEqual(cell.json("/api/certificates", who="supplier")[0], 403)
+        status, body = cell.json("/api/certificates", who="manager")
+        self.assertEqual((status, body["checked"], body["not_checked"]), (200, ["signature", "repository", "journal"], []))
+        rows = {row["file"]: row for row in body["certificates"]}
+        self.assertEqual((rows["unheld.json"]["verdict"], rows["unheld.json"]["reason"]), ("fail", "commit_missing:result"))
+        text = json.dumps(body)
+        for path in (self.clone, self.project):
+            for spelled in {str(path), path.as_posix(), json.dumps(str(path))[1:-1]}:
+                self.assertNotIn(spelled, text)
+
+    def test_the_shelf_takes_only_a_certificate_repository(self):
+        self.assertIsInstance(self.shelf_over().repository, shelf_module.CertificateRepository)
+        for repository in (Repo(self.clone), str(self.clone), self.clone, True):
+            with self.subTest(repr(repository)), self.assertRaises(Rejected):
+                CertificateShelf(self.cert_home, PUBLIC, repository=repository)
+        environment = shelf_module.CertificateRepository._env()
+        self.assertEqual((environment["GIT_NO_REPLACE_OBJECTS"], environment["GIT_NO_LAZY_FETCH"]), ("1", "1"))
+
+    def test_serve_reads_the_repository_variable_and_refuses_an_empty_or_unusable_one(self):
+        parser = argparse.ArgumentParser()
+        def configured(repository=None, home=str(self.cert_home), public=PUBLIC.hex()):
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("SYBERWORK_CERTIFICATE_")}
+            names = {k: v for k, v in (("SYBERWORK_CERTIFICATE_HOME", home), ("SYBERWORK_CERTIFICATE_PUBLIC", public),
+                                       ("SYBERWORK_CERTIFICATE_REPOSITORY", repository)) if v is not None}
+            with unittest.mock.patch.dict(os.environ, {**environment, **names}, clear=True):
+                return _certificates(parser)
+        self.assertIsNone(configured().repository)
+        top = Path(git(self.clone, "rev-parse", "--show-toplevel"))
+        self.assertEqual(configured(str(self.clone)).repository.root, top)
+        # A subdirectory of the working tree names the working tree, as git and syberlabs verify --repo read it.
+        self.assertEqual(configured(str(self.project / "src")).repository.root, Path(git(self.project, "rev-parse", "--show-toplevel")))
+        self.assertIsInstance(configured(str(self.clone)).repository, shelf_module.CertificateRepository)
+        # Empty is refused, not read as no repository: an unset shell variable expanded into it would turn the layer off.
+        # So are a path git does not resolve to a working tree: an absent one, and a .git folder (no working tree inside it).
+        for repository in ("", " ", "\n", str(self.project.parent / "absent"), str(self.clone / ".git")):
+            with self.subTest(repository), self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+                configured(repository)
+        with self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr"):
+            configured(str(self.clone), home=None, public=None)
 
 
 class ConsolePreview(CellCase):
@@ -1241,14 +2037,12 @@ class ConsolePreview(CellCase):
         self.assertEqual(preview["head"], {"seq": head["seq"], "hash": head["hash"]}, "the head the answer was computed against")
         self.assertEqual((preview["written"], preview["policy_version"], preview["origin"]), (False, 1, "human"))
 
-    def test_each_preview_is_counted_and_traced_though_no_event_records_it(self):
+    def test_each_preview_is_traced_though_no_event_records_it(self):
         case = self.case()
         recorded = []
         self.cell.work.trace = type("Trace", (), {"record": lambda _self, name, **fields: recorded.append((name, fields))})()
         self.addCleanup(setattr, self.cell.work, "trace", None)
-        before = self.cell.work.metrics.get("admission_preview", 0)
         self.cell.json(f"/api/cases/{case}/preview", {"action": "issue_order", "args": {"amount": 30000}}, who="manager")
-        self.assertEqual(self.cell.work.metrics["admission_preview"], before + 1)
         self.assertEqual(recorded, [("admission_preview", {"case_id": case, "actor": "manager", "action": "issue_order", "status": "denied",
                                                            "reason": "actor_role_missing", "rule": "actor.role"})])
 
@@ -1273,7 +2067,16 @@ class ConsolePreview(CellCase):
                   {"action": "absent", "args": {}}, {"action": "absent"}, {"args": {}}, {"action": "record_review", "args": []})
         for body in bodies:
             for who in ("operator", "scheduler", "manager", "planner", "supplier", None):
-                self.cell.call(f"/api/cases/{case}/preview", body, who=who)
+                try:
+                    status, _, raw = self.cell.call(f"/api/cases/{case}/preview", body, who=who)
+                except OSError as exc:
+                    self.fail(f"preview {body} as {who}: the connection broke before the answer was read ({exc!r})")
+                answer = json.loads(raw)
+                if who is None:
+                    self.assertEqual((status, answer["error"]), (409, "unauthorized"), body)
+                else:
+                    self.assertIn(status, (200, 409), (body, who, answer))
+                    self.assertNotEqual(answer.get("error"), "internal_error", (body, who))
         self.assertEqual(self.cell.work.inspect(case)["events"], events)
         self.assertEqual(self.dump(), before, "no table changed, including event_side and reservations")
         self.assertTrue(self.cell.work.verify_chain(case))
@@ -1460,6 +2263,36 @@ class ConsoleModel(CellCase):
         parity["certificates"] = {"body": self.cell.json("/api/certificates")[1], "count": self.cert_payload["chain"]["count"],
                                   "expected": [[f"{thread8}-c1.bare.json", "certified", "verified"], [f"{thread8}-c1.json", "certified", "verified"],
                                                ["foreign.json", "not_signed", "denied"]]}
+        # And what a shelf over the same home answers when it trusts the foreign key as the new one and PUBLIC as the old.
+        parity["certificates"]["rotated"] = {
+            "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC)).listing(),
+            "expected": [[f"{thread8}-c1.bare.json", "certified", 2], [f"{thread8}-c1.json", "certified", 2], ["foreign.json", "certified", 1]]}
+        # And one that also revokes the statement form's certificate, which foreign.json re-signs under the new key.
+        bare = json.loads((self.cert_home / "certificates" / f"{thread8}-c1.bare.json").read_text(encoding="utf-8"))
+        digest = hashlib.sha256(base64.standard_b64decode(bare["payload"])).hexdigest()
+        statement = hashlib.sha256(jcs_bytes(json.loads(base64.standard_b64decode(good["payload"]))["predicate"])).hexdigest()
+        parity["certificates"]["revoked"] = {
+            "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC), (statement,)).listing(),
+            "expected": [[f"{thread8}-c1.bare.json", "certified", 2, digest], [f"{thread8}-c1.json", "revoked", 2, statement],
+                         ["foreign.json", "revoked", 1, statement]]}
+        # And one with a validity window, its clock set so the statement form has expired and the bare form, certified
+        # later, has not; foreign.json re-signs the statement form's payload, so it has expired too.
+        issued = json.loads(base64.standard_b64decode(bare["payload"]))["issued_at"]
+        statement_issued = json.loads(base64.standard_b64decode(good["payload"]))["predicate"]["issued_at"]
+        self.assertLess(statement_issued, issued, "the fixture certifies the statement form first")
+        parity["certificates"]["windowed"] = {
+            "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC), (), 1, clock=lambda: (statement_issued + issued) / 2e6 + 1).listing(),
+            "expected": [[f"{thread8}-c1.bare.json", "certified", issued + 1_000_000], [f"{thread8}-c1.json", "expired", statement_issued + 1_000_000],
+                         ["foreign.json", "expired", statement_issued + 1_000_000]]}
+        # And one that checks every signed file against the project's repository, with one more file for a result commit
+        # the repository does not hold.
+        unheld = dict(self.cert_payload, result=dict(self.cert_payload["result"], commit="e" * 40))
+        (self.cert_home / "certificates" / "unheld.json").write_text(json.dumps(sign_dsse(bare["payloadType"], jcs_bytes(unheld), SEED)), encoding="utf-8")
+        parity["certificates"]["repository"] = {
+            "body": CertificateShelf(self.cert_home, (OTHER_PUBLIC, PUBLIC), repository=shelf_module.CertificateRepository(self.cert_home.parent)).listing(),
+            "failures": list(shelf_module.REPOSITORY_FAILURES),
+            "expected": [[f"{thread8}-c1.bare.json", "certified", "ok"], [f"{thread8}-c1.json", "certified", "ok"], ["foreign.json", "certified", "ok"],
+                         ["unheld.json", "repository_differs", "commit_missing:result"]]}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
             json.dump(parity, handle)
         self.addCleanup(os.unlink, handle.name)
@@ -1478,6 +2311,8 @@ class ConsoleBrowser(CellCase):
     reference = True
     witness = "server"
     certificates = True
+    # A rotation: serve trusts a new key (OTHER_PUBLIC) and the old one (PUBLIC) the fixture's certificates are under.
+    certificate_keys = (OTHER_PUBLIC, PUBLIC)
 
     def test_the_purchase_order_path_completes_in_a_browser(self):
         # The strict suite allows only the inspector's exact reasons for a missing browser tool.
@@ -1488,6 +2323,26 @@ class ConsoleBrowser(CellCase):
             if shutil.which("npm") is None:
                 self.skipTest("npm is not installed")
             self.skipTest("playwright for node is not installed")
+        # One certificate signed under the new key, beside the two the fixture signed under the old one.
+        good = json.loads((self.cert_home / "certificates" / f"{self.cert_payload['thread'][:8]}-c1.bare.json").read_text(encoding="utf-8"))
+        rotated = sign_dsse(good["payloadType"], base64.standard_b64decode(good["payload"]), OTHER_SEED)
+        (self.cert_home / "certificates" / "rotated.json").write_text(json.dumps(rotated), encoding="utf-8")
+        # And one the same candidate was certified with again, later, under the new key, which the deployment revokes. Its
+        # digest exists only now, so the served shelf's list is set here, before anything is read.
+        withdrawn = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] + 1)
+        (self.cert_home / "certificates" / "withdrawn.json").write_text(json.dumps(sign_dsse(good["payloadType"], jcs_bytes(withdrawn), OTHER_SEED)), encoding="utf-8")
+        revoked = shelf_module.certificate_digest(withdrawn)
+        self.shelf.revoked = (revoked,)
+        # And one certified 60 days ago under the new key, which a 30-day validity window retires.
+        window = 30 * 24 * 3600
+        stale = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] - 2 * window * 1_000_000)
+        (self.cert_home / "certificates" / "stale.json").write_text(json.dumps(sign_dsse(good["payloadType"], jcs_bytes(stale), OTHER_SEED)), encoding="utf-8")
+        self.shelf.max_age = window
+        # And serve checks each signed file against the project's repository: one more certificate, under the new key, names
+        # a result commit the repository does not hold.
+        unheld = dict(self.cert_payload, issued_at=self.cert_payload["issued_at"] + 2, result=dict(self.cert_payload["result"], commit="e" * 40))
+        (self.cert_home / "certificates" / "unheld.json").write_text(json.dumps(sign_dsse(good["payloadType"], jcs_bytes(unheld), OTHER_SEED)), encoding="utf-8")
+        self.shelf.repository = shelf_module.CertificateRepository(self.cert_home.parent)
         env = {**os.environ, "NODE_PATH": root, "CONSOLE_URL": self.cell.base + "/", "CONSOLE_TOKENS": json.dumps(self.cell.tokens)}
         env.pop("SHOTS", None)
         if Path("/opt/pw-browsers/chromium").exists():
@@ -1515,14 +2370,34 @@ class ConsoleBrowser(CellCase):
         self.assertEqual(report["certificate_buttons"], [["Open certificates in Studio", False]])
         self.assertIn("a case is not a Build Thread and has none", report["certificate_text"])
         self.assertIn("Nothing on this case is drawn as certified", report["certificate_text"])
-        # Studio → Certificates: both genuine forms pass the signature and the journal; the repository is named as not checked.
+        # Studio → Certificates: both genuine forms pass the signature and the journal under the old key, the rotated file
+        # under the new one, and each row names its key; the revoked file reads revoked and the stale one expired, beside
+        # what each states and its digest. Each signed row says when it expires. The repository is checked: the certified rows
+        # say it holds what they state, and the row for a commit it does not hold reads repository differs.
         thread8 = self.cert_payload["thread"][:8]
-        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified", "certified"], report["certificate_rows"])
-        for (_, row), name in zip(report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json")):
-            for text in (name, thread8, "c1", self.cert_payload["result"]["commit"][:10], "certified", "Add a CSV export"):
+        self.assertEqual([state for state, _ in report["certificate_rows"]], ["certified"] * 3 + ["expired", "repository_differs", "revoked"], report["certificate_rows"])
+        for (_, row), name, key, verdict, commit in zip(
+                report["certificate_rows"], (f"{thread8}-c1.bare.json", f"{thread8}-c1.json", "rotated.json", "stale.json", "unheld.json", "withdrawn.json"),
+                ("key 2 · " + PUBLIC.hex()[:16], "key 2 · " + PUBLIC.hex()[:16]) + ("key 1 · " + OTHER_PUBLIC.hex()[:16],) * 4,
+                ("certified", "certified", "certified", "expired", "repository differs", "revoked"),
+                (self.cert_payload["result"]["commit"][:10],) * 4 + ("e" * 10, self.cert_payload["result"]["commit"][:10])):
+            for text in (name, thread8, "c1", commit, verdict, "Add a CSV export", key, "digest ", "UTC"):
                 self.assertIn(text, row)
-        for text in ("2 of 2 certificates certified", PUBLIC.hex()[:16], "Not checked: repository", "syberlabs verify FILE --public KEY --repo .",
-                     "the .pub file beside each certificate is not read", "A SyberWork case has none"):
+        self.assertIn("the configured repository holds the commits, trees and diff it states", report["certificate_rows"][0][1])
+        self.assertIn("commit_missing:result", report["certificate_rows"][4][1])
+        self.assertIn("the configured repository does not hold the commits, trees or diff it states: do not treat it as certified", report["certificate_rows"][4][1])
+        self.assertIn("digest " + revoked, report["certificate_rows"][5][1])
+        self.assertIn("serve's configuration revokes this certificate: do not treat it as certified", report["certificate_rows"][5][1])
+        stale_end = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime((stale["issued_at"] // 1_000_000) + window))
+        self.assertIn("expired " + stale_end + " UTC", report["certificate_rows"][3][1])
+        self.assertIn("issued longer ago than serve's validity window: do not treat it as certified", report["certificate_rows"][3][1])
+        self.assertIn("expires ", report["certificate_rows"][0][1])
+        for text in ("3 of 6 certificates certified", "2 keys 1 " + OTHER_PUBLIC.hex()[:16] + "…, 2 " + PUBLIC.hex()[:16] + "…",
+                     "1 certificate digest revoked", "valid for 30d after issue, by serve's clock at ", "Checked by serve: signature, repository and journal",
+                     "SYBERWORK_CERTIFICATE_REPOSITORY", "where the target ref points now is not judged",
+                     "SYBERWORK_CERTIFICATE_REVOKED lists reads revoked under every key. ",
+                     "One issued more than 30d before serve's clock reads expired, and one dated more than 5m after it not yet valid",
+                     "The .pub file beside each certificate is not read", "A SyberWork case has none"):
             self.assertIn(text, report["certificate_page"])
         # Before the witness signs, the log holds nothing for the case; after, every event up to the head is witnessed.
         self.assertIn("not witnessed", report["witness_before"])
@@ -1563,6 +2438,11 @@ class ConsoleBrowser(CellCase):
         self.assertFalse(any("invented.rule" in row for row in report["mismatch_rules"]), "a rule that does not reproduce the decision is never shown")
         self.assertTrue(report["refused_rules"] and all("unavailable" in row and "unknown_case" in row for row in report["refused_rules"]), report["refused_rules"])
         self.assertIn("amount_exceeds_limit", report["replay"])
+        # The observer-only supplier is refused a key the contract reads from a verified source and cannot read the case.
+        self.assertEqual((report["quote_attest"]["status"], report["quote_attest"]["body"]["error"]), (409, "attestation_denied"))
+        self.assertEqual(report["note_attest"]["status"], 200, report["note_attest"])
+        self.assertEqual(report["receipt_attest"]["status"], 200, report["receipt_attest"])
+        self.assertEqual(report["supplier_case_read"], 403)
         self.assertEqual(len(report["manual"]), 2)
         self.assertTrue(all("unverified" in row for row in report["manual"]))
         self.assertIn("Attest claim", report["manual"][0])

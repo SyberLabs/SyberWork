@@ -5,8 +5,8 @@ bodies valid under the pinned OpenAPI fixture, ``X-Request-ID`` and the rate-lim
 real API and no real token exists: each test makes a random one and checks where it went.
 
 The fixture ``tests/fixtures/githits_openapi_v1.json`` is ``fixture_bytes`` of the public document fetched once
-from https://api.githits.dev/v1/openapi.json on 2026-10-26 (1,364,570 bytes, SHA-256 ``UPSTREAM_SHA256``): the five
-operations this client calls with every component they reference, values unchanged, as compact sorted ASCII JSON.
+from https://api.githits.dev/v1/openapi.json on 2026-10-26 (1,364,570 bytes, SHA-256
+e58048e3e56d7b0d6346e24722614d2d8907748960f18f18204895a354ab8a6a): the five operations this client calls with every component they reference, values unchanged, as compact sorted ASCII JSON.
 The whole document is over the change-size limit of the contract this repository is built under, so only that
 closed subset is pinned. ``SpecPin`` fails when the fixture changes, and when the client sends or reads a field
 the fixture does not have. ``tests/fixtures/githits_openapi_v1_languages.json`` pins, the same way and from the same
@@ -21,6 +21,8 @@ import json
 import os
 import re
 import secrets
+import subprocess
+import sys
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,7 +31,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
-from syberlabs import cli, githits, githits_cli_entry
+from syberlabs import cli, githits, githits_cli_entry, query_guard
 from syberlabs.canonical import canonical
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,9 +39,31 @@ FIXTURE = ROOT / "tests" / "fixtures" / "githits_openapi_v1.json"
 FIXTURE_SHA256 = "c388ab7e53a25fdfbd914c10634d799ae923b01ab8880750c750e775c21f1b9c"
 DOCTOR_FIXTURE = ROOT / "tests" / "fixtures" / "githits_openapi_v1_languages.json"
 DOCTOR_FIXTURE_SHA256 = "492fcb7f97838a2bed4dfc4618c3858cc8589787f1f3ff92422ffff3fdc8904c"
-UPSTREAM_SHA256 = "e58048e3e56d7b0d6346e24722614d2d8907748960f18f18204895a354ab8a6a"
 ENV_NAMES = (githits.TOKEN_ENV, githits.URL_ENV, githits.SESSION_ENV, githits.AGENT_ENV, githits.EXCLUDE_ENV,
-             githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV)
+             githits.EXCLUDE_REPLACE_ENV, githits.LICENSES_ENV, githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV,
+             query_guard.KEY_ENV, query_guard.LAUNCHER_ENV)
+# The response fields the client reads, as paths through the response schema ("[]" is an array's items). Every one
+# resolves in the pinned OpenAPI fixture, so a renamed field fails a test.
+READS = {
+    "search": tuple(("result", "results", "[]", *tail) for tail in (
+        ("locator", "repo_url"), ("locator", "source_url"), ("locator", "docs_read_target"), ("locator", "git_ref"),
+        ("locator", "file_path"), ("locator", "start_line"), ("locator", "end_line"), ("locator", "package_name"),
+        ("locator", "version"), ("score",), ("title",), ("summary",), ("target_label",))) + (
+        ("result", "page", "has_more"), ("search_ref",), ("completed",)),
+    "example": (("result",), ("search_status",), ("solution_id",)),
+    "read": (("kind",), ("path",), ("content", "body"), ("content", "start_line"), ("content", "end_line"),
+             ("metadata", "total_lines"), ("metadata", "title"), ("docs_read_target",), ("source", "repo_url"),
+             ("source", "url"), ("target_resolution", "served", "repo_url"),
+             ("target_resolution", "resolved_requested", "repo_url")),
+    "list": (("entries", "[]", "path"), ("entries", "[]", "kind"), ("entries", "[]", "line_count"),
+             ("entries", "[]", "read", "target"), ("entries", "[]", "browse", "target"), ("next_cursor",),
+             ("has_more",), ("canonical_target",), ("target_resolution", "served", "repo_url"),
+             ("target_resolution", "resolved_requested", "repo_url")),
+    "grep": (("hits", "[]", "repo_url"), ("hits", "[]", "page_url"), ("hits", "[]", "file_path"),
+             ("hits", "[]", "line"), ("hits", "[]", "line_content"), ("hits", "[]", "kind"),
+             ("next_cursor",), ("total_matches",)),
+}
+HEADERS_SENT = ("X-GitHits-Client-Name", "X-GitHits-Client-Version", "X-GitHits-Session-ID", "X-GitHits-Agent")
 
 
 # ----------------------------------------------------------------------------------------------- the pinned contract
@@ -411,7 +435,7 @@ class SpecPin(unittest.TestCase):
 
     def test_every_response_field_the_client_reads_is_in_the_fixture(self):
         spec = load_spec()
-        for op, paths in githits.READS.items():
+        for op, paths in READS.items():
             for path in paths:
                 with self.subTest(op=op, path=path):
                     self.assertTrue(has_path(spec, response_schema(spec, op), path))
@@ -423,7 +447,7 @@ class SpecPin(unittest.TestCase):
             with self.subTest(op=op):
                 operation = operation_of(spec, op)
                 sent = {p["name"].lower() for p in operation["parameters"] if p["in"] == "header"}
-                self.assertLessEqual({name.lower() for name in githits.HEADERS_SENT}, sent)
+                self.assertLessEqual({name.lower() for name in HEADERS_SENT}, sent)
                 session = next(p for p in operation["parameters"] if p["name"] == "X-GitHits-Session-ID")
                 self.assertEqual(session["schema"]["pattern"], githits.SESSION_PATTERN.pattern)
                 answered = {name.lower() for name in operation["responses"]["200"].get("headers", {})}
@@ -488,7 +512,7 @@ class SpecPin(unittest.TestCase):
         for name, value in request.params.items():
             self.assertEqual(problems(spec, params[name]["schema"], value), [], name)
         headers = {p["name"].lower() for p in operation["parameters"] if p["in"] == "header"}
-        self.assertLessEqual({name.lower() for name in githits.HEADERS_SENT}, headers)
+        self.assertLessEqual({name.lower() for name in HEADERS_SENT}, headers)
         answer = operation["responses"]["200"]["content"]["application/json"]["schema"]
         self.assertEqual(answer["items"]["$ref"].split("/")[-1], githits.DOCTOR.response)
         self.assertEqual(problems(spec, answer, DEFAULTS["/v1/languages"]()), [], "the fake's answer is valid")
@@ -561,7 +585,10 @@ class LicensePolicy(unittest.TestCase):
                                          "[Source 2](https://gitlab.com/a/b/-/blob/1/c.py) (GPL-3.0-only)"}),
                          ["MIT", "GPL-3.0-only"])
         self.assertEqual(read({"result": "[Source 1](https://github.com/a/b/blob/1/c.py)"}), [None])
-        self.assertEqual(read({"result": "see [the docs](https://docs.python.org/3/) only"}), [None])
+        # No code and no source: nothing to license (pilot-readiness; GitHits' documented "no_example" shape). The
+        # same docs link beside code is a source-less code example: unknown, dropped.
+        self.assertEqual(read({"result": "see [the docs](https://docs.python.org/3/) only"}), [])
+        self.assertEqual(read({"result": "```python\nx = 1\n```\nsee [the docs](https://docs.python.org/3/)"}), [None])
         self.assertEqual(read({"result": "code\n\n**License:** BSD-3-Clause"}), ["BSD-3-Clause"])
         self.assertEqual(read({"result": "", "references": [{"license_spdx_id": "MPL-2.0"}, {"url": "u"}]}),
                          ["MPL-2.0", None])
@@ -577,7 +604,7 @@ class Exclusion(unittest.TestCase):
                      "https%3A%2F%2Fgithub.com%2FSyberLabs%2FSyberWork", "gitlab:SyberLabs/mirror"):
             with self.subTest(text=text):
                 self.assertTrue(exclude.names(text))
-        for text in ("https://github.com/psf/requests", "github:SyberLabsX/fork", "github:other/SyberLabs",
+        for text in ("https://github.com/psf/requests", "github:SyberLabsX/fork",
                      "pypi:syberlabs-sdk", "https://github.com/syberlabs-archive/x", "npm:express@5.2.1",
                      "site:docs.python.org/3", "https://notgithub.com/SyberLabs/x", ""):
             with self.subTest(text=text):
@@ -598,7 +625,8 @@ class Exclusion(unittest.TestCase):
         self.assertTrue(custom.names("https://github.com/other/repo"))
         self.assertFalse(custom.names("https://github.com/other/else"))
         self.assertTrue(custom.names("github:SyberLabs/SyberWork"), "the default is kept")
-        self.assertEqual(custom.entries, (("syberlabs",), ("acme",), ("other", "repo")))
+        self.assertEqual(custom.entries, (("syberlabs",), ("sykosyber",), ("pypi:syberwork",), ("deepwiki.com",),
+                                          ("deepwiki.org",), ("acme",), ("other", "repo")))
         for switch in ("0", "", "yes", "true"):
             kept = githits.Exclusions.from_env({githits.EXCLUDE_ENV: "Acme", githits.EXCLUDE_REPLACE_ENV: switch})
             self.assertTrue(kept.names("github:SyberLabs/x"), f"only 1 replaces, not {switch!r}")
@@ -607,6 +635,60 @@ class Exclusion(unittest.TestCase):
         self.assertTrue(replaced.names("github:acme/x"))
         empty = githits.Exclusions.from_env({githits.EXCLUDE_ENV: " , ", githits.EXCLUDE_REPLACE_ENV: "1"})
         self.assertTrue(empty.names("github:SyberLabs/x"), "replacing with nothing keeps the default")
+
+    def test_the_default_deny_list_refuses_our_package_founder_forks_and_deepwiki(self):
+        """guard-lane (the pilot's pre-registration): besides SyberLabs, the default refuses this repository's PyPI
+        name (pyproject.toml: syberwork), github.com/sykosyber, a fork of a SyberLabs repository detectable by its
+        name under another owner (FORK_NAMES), and the DeepWiki front-ends, as targets and in result text."""
+        exclude = githits.Exclusions.from_env({})
+        self.assertEqual(githits.DEFAULT_EXCLUDE, ("SyberLabs", "sykosyber", "pypi:syberwork", "deepwiki.com",
+                                                   "deepwiki.org"))
+        for text in ("pypi:syberwork", "pypi:SyberWork@0.1.0", "pypi: syberwork", "github:sykosyber/dotfiles",
+                     "https://github.com/sykosyber/x", "https://github.com/someone/SyberWork",
+                     "github:someone/syberfactory@main", "someone/SyberSDK", "github:other/SyberLabs",
+                     "https://gitlab.com/mirror/syberwork.git", "site:deepwiki.com/SyberLabs/SyberWork",
+                     "https://deepwiki.com/psf/requests", "https://www.deepwiki.org/x", "site:DEEPWIKI.COM",
+                     "https://deepwiki.com:443/x", "https%3A%2F%2Fdeepwiki.com%2Fx"):
+            with self.subTest(refused=text):
+                self.assertTrue(exclude.names(text))
+        for text in ("pypi:syberworkx", "pypi:requests", "npm:syberwork", "https://github.com/someone/syberworking",
+                     "https://notdeepwiki.com/x", "site:docs.python.org/3", "https://github.com/psf/requests",
+                     "https://notgithub.com/x/SyberWork"):
+            with self.subTest(kept=text):
+                self.assertFalse(exclude.names(text))
+        for text in ("see https://pypi.org/project/syberwork/", "the page at deepwiki.com/psf/requests",
+                     "[Source 1](https://github.com/fork/SyberWork/blob/1/a.py) (MIT)",
+                     "(https://github.com/sykosyber/notes)"):
+            with self.subTest(mentioned=text):
+                self.assertTrue(exclude.mentioned(text))
+        self.assertFalse(exclude.mentioned("syberwork, said without a host or registry"))
+        added = githits.Exclusions.from_env({githits.EXCLUDE_ENV: "npm:left-pad, example.org"})
+        self.assertTrue(added.names("npm:left-pad@1.3.0") and added.names("https://docs.example.org/x"))
+        self.assertTrue(added.names("pypi:syberwork"), "the variable adds; the deny-list stays")
+        self.assertEqual(githits.Exclusions.from_env({githits.EXCLUDE_ENV: added.written()}).entries, added.entries,
+                         "the written list reads back as itself")
+        for bad in ("foo:bar", "pypi:", "a..b", "x/y/z"):
+            with self.subTest(bad=bad), self.assertRaises(githits.GitHitsError):
+                githits.Exclusions([bad])
+
+    def test_the_deny_list_never_leaves_and_drops_what_points_at_it(self):
+        """Refused targets send nothing; a result or an example pointing at a denied place is dropped."""
+        fake = FakeGitHits()
+        self.addCleanup(fake.close)
+        env = {githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(8), githits.URL_ENV: fake.url}
+        client = githits.Client.from_env(env)
+        for target in ("pypi:syberwork", "site:deepwiki.com/psf/requests", "github:sykosyber/x"):
+            with self.subTest(target=target):
+                self.assertEqual(client.call(githits.search_request("q", [target])).status, githits.EXCLUDED)
+        self.assertEqual(fake.requests, [], "nothing was sent")
+        fake.serve("/v1/searches", search_response([search_hit("a", "https://github.com/someone/SyberWork"),
+                                                    search_hit("b", "https://github.com/psf/requests")]))
+        result = client.call(githits.search_request("q", ["pypi:requests"]))
+        self.assertEqual((result.results_returned, result.results_dropped), (1, 1), "the fork's hit is dropped")
+        fake.serve("/v1/examples/search", {"result": "Use this.\n\nSee https://deepwiki.com/psf/requests\n",
+                                           "search_status": "complete",
+                                           "solution_id": "12345678-1234-4234-8234-123456789abc"})
+        self.assertTrue(client.call(githits.example_request("q")).contamination_blocked, "an example citing DeepWiki is dropped whole")
         for value in ("", " , "):
             self.assertTrue(githits.Exclusions.from_env({githits.EXCLUDE_ENV: value}).names("github:SyberLabs/x"))
         with self.assertRaises(githits.GitHitsError):
@@ -616,8 +698,8 @@ class Exclusion(unittest.TestCase):
 class Token(FakeCase):
     def test_the_token_goes_only_into_the_authorization_header(self):
         client = self.client(session_id="arm-on_7", agent="claude-code/2.1.309")
-        client.search("how to retry", ["pypi:requests@2.32.3"])
-        client.read("pypi:requests@2.32.3", path="src/requests/api.py")
+        client.call(githits.search_request("how to retry", ["pypi:requests@2.32.3"]))
+        client.call(githits.read_request("pypi:requests@2.32.3", path="src/requests/api.py"))
         self.assertEqual(len(self.fake.requests), 2)
         for request in self.fake.requests:
             headers = request["headers"]
@@ -633,7 +715,7 @@ class Token(FakeCase):
         self.assertNotIn(self.token, repr(client))
 
     def test_no_session_or_agent_header_unless_set(self):
-        self.client().example("retry with backoff")
+        self.client().call(githits.example_request("retry with backoff"))
         headers = self.fake.requests[0]["headers"]
         self.assertNotIn("x-githits-session-id", headers)
         self.assertNotIn("x-githits-agent", headers)
@@ -642,7 +724,7 @@ class Token(FakeCase):
         problem = {"code": "AUTHENTICATION_REQUIRED", "title": f"bad token {self.token}", "status": 401}
         self.fake.serve("/v1/searches", problem, 401, {"Content-Type": "application/problem+json"})
         with self.assertRaises(githits.GitHitsError) as caught:
-            self.client().search("q", ["pypi:requests"])
+            self.client().call(githits.search_request("q", ["pypi:requests"]))
         error = caught.exception
         self.assertEqual((error.code, error.http_status, error.request_id), ("http_401", 401, "req-scripted"))
         self.assertIn("AUTHENTICATION_REQUIRED", str(error))
@@ -660,7 +742,7 @@ class Token(FakeCase):
             self.fake.serve("/v1/searches", {"code": "AUTHENTICATION_REQUIRED", "title": title, "status": 401}, 401,
                             {"Content-Type": "application/problem+json", "X-Request-ID": "req-" + self.token})
             with self.subTest(offset=offset), self.assertRaises(githits.GitHitsError) as caught:
-                self.client().search("q", ["pypi:requests"])
+                self.client().call(githits.search_request("q", ["pypi:requests"]))
             error = caught.exception
             for leak in (self.token, self.token[:8], self.token[-8:]):
                 self.assertNotIn(leak, str(error) + str(error.request_id), offset)
@@ -669,7 +751,7 @@ class Token(FakeCase):
         self.fake.script["/v1/searches"] = lambda request: (
             200, {"Content-Type": "application/json", "X-Request-ID": "x" * 120 + self.token},
             json.dumps(search_response([])).encode())
-        result = self.client().search("q", ["pypi:requests"])
+        result = self.client().call(githits.search_request("q", ["pypi:requests"]))
         self.assertEqual(result.request_id, "x" * 120 + "[token]"[:8])
         code, out, err = run_cli(self.env, "githits", "search", "q", "--target", "pypi:requests", "--json")
         self.assertEqual(code, 0)
@@ -681,7 +763,7 @@ class Token(FakeCase):
         env = dict(self.env)
         del env[githits.TOKEN_ENV]
         with self.assertRaises(githits.GitHitsError) as caught:
-            githits.Client.from_env(env).example("q")
+            githits.Client.from_env(env).call(githits.example_request("q"))
         self.assertEqual(caught.exception.code, "no_token")
         self.assertEqual(self.fake.requests, [])
         self.assertEqual([r["status"] for r in self.records().records], ["error"])
@@ -703,11 +785,11 @@ class Token(FakeCase):
 class Contamination(FakeCase):
     def test_an_excluded_target_is_refused_without_a_request(self):
         client = self.client()
-        calls = [lambda: client.search("q", ["pypi:requests", "github:SyberLabs/SyberWork@main"]),
-                 lambda: client.search("q", [{"repo_url": "https://GITHUB.com/syberlabs/flyspace"}]),
-                 lambda: client.read("https://github.com/SyberLabs/SyberWork/blob/main/README.md"),
-                 lambda: client.list("SyberLabs/SyberWork"),
-                 lambda: client.grep("x", ["npm:express", {"target": "github:syberlabs/x"}])]
+        calls = [lambda: client.call(githits.search_request("q", ["pypi:requests", "github:SyberLabs/SyberWork@main"])),
+                 lambda: client.call(githits.search_request("q", [{"repo_url": "https://GITHUB.com/syberlabs/flyspace"}])),
+                 lambda: client.call(githits.read_request("https://github.com/SyberLabs/SyberWork/blob/main/README.md")),
+                 lambda: client.call(githits.list_request("SyberLabs/SyberWork")),
+                 lambda: client.call(githits.grep_request("x", ["npm:express", {"target": "github:syberlabs/x"}]))]
         for call in calls:
             result = call()
             self.assertEqual((result.status, result.data, result.refused), (githits.EXCLUDED, None, True))
@@ -724,7 +806,7 @@ class Contamination(FakeCase):
             search_hit("ours", "https://github.com/SyberLabs/SyberWork"),
             search_hit("pkg", None, package_name="syberwork", source_url="https://github.com/syberlabs/syberwork/blob/1/a.py"),
             search_hit("theirs", "https://github.com/psf/requests")]), headers={"X-RateLimit-Remaining": "41"})
-        result = self.client().search("q", ["pypi:requests"])
+        result = self.client().call(githits.search_request("q", ["pypi:requests"]))
         self.assertEqual((result.status, result.results_returned, result.results_dropped), ("ok", 1, 2))
         self.assertEqual([hit["title"] for hit in result.data["result"]["results"]], ["theirs"])
         self.assertEqual(result.rate_limit_remaining, 41)
@@ -736,19 +818,19 @@ class Contamination(FakeCase):
         self.fake.serve("/v1/grep", grep_response([grep_hit(1, repo_url="https://github.com/SyberLabs/SyberWork"),
                                                    grep_hit(2, page_url="https://syberlabs.github.io/guide"),
                                                    grep_hit(3, repo_url="https://github.com/psf/requests")]))
-        grep = self.client().grep("Retry", ["pypi:requests"])
+        grep = self.client().call(githits.grep_request("Retry", ["pypi:requests"]))
         self.assertEqual((grep.results_returned, grep.results_dropped, [h["line"] for h in grep.data["hits"]]),
                          (1, 2, [3]))
         self.fake.serve("/v1/list", list_response([list_entry("a.py"), list_entry("b.py")],
                                                   served_repo="https://github.com/SyberLabs/SyberWork"))
-        served = self.client().list("pypi:syberwork-mirror")
+        served = self.client().call(githits.list_request("pypi:syberwork-mirror"))
         self.assertEqual((served.status, served.results_returned, served.results_dropped, served.data["entries"]),
                          ("ok", 0, 2, []))
         self.fake.serve("/v1/list", list_response([list_entry("a.py"), list_entry("b.py", "github:SyberLabs/x")]))
-        entry = self.client().list("pypi:requests")
+        entry = self.client().call(githits.list_request("pypi:requests"))
         self.assertEqual((entry.results_returned, entry.results_dropped), (1, 1))
         self.fake.serve("/v1/read", read_code_response("https://github.com/SyberLabs/SyberWork"))
-        read = self.client().read("pypi:syberwork-mirror")
+        read = self.client().call(githits.read_request("pypi:syberwork-mirror"))
         self.assertEqual((read.status, read.data, read.results_returned, read.results_dropped), ("ok", None, 0, 1))
         self.assertEqual([r["results_dropped"] for r in self.records().records], [2, 2, 1, 1])
 
@@ -759,11 +841,11 @@ class Contamination(FakeCase):
                      {"url": "https://example.org/a", "source": {"target": {"repo_url": "https://github.com/SyberLabs/Flyspace"}}}]}]
         for body in cases:
             self.fake.serve("/v1/examples/search", body)
-            result = self.client().example("retry with backoff")
+            result = self.client().call(githits.example_request("retry with backoff"))
             self.assertEqual((result.status, result.data, result.contamination_blocked, result.results_dropped),
                              ("contamination_blocked", None, True, 1))
         del self.fake.script["/v1/examples/search"]
-        result = self.client().example("retry with backoff")
+        result = self.client().call(githits.example_request("retry with backoff"))
         self.assertEqual((result.status, result.results_returned, result.contamination_blocked), ("ok", 1, False))
         self.assertIn("requests.get", result.data["result"])
         records = self.records().records
@@ -772,10 +854,10 @@ class Contamination(FakeCase):
 
     def test_a_read_body_citing_an_excluded_owner_is_blocked(self):
         self.fake.serve("/v1/read", read_doc_response("Fork of https://github.com/SyberLabs/SyberWork"))
-        result = self.client().read("https://requests.readthedocs.io/en/latest/")
+        result = self.client().call(githits.read_request("https://requests.readthedocs.io/en/latest/"))
         self.assertEqual((result.status, result.data, result.contamination_blocked), ("contamination_blocked", None, True))
         self.fake.serve("/v1/read", read_doc_response("# Quickstart\nrequests.get(url)"))
-        self.assertEqual(self.client().read("https://requests.readthedocs.io/en/latest/").results_returned, 1)
+        self.assertEqual(self.client().call(githits.read_request("https://requests.readthedocs.io/en/latest/")).results_returned, 1)
 
 
 def source(license_text: str | None, repo: str = "psf/requests") -> str:
@@ -793,13 +875,13 @@ class Licenses(FakeCase):
             search_hit("unknown", "https://github.com/a/unknown", license="NOASSERTION"),
             search_hit("unlabelled", "https://github.com/a/plain"),
             {**search_hit("ours", "https://github.com/SyberLabs/SyberWork"), "license_spdx_id": "Apache-2.0"}]))
-        result = self.client().search("q", ["pypi:requests"])
+        result = self.client().call(githits.search_request("q", ["pypi:requests"]))
         self.assertEqual([hit["title"] for hit in result.data["result"]["results"]], ["apache", "dual", "unlabelled"])
         self.assertEqual((result.results_returned, result.results_dropped, result.results_dropped_license), (3, 1, 3))
         self.fake.serve("/v1/grep", grep_response([{**grep_hit(1, repo_url="https://github.com/a/b"),
                                                     "license_spdx_id": "LGPL-2.1-or-later"},
                                                    grep_hit(2, repo_url="https://github.com/a/c")]))
-        grep = self.client().grep("x", ["pypi:requests"])
+        grep = self.client().call(githits.grep_request("x", ["pypi:requests"]))
         self.assertEqual((grep.results_returned, grep.results_dropped, grep.results_dropped_license), (1, 0, 1))
         records = self.records().records
         self.assertEqual([(r["results_dropped"], r["results_dropped_license"]) for r in records], [(1, 3), (0, 1)])
@@ -809,15 +891,15 @@ class Licenses(FakeCase):
         for markdown in (source("AGPL-3.0-only"), source("MIT") + "\n" + source("AGPL-3.0-or-later"),
                          source(None), "```python\nprint(1)\n```", "code\n\nLicense: GPL-2.0-only"):
             self.fake.serve("/v1/examples/search", example_response(markdown))
-            result = self.client().example("retry with backoff")
+            result = self.client().call(githits.example_request("retry with backoff"))
             with self.subTest(markdown=markdown):
                 self.assertEqual((result.status, result.data, result.results_dropped_license,
                                   result.contamination_blocked, result.results_dropped), ("ok", None, 1, False, 0))
         self.fake.serve("/v1/examples/search", {**example_response("clean " + source("MIT")),
                                                 "references": [{"url": "https://github.com/a/b", "license_spdx_id": "MPL-2.0"}]})
-        self.assertEqual(self.client().example("q").results_dropped_license, 1)
+        self.assertEqual(self.client().call(githits.example_request("q")).results_dropped_license, 1)
         self.fake.serve("/v1/examples/search", example_response(source("MIT") + "\n" + source("BSD-3-Clause", "a/b")))
-        kept = self.client().example("q")
+        kept = self.client().call(githits.example_request("q"))
         self.assertEqual((kept.results_returned, kept.results_dropped_license), (1, 0))
         self.assertEqual({json.loads(r["body"])["license_mode"] for r in self.fake.requests}, {"strict"})
         self.assertEqual([r["results_dropped_license"] for r in self.records().records], [1, 1, 1, 1, 1, 1, 0])
@@ -830,7 +912,7 @@ class Licenses(FakeCase):
 
     def test_contamination_is_judged_before_the_license(self):
         self.fake.serve("/v1/examples/search", example_response(source("GPL-3.0-only", "SyberLabs/SyberWork")))
-        result = self.client().example("q")
+        result = self.client().call(githits.example_request("q"))
         self.assertEqual((result.status, result.results_dropped, result.results_dropped_license),
                          ("contamination_blocked", 1, 0))
 
@@ -840,7 +922,7 @@ class Licenses(FakeCase):
             {**search_hit("gpl", "https://github.com/a/gpl"), "license_spdx_id": "GPL-3.0-only"}]))
         self.fake.serve("/v1/examples/search", example_response(source("AGPL-3.0-only")))
         client = self.client()
-        search, example = client.search("q", ["pypi:requests"]), client.example("q")
+        search, example = client.call(githits.search_request("q", ["pypi:requests"])), client.call(githits.example_request("q"))
         self.assertEqual((search.results_returned, search.results_dropped_license), (1, 0))
         self.assertEqual((example.results_returned, example.results_dropped_license), (1, 0))
         self.assertIn("AGPL-3.0-only", example.data["result"])
@@ -851,19 +933,126 @@ class Licenses(FakeCase):
         self.env[githits.LICENSES_ENV] = "MIT"
         self.fake.serve("/v1/searches", search_response([
             {**search_hit("apache", "https://github.com/a/apache"), "license_spdx_id": "Apache-2.0"}]))
-        self.assertEqual(self.client().search("q", ["pypi:requests"]).results_dropped_license, 1)
+        self.assertEqual(self.client().call(githits.search_request("q", ["pypi:requests"])).results_dropped_license, 1)
+
+
+def documented_examples() -> dict:
+    """GitHits' three documented example responses (``complete``, ``degraded``, ``no_example``), as the pinned
+    OpenAPI fixture holds them for ``POST /v1/examples/search`` 200."""
+    spec = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    found = spec["paths"]["/v1/examples/search"]["post"]["responses"]["200"]["content"]["application/json"]["examples"]
+    return {name: entry["value"] for name, entry in found.items()}
+
+
+class DocumentedExamples(FakeCase):
+    """pilot-readiness, item 1. A lead review on 2026-10-26 found the license filter withheld all three of GitHits'
+    documented example responses (``results_dropped_license=1`` each): the ``complete`` example cites its source as
+    ``[Source 1](https://example.org/source) (MIT)`` under ``### References``, a host the filter did not read as a
+    source, and ``degraded`` and ``no_example`` carry no code and no source at all. GitHits confirmed it returns no
+    structured license fields, so the Markdown is all there is. Permissive now passes; copyleft and unknown are still
+    dropped."""
+
+    def test_the_three_documented_responses_pass_through_the_client(self):
+        examples = documented_examples()
+        self.assertEqual(sorted(examples), ["complete", "degraded", "no_example"])
+        spec = load_spec()
+        for name, body in examples.items():
+            with self.subTest(example=name):
+                self.assertEqual(problems(spec, response_schema(spec, "example"), body), [])
+                self.fake.serve("/v1/examples/search", body)
+                result = self.client().call(githits.example_request("read a JSON file in Rust"))
+                self.assertEqual((result.status, result.results_dropped_license, result.results_dropped),
+                                 (githits.OK, 0, 0))
+                self.assertEqual(result.data, body, "passed whole, nothing rewritten")
+        self.assertEqual(githits.example_licenses(examples["complete"]), ["MIT"],
+                         "the References link is the source; the GitHits app link is not")
+        self.assertEqual(githits.example_licenses(examples["degraded"]), [])
+        self.assertEqual(githits.example_licenses(examples["no_example"]), [])
+        self.assertEqual([r["results_dropped_license"] for r in self.records().records], [0, 0, 0])
+
+    def test_the_documented_shape_with_copyleft_or_unknown_licenses_is_still_dropped(self):
+        complete = documented_examples()["complete"]
+        for license_text in ("GPL-3.0-only", "AGPL-3.0-or-later", "MPL-2.0", "NOASSERTION", "MIT AND GPL-2.0-only",
+                             "see repository"):
+            body = {**complete, "result": complete["result"].replace("(MIT)", f"({license_text})")}
+            with self.subTest(license=license_text):
+                self.fake.serve("/v1/examples/search", body)
+                result = self.client().call(githits.example_request("q"))
+                self.assertEqual((result.status, result.data, result.results_dropped_license), (githits.OK, None, 1))
+        unknown = {**complete, "result": complete["result"].replace(" (MIT)", "")}
+        self.fake.serve("/v1/examples/search", unknown)
+        self.assertEqual(self.client().call(githits.example_request("q")).results_dropped_license, 1, "a cited source with no license")
+        no_source = {**complete, "result": complete["result"].split("### References")[0]}
+        self.assertIn("```rust", no_source["result"])
+        self.fake.serve("/v1/examples/search", no_source)
+        self.assertEqual(self.client().call(githits.example_request("q")).results_dropped_license, 1, "code with no source at all")
+        second = {**complete, "result": complete["result"].replace(
+            "(MIT)\n", "(MIT)\n- [Source 2](https://example.org/other) (GPL-3.0-only)\n")}
+        self.assertIn("Source 2", second["result"])
+        self.fake.serve("/v1/examples/search", second)
+        self.assertEqual(self.client().call(githits.example_request("q")).results_dropped_license, 1, "one copyleft source drops it whole")
+        permissive = {**complete, "result": complete["result"].replace("(MIT)", "(Apache-2.0 OR MIT)")}
+        self.fake.serve("/v1/examples/search", permissive)
+        self.assertEqual(self.client().call(githits.example_request("q")).results_dropped_license, 0)
+
+    def test_only_links_under_a_sources_heading_or_on_a_code_host_are_sources_and_never_githits_own(self):
+        read = githits.example_licenses
+        app = "[Open in GitHits Web App](https://app.githits.com/solutions/12345678-1234-4234-8234-123456789abc)"
+        self.assertEqual(read({"result": "```py\nx\n```\n### References\n" + app}), [None],
+                         "the app link is not a source, so the code has none")
+        self.assertEqual(read({"result": "```py\nx\n```\n## Sources\n- [a](https://docs.example.org/a) (ISC)\n"
+                                         "\n## Notes\n[b](https://docs.example.org/b)"}), ["ISC"],
+                         "the section ends at the next heading")
+        self.assertEqual(read({"result": "```py\nx\n```\n**References**\n- <https://example.org/s> (BSD-3-Clause)\n"
+                                         "\n---\n\n[c](https://example.org/c)"}), ["BSD-3-Clause"],
+                         "a bold heading, an autolink, and a thematic break ends the section")
+        self.assertEqual(read({"result": "```py\nx\n```\n[docs](https://docs.example.org/) (GPL-3.0-only)\n"
+                                         "[Source 1](https://github.com/a/b/blob/1/c.py) (MIT)"}), ["MIT"],
+                         "outside a sources section a non-code-host link is not a source, as before")
+
+    def test_a_singular_heading_a_heading_with_more_words_and_crlf_still_open_a_sources_section(self):
+        """guard-lane, item 4 (#153's verification): the heading parser took only ``References`` or ``Sources``,
+        alone, on an LF line, so a ``## Source`` heading, ``### Sources and references`` or a CRLF answer left its
+        links outside every sources section, where an unlicensed docs link counted for nothing."""
+        read = githits.example_licenses
+        link = "\n- [a](https://docs.example.org/a)\n"  # a docs link: a source only inside a sources section
+        for heading in ("## Source", "### Reference", "Reference:", "Source", "## Sources and references",
+                        "### Reference links ###", "**Sources used:**", "## Sources"):
+            for newline in ("\n", "\r\n"):
+                with self.subTest(heading=heading, crlf=newline == "\r\n"):
+                    text = ("```py\nx\n```\n" + heading + link).replace("\n", newline)
+                    self.assertEqual(read({"result": text}), [None], "the unlicensed link is a source: dropped")
+                    licensed = text.replace("/a)", "/a) (MIT)")
+                    self.assertEqual(read({"result": licensed}), ["MIT"])
+        self.assertEqual(read({"result": "```py\nx\n```\nThe sources below are informal." + link}), [None],
+                         "a sentence is no heading: the link is not a source, and the code has none")
+
+    def test_a_fenced_block_inside_a_blockquote_is_code(self):
+        """guard-lane, item 4 (#153's verification): ``_CODE`` matched a fence only at the margin, so an example whose
+        only code sat in a blockquote, with no source, read as carrying nothing to license and passed."""
+        read = githits.example_licenses
+        for quoted in ("> ```python\n> import requests\n> ```\n", ">> ~~~\n>> x = 1\n>> ~~~\n",
+                       "> ```python\r\n> import requests\r\n> ```\r\n", ">     indented = True\n"):
+            with self.subTest(quoted=quoted):
+                self.assertEqual(read({"result": "Use this:\n\n" + quoted}), [None], "code with no source")
+        self.assertEqual(read({"result": "> A quoted remark, no code.\n"}), [], "a quote without code is not code")
+        self.fake.serve("/v1/examples/search", {"result": "Use this:\n\n> ```python\n> import requests\n> ```\n",
+                                                "search_status": "complete",
+                                                "solution_id": "12345678-1234-4234-8234-123456789abc"})
+        result = self.client().call(githits.example_request("q"))
+        self.assertEqual((result.results_dropped_license, result.data), (1, None), "an uncited quoted fence is dropped")
 
 
 class Transport(FakeCase):
     def test_lean_defaults_are_sent(self):
         client = self.client()
-        client.search("q", ["pypi:requests"])
-        client.read("pypi:requests", path="src/requests/api.py")
-        client.read("https://docs.python.org/3/library/json.html%23json.dumps")
-        client.read("https://docs.python.org/3/library/json.html#basic-usage")
-        client.list("pypi:requests")
-        client.grep("Retry", ["pypi:requests"])
-        client.example("q")
+        client.call(githits.search_request("q", ["pypi:requests"]))
+        client.call(githits.read_request("pypi:requests", path="src/requests/api.py"))
+        client.call(githits.read_request("https://docs.python.org/3/library/json.html%23json.dumps"))
+        client.call(githits.read_request("https://docs.python.org/3/library/json.html#basic-usage"))
+        client.call(githits.list_request("pypi:requests"))
+        client.call(githits.grep_request("Retry", ["pypi:requests"]))
+        client.call(githits.example_request("q"))
         search, read, read_encoded, read_fragment, listing, grep, example = self.fake.requests
         self.assertEqual(json.loads(search["body"])["limit"], githits.SEARCH_LIMIT)
         self.assertEqual(search["query"], {"fields": ["results"]})
@@ -880,7 +1069,7 @@ class Transport(FakeCase):
         target = self.fake.url + "/capture"
         self.fake.script["/v1/searches"] = lambda request: (302, {"Location": target, "X-Request-ID": "req-302"}, b"")
         with self.assertRaises(githits.GitHitsError) as caught:
-            self.client().search("q", ["pypi:requests"])
+            self.client().call(githits.search_request("q", ["pypi:requests"]))
         self.assertEqual((caught.exception.code, caught.exception.http_status), ("redirect_refused", 302))
         self.assertEqual([r["path"] for r in self.fake.requests], ["/v1/searches"])
         self.assertEqual([(r["status"], r["http_status"], r["request_id"]) for r in self.records().records],
@@ -892,7 +1081,7 @@ class Transport(FakeCase):
             self.fake.script["/v1/examples/search"] = lambda request, w=with_length: (
                 200, {"Content-Type": "application/json", "X-Request-ID": "req-big"}, big, w)
             with self.subTest(with_length=with_length), self.assertRaises(githits.GitHitsError) as caught:
-                self.client(max_bytes=1024).example("q")
+                self.client(max_bytes=1024).call(githits.example_request("q"))
             self.assertEqual(caught.exception.code, "response_too_large")
         self.assertEqual([(r["status"], r["http_status"]) for r in self.records().records],
                          [("error", 200), ("error", 200)])
@@ -902,12 +1091,12 @@ class Transport(FakeCase):
                         429, {"Content-Type": "application/problem+json", "Retry-After": "30",
                               "X-RateLimit-Remaining": "0", "X-Request-ID": "req-429"})
         with self.assertRaises(githits.GitHitsError) as caught:
-            self.client().grep("x", ["pypi:requests"])
+            self.client().call(githits.grep_request("x", ["pypi:requests"]))
         self.assertEqual((caught.exception.code, caught.exception.request_id), ("http_429", "req-429"))
         self.assertIn("RATE_LIMITED", str(caught.exception))
         self.fake.serve("/v1/list", b"", 500)
         with self.assertRaises(githits.GitHitsError) as caught:
-            self.client().list("pypi:requests")
+            self.client().call(githits.list_request("pypi:requests"))
         self.assertEqual(caught.exception.code, "http_500")
         records = self.records().records
         self.assertEqual([(r["op"], r["status"], r["http_status"], r["request_id"], r["rate_limit_remaining"])
@@ -917,17 +1106,55 @@ class Transport(FakeCase):
         for body in (b"{not json", b"[1, 2]", b"\xff\xfe"):
             self.fake.serve("/v1/searches", body)
             with self.assertRaises(githits.GitHitsError) as caught:
-                self.client().search("q", ["pypi:requests"])
+                self.client().call(githits.search_request("q", ["pypi:requests"]))
             self.assertEqual((caught.exception.code, caught.exception.http_status), ("malformed_response", 200))
         self.assertEqual([(r["status"], r["http_status"]) for r in self.records().records], [("error", 200)] * 3)
 
 
 class Records(FakeCase):
+    def test_an_ambiguous_write_error_cannot_claim_that_nothing_was_sent(self):
+        arrived = threading.Event()
+        def answer(request):
+            arrived.set()
+            return 200, {}, b"{}"
+        self.fake.script["/v1/searches"] = answer
+        self.fake.server.handle_error = lambda *args: None  # the intentionally closed client may break its pipe
+        original = githits.http.client.HTTPConnection.request
+        def after_send(connection, *args, **kwargs):
+            original(connection, *args, **kwargs)
+            self.assertTrue(arrived.wait(3), "the real loopback server received the request")
+            raise BrokenPipeError("injected after the real request")
+        with mock.patch.object(githits.http.client.HTTPConnection, "request", after_send):
+            with self.assertRaises(githits.GitHitsError):
+                self.client().call(githits.search_request("q", ["pypi:requests"]))
+        self.assertEqual(len(self.fake.requests), 1)
+        [record] = self.records().records
+        self.assertEqual(record["status"], "error")
+        self.assertIsNone(record["sent"], "a wrapped write error cannot establish a pre-send refusal")
+
+    def test_an_interrupted_tail_is_ignored_without_hiding_the_next_record(self):
+        client = self.client()
+        client.call(githits.search_request("first", ["pypi:requests"]))
+        path = Path(self.folder.name) / githits.RECORD_FILE
+        with open(path, "ab") as handle:
+            handle.write(b'{"op":"search","partial":"\xff')
+        client.call(githits.search_request("second", ["pypi:requests"]))
+        read = self.records()
+        self.assertEqual((len(read.records), read.ignored), (2, 1))
+        self.assertEqual([r["request_id"] for r in read.records], ["req0001", "req0002"])
+
+    def test_a_write_failure_never_fabricates_a_record(self):
+        with mock.patch.object(githits, "write_record", side_effect=OSError("write refused")):
+            with self.assertRaises(githits.GitHitsError) as caught:
+                self.client().call(githits.search_request("q", ["pypi:requests"]))
+        self.assertEqual(caught.exception.code, "record_failed")
+        self.assertEqual((len(self.fake.requests), self.records().records), (1, []))
+
     def test_records_hold_digests_and_counts_never_the_query_and_verify_by_mac(self):
         query = "private-looking query " + secrets.token_hex(8)
         client = self.client()
-        client.search(query, ["pypi:requests"])
-        client.grep(query, ["pypi:requests"])
+        client.call(githits.search_request(query, ["pypi:requests"]))
+        client.call(githits.grep_request(query, ["pypi:requests"]))
         text = self.record_text()
         self.assertNotIn(query, text)
         read = self.records()
@@ -944,8 +1171,8 @@ class Records(FakeCase):
 
     def test_forged_tampered_and_malformed_lines_are_ignored_and_counted(self):
         client = self.client()
-        client.search("q", ["pypi:requests"])
-        client.example("q")
+        client.call(githits.search_request("q", ["pypi:requests"]))
+        client.call(githits.example_request("q"))
         path = Path(self.folder.name) / githits.RECORD_FILE
         first = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         tampered = {**first, "results_dropped": 0, "contamination_blocked": True}
@@ -964,7 +1191,7 @@ class Records(FakeCase):
 
     def test_no_record_without_the_record_settings(self):
         env = {k: v for k, v in self.env.items() if k not in (githits.RECORD_DIR_ENV, githits.RECORD_KEY_ENV)}
-        githits.Client.from_env(env).search("q", ["pypi:requests"])
+        githits.Client.from_env(env).call(githits.search_request("q", ["pypi:requests"]))
         self.assertEqual(self.record_text(), "")
 
 
@@ -1081,8 +1308,29 @@ class Cli(FakeCase):
         self.assertTrue(all(record["status"] == "ok" for record in self.records().records))
 
 
-def run_entry(env: dict, *argv: str) -> tuple[int, str, str]:
-    """The GitHits launcher's entry (``githits_cli_entry.main``), what the launcher a model can run executes."""
+@contextlib.contextmanager
+def launch_guard(*argvs, key: str | None = None):
+    """A query-guard directory holding one ``pass`` decision per launcher argv in ``argvs``, as the hook writes when it
+    passes a launcher command (``arguments_digest`` of the words it read, MAC under the per-call key), and the
+    environment the launcher's entry reads it with: the key and the launcher's path in that directory."""
+    with TemporaryDirectory() as folder:
+        directory = Path(folder)
+        (directory / query_guard.DECISIONS).mkdir()
+        key = key or secrets.token_hex(32)
+        for n, argv in enumerate(argvs, 1):
+            query_guard.write_decision(directory, {
+                "tool_use_id": f"toolu_guard{n}", "tool": "Bash", "query_digest": "0" * 64, "rule": query_guard.PASS,
+                "arguments_digest": query_guard.arguments_digest(argv)}, key)
+        yield {query_guard.KEY_ENV: key, query_guard.LAUNCHER_ENV: (directory / "githits").as_posix()}
+
+
+def run_entry(env: dict, *argv: str, guarded: bool = True) -> tuple[int, str, str]:
+    """The GitHits launcher's entry (``githits_cli_entry.main``), what the launcher a model can run executes. With
+    ``guarded`` (the default) the query guard's hook has passed exactly this argv (``launch_guard``), as it has for
+    every launcher call Claude Code runs with the hook; ``guarded=False`` runs it with ``env`` alone."""
+    if guarded:
+        with launch_guard(list(argv)) as extra:
+            return run_entry({**env, **extra}, *argv, guarded=False)
     out, err = io.StringIO(), io.StringIO()
     with mock.patch.dict(os.environ, env):
         for name in ENV_NAMES:
@@ -1143,3 +1391,232 @@ class LauncherEntry(FakeCase):
         code, _, _ = run_cli(self.env, "githits", "example", "retry", "--license-mode", "yolo")
         self.assertEqual(code, 0, "the operator's own CLI keeps the option")
         self.assertEqual(json.loads(self.fake.requests[-1]["body"])["license_mode"], "yolo")
+
+
+class LauncherGuard(FakeCase):
+    """guard-lane, item 1 (the live canary, 2026-10-30): under ``claude --bare`` Claude Code 2.1.312 ran the launcher
+    without the query guard's hook, and the client sent the lookup (``sent: true``) before the host stopped the run.
+    Now the launcher's entry sends nothing unless it claims the hook's verified decision for its exact argv: without
+    one the call is recorded ``unguarded`` with ``sent: false``, exits 2, and the loopback fake sees no request."""
+
+    WORDS = ["search", "retry backoff", "--target", "pypi:urllib3@2.2.1"]
+
+    def refused(self, env, words=None):
+        code, out, err = run_entry(env, *(words or self.WORDS), guarded=False)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("refused: unguarded:", err)
+        self.assertIn("no request was sent", err)
+        return err
+
+    def test_a_launcher_run_with_no_decision_sends_nothing_and_records_sent_false(self):
+        with launch_guard() as guard:  # a guard directory and key, and no decision at all: no hook ran
+            err = self.refused({**self.env, **guard})
+        self.assertIn(query_guard.NO_DECISION, err)
+        self.refused(self.env)  # no key and no launcher in the environment at all
+        self.assertEqual(self.fake.requests, [], "the loopback fake saw no request")
+        records = self.records().records
+        self.assertEqual(len(records), 2, "each refusal is recorded")
+        for record in records:
+            self.assertEqual((record["op"], record["status"], record["sent"], record["http_status"]),
+                             ("search", githits.UNGUARDED, False, None))
+            self.assertEqual(record["query_digest"], githits.query_digest(
+                githits.search_request("retry backoff", ["pypi:urllib3@2.2.1"])), "the request it would have sent")
+            self.assertNotIn("paced_ms", record)
+
+    def test_an_unguarded_example_is_not_paced_before_it_is_refused(self):
+        with mock.patch.object(githits_cli_entry, "_pace", side_effect=AssertionError("paced")):
+            self.refused(self.env, ["example", "retry"])
+        self.assertEqual(self.fake.requests, [])
+
+    def test_a_forged_or_mismatched_decision_is_refused(self):
+        def decision(directory, key, words, **changes):
+            entry = {"tool_use_id": "toolu_forged", "tool": "Bash", "query_digest": "0" * 64, "rule": query_guard.PASS,
+                     "arguments_digest": query_guard.arguments_digest(words)}
+            entry.update(changes)
+            query_guard.write_decision(directory, entry, key)
+
+        cases = {
+            "no MAC": lambda d, key: decision(d, "", self.WORDS),
+            "another key": lambda d, key: decision(d, secrets.token_hex(32), self.WORDS),
+            "other arguments": lambda d, key: decision(d, key, ["search", "retry", "--target", "pypi:urllib3@2.2.1"]),
+            "a blocking rule": lambda d, key: decision(d, key, self.WORDS, rule="email"),
+            "not a shell tool": lambda d, key: decision(d, key, self.WORDS, tool="mcp__githits__search"),
+            "no arguments digest": lambda d, key: decision(d, key, self.WORDS, arguments_digest=None),
+            "no tool use id": lambda d, key: decision(d, key, self.WORDS, tool_use_id=None),
+        }
+        for name, write in cases.items():
+            with self.subTest(name), launch_guard() as guard:
+                write(Path(guard[query_guard.LAUNCHER_ENV]).parent, guard[query_guard.KEY_ENV])
+                self.refused({**self.env, **guard})
+        with self.subTest("a MAC'd decision whose digest was rewritten after signing"), launch_guard(self.WORDS) as guard:
+            folder = Path(guard[query_guard.LAUNCHER_ENV]).parent / query_guard.DECISIONS
+            [file] = folder.glob("*.json")
+            entry = json.loads(file.read_text(encoding="utf-8"))
+            other = ["search", "other", "--target", "pypi:urllib3@2.2.1"]
+            entry["arguments_digest"] = query_guard.arguments_digest(other)
+            file.write_text(json.dumps(entry), encoding="utf-8")
+            self.refused({**self.env, **guard}, other)
+        self.assertEqual(self.fake.requests, [], "no forged or mismatched decision let a request out")
+        self.assertTrue(all(r["status"] == githits.UNGUARDED and r["sent"] is False for r in self.records().records))
+
+    def test_a_valid_decision_is_sent_once(self):
+        with launch_guard(self.WORDS) as guard:
+            env = {**self.env, **guard}
+            code, out, err = run_entry(env, *self.WORDS, guarded=False)
+            self.assertEqual((code, err), (0, ""))
+            self.assertTrue(out.startswith("search: "))
+            self.assertEqual(len(self.fake.requests), 1, "the guarded lookup was sent")
+            err = self.refused(env)  # the same command again: its one decision is spent
+            self.assertIn(query_guard.DECISION_USED, err)
+        self.assertEqual(len(self.fake.requests), 1)
+        first, second = self.records().records
+        self.assertEqual((first["status"], first["sent"]), ("ok", True))
+        self.assertEqual((second["status"], second["sent"]), (githits.UNGUARDED, False))
+
+    def test_two_passed_calls_with_the_same_arguments_each_send_once(self):
+        with launch_guard(self.WORDS, self.WORDS) as guard:
+            env = {**self.env, **guard}
+            self.assertEqual(run_entry(env, *self.WORDS, guarded=False)[0], 0)
+            self.assertEqual(run_entry(env, *self.WORDS, guarded=False)[0], 0)
+            self.refused(env)
+        self.assertEqual(len(self.fake.requests), 2)
+
+    def test_the_hooks_decision_for_a_passed_launcher_command_is_what_the_launcher_claims(self):
+        """End to end without Claude Code: the real hook judges the command, then the entry runs its words."""
+        launcher = "/tmp/syberlabs-guard-0000/githits"
+        command = launcher + ' search "retry backoff" --target pypi:urllib3@2.2.1'
+        with TemporaryDirectory() as folder:
+            directory = Path(folder)
+            key = secrets.token_hex(32)
+            query_guard.prepare(directory, query_guard.policy(), set(), bash=True)
+            hook_env = query_guard.hook_environment(directory, key, launcher)
+            call = {"tool_name": "Bash", "tool_input": {"command": command}, "tool_use_id": "toolu_1"}
+            code = query_guard.run(directory, io.StringIO(json.dumps(call)), io.StringIO(), hook_env)
+            self.assertEqual(code, 0)
+            [decision] = query_guard.read_decisions(directory)
+            self.assertTrue(query_guard.authentic(decision, key))
+            self.assertEqual(decision["arguments_digest"], query_guard.arguments_digest(self.WORDS))
+            env = {**self.env, query_guard.KEY_ENV: key, query_guard.LAUNCHER_ENV: (directory / "githits").as_posix()}
+            self.assertEqual(run_entry(env, *self.WORDS, guarded=False)[0], 0)
+            query_guard.remove(directory)
+        self.assertEqual(len(self.fake.requests), 1)
+
+    def test_the_operator_cli_and_doctor_need_no_decision(self):
+        for env in (self.env, {**self.env, query_guard.KEY_ENV: secrets.token_hex(32),
+                               query_guard.LAUNCHER_ENV: "/nowhere/githits"}):  # with or without a guard key around
+            code, out, _ = run_cli(env, "githits", "doctor")
+            self.assertEqual(code, 0)
+            self.assertTrue(out.startswith("githits doctor: ok"))
+            code, out, _ = run_cli(env, "githits", *self.WORDS)
+            self.assertEqual(code, 0, "the operator's own lookup is not gated")
+        self.assertEqual(len(self.fake.requests), 4)
+        self.assertEqual([(r["op"], r["status"]) for r in self.records().records], [("doctor", "ok"), ("search", "ok")] * 2)
+
+
+# Outside cp1252: two box-drawing characters (U+2500) and an emoji (U+1F680). Written as escapes: the file stays ASCII.
+WIDE_TITLE = "box \u2500\u2500 rocket \U0001F680"
+ENTRY = ROOT / "syberlabs" / "githits_cli_entry.py"
+
+
+class _BrokenStream(io.StringIO):
+    """A stdout whose every write fails with ``error``: a closed pipe, a stream gone away, an unencodable character."""
+
+    def __init__(self, error: BaseException):
+        super().__init__()
+        self.error = error
+
+    def write(self, text):
+        raise self.error
+
+
+class LauncherOutput(FakeCase):
+    """launcher-unicode-and-docs, item 1 (#135's verification): the launcher's entry ran ``githits.run`` without
+    ``cli.main``'s unicode reconfiguration, so under ``-I`` on Windows (a piped stdout is cp1252) a result holding a
+    character outside cp1252 raised ``UnicodeEncodeError`` after the client had written an ``ok`` record: the host
+    journaled an ok lookup while the model read a traceback. Now the entry reconfigures first, the client writes with
+    unencodable characters replaced, and it delivers the output before the record, so a failed print is an error."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake.serve("/v1/searches", search_response([search_hit(WIDE_TITLE, "https://github.com/psf/requests")]))
+
+    def entry_subprocess(self, isolated: bool, ioencoding):
+        env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("PYTHON", "GITHITS_", "SYBERLABS_"))}
+        env.update(self.env)
+        if ioencoding is not None:
+            env["PYTHONIOENCODING"] = ioencoding
+        words = ["search", "q", "--target", "pypi:requests"]
+        argv = [sys.executable, *(["-I"] if isolated else []), str(ENTRY), *words]
+        with TemporaryDirectory() as cwd, launch_guard(words) as guard:  # no checkout in the current directory
+            return subprocess.run(argv, cwd=cwd, env={**env, **guard}, stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+
+    def test_a_result_outside_cp1252_prints_through_the_entry_on_a_piped_stdout_and_is_recorded_ok_once(self):
+        # -I as the launcher runs it (PYTHONIOENCODING is then ignored: cp1252 on Windows, the locale's elsewhere);
+        # and without -I, PYTHONIOENCODING=cp1252 forces the strict cp1252 pipe on every platform.
+        for isolated, ioencoding in ((True, None), (True, "cp1252"), (False, "cp1252")):
+            with self.subTest(isolated=isolated, PYTHONIOENCODING=ioencoding):
+                before = len(self.records().records)
+                done = self.entry_subprocess(isolated, ioencoding)
+                self.assertEqual(done.returncode, 0, done.stderr.decode("utf-8", "replace"))
+                self.assertEqual(done.stderr, b"", "no traceback")
+                try:
+                    out = done.stdout.decode("utf-8")
+                except UnicodeDecodeError:
+                    out = done.stdout.decode("cp1252")
+                lines = out.splitlines()
+                self.assertEqual(lines[0], "search: 1 results")
+                self.assertIn(" rocket ", lines[1])
+                if not isolated:
+                    self.assertEqual(done.stdout.decode("ascii").splitlines()[1],
+                                     "1. [0.88] github.com/psf/requests src/box ?? rocket ?.py:10-20 box ?? rocket ?",
+                                     "cp1252 cannot hold them: each becomes ?")
+                records = self.records().records
+                self.assertEqual(len(records), before + 1, "one record per lookup")
+                self.assertEqual((records[-1]["op"], records[-1]["status"]), ("search", "ok"))
+
+    def test_the_entry_runs_the_clis_unicode_helper_before_any_output(self):
+        """The same helper ``cli.main`` runs (not a copy), and before the parser or the client prints a thing."""
+        for argv, expected in ((["search", "q", "--target", "pypi:requests"], 0), (["doctor"], 2), (["--help"], 2)):
+            with self.subTest(argv=argv):
+                order = []
+                with mock.patch.object(cli, "survive_unicode", side_effect=lambda: order.append("survive")), \
+                        mock.patch.object(githits, "run", side_effect=lambda args, **_: order.append("run") or 0), \
+                        mock.patch.object(sys, "stdout", io.StringIO()), mock.patch.object(sys, "stderr", io.StringIO()):
+                    self.assertEqual(githits_cli_entry.main(argv), expected)
+                    printed = sys.stdout.getvalue() + sys.stderr.getvalue()
+                self.assertEqual(order, ["survive", "run"] if expected == 0 else ["survive"])
+                self.assertEqual(printed == "", expected == 0)
+
+    def test_the_client_writes_a_strict_cp1252_stream_with_unencodable_characters_replaced(self):
+        out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict", newline="\n")
+        args = githits.launcher_parser().parse_args(["search", "q", "--target", "pypi:requests"])
+        code = githits.run(args, environ=dict(self.env), stdout=out, stderr=io.StringIO())
+        self.assertEqual(code, 0)
+        self.assertIn(b"box ?? rocket ?", out.buffer.getvalue())
+        [record] = self.records().records
+        self.assertEqual(record["status"], "ok")
+
+    def test_a_forced_output_failure_is_recorded_error_not_ok(self):
+        failures = (BrokenPipeError(32, "Broken pipe"), OSError(22, "Invalid argument"),
+                    ValueError("I/O operation on closed file."),
+                    UnicodeEncodeError("charmap", WIDE_TITLE, 4, 5, "character maps to <undefined>"))
+        for json_flag in ([], ["--json"]):
+            for failure in failures:
+                with self.subTest(error=type(failure).__name__, json=bool(json_flag)):
+                    sent, before = len(self.fake.requests), len(self.records().records)
+                    err = io.StringIO()
+                    words = ["search", "q", "--target", "pypi:requests", *json_flag]
+                    with launch_guard(words) as guard, contextlib.redirect_stdout(_BrokenStream(failure)), \
+                            contextlib.redirect_stderr(err), mock.patch.dict(os.environ, {**self.env, **guard}):
+                        code = githits_cli_entry.main(words)
+                    self.assertEqual(code, 1)
+                    self.assertIn("error: output_failed", err.getvalue())
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual(len(self.fake.requests), sent + 1, "the lookup was sent")
+                    records = self.records().records
+                    self.assertEqual(len(records), before + 1, "and recorded once")
+                    self.assertEqual((records[-1]["status"], records[-1]["http_status"], records[-1]["results_returned"]),
+                                     ("error", 200, 1), "as an error: its result never reached the caller")
+                    self.assertIsNotNone(records[-1]["request_id"])
+        self.assertNotIn("ok", [record["status"] for record in self.records().records])

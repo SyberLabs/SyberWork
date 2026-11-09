@@ -15,7 +15,6 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
-from typing import Protocol
 from urllib.parse import urlsplit
 
 from syberlabs.errors import Rejected
@@ -28,7 +27,7 @@ def _statements(sql: str) -> list[str]:
     return [part.strip() for part in sql.split(";") if part.strip()]
 
 
-_MIGRATIONS: list[tuple[str, str]] = [
+_MIGRATIONS: list[tuple[str, str | dict[str, str]]] = [
     ("0001", f"""
         CREATE TABLE IF NOT EXISTS cell_lock (
             id INTEGER PRIMARY KEY,
@@ -274,6 +273,13 @@ _MIGRATIONS: list[tuple[str, str]] = [
             UNIQUE (evaluation_event_hash)
         );
     """),
+    # ``units`` admits amounts up to 2**63-1, but 0001 created ``amount_units`` as INTEGER, which PostgreSQL
+    # stores as int4: a reservation above 2147483647 aborted the commit before the adapter ran. SQLite's
+    # INTEGER is already 64-bit, so only PostgreSQL changes. A dialect-keyed script runs only on its dialect.
+    ("0006", {
+        "sqlite": "",
+        "postgres": "ALTER TABLE economic_reservations ALTER COLUMN amount_units TYPE BIGINT",
+    }),
 ]
 
 
@@ -285,20 +291,6 @@ def translate(sql: str, dialect: str) -> str:
         sql = "INSERT" + sql.lstrip()[len("INSERT OR IGNORE"):]
         sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
     return sql.replace("?", "%s")
-
-
-class Store(Protocol):
-    dialect: str
-
-    def execute(self, sql: str, params: tuple = ()): ...
-
-    def begin(self) -> None: ...
-
-    def commit(self) -> None: ...
-
-    def rollback(self) -> None: ...
-
-    def close(self) -> None: ...
 
 
 # Advisory lock key for PostgreSQL migration. It does not depend on cell_lock existing yet.
@@ -394,16 +386,7 @@ def open_store(target: str | Path):
 
 def _column_names(store, table: str) -> set[str]:
     if store.dialect == "sqlite":
-        rows = store.execute(f"PRAGMA table_info({table})").fetchall()
-        if not rows:
-            return set()
-        names = set()
-        for row in rows:
-            try:
-                names.add(row["name"])
-            except (KeyError, IndexError, TypeError):
-                names.add(row[1])
-        return names
+        return {row["name"] for row in store.execute(f"PRAGMA table_info({table})").fetchall()}
     rows = store.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
         (table,),
@@ -433,6 +416,8 @@ def migrate(store) -> list[str]:
         for version, script in _MIGRATIONS:
             if version in applied:
                 continue
+            if isinstance(script, dict):
+                script = script.get(store.dialect, "")
             for statement in _statements(script):
                 store.execute(statement)
             store.execute(
@@ -590,10 +575,10 @@ class ReservationStore:
     def __init__(self, store):
         self.store = store
 
-    def reserve(self, proposal_id, case_id, budget_id, asset, amount, state="reserved") -> None:
+    def reserve(self, proposal_id, case_id, budget_id, asset, amount) -> None:
         self.store.execute(
             "INSERT INTO economic_reservations VALUES (?,?,?,?,?,?)",
-            (proposal_id, case_id, budget_id, asset, amount, state),
+            (proposal_id, case_id, budget_id, asset, amount, "reserved"),
         )
 
     def set_state(self, proposal_id: str, state: str, *, only_reserved: bool = False) -> None:

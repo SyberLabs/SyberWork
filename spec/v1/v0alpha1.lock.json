@@ -1,0 +1,22 @@
+{
+  "description": "SHA-256 of canonical JSON of each frozen v0alpha1 schema file as of origin/main 8a5e21f, when v1alpha1 was drafted. Canonical JSON (sorted keys, compact separators, non-ASCII preserved) makes the lock independent of line endings. A change to any of them is deliberate: update this lock in the same pull request and say why. Updated for reconciliation.schema.json after #165 added the optional proof.destination (a recovered settlement's destination); additive, so v1alpha1 is unaffected.",
+  "files": {
+    "acceptance-clause.schema.json": "e1ffc561d8f4d9e134452497d5790d1ab9a90a977939531a9fbb8d810fa0ff7a",
+    "action-definition.schema.json": "6c6422654e047d58355689bb0a305e727506de9bfb8bee537dd90121d2d1dc60",
+    "admission-decision.schema.json": "95784f4c66cad8e43e0babd4717f3f04420491e913cbe3ff902cd323658902ad",
+    "candidate.schema.json": "2534fb00e8cdbc339c9bfd2fee7b7dde2bc3f67b3f5dbff72fdacccce78e9d32",
+    "certificate.schema.json": "645072cbcd3b3ee170b21ef6b4ba692c665c078f0ec3652ccc89a7f566017c28",
+    "contract.schema.json": "5e00445d73598934d11620d5bfc8c1486622b6546a8c94b4fbca2f7ba6733cc9",
+    "effect-outcome.schema.json": "a9348117c9a05b2d1a1948b930f4de55e71f875971a41cb187470147dc9fc675",
+    "event-body.schema.json": "d92b4f565d950f59004afafe0da13c75ee8fb20f5c8f2405197df466d75a4e70",
+    "event.schema.json": "1548574673b2c7b2e5ad202516ee6f65e6c2cc4b32536a6172c884e08a36a043",
+    "evolution.schema.json": "8bc6b85071e981a5de73a23dde94c138e6a2f1e2f1a9aa412f00bf4ffe70602a",
+    "finding.schema.json": "6b62581bf1fd479a983ad568a16eff74baf6c22912c67f32b226c8c848a75eaa",
+    "observation.schema.json": "683ea1653692ca2cb399a5b8303bf190e1e3cd0ba21fd12f0be58699ae250585",
+    "policy.schema.json": "c7d1257ba17476ced1b0ae1ee1520e3d2a69e52a871efd035c8947f9717cdda8",
+    "proposal.schema.json": "43dc1ec5181314380519cb93cac7c0779e72da3d1da473e604063ccca225f7b0",
+    "reconciliation.schema.json": "1621c2aef9f0c849690cfc4659afe31ece4677beafea1729f1d3b8a43c6dd2e8",
+    "resolution-task.schema.json": "4a2e75f72177e2ee64339631d9c250a8a67bfe1d5006d4f9d003b86631f2c01a",
+    "source-definition.schema.json": "dc3bdce61488cce47490a1ff99fc58a3eeca1b0588dc4f4e6b5747c7455082ed"
+  }
+}

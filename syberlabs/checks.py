@@ -50,10 +50,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 import signal
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -117,6 +115,12 @@ def _stop(proc: subprocess.Popen) -> None:
     except (ProcessLookupError, PermissionError, OSError, subprocess.TimeoutExpired):
         pass
     proc.wait()
+
+
+# The two routines another host-side runner reuses (the factory's harness and its tests runner), under public
+# names: the scrubbed environment a check runs under, and the stop of a check's whole process tree.
+scrubbed_environment = _environment
+stop_tree = _stop
 
 
 def run_check(argv: list[str], cwd: Path, env: dict, timeout: int, max_output: int, log: Path,
@@ -216,6 +220,3 @@ def evaluate(repo: Repo, candidate: dict, evaluation: dict, *, context: dict | N
     return {"candidate": candidate["id"], "commit": candidate["commit"], "tree": candidate["tree"],
             "evaluator": EVALUATOR, "checks": results}
 
-
-def environment_note() -> str:
-    return f"{platform.system()} {platform.machine()} python {sys.version.split()[0]}"

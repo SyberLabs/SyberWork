@@ -17,7 +17,10 @@ baseline over the items that ran in both. Like ``metrics``, it reads events and 
 What it adds to the per-item metrics:
 
 - ``time_to_pass``: hours from the thread's first search to the host's evaluation of the candidate that was accepted.
-  The time the change then waited for a person, or for ``syberlabs run``, is left out on both arms.
+  The time the change then waited for a person, or for ``syberlabs run``, is left out on both arms, and so is the time
+  the host's GitHits launcher held example calls to keep GitHits' per-organization rate (``paced_ms`` on the
+  ``githits.<op>`` lookup facts, ``githits_pace``): that wait is the host's, not the agent's, and is reported per arm
+  as ``paced_seconds``. ``agent_time`` (per arm) leaves it out the same way.
 - ``accepted``: the contract's promotion succeeded (``effect_succeeded``, or a verified reconciliation of it). Both arms
   of an item can be accepted; only one arm's pull request can merge, so ``agent_time`` (to merge) is reported per arm.
 - ``reviewed``: accepted, and a ``review`` fact on the accepted commit passed (unknown until one is recorded).
@@ -122,8 +125,8 @@ CHECKS = {
     "base_unknown": "a thread has no recorded base commit, so the start could not be compared",
     "arm_unverified": "no call recorded its MCP servers or a GitHits launcher, so only the label says which arm ran",
     "server_mixed": "the server was there in some of a thread's calls and not in others",
-    "two_routes": "the treatment had GitHits by two routes, the host's API launcher and its MCP server, not one; where "
-                  "it has client records, its GitHits count (metrics) leaves the MCP server's lookups out",
+    "two_routes": "the treatment had GitHits by two routes, the host's API launcher and its MCP server; the metric "
+                  "includes both routes' attempts, but this is not the registered single-route treatment",
     "unused": "the treatment made no lookups on its server",
     "use_unknown": "the record cannot say how many lookups the treatment made on its server, and shows none, so it "
                    "cannot be shown to have used it",
@@ -198,7 +201,9 @@ class Run:
     work: metrics.WorkItemMetrics
     upto: metrics.WorkItemMetrics | None = None  # the same fold over the events up to acceptance
     observed: int = 0              # lookup facts showing a lookup on the server, in the whole thread (``_observed``)
+    paced: float = 0.0             # seconds the host's launcher held GitHits calls, in the whole thread (``_paced``)
     routes: tuple[str, ...] = ()   # how its calls had GitHits: ``launcher``, ``mcp`` or both (``_routes``)
+    blocked: int = 0              # GitHits MCP attempts blocked by the host, included in declared attempt counts
 
     def value(self, name: str) -> metrics.Metric:
         """A compared number. An accepted thread's work metrics are read up to its first acceptance, so what happened
@@ -283,9 +288,25 @@ def _routes(registrations: list[dict], server: str | None) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def _paced(events: list[dict], after: int | None = None, upto: int | None = None) -> float:
+    """Seconds the host's GitHits launcher held calls before sending them (``paced_ms`` on the verified
+    ``githits.<op>`` lookup facts, ``githits_pace``), over the events with ``after < seq <= upto`` (either bound
+    open when None). Host time spent keeping GitHits' example rate, not the agent's."""
+    total = 0
+    for event in events:
+        if (after is not None and event["seq"] <= after) or (upto is not None and event["seq"] > upto):
+            continue
+        value = metrics.fact(event, LOOKUP) or {}
+        paced = value.get("paced_ms")
+        if (isinstance(value.get("tool"), str) and value["tool"].startswith(CLIENT_TOOL) and type(paced) is int
+                and paced > 0):
+            total += paced
+    return total / 1000
+
+
 def _observed(events: list[dict], server: str | None) -> int:
     """The thread's verified ``lookup`` facts that show a lookup on the server: every ``mcp__<server>__*`` call the
-    stream showed, and for GitHits each client record a guarded launcher call stands behind (``githits.<op>``, guard
+    guard passed, and for GitHits each client record a guarded launcher call stands behind (``githits.<op>``, guard
     ``pass``; not ``githits.doctor``, a readiness check). A call journals its lookups before its candidate, and before it
     raises when it fails, so this sees a lookup that no registration counts. A client record no guarded launcher call
     stands behind (``unguarded``) is left to ``githits_lookups``: the record cannot say whether it reached GitHits, and
@@ -298,9 +319,10 @@ def _observed(events: list[dict], server: str | None) -> int:
         tool = value.get("tool")
         if not isinstance(tool, str):
             continue
-        if tool.startswith(f"mcp__{server}__"):
+        if tool.startswith(f"mcp__{server}__") and value.get("guard") == "pass":
             found += 1
-        elif server == SERVER and tool.startswith(CLIENT_TOOL) and tool != DOCTOR and value.get("guard") == "pass":
+        elif (server == SERVER and tool.startswith(CLIENT_TOOL)
+              and tool not in (DOCTOR, metrics.CLIENT_UNRECORDED) and value.get("guard") == "pass"):
             found += 1
     return found
 
@@ -372,9 +394,11 @@ def _run(case_id: str, events: list[dict], name: str, work: metrics.WorkItemMetr
     passed = next((e for e in reversed(events) if accept is not None and e["kind"] == "candidate_evaluated"
                    and e["seq"] < accept["seq"] and e["body"].get("candidate") == candidate), None)
     if start is not None and passed is not None:
-        hours = round((as_seconds(passed["at"]) - as_seconds(start["at"])) / 3600, 4)
+        paced = _paced(events, start["seq"], passed["seq"])
+        hours = round(max(0.0, as_seconds(passed["at"]) - as_seconds(start["at"]) - paced) / 3600, 4)
         time_to_pass = metrics.Metric(hours, (start["hash"], passed["hash"]),
-                                      "first search to the evaluation of the accepted candidate")
+                                      "first search to the evaluation of the accepted candidate"
+                                      + (f", less {paced:g} s the host held GitHits calls" if paced else ""))
     else:
         time_to_pass = metrics.Metric(None, (accept["hash"],) if accept else (),
                                       "not accepted" if accept is None else "no search or evaluation of the accepted "
@@ -387,7 +411,11 @@ def _run(case_id: str, events: list[dict], name: str, work: metrics.WorkItemMetr
                base=_base(events), objective=_objective(events), server=_servers(registrations, server),
                models=_models(registrations), accepted=accepted, time_to_pass=time_to_pass,
                reviewed=_reviewed(events, accept, commit), work=work, upto=upto, observed=_observed(events, server),
-               routes=_routes(registrations, server))
+               paced=_paced(events),
+               routes=_routes(registrations, server), blocked=sum(
+                   1 for f in (metrics.fact(e, LOOKUP) or {} for e in events)
+                   if str(f.get("tool", "")).startswith(f"mcp__{server}__")
+                   and f.get("guard") not in (None, "pass", "unguarded")))
 
 
 def _threads(events: Iterable[dict]) -> dict[str, list[dict]]:
@@ -418,9 +446,9 @@ def _mean(runs_: Sequence[Run], name: str) -> float | None:
 
 
 def _looked_up(run: Run) -> bool:
-    """The record shows the run made a GitHits lookup: ``githits_lookups`` known and above zero, or a lookup fact the
+    """The record shows the run made a GitHits lookup: ``githits_lookups`` above the host's blocked MCP attempts, or a lookup fact the
     host observed (``_observed``)."""
-    return (run.work.githits_lookups.value or 0) > 0 or run.observed > 0
+    return (run.work.githits_lookups.value or 0) > run.blocked or run.observed > 0
 
 
 def _flags(item_runs: dict[str, list[Run]], baseline: str, treatment: str, server: str | None) -> list[str]:
@@ -454,7 +482,8 @@ def _flags(item_runs: dict[str, list[Run]], baseline: str, treatment: str, serve
             elif any(not run.work.githits_lookups.known for run in base_runs):
                 flags.append("contamination_unknown")
             if treat_runs and not any(_looked_up(run) for run in treat_runs):
-                flags.append("unused" if all(run.work.githits_lookups.value == 0 for run in treat_runs)
+                flags.append("unused" if all(run.work.githits_lookups.known
+                                             and run.work.githits_lookups.value <= run.blocked for run in treat_runs)
                              else "use_unknown")
     every_arm = [run for found in item_runs.values() for run in found]  # a run moved into another arm still counts
     if any(run.labelled_late for run in every_arm):
@@ -464,7 +493,7 @@ def _flags(item_runs: dict[str, list[Run]], baseline: str, treatment: str, serve
     models = [set(run.models) for run in everyone if run.models]
     if models and any(m != models[0] for m in models):
         flags.append("model_mismatch")
-    if len({(run.work.cost_basis, getattr(run.work, "lane", None)) for run in everyone}) > 1:
+    if len({(run.work.cost_basis, run.work.lane) for run in everyone}) > 1:
         flags.append("cost_basis_mismatch")
     if len({run.tags for run in everyone}) > 1:
         flags.append("tag_mismatch")
@@ -594,22 +623,20 @@ def delivery_rule(rows: list[dict], baseline: str, treatment: str, delivered_by:
 
 
 def _per_arm(item_runs: Iterable[Run]) -> dict:
-    """Unpaired: what each arm's threads show for the metrics only one arm of a pair can reach."""
+    """Unpaired: what each arm's threads show for the metrics only one arm of a pair can reach. ``agent_time``
+    leaves out the time the host's launcher held GitHits calls (``paced_seconds``, the arm's total)."""
     found = list(item_runs)
-    hours = [float(r.work.agent_time.value) for r in found if r.work.agent_time.known]
+    hours = [max(0.0, float(r.work.agent_time.value) - r.paced / 3600) for r in found if r.work.agent_time.known]
     blocked = []
     for run in found:
-        try:
-            metric = run.work.metric("lookups_blocked")
-        except KeyError:
-            continue
-        if metric.known:
-            blocked.append(int(metric.value))
+        if run.work.lookups_blocked.known:
+            blocked.append(int(run.work.lookups_blocked.value))
     return {"threads": len(found), "accepted": sum(1 for r in found if r.accepted.value is True),
             "opened": sum(1 for r in found if r.work.opened.value is True),
             "delivered": sum(1 for r in found if r.work.delivered.value is True),
             "agent_time_known": len(hours), "agent_time_mean": round(statistics.fmean(hours), 6) if hours else None,
-            "lookups_blocked": sum(blocked) if blocked else None}
+            "lookups_blocked": sum(blocked) if blocked else None,
+            "paced_seconds": round(sum(r.paced for r in found), 3)}
 
 
 def report(events: Iterable[dict], name: str, contracts: Mapping | None = None, *, baseline: str = BASELINE,
@@ -801,7 +828,9 @@ def table(found: dict) -> str:
         p = found["per_arm"][arm]
         lines.append(f"{arm:>5}: {p['threads']} threads, {p['accepted']} accepted, {p['opened']} pull requests opened, "
                      f"{p['delivered']} merged, agent time to merge known for {p['agent_time_known']}"
-                     + ("" if p["lookups_blocked"] is None else f", {p['lookups_blocked']} lookups blocked by the guard"))
+                     + ("" if p["lookups_blocked"] is None else f", {p['lookups_blocked']} lookups blocked by the guard")
+                     + (f", {p['paced_seconds']:g} s of GitHits pacing left out of its time" if p.get("paced_seconds")
+                        else ""))
     for flag, names in found["checks"].items():
         effect = "excluded" if flag in EXCLUDE else "kept"
         lines.append(f"check {flag} ({effect}): {', '.join(names)}: {CHECKS[flag]}")

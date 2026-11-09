@@ -1,0 +1,71 @@
+{
+  "schema": "agent.schema.json",
+  "valid": [
+    {
+      "name": "SyberWork Build Thread as an Agent instance",
+      "instance": {
+        "identity": {"id": "agt_buildthread", "root_id": "agt_buildthread", "parent_id": null, "subject_binding": "github:sykosyber", "platform": "claude@claude-opus-5-5"},
+        "contract": {"id": "syberwork-build-thread", "version": 1},
+        "grants": [
+          {"api_version": "turtle.syberlabs.space/v0alpha1", "name": "syberlabs-org", "policy_digest": "4b7e1d0c9a8f6e5d4c3b2a1908f7e6d5c4b3a29180f7e6d5c4b3a2918f7e6d5c", "layer": 0}
+        ],
+        "ports": {"generate": {"adapter": "claude_code", "protocol": "syberlabs.search/v0alpha1"}},
+        "capabilities": [],
+        "history": {"case_id": "thread-2026-11-02-a"}
+      }
+    },
+    {
+      "name": "RISE Changes digest as an Agent instance, decision and generator ports",
+      "instance": {
+        "identity": {"id": "agt_rise_changes", "root_id": "agt_rise_changes", "parent_id": null, "subject_binding": "service:rise-changes", "platform": "claude@claude-sonnet-5-5"},
+        "contract": {"id": "rise-changes-digest", "version": 1},
+        "grants": [
+          {"api_version": "turtle.syberlabs.space/v0alpha1", "name": "rise-changes", "policy_digest": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90", "layer": 0}
+        ],
+        "ports": {
+          "generate": {"adapter": "claude_code", "protocol": "syberlabs.search/v0alpha1"},
+          "decide": {"provider": {"name": "rules", "model": "changes-route-v1"}, "connection": "local"}
+        },
+        "capabilities": [
+          {"id": "rise.present", "version": 1, "digest": "88ec1e75043040d530355f224a2c2c5d9512762bab038929eb4fa14ca49d484a"}
+        ],
+        "history": {"case_id": "changes-2026-w44"}
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an Agent always has one history",
+      "instance": {
+        "identity": {"id": "agt_x", "root_id": "agt_x", "parent_id": null, "subject_binding": "github:sykosyber", "platform": "claude"},
+        "contract": {"id": "c", "version": 1},
+        "grants": [],
+        "ports": {},
+        "capabilities": []
+      }
+    },
+    {
+      "name": "a model is a port, not a field that holds authority",
+      "instance": {
+        "identity": {"id": "agt_x", "root_id": "agt_x", "parent_id": null, "subject_binding": "github:sykosyber", "platform": "claude"},
+        "contract": {"id": "c", "version": 1},
+        "grants": [],
+        "ports": {},
+        "capabilities": [],
+        "history": {"case_id": "c-1"},
+        "model": "claude-opus-5-5"
+      }
+    },
+    {
+      "name": "capabilities are pinned by version and digest",
+      "instance": {
+        "identity": {"id": "agt_x", "root_id": "agt_x", "parent_id": null, "subject_binding": "github:sykosyber", "platform": "claude"},
+        "contract": {"id": "c", "version": 1},
+        "grants": [],
+        "ports": {},
+        "capabilities": [{"id": "rise.present"}],
+        "history": {"case_id": "c-1"}
+      }
+    }
+  ]
+}

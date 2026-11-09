@@ -80,7 +80,7 @@ class CellRuntime(unittest.TestCase):
             self.assertEqual(committed["status"], "succeeded")
             self.assertTrue(work.verify_chain(case_id))
             versions = [row["version"] for row in work._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
-            self.assertEqual(versions, ["0001", "0002", "0003", "0004", "0005"])
+            self.assertEqual(versions, ["0001", "0002", "0003", "0004", "0005", "0006"])
             work.close()
             copy = Path(folder) / "main.sqlite"
             shutil.copy(FIXTURE, copy)
@@ -106,7 +106,7 @@ class CellRuntime(unittest.TestCase):
             self.assertEqual(settled["status"], "succeeded")
             self.assertTrue(resumed.verify_chain(case_id))
             self.assertIsNone(run_once(resumed))
-            names = [row["name"] for row in trace.read()]
+            names = [json.loads(line)["name"] for line in trace.path.read_text(encoding="utf-8").splitlines() if line.strip()]
             self.assertIn("admission", names)
             self.assertIn("effect_claim", names)
             self.assertIn("effect_settlement", names)
@@ -201,7 +201,7 @@ class CellGuards(unittest.TestCase):
             self.assertEqual(errors, [])
             check = Work(path)
             versions = [row["version"] for row in check._db.execute("SELECT version FROM schema_migrations ORDER BY version")]
-            self.assertEqual(versions, ["0001", "0002", "0003", "0004", "0005"])
+            self.assertEqual(versions, ["0001", "0002", "0003", "0004", "0005", "0006"])
             check.close()
 
     def test_failed_restore_does_not_keep_the_rows(self):

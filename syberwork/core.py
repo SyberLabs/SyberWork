@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -16,22 +17,23 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from syberlabs.admission import AdmissionContext, admit, approval_roles, explain, proposal_prefix
+from syberlabs.attest_reconcile_map import attest_artifact
 from syberlabs.bindings import bind_arguments, next_compiled
 from syberlabs.canonical import canonical, digest
 from syberlabs.clock import stamp
-from syberlabs.contracts import check_case_inputs, compile_path, prepare_contract
+from syberlabs.contracts import check_case_inputs, prepare_contract
 from syberlabs.dsse import CHAIN_HEAD_TYPE, head_payload, verified_payload
 from syberlabs.economic import policy_has_economic, receipt_matches, units, validate_policy_budgets
 from syberlabs.errors import Rejected
 from syberlabs.events import event_digest, verify_events
-from syberlabs.evidence import (AmbiguousRecord, acceptance_results, destination_record, signer_is_effect_actor,
-                                simulation_labeled, verified_reconciliation)
+from syberlabs.evidence import (AmbiguousRecord, acceptance_results, destination_record, record_id,
+                                signer_is_effect_actor, simulation_labeled, verified_reconciliation)
 from syberlabs.evolution import (AUTOMATION_ROLES, candidate_record, candidate_views, evaluation_record, registered,
                                  search_record)
 from syberlabs.jcs import envelope_jcs
 from syberlabs import metrics as work_metrics
 from syberlabs.planner import HttpPlanner, planning_context
-from syberlabs.targets import guard_request, trusted_origin
+from syberlabs.targets import credentialed_opener, guard_request, header_value_ok, trusted_origin
 from syberlabs.values import at_path
 from syberwork.storage import (
     ActionRegistry,
@@ -44,7 +46,7 @@ from syberwork.storage import (
     open_store,
 )
 
-__all__ = ["METRIC_KEYS", "Rejected", "Work", "canonical", "digest", "trusted_origin"]
+__all__ = ["METRIC_KEYS", "Rejected", "Work", "digest"]
 
 # The cell's own numbers, each counted from the store by ``Work.metric``. The service serves them at
 # ``GET /metrics/<key>`` (plus ``uptime_seconds``, which is the process's, not the store's).
@@ -61,7 +63,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-HTTP = urllib.request.build_opener(NoRedirect)
+HTTP = credentialed_opener(NoRedirect)
 
 
 class StatusNotAuthoritative(Exception):
@@ -79,22 +81,92 @@ def _destination_code(exc: BaseException) -> str:
     return "destination_error"
 
 
+WRITE_IDENTITY = ("idempotency_key", "request_digest")
+_BLANK = re.compile(r"[ \t\n\r]*")
+_LENIENT = json.JSONDecoder(strict=False)
+
+
+def _object_fields(text: str, index: int) -> tuple[list, int | None]:
+    """The fields of the JSON object that opens at ``text[index]``, in order, up to the first one that cannot be read,
+    and the index just after the object, or None when a field could not be read or the object does not close.
+
+    Values are read Python's lenient way (``NaN``, control characters in strings, any depth the stack allows).
+    """
+    fields = []
+    index = _BLANK.match(text, index + 1).end()
+    if text[index:index + 1] == "}":
+        return fields, index + 1
+    while True:
+        if text[index:index + 1] != '"':
+            return fields, None
+        try:
+            name, index = json.decoder.scanstring(text, index + 1, False)
+            index = _BLANK.match(text, index).end()
+            if text[index:index + 1] != ":":
+                return fields, None
+            value, index = _LENIENT.raw_decode(text, _BLANK.match(text, index + 1).end())
+        except (ValueError, RecursionError):
+            return fields, None
+        fields.append((name, value))
+        index = _BLANK.match(text, index).end()
+        if text[index:index + 1] == "}":
+            return fields, index + 1
+        if text[index:index + 1] != ",":
+            return fields, None
+        index = _BLANK.match(text, index + 1).end()
+
+
+def _leading_records(raw: bytes) -> list:
+    """The top-level fields of each JSON object in a body that opens a JSON object, up to the first unreadable field.
+
+    A body the strict parser refuses (a ``NaN``, too deep, cut off at the read limit) still shows what its first
+    object names before its first unreadable field. A body that carries further JSON values after that object,
+    separated by JSON whitespace or by nothing (concatenated or NDJSON-style records), shows each further object's
+    fields the same way; a value that is not an object is passed over, and anything that is not JSON ends the read.
+    """
+    text = raw.decode(json.detect_encoding(raw), errors="replace")
+    index = _BLANK.match(text).end()
+    if text[index:index + 1] != "{":
+        return []
+    records = []
+    while index < len(text):
+        if text[index:index + 1] == "{":
+            fields, index = _object_fields(text, index)
+            records.append(fields)
+            if index is None:
+                break
+        else:
+            try:
+                _, index = _LENIENT.raw_decode(text, index)
+            except (ValueError, RecursionError):
+                break
+        index = _BLANK.match(text, index).end()
+    return records
+
+
 def _acknowledged_other_write(raw: bytes, key: str, request_digest: str) -> str | None:
     """Code for a write acknowledgement whose body names another write, or None.
 
     A body that names ``idempotency_key`` or ``request_digest`` at its top level must name this write's.
-    A body with no single meaning is ambiguous; a body that is not strict JSON or not an object names nothing.
+    A body with no single meaning is ambiguous. A body that opens a JSON object but is not strict JSON is
+    judged on the identity fields each of its top-level objects names before the first unreadable field; an
+    object that names one of them twice is ambiguous. Any other body names nothing.
     """
     try:
         record = destination_record(raw)
     except AmbiguousRecord:
         return "destination_record_ambiguous"
     except ValueError:
-        return None
-    if not isinstance(record, dict):
-        return None
-    if (("idempotency_key" in record and record["idempotency_key"] != key) or
-            ("request_digest" in record and record["request_digest"] != request_digest)):
+        records = [[(name, value) for name, value in fields if name in WRITE_IDENTITY] for fields in _leading_records(raw)]
+        if any(len({name for name, _ in named}) < len(named) for named in records):
+            return "destination_record_ambiguous"
+        named = [field for fields in records for field in fields]
+    else:
+        if not isinstance(record, dict):
+            return None
+        named = [(name, record[name]) for name in WRITE_IDENTITY if name in record]
+    expected = {"idempotency_key": key, "request_digest": request_digest}
+    if any(value != expected[name] for name, value in named):
         return "destination_record_mismatch"
     return None
 
@@ -132,7 +204,6 @@ class Work:
         self.database = str(database)
         self.effects = effects
         self.trace = trace
-        self.metrics = {"admission": 0, "effect_claim": 0, "effect_settlement": 0, "effect_unknown": 0, "reconciliation": 0}
         self._lock = threading.Lock()
         self._witness_lock = threading.Lock()
         self._db = open_store(database)
@@ -147,7 +218,6 @@ class Work:
             pass
 
     def _emit(self, name: str, **fields) -> None:
-        self.metrics[name] = self.metrics.get(name, 0) + 1
         if self.trace is not None:
             self.trace.record(name, **fields)
 
@@ -171,10 +241,6 @@ class Work:
             if row and row["body"] != canonical(doc):
                 raise Rejected("immutable_contract", "publish a new version")
             contracts.insert_new(doc["id"], doc["version"], canonical(doc))
-
-    @staticmethod
-    def _compile_path(doc: dict) -> list[str]:
-        return compile_path(doc)
 
     def artifacts(self, contract_id: str, version: int) -> dict:
         with self.tx() as db:
@@ -209,6 +275,10 @@ class Work:
             raise Rejected("invalid_action", "action kind must be local, http or economic_http")
         if doc["kind"] in ("http", "economic_http"):
             origin = trusted_origin(doc.get("url", ""))
+            # A definition names credential variables and never holds a secret (``registry``). A query string
+            # is where a secret would ride, so neither the write URL nor the status URL may carry one.
+            if urlsplit(doc["url"]).query or "?" in doc["url"] or any(c in doc["url"] for c in "{}"):
+                raise Rejected("invalid_action", "action URL takes no query string or template")
             allowed_methods = ("POST",) if doc["kind"] == "economic_http" else ("POST", "PUT", "PATCH")
             if doc.get("method", "POST") not in allowed_methods:
                 raise Rejected("invalid_action", "HTTP method must write")
@@ -225,6 +295,7 @@ class Work:
             if (doc["kind"] not in ("http", "economic_http") or trusted_origin(status_url) != origin or
                     status_url.count("{key}") != 1 or
                     urlsplit(status_url).path.count("{key}") != 1 or
+                    "?" in status_url or
                     any(c in status_url.replace("{key}", "") for c in "{}")):
                 raise Rejected("invalid_action", "status lookup needs one path key on the action origin")
         no_write = doc.get("no_write_statuses", [])
@@ -244,8 +315,12 @@ class Work:
             trusted = True
         except Rejected:
             trusted = False
-        if doc.get("kind") != "http" or not trusted or "{key}" not in url:
-            raise Rejected("invalid_source", "source needs a fixed HTTPS or local URL with {key}")
+        # The record key is substituted into the path only. A ``{key}`` in the host would let the case input
+        # choose which host receives the source's bearer token; a query would store a secret in the definition.
+        if (doc.get("kind") != "http" or not trusted or url.count("{key}") != 1 or
+                urlsplit(url).path.count("{key}") != 1 or "?" in url or
+                any(c in url.replace("{key}", "") for c in "{}")):
+            raise Rejected("invalid_source", "source needs a fixed HTTPS or local URL with one {key} in its path")
         with self.tx() as db:
             sources = SourceRegistry(db)
             prior = sources.get(name)
@@ -348,8 +423,21 @@ class Work:
             identity = at_path(result["body"]["value"], spec["result"]["identity_path"])
             confirmed = (not confirmation or at_path(confirmation["body"]["value"],
                          spec["confirmation"]["value_path"]) == selected)
-            changed = (spec["trigger"]["key"] != spec["result"]["key"] or
-                       result["body"]["version"] != task["trigger_version"])
+            if spec["trigger"]["key"] == spec["result"]["key"]:
+                changed = result["body"]["version"] != task["trigger_version"]
+            else:
+                # A different result key is not itself a change. Either the confirmation re-reads the trigger and
+                # finds the decision at the path that was empty when the task was requested, or the result's own
+                # version moved from the one read before the request. Otherwise the task stays pending.
+                trigger, check = spec["trigger"], spec.get("confirmation") or {}
+                decided_at_trigger = (confirmation is not None and check.get("key") == trigger["key"]
+                                      and check.get("source") == trigger["source"]
+                                      and check.get("value_path") == trigger["missing_path"])
+                requested_at = next(e["seq"] for e in history if e["kind"] == "resolution_requested"
+                                    and e["body"]["id"] == task_id)
+                baseline = self._result_baseline([e for e in history if e["seq"] < requested_at], spec)
+                changed = decided_at_trigger or (baseline is not None
+                                                 and result["body"]["version"] != baseline["body"]["version"])
             if (selected not in task["choices"] or identity != task["record_key"] or
                     not changed or not confirmed):
                 self._append(db, case_id, "resolution_checked", {
@@ -364,6 +452,13 @@ class Work:
                 "confirmation_hash": confirmation["hash"] if confirmation else None,
             })
             return {"status": "completed", "choice": selected, "event": event}
+
+    @staticmethod
+    def _result_baseline(history: list, spec: dict) -> dict | None:
+        """The newest verified observation of a resolution's result key from its result source, if any."""
+        result = spec["result"]
+        return next((e for e in reversed(history) if e["kind"] == "observed" and e["body"]["key"] == result["key"]
+                     and e["body"]["source"] == result["source"] and e["body"].get("verified")), None)
 
     def escalate_resolution(self, case_id: str, task_id: str, actor: str, roles: list[str]) -> dict:
         with self.tx() as db:
@@ -453,6 +548,54 @@ class Work:
             self._case(db, case_id)
             return self._append(db, case_id, "observed", {"key": key, "value": value, "source": source, "version": version, "actor": actor, "verified": verified})
 
+    @staticmethod
+    def _attestable(contract: dict, key: str, source: str) -> bool:
+        """Whether a manual, unverified attestation of ``key`` from ``source`` may enter this contract's case.
+
+        Admission (``facts.required``, ``resolution.current``) and argument binding read the newest observation
+        of a key. An unverified attestation of a key the contract relies on would shadow the verified fact, so
+        a case could be stalled, or its compiled arguments chosen, by anyone holding any attesting source. A key
+        the contract names (a required fact, an argument binding, a fact acceptance clause, a resolution's evidence)
+        is attestable only where a required fact names this very source and does not ask for verification. A key the contract never
+        reads stays attestable, as before: it is recorded unverified and decides nothing.
+        """
+        named, allowed = set(), False
+        for action in (contract.get("actions") or {}).values():
+            if not isinstance(action, dict):
+                continue
+            for requirement in action.get("required_facts") or []:
+                if isinstance(requirement, dict) and requirement.get("key") == key:
+                    named.add(key)
+                    if requirement.get("source") == source and not requirement.get("verified"):
+                        allowed = True
+            bindings = action.get("arguments") or {}
+            if isinstance(bindings, dict):
+                for binding in bindings.values():
+                    if (isinstance(binding, str) and
+                            binding.removeprefix("version:").removeprefix("fact:").split(".")[0] == key):
+                        named.add(key)
+        for clause in contract.get("acceptance") or []:
+            if isinstance(clause, dict) and clause.get("kind") == "fact" and clause.get("key") == key:
+                named.add(key)   # acceptance reads the newest observation of this key
+        for resolution in (contract.get("resolutions") or {}).values():
+            if isinstance(resolution, dict) and any(
+                    isinstance(part, dict) and part.get("key") == key for part in resolution.values()):
+                return False
+        return allowed or key not in named
+
+    def attest(self, case_id: str, key: str, value: Any, source: str, version: str, actor: str) -> dict:
+        """Record a person's or service's unverified attestation (``POST /api/cases/{id}/facts``).
+
+        Refused for a key the case's contract relies on unless that contract accepts this source's unverified
+        word for it (``_attestable``). ``refresh_fact`` is the route for a verified fact.
+        """
+        with self.tx() as db:
+            row = self._case(db, case_id)
+            contract = self._contract(db, row["contract_id"], row["contract_version"])
+        if not isinstance(key, str) or not self._attestable(contract, key, source):
+            raise Rejected("attestation_denied", "this contract reads that key only from its configured source")
+        return self.observe(case_id, key, value, source, version, actor)
+
     def refresh_fact(self, case_id: str, source: str, key: str, record_key: str, actor: str, roles: list[str]) -> dict:
         with self.tx() as db:
             self._case(db, case_id)
@@ -472,7 +615,10 @@ class Work:
                 raise Rejected("missing_credential", "source credential unavailable")
             headers["Authorization"] = "Bearer " + token
         target = config["url"].replace("{key}", quote(record_key, safe=""))
-        guard_request(target)
+        try:
+            guard_request(target)
+        except urllib.error.URLError:   # the guard could not resolve the host; no request was made
+            raise Rejected("source_unavailable", "destination_unreachable") from None
         request = urllib.request.Request(target, headers=headers)
         try:
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
@@ -574,6 +720,11 @@ class Work:
                 self._append(db, case_id, "decision", {"proposal_id": proposal_id, "policy_version": policy["version"], "phase": "commit", **decision}, rule=full["rule"])
                 return {"decision": decision}
             action = json.loads(ActionRegistry(db).get(proposal["action"])["body"])
+            version_arg = action.get("version_arg")
+            if (action["kind"] != "local" and version_arg in proposal["args"]
+                    and not header_value_ok(str(proposal["args"][version_arg]))):
+                # Sent as If-Match. Refused before the claim, so no effect is started for a value that cannot be sent.
+                raise Rejected("invalid_argument", f"{version_arg} is not a valid header value")
             extra = {}
             if action["kind"] == "economic_http":
                 rule = policy["actions"][proposal["action"]]["economic"]
@@ -647,13 +798,22 @@ class Work:
         with self.tx() as db:
             row = db.execute(
                 "SELECT proposal_id, case_id, state FROM effect_obligations "
-                "WHERE state='queued' OR (state='leased' AND lease_until IS NOT NULL AND lease_until <= ?) "
+                "WHERE state='queued' OR (state IN ('leased', 'recovering') AND lease_until IS NOT NULL AND lease_until <= ?) "
                 "ORDER BY proposal_id LIMIT 1",
                 (now,),
             ).fetchone()
             if not row:
                 return None
-            if row["state"] == "leased":
+            if row["state"] in ("leased", "recovering"):
+                # Compare-and-swap the expired lease, so only one worker recovers it. The recovery holds a lease
+                # of its own, so a worker that dies while recovering leaves the obligation to the next one.
+                taken = db.execute(
+                    "UPDATE effect_obligations SET state='recovering', lease_until=? "
+                    "WHERE proposal_id=? AND state=? AND lease_until IS NOT NULL AND lease_until <= ?",
+                    (now + 30, row["proposal_id"], row["state"], now),
+                )
+                if getattr(taken, "rowcount", 1) != 1:
+                    return None
                 return {"state": "interrupted", "case_id": row["case_id"], "proposal_id": row["proposal_id"]}
             db.execute(
                 "UPDATE effect_obligations SET state='leased', lease_until=?, attempts=attempts+1 "
@@ -678,9 +838,17 @@ class Work:
         case_id, proposal_id = job["case_id"], job["proposal_id"]
         with self.tx() as db:
             history = self._events(db, case_id)
-            if any(event["kind"] in ("effect_succeeded", "effect_rejected", "effect_unknown") and event["body"]["proposal_id"] == proposal_id for event in history):
-                self._close_obligation(db, proposal_id, "settled")
-                return {"status": "settled", "proposal_id": proposal_id}
+            terminal = next((event for event in reversed(history)
+                             if event["kind"] in ("effect_succeeded", "effect_rejected", "effect_unknown")
+                             and event["body"]["proposal_id"] == proposal_id), None)
+            reconciled = any(verified_reconciliation(event) and event["body"]["proposal_id"] == proposal_id
+                             for event in history)
+            if terminal is not None or reconciled:
+                # Report the outcome already stored. An unknown effect stays unknown (still pending, budget held).
+                outcome = "succeeded" if reconciled else {"effect_succeeded": "succeeded", "effect_rejected": "rejected",
+                                                          "effect_unknown": "unknown"}[terminal["kind"]]
+                self._close_obligation(db, proposal_id, {"succeeded": "settled"}.get(outcome, outcome))
+                return {"status": outcome, "proposal_id": proposal_id}
             action = next(event["body"]["action"] for event in history if event["kind"] == "effect_started" and event["body"]["proposal_id"] == proposal_id)
             self._append(db, case_id, "effect_unknown", {"proposal_id": proposal_id, "action": action, "error": "worker_interrupted"})
             self._close_obligation(db, proposal_id, "unknown")
@@ -721,9 +889,15 @@ class Work:
                 raise Rejected("missing_credential", "destination status credential unavailable")
             headers["Authorization"] = "Bearer " + token
         target = status_url.replace("{key}", quote(proposal_id, safe=""))
-        guard_request(target)
+        try:
+            guard_request(target)
+            unresolved = None
+        except urllib.error.URLError as exc:   # the guard could not resolve the host: the lookup is unavailable
+            unresolved = exc
         request = urllib.request.Request(target, headers=headers)
         try:
+            if unresolved is not None:
+                raise unresolved
             with HTTP.open(request, timeout=min(30, config.get("timeout_seconds", 10))) as response:
                 if getattr(response, "status", None) != 200:
                     raise StatusNotAuthoritative(getattr(response, "status", None))
@@ -747,10 +921,14 @@ class Work:
             elif (isinstance(record, dict) and record.get("state") == "committed"
                     and record.get("idempotency_key") == proposal_id
                     and record.get("request_digest") == digest(proposal["args"])
-                    and isinstance(record.get("external_id"), str) and record["external_id"]):
+                    and record_id(record.get("external_id"))):
+                # A blank ID, or one with an invisible character, names no record (``record_id``).
                 matched = True
+            # A matching record that is an Attest artifact is an observation, not the destination's record (G6).
+            if matched and attest_artifact(record):
+                status, reason = "unverified", "attest_artifact_not_proof"
             # A destination that labels its own matching record simulated or sandbox has not reported a live effect.
-            if matched and simulation_labeled(record):
+            elif matched and simulation_labeled(record):
                 status, reason = "unverified", "destination_record_simulated"
             elif matched:
                 status, reason = "verified", "destination_record_matched"
@@ -873,7 +1051,7 @@ class Work:
             if key == "cases_total":
                 return int(db.execute("SELECT COUNT(*) AS n FROM cases").fetchone()["n"])
             if key == "queue_depth":
-                row = db.execute("SELECT COUNT(*) AS n FROM effect_obligations WHERE state IN ('queued', 'leased')").fetchone()
+                row = db.execute("SELECT COUNT(*) AS n FROM effect_obligations WHERE state IN ('queued', 'leased', 'recovering')").fetchone()
                 return int(row["n"])
             if key == "cases_open":
                 count = 0
@@ -942,14 +1120,6 @@ class Work:
                     "changed_decisions": changed, "acceptance_before": self._acceptance(original_contract, events),
                     "acceptance_after": self._acceptance(contract, events),
                     "note": "Counterfactual against captured case events; does not re-read or mutate external systems"}
-
-    def submit_witness(self, case_id: str, client) -> dict:
-        """Ask an external witness to sign this case. This store has no signing seed."""
-        if not self.verify_chain(case_id):
-            raise Rejected("invalid_chain", "case history does not verify")
-        with self.tx() as db:
-            events = self._events(db, case_id)
-        return client.submit(events)
 
     def witness_status(self, case_id: str, log) -> dict:
         """What a read-only transparency log says about this case's history. Appends nothing, signs nothing.
@@ -1067,6 +1237,34 @@ class Work:
         with self.tx() as db:
             return self.chain_ok(db, case_id)
 
+    def verify_history(self, case_id: str, log=None) -> dict:
+        """``GET /api/cases/{id}/verify`` and ``syberwork verify``: the hash chain, and the witness's log when one is read.
+
+        The chain alone (``chain``) catches an edit that was not rehashed. Whoever owns the database can rewrite an
+        event and rehash every event after it, and the chain still verifies. A head the witness signed is outside the
+        database, under a key the database owner does not hold, so with ``log`` (``TransparencyLog.open_readonly``)
+        a rewritten, truncated or rehashed history shows as a conflict (``head_differs``, ``beyond_history``,
+        ``chain_broken``) and ``valid`` is false. Without a log, or for events after ``witnessed_through``, ``valid``
+        is the chain's answer and the note says what it cannot see. Events are read once, in one transaction.
+        """
+        with self.tx() as db:
+            chain = self.chain_ok(db, case_id)
+            events = self._events(db, case_id)
+        if log is None:
+            return {"valid": chain, "chain": chain, "witness": None,
+                    "note": "Hash chain only: it does not detect a history rewritten and rehashed by the database owner. "
+                            "Read a witness log (SYBERWORK_WITNESS_LOG, SYBERWORK_WITNESS_PUBLIC) to check against signed heads"}
+        status = self._witness_judgement(case_id, events, log)
+        conflicts = [entry for entry in status["entries"] if entry["verdict"] in WITNESS_CONFLICTS]
+        through = status["witnessed_through"]
+        note = ("A head the witness signed conflicts with this history: it was changed after signing" if conflicts else
+                f"Chain checked, and events #1 to #{through} match a head the witness signed" if through else
+                "Chain checked; the witness has signed no head of this case yet, so a rehash would not show")
+        return {"valid": chain and not conflicts, "chain": chain,
+                "witness": {"witnessed_through": through, "count": status["count"],
+                            "conflicts": [{"index": e["index"], "count": e["count"], "verdict": e["verdict"]} for e in conflicts]},
+                "note": note}
+
     def side_channel(self, case_id: str) -> list[dict]:
         """JCS digest and deciding rule id for each new event. Neither is in the event hash.
 
@@ -1090,6 +1288,8 @@ class Work:
             headers["Authorization"] = f"Bearer {token}"
         if "version_arg" in action and action["version_arg"] in args:
             headers["If-Match"] = str(args[action["version_arg"]])
+        if not all(header_value_ok(value) for value in headers.values()):
+            raise Rejected("invalid_header", "a request header value has a line break, control character or edge whitespace")
         guard_request(action["url"])
         req = urllib.request.Request(action["url"], data=canonical(args).encode(), headers=headers, method=action.get("method", "POST"))
         with HTTP.open(req, timeout=min(30, action.get("timeout_seconds", 10))) as response:

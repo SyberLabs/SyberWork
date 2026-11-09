@@ -20,7 +20,6 @@ page.on('dialog', async d => { errors.push('native dialog: ' + d.message()); awa
 
 const shot = async name => { if (shots) await page.screenshot({ path: `${shots}/${name}.png`, fullPage: false }); };
 const step = name => report.steps.push(name);
-const nextText = () => page.textContent('.next p');
 async function waitNext(fragment) {
   await page.waitForFunction(f => (document.querySelector('.next p') || {}).textContent?.includes(f), fragment, { timeout: 15000 });
 }
@@ -190,7 +189,8 @@ await shot('09a-witness');
 await page.locator('.timeline li').first().locator('summary').click();
 report.side_row = await page.locator('.timeline li').first().locator('.side-row').textContent();
 await shot('09-history');
-// History → Open certificates in Studio: the Build Thread certificates serve reads, each verified by serve.
+// History → Open certificates in Studio: the Build Thread certificates serve reads, each verified by serve under one of
+// the keys it trusts, and each signed row names that key.
 await page.locator('.certificate-case button', { hasText: 'Open certificates in Studio' }).click();
 await page.waitForSelector('.certificate-rows tbody tr');
 report.certificate_rows = await page.locator('.certificate-rows tbody tr').evaluateAll(rows => rows.map(r => [r.dataset.state, r.textContent]));
@@ -259,26 +259,29 @@ await page.waitForSelector('.replay table.diff');
 report.replay = await page.locator('.replay table.diff').first().textContent();
 await shot('14-replay');
 
-// A typed observation and an Attest receipt on a second case stay unverified.
+// A typed observation and an Attest receipt on a second case stay unverified. The supplier holds only the
+// observer role: it may attest keys the contract does not read from another source, is refused one it does
+// (quote must be a verified supplier read), and cannot read the case, so the operator inspects the result.
 await switchTo('operator');
 await page.keyboard.press('n');
 await page.waitForSelector('#newcase-form input[name="in:part_number"]');
 await page.click('#newcase-form button.primary');
 await page.waitForSelector('.case-head');
-await switchTo('supplier');
+const secondCase = decodeURIComponent(page.url().split('#/case/')[1].split('/')[0]);
+const attest = (key, version, value) => page.evaluate(async ([id, token, body]) => {
+  const response = await fetch('/api/cases/' + encodeURIComponent(id) + '/facts', {method: 'POST', cache: 'no-store',
+    headers: {Authorization: 'Bearer ' + token, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  return {status: response.status, body: await response.json().catch(() => null)};
+}, [secondCase, tokens.supplier, {key, source: 'supplier', version, value}]);
+report.quote_attest = await attest('quote', 'typed-1', {id: 'Q-7', price: 1, part_number: 'P-104', supplier: 'typed'});
+report.note_attest = await attest('supplier_note', 'typed-1', {text: 'typed by the supplier'});
+report.receipt_attest = await attest('attest_receipt', 'receipt-1', {schema: 'attest.receipt/v0', verified: false, evidence: {after: {status: 'proven'}}});
+report.supplier_case_read = await page.evaluate(async ([id, token]) =>
+  (await fetch('/api/cases/' + encodeURIComponent(id), {headers: {Authorization: 'Bearer ' + token}, cache: 'no-store'})).status,
+  [secondCase, tokens.supplier]);
+// The operator is still on the second case; r reads it again with the two attestations.
 await page.keyboard.press('2');
-await page.locator('.evidence details.warn-panel summary').click();
-const manual = page.locator('.evidence details.warn-panel');
-await manual.locator('input[name="key"]').fill('quote');
-await manual.locator('input[name="source"]').fill('supplier');
-await manual.locator('input[name="version"]').fill('typed-1');
-await manual.locator('textarea[name="value"]').fill('{"id":"Q-7","price":1,"part_number":"P-104","supplier":"typed"}');
-await manual.locator('button.btn').click();
-await page.waitForFunction(() => document.querySelectorAll('.obs tbody tr').length === 1);
-await manual.locator('input[name="key"]').fill('attest_receipt');
-await manual.locator('input[name="version"]').fill('receipt-1');
-await manual.locator('textarea[name="value"]').fill('{"schema":"attest.receipt/v0","verified":false,"evidence":{"after":{"status":"proven"}}}');
-await manual.locator('button.btn').click();
+await page.keyboard.press('r');
 await page.waitForFunction(() => document.querySelectorAll('.obs tbody tr').length === 2);
 report.manual = await page.locator('.obs tbody tr').allTextContents();
 await shot('15-unverified');
@@ -287,6 +290,7 @@ await page.waitForSelector('.effects .notice.warn');
 report.attest_notice = await page.textContent('.effects .notice.warn');
 
 // The supplier holds no source read role; in the Studio it sees the read roles, not the definitions.
+await switchTo('supplier');
 await page.click('[data-view="studio"]');
 await page.locator('.studio-item', { hasText: 'Sources' }).click();
 await page.waitForSelector('.studio-body table.grid');

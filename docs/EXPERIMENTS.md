@@ -1,5 +1,7 @@
 # Experiments: two arms compared from the journal
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 ```bash
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup   # right after start
 syberlabs experiment report --name githits-pilot                    # the arms compared, with every check that applies
@@ -80,7 +82,7 @@ Each item is checked against the record. The first nine take the item out of eve
 | `base_unknown` | kept | a thread has no recorded base commit |
 | `arm_unverified` | kept | no call recorded its MCP servers or the GitHits launcher, so only the label says which arm ran |
 | `server_mixed` | kept | GitHits was there in some of a treatment thread's calls and not in others |
-| `two_routes` | kept | a treatment thread had GitHits by both routes: the API launcher and a connected GitHits MCP server, usually a `--mcp-config` left in arm B by mistake. It is still the treatment, but not the single route the pilot registers, and where the thread has client records its GitHits count is those records only, without the MCP server's lookups (`spec/GAPS.md` 59). What to do: take the GitHits server out of arm B's `--mcp-config` before the next item; read this item's GitHits count as a floor, and say in the write-up that it ran with both routes |
+| `two_routes` | kept | a treatment thread had GitHits by both routes: the API launcher and a connected GitHits MCP server, usually a `--mcp-config` left in arm B by mistake. It is still the treatment, but not the single route the pilot registers, and its count includes authentic client records plus host-observed MCP attempts (`spec/GAPS.md` 59). What to do: take the GitHits server out of arm B's `--mcp-config` before the next item; say in the write-up that it ran with both routes; do not treat it as the registered single-route experiment |
 | `unused` | kept | the treatment shows no GitHits lookup, and its count is known to be zero |
 | `use_unknown` | kept | the treatment shows no GitHits lookup, but its count is unknown, so it can be shown neither to have used GitHits nor not to. The count is unknown when a call declared none, or, where `syberlabs metrics` says so (SyberWork #139), when the record cannot say how many lookups reached GitHits: a call's `signal.githits.mismatch` (a launcher call the guard passed left no client record) or an `unguarded` client record. What to do: `syberlabs metrics --thread <id> --json` gives the reason in the count's note; fix the cause (a client that failed before recording, a proposer that declares no lookups) before the next item, and do not read the item as one where GitHits went unused |
 | `contamination_unknown` | kept | the baseline shows no GitHits lookup, but its count is unknown, so it cannot be shown clean |
@@ -136,21 +138,21 @@ The pilot itself runs a real model with a paid key: Class X (`AGENTS.md`). A nam
 1. The item list, as the `--items` file: each work item's id and its tag, `needs_lookup` when the work depends on a library or API the agent is unlikely to know well (new, niche, or changed since the model's training), else `routine`; beside it, each item's objective and scope.
 2. The primary metric and the group the decision rests on (for example: the delivery rule on `needs_lookup` items, with `--delivered review`).
 3. The exclusion rules: the nine excluded checks above, and nothing else.
-4. The frozen setup: the SyberWork commit, Claude Code version, model, effort, `--allowed-tools`, `--max-turns`, the query guard's thresholds, the credential lane, and arm B's GitHits route (`--githits`) with its license policy (`SYBERLABS_GITHITS_LICENSES`, recorded as `signal.githits.license_policy`). Use the `api` lane (`--bare`) in both arms: it is the lane whose cost is billed and known, and in bare mode the tree's `CLAUDE.md` is not read in either arm. The contract prices every model the runs report (`evolution.budget.prices`); a run that used a model the contract does not price has an unknown cost. Anything that learns from runs stays off for the week. AutoSkill is a design (`docs/AUTOSKILL.md`) and is in no proposer path; the `jev` and `empirical` branch policies belong to `--evolve`, which the pilot does not use.
+4. The frozen setup: the SyberWork commit, Claude Code version, model, effort, `--allowed-tools`, `--max-turns`, the query guard's thresholds, the credential lane, and arm B's GitHits route (`--githits`) with its license policy (`SYBERLABS_GITHITS_LICENSES`, recorded as `signal.githits.license_policy`). Use the `api-hooked` lane (`--lane api-hooked --trusted-tree`) in both arms: the API key, so the cost is billed and known, without `--bare`, because Claude Code 2.1.312 runs no `--settings` hook under `--bare` and the provider refuses `--githits` there (`docs/CLAUDE_CODE.md`, the hooked API lane); each call gets an empty config directory and home. Not in bare mode, the tree's `CLAUDE.md` is read, equally in both arms: record it with the conditions. The contract prices every model the runs report (`evolution.budget.prices`); a run that used a model the contract does not price has an unknown cost. Anything that learns from runs stays off for the week. AutoSkill is a design (`docs/AUTOSKILL.md`) and is in no proposer path; the `jev` and `empirical` branch policies belong to `--evolve`, which the pilot does not use.
 
-**Before the week, the dry run** (Class X as well, a few dollars): `python scripts/pilot_dry_run.py --plan plan.json` runs this protocol on 3 to 5 items on the API route (`--githits`, `docs/GITHITS.md`, "The A/B report"), in a home of its own: a preflight that refuses to start on any failure, one canary call that shows the query guard fires under `--bare`, both arms per item from one `HEAD` in a seeded order, the blind review and this report under a hard budget cap (default $8). It passes when the nine metrics are known for every thread and the report compares every item; its docstring says how to run it, and its `receipt.json` and `report.md` are what to send.
+**Before the week, the dry run** (Class X as well, a few dollars): `python scripts/pilot_dry_run.py --plan plan.json` runs this protocol on 3 to 5 items on the API route (`--githits`, `docs/GITHITS.md`, "The A/B report"), in a home of its own: a preflight that refuses to start on any failure, one canary call that shows the query guard fires on the `api-hooked` lane, both arms per item from one `HEAD` in a seeded order, the blind review and this report under a hard budget cap (default $8). It passes when the nine metrics are known for every thread and the report compares every item; its docstring says how to run it, and its `receipt.json` and `report.md` are what to send.
 
 **Each item, each arm, from the same `HEAD`** (accepting moves only the thread's own branch, so `HEAD` stays put):
 
 ```bash
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
+syberlabs propose --claude-code --lane api-hooked --trusted-tree --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
 syberlabs run --once                     # one safe step per thread; here, accepting the passing candidate
 
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm on --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
+syberlabs propose --claude-code --lane api-hooked --trusted-tree --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
     --githits --githits-arm on           # the only difference between the arms: the launcher and the skill
 syberlabs run --once
 ```

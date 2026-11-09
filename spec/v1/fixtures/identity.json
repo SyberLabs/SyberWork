@@ -1,0 +1,31 @@
+{
+  "schema": "identity.schema.json",
+  "valid": [
+    {
+      "name": "root Agent acting for the owner",
+      "instance": {"id": "agt_buildthread", "root_id": "agt_buildthread", "parent_id": null, "subject_binding": "github:sykosyber", "platform": "claude@claude-opus-5-5"}
+    },
+    {
+      "name": "spawned child of a root Agent",
+      "instance": {"id": "agt_buildthread.c1", "root_id": "agt_buildthread", "parent_id": "agt_buildthread", "subject_binding": "github:sykosyber", "platform": "codex"}
+    },
+    {
+      "name": "host-run Agent with no model platform",
+      "instance": {"id": "agt_presence", "root_id": "agt_presence", "parent_id": null, "subject_binding": "service:presence-bot", "platform": "host"}
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a subject binding names a principal, not a token",
+      "instance": {"id": "agt_x", "root_id": "agt_x", "parent_id": null, "subject_binding": "ghp_0123456789abcdef", "platform": "claude"}
+    },
+    {
+      "name": "platform follows the Agent-platform convention",
+      "instance": {"id": "agt_x", "root_id": "agt_x", "parent_id": null, "subject_binding": "github:sykosyber", "platform": "chatbot"}
+    },
+    {
+      "name": "every identity field is present",
+      "instance": {"id": "agt_x", "subject_binding": "github:sykosyber", "platform": "claude"}
+    }
+  ]
+}

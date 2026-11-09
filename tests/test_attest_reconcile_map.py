@@ -108,7 +108,6 @@ class AttestArtifactClassification(unittest.TestCase):
                 # The destination commits, but the write acknowledgement is lost.
                 erp.drop_after_write = True
                 self.assertEqual(work.commit(case_id, proposal_id, "scheduler")["status"], "unknown")
-                destination_record = erp.order_for_key(proposal_id)
                 # Live Attest path: <attest_home>/receipts/<case_id>.json.
                 # Keep the shipped top-level receipt shape opaque to SyberWork.
                 receipt_file = {

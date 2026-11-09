@@ -1,5 +1,7 @@
 # GitHits API client
 
+> Some code this page names may have been removed as dead code. `git log -S<name>` finds where it last lived.
+
 ```bash
 export GITHITS_API_TOKEN=...            # from the environment only; never in a file in this repository
 syberlabs githits search "retry with backoff" --target pypi:urllib3@2.2.1 --source code
@@ -56,9 +58,24 @@ not be shown SyberLabs code as if it were outside evidence. For the pilot, conta
 side: the work items are unpublished, both arms run locally on a pinned base, and this client is the backstop. An
 exclusion at GitHits' index is optional, not something the pilot relies on.
 
-The client works in three layers. The exclusion list is `SyberLabs` plus whatever `SYBERLABS_GITHITS_EXCLUDE` adds:
-a comma list of owners or `owner/repo`, matched case-insensitively. The variable only adds; it never removes
-`SyberLabs`, and an empty value keeps the default. `SYBERLABS_GITHITS_EXCLUDE_REPLACE=1` makes the variable's list
+The client works in three layers. The exclusion list is the default deny-list plus whatever
+`SYBERLABS_GITHITS_EXCLUDE` adds, matched case-insensitively. The default (`githits.DEFAULT_EXCLUDE`, from the
+pilot's pre-registration) is:
+
+- the GitHub owners `SyberLabs` and `sykosyber` (`github.com/sykosyber/*`, and each owner's own domains and
+  `*.github.io` pages, as for any owner);
+- `pypi:syberwork`, the PyPI name of this repository's distribution (`pyproject.toml`; there is no npm package), as a
+  target and as `pypi.org/project/syberwork` in a result;
+- `deepwiki.com` and `deepwiki.org` with their subdomains, the DeepWiki front-ends that re-serve public repositories,
+  SyberLabs' among them, as a target (`site:deepwiki.com/...`, a URL) and anywhere in a result's text;
+- forks of SyberLabs repositories where the result's URL shows one: a repository named like a SyberLabs product
+  (`githits.FORK_NAMES`: `syberwork`, `sybersdk`, `syberfactory`, `syberlabs`, `syberstate`) under any owner on a
+  code host (`github.com/<anyone>/SyberWork`, `github:<anyone>/syberfactory`). This is by name only: a fork renamed
+  to something else is not detected.
+
+An entry of the variable is an owner, `owner/repo`, a package `registry:name` (`npm:left-pad`) or a host name with a
+dot and no slash (`example.org`, which also covers its subdomains). The variable only adds; it never removes the
+default, and an empty value keeps it. `SYBERLABS_GITHITS_EXCLUDE_REPLACE=1` makes the variable's list
 replace the default; it exists for tests only, and the Claude Code provider never passes it to the launcher's client.
 Passing another list to `Client(exclude=...)` in code replaces the default too.
 
@@ -94,8 +111,18 @@ unbalanced parenthesis, a dangling operator, a stray character, more than 64 tok
   `results_dropped_license`, apart from the contamination count. Contamination is judged first. In contract
   0.1.0 only an example carries licenses: the `(SPDX)` after each source link of its Markdown
   (`[Source 1](https://github.com/o/r/blob/sha/path) (MIT)`), a `License:` line, or a structured `references`
-  list if one is ever returned. An example whose sources include a license that is not admitted, a source link
-  with no license, or no source link at all, is dropped whole. Exit 0, with a one-line notice.
+  list if one is ever returned. A source link is a link to a code host, or any link under a `References` or
+  `Sources` heading (up to the next heading or thematic break), which is how GitHits' documented responses cite
+  them (`### References` / `- [Source 1](https://example.org/source) (MIT)`); GitHits' own "Open in GitHits Web
+  App" link is never one. An example whose sources include a license that is not admitted, a source link
+  with no license, or code with no source link at all, is dropped whole. Exit 0, with a one-line notice. An
+  example with neither code (a fenced, indented or HTML block) nor a source carries nothing to license and
+  passes: GitHits' documented `degraded` ("Source search may be incomplete.") and `no_example` ("No suitable
+  example was found.") answers. All three documented example responses in the pinned OpenAPI document pass, and
+  the same shapes with a copyleft, `NOASSERTION`, unparsable or missing license are dropped
+  (`tests/test_githits.py`, `DocumentedExamples`). Before 2026-10-29 all three were withheld
+  (`results_dropped_license=1`): the `complete` example's source is not on a code host, and the other two have
+  no source.
 - **It depends on license data being present.** No search, grep, list or read result in 0.1.0 has a license
   field, so those results pass this check unjudged. The client would read `license_spdx_id`, `spdx_id`,
   `license_id` or `license` on a result (or a search hit's locator) if GitHits added one.
@@ -117,22 +144,55 @@ the two is an error, so a run never believes it is recording when it is not.
 {"op": "search", "query_digest": "<sha256>", "targets_count": 1, "status": "ok", "http_status": 200,
  "request_id": "<X-Request-ID>", "results_returned": 3, "results_dropped": 1, "results_dropped_license": 0,
  "license_policy": "<sha256>", "contamination_blocked": false, "latency_ms": 412, "rate_limit_remaining": 97,
- "at": "2026-10-26T17:01:16.123Z", "mac": "<hmac-sha256>"}
+ "at": "2026-10-26T17:01:16.123Z", "sent": true, "mac": "<hmac-sha256>"}
 ```
 
-- `status` is `ok`, `excluded_target`, `contamination_blocked` or `error`.
+- `status` is `ok`, `excluded_target`, `contamination_blocked`, `error`, or `unguarded` (the launcher's entry
+  refused the call before sending: no query-guard decision for it; below).
+- `sent` says whether the request was written to GitHits: `false` when it never left (an excluded target, an
+  `unguarded` refusal, no token, a connection, TLS or proxy failure), `true` once it was (an answer, an HTTP error,
+  a read timeout, a connection closed before the answer), `null` when the call was interrupted in flight.
 - `query_digest` is the SHA-256 of the canonical JSON request: the body of a POST, the query parameters of a
   read.
 - `rate_limit_remaining` is `X-RateLimit-Remaining` when the answer has it. The spec documents it for every
-  operation here except `example`.
+  operation here except `example`. Observed live (pilot canary, 2026-10-30): `search` and `grep` answers carry it
+  (599, then 598), `example` and `doctor` answers do not (`null`); `read` and `list` were not called.
 - `mac` is HMAC-SHA256 under the record key over the canonical JSON of every other field. It is
   `query_guard.sign`, the same canonical form and MAC the query guard's decisions use.
 - `read_records(directory, key)` returns the records whose MAC verifies, and counts every other line (bad MAC,
   extra or missing field, not JSON) as ignored.
 
+`paced_ms`, present only on a call the host's launcher paced (next section), is how long the launcher held the
+call before sending it; the MAC covers it, and a record without it has exactly the fields above. Every launcher
+`example` to GitHits goes through the pacing lock, so `paced_ms` is present on it even when nothing was waited for,
+with a small value: the lock and the time file's own cost (the canary's first example recorded `paced_ms: 4`; its
+second, held for the slot, `26312`). Read a small value as "not held", not as a wait.
+
 No query text, no result and no token is ever stored. As with the guard's key, the MAC shows that a process
 holding the key wrote the line. The key is in the environment of whatever runs the client, so it does not show
 which process that was.
+
+## Example pacing (host side)
+
+GitHits limits its example endpoint per organization to one or two requests a minute, and the pilot runs both arms
+and every Claude Code call under one organization's token. The launcher's entry (`githits_cli_entry.py`) therefore
+holds each `example` before it is sent until this host's last example is 40 s old (`githits_pace.EXAMPLE_INTERVAL`):
+a cross-process lock on `example.lock` and the time of the last slot in `example.last`, in the host's pacing
+directory, outside any worktree (`SYBERLABS_GITHITS_PACE_DIR`, an absolute path, else `syberlabs-githits-pace` in the
+system temporary directory). Callers queue on the lock, so two examples from any two processes, either arm, are at
+least 40 s apart. Search, read, list and grep are not paced, and `syberlabs githits example` (the operator's) is not
+paced either.
+
+This is pacing, not a retry: the client still sends each request once and never waits or retries on its own (a
+missing retry and back-off is itself a pilot work item, so it is kept out of `githits.py`'s request code). The time
+the call was held is recorded on its client record as `paced_ms` and on its `lookup` fact; `latency_ms` never
+includes it. `syberlabs experiment report` leaves it out of an arm's time: `time_to_pass` subtracts the pacing between
+the first search and the evaluation of the accepted candidate, the per-arm `agent_time` subtracts the thread's total,
+and each arm reports its `paced_seconds`.
+
+An example to a loopback base URL (a stand-in, such as the tests' fake GitHits) never reaches GitHits' limit and is
+not paced unless `SYBERLABS_GITHITS_PACE_SECONDS` sets an interval for it; that variable is ignored for any other
+base. A pacing directory that cannot be used fails the call before anything is sent. Limits: `spec/GAPS.md` 63.
 
 ## Token and transport
 
@@ -187,6 +247,14 @@ five lookups, `search`, `example`, `read`, `list` and `grep` (`githits.LOOKUPS`,
 unknown operation and a usage error exit 2 with a usage message before a client exists, so nothing is sent and
 nothing is recorded. The operator keeps `syberlabs githits doctor` and `--license-mode`.
 
+A lookup is sent only when the query guard's hook passed that launcher call: the entry claims the hook's
+MAC-verified decision whose `arguments_digest` equals its own argv's (`query_guard.claim_launch`; one decision, one
+launch) before it paces or sends. Without one (no hook ran, as under `claude --bare` on 2.1.312; no guard key in
+the environment; a forged, mismatched or used decision) it records the call `status: unguarded`, `sent: false`,
+prints `refused: unguarded: ...` and exits 2, with no HTTP request (`docs/CLAUDE_CODE.md`, the pre-send refusal).
+`syberlabs githits` (the operator's) has no such gate.
+It prints as `syberlabs` does, unencodable characters replaced, and before the record: a failed print records `error`.
+
 ## The pinned contract
 
 `tests/fixtures/githits_openapi_v1.json` pins the part of the public OpenAPI document that this client uses. The
@@ -203,7 +271,7 @@ fixture_bytes`): 215,618 bytes, SHA-256 `c388ab7e53a25fdfbd914c10634d799ae923b01
 - each operation's method, path and schema names;
 - that every request the client builds, all options set, is valid under the request schema (the request
   schemas reject unknown keys);
-- that every response field the client reads (`githits.READS`) and every header it sends or reads exists.
+- that every response field the client reads (listed in `tests/test_githits.py`) and every header it sends or reads exists.
 
 It also checks that the fake server's responses are valid under the response schemas. A contract change
 therefore fails a test.
@@ -226,13 +294,13 @@ before its first candidate and keep everything else equal, `--allowed-tools` inc
 ```bash
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm off --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
+syberlabs propose --claude-code --lane api-hooked --trusted-tree --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch
 syberlabs run --once
 
 syberlabs start "Parse ISO dates with the UTC offset" --paths src tests --unattended
 syberlabs experiment label --name githits-pilot --item LIB-1 --arm on --tag needs_lookup
-syberlabs propose --claude-code --bare --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
-    --githits --githits-arm on          # the only difference: the launcher and the skill
+syberlabs propose --claude-code --lane api-hooked --trusted-tree --allowed-tools Read,Edit,Write,Glob,Grep,WebSearch,WebFetch \
+    --githits --githits-arm on          # the only difference: the launcher and the skill (never with --bare)
 syberlabs run --once
 
 syberlabs experiment report --name githits-pilot --items items.txt --delivered review
@@ -257,7 +325,7 @@ authentic client record (tool `githits.<op>`), which `syberlabs metrics` counts 
 | `contaminated` | excluded | the baseline shows a GitHits lookup: its `githits_lookups` is above zero, or its thread holds a verified `lookup` fact the host observed, an MCP call (`mcp__githits__*`) or a client record a guarded launcher call stands behind (`githits.<op>` but `doctor`, guard `pass`), a call that failed before its candidate included |
 | `contamination_unknown` | kept | the baseline shows no lookup but its `githits_lookups` is unknown, so it cannot be shown clean |
 | `server_mixed` | kept | some of a treatment thread's calls carry the ledger and some do not |
-| `two_routes` | kept | a treatment thread had GitHits by both routes, the ledger and a connected GitHits MCP server (one left in arm B by mistake): still the treatment, but not one route alone, and where it has client records `githits_lookups` counts only those, leaving the MCP lookups out (`spec/GAPS.md` 59) |
+| `two_routes` | kept | a treatment thread had GitHits by both routes, the ledger and a connected GitHits MCP server (one left in arm B by mistake): still the treatment, but not one route alone, and `githits_lookups` includes authentic client records plus host-observed MCP attempts, while guard-blocked attempts do not establish actual use (`spec/GAPS.md` 59) |
 | `unused` | kept | the treatment shows no GitHits lookup and its count is known to be zero (a launcher call the guard refused never reached GitHits) |
 | `use_unknown` | kept | the treatment shows no GitHits lookup but its count is unknown, so it cannot be shown to have used GitHits (nor not to) |
 | `arm_unverified` | kept | no call recorded its MCP servers or the ledger |
@@ -295,10 +363,12 @@ misreports. Claim ceiling: implemented and tested with stand-ins; no pilot has r
 | `GITHITS_API_TOKEN` | the bearer token (required for a call; a refused target needs none) |
 | `GITHITS_API_URL` | base URL, default `https://api.githits.dev/v1` |
 | `GITHITS_SESSION_ID`, `GITHITS_AGENT` | optional `X-GitHits-Session-ID` and `X-GitHits-Agent` |
-| `SYBERLABS_GITHITS_EXCLUDE` | owners or `owner/repo` to exclude besides `SyberLabs`, comma list (it only adds) |
-| `SYBERLABS_GITHITS_EXCLUDE_REPLACE` | `1`: the list above replaces `SyberLabs` (tests only) |
+| `SYBERLABS_GITHITS_EXCLUDE` | owners, `owner/repo`, `registry:name` packages or hosts to exclude besides the default deny-list (`SyberLabs`, `sykosyber`, `pypi:syberwork`, `deepwiki.com`, `deepwiki.org`, and forks by name), comma list (it only adds) |
+| `SYBERLABS_GITHITS_EXCLUDE_REPLACE` | `1`: the list above replaces the default deny-list, the fork rule included (tests only) |
 | `SYBERLABS_GITHITS_LICENSES` | allowed SPDX ids, comma list, or `any` (default: the permissive list) |
 | `SYBERLABS_GITHITS_RECORD_DIR`, `SYBERLABS_GITHITS_RECORD_KEY` | where records go and their MAC key (both or neither) |
+| `SYBERLABS_GITHITS_PACE_DIR` | the host's example pacing directory, absolute (default: `syberlabs-githits-pace` in the temporary directory) |
+| `SYBERLABS_GITHITS_PACE_SECONDS` | a pacing interval for a loopback base URL only (tests); ignored for GitHits itself, always 40 s |
 
 Claim ceiling: **implemented and tested** against a loopback fake that follows the pinned schemas. It has not
 been run against the real API, so the real server's behaviour is not observed: whether `strict` already excludes

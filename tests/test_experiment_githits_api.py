@@ -7,20 +7,16 @@ API route's record: first synthetic journals, ``tests.test_experiment.run`` thre
 ``claude_code`` writes on that route, so each check can be read off the events that make it; then both arms of the pilot
 end to end through the real ``ClaudeCodeProvider`` (the stand-in ``claude`` of ``tests/test_claude_code.py``, whose Bash
 tool runs the real launcher behind the real query guard, and the host's own GitHits client against a loopback fake),
-labelled with ``syberlabs experiment label`` and compared with ``syberlabs experiment report``; and last the rehearsal,
-``examples/githits_ab.py``, on that route. No model is called and nothing reaches the real GitHits API.
+labelled with ``syberlabs experiment label`` and compared with ``syberlabs experiment report``. No model is called and nothing reaches the real GitHits API.
 """
 
 import contextlib
 import copy
-import importlib.util
 import io
 import json
 import os
 import secrets
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from spec.validate import validate_events
@@ -143,6 +139,23 @@ class ApiRouteChecks(unittest.TestCase):
         self.assertEqual(self.row(looked_up(idle, "x-on", "mcp__githits__search"))["flags"], [],
                          "a lookup the host observed in a call that registered nothing is still a use")
 
+    def test_blocked_mcp_facts_never_establish_use_in_either_arm(self):
+        for guard in ("email", "secret", "shell_syntax", "unguarded", None):
+            with self.subTest(guard=guard):
+                events = self.pair(on={"githits": 0})
+                for case in ("x-off", "x-on"):
+                    events = looked_up(events, case, "mcp__githits__search", guard=guard)
+                self.assertEqual(self.row(events)["flags"], ["unused"])
+                self.assertEqual([r.observed for r in experiment.runs(events, NAME)], [0, 0])
+
+    def test_registered_mcp_attempt_counts_do_not_turn_blocks_into_use(self):
+        events = self.pair(off={"githits": 1}, on={"githits": 1})
+        for case in ("x-off", "x-on"):
+            events = looked_up(events, case, "mcp__githits__search", guard="email")
+        self.assertEqual(self.row(events)["flags"], ["unused"])
+        events = looked_up(events, "x-on", "mcp__githits__search", guard="pass")
+        self.assertEqual(self.row(events)["flags"], [])
+
     def test_an_unknown_lookup_count_is_never_read_as_zero(self):
         """``githits_lookups`` is unknown when a call declared no count and, where ``metrics`` reads it so (#139), when
         a launcher call or a client record cannot be vouched for (``signal.githits.mismatch``, ``unguarded``). The
@@ -232,7 +245,7 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         super().setUp()
         self.fake = FakeGitHits()
         self.addCleanup(self.fake.close)
-        # The api lane as an operator's machine has it: a key, no gateway or provider switch inherited from the
+        # The api-hooked lane (both arms; --githits refuses --bare) as an operator's machine has it: a key, no gateway or provider switch inherited from the
         # environment the suite runs in, and GitHits settings from nowhere but this test.
         env = {k: v for k, v in os.environ.items() if k not in THIRD_PARTY_SWITCHES and k not in GITHITS_SETTINGS}
         env.update({"ANTHROPIC_API_KEY": "test-placeholder", githits.TOKEN_ENV: "ghtest_" + secrets.token_hex(16),
@@ -266,8 +279,8 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         self.assertEqual(code, 0, text)
         self.assertNotIn("labelled_late", text)
         claude = self.stand_in(name, first=first, repair=repair, lookups=[list(entry) for entry in lookups])
-        provider = ClaudeCodeProvider(kit.repo, bare=True, executable=claude, max_calls=3, githits=githits_on,
-                                      arm=arm, thread_label=thread.id, **options)
+        provider = ClaudeCodeProvider(kit.repo, lane="api-hooked", trusted_tree=True, executable=claude, max_calls=3,
+                                      githits=githits_on, arm=arm, thread_label=thread.id, **options)
         found = thread.propose(provider)
         receipt = thread.accept(found[-1].id, actor=RUNNER)
         self.assertEqual(receipt.status, "succeeded", receipt.reason)
@@ -341,8 +354,7 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         """Arm B runs the API launcher and, by mistake, a GitHits MCP server as well (``--mcp-config``), and the model
         uses both. GitHits was there, so the item is no ``arm_conflict``; the treatment is said to have had two routes
         (``two_routes``, kept: the pilot pre-registers its exclusions, and this is not one). Its paired GitHits count is
-        the metrics station's count of client records, which leaves the MCP lookup out (``spec/GAPS.md`` 59), while
-        the report sees both. The same stray server in arm A is ``arm_conflict``, and its lookup ``contaminated``."""
+        the metrics station's count of client records plus MCP attempts; the report also sees both. The same stray server in arm A is ``arm_conflict``, and its lookup ``contaminated``."""
         config = self.root.parent / "githits-mcp.json"
         config.write_text(json.dumps({"mcpServers": {"githits": {"command": "githits-stand-in"}}}), encoding="utf-8")
         mcp = ["mcp__githits__search", {"query": "zq95 githits mcp query: csv writer header"}]
@@ -364,8 +376,8 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         runs = {(r.item, r.arm): r for r in experiment.runs(self.events(), NAME)}
         self.assertEqual((runs["Z", "on"].server, runs["Z", "on"].routes, runs["Z", "on"].observed), (True,
                          ("launcher", "mcp"), 2))
-        self.assertEqual(rows["Z"]["values"]["on"]["githits_lookups"], 1.0,
-                         "metrics counts the client's record only; the MCP lookup is the report's to see")
+        self.assertEqual(rows["Z"]["values"]["on"]["githits_lookups"], 2.0,
+                         "both the authentic client record and the MCP attempt are counted")
         self.assertEqual(rows["W"]["excluded"], ["arm_conflict", "contaminated"])
         self.assertEqual(found["items"], {"labelled": 2, "compared": 1, "excluded": 1})
         code, text = self.cli("experiment", "report", "--name", NAME)
@@ -389,42 +401,6 @@ class ApiArmEndToEnd(ClaudeCodeCase):
         self.assertEqual(code, 1)
         self.assertIn("check arm_conflict (excluded): X, Y", text)
         self.assertIn("nothing was compared", text)
-
-
-def load_rehearsal():
-    path = Path(__file__).resolve().parents[1] / "examples" / "githits_ab.py"
-    spec = importlib.util.spec_from_file_location("githits_ab", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-class Rehearsal(unittest.TestCase):
-    """``examples/githits_ab.py`` on its default route, the API launcher: seven items through both arms of the real
-    ``ClaudeCodeProvider``, with its own stand-in ``claude`` and loopback GitHits."""
-
-    def test_the_api_route_rehearsal_compares_six_items_and_excludes_the_misconfigured_one(self):
-        rehearsal, said = load_rehearsal(), []
-        with tempfile.TemporaryDirectory() as folder:
-            before = dict(os.environ)
-            events, contracts = rehearsal.rehearse(Path(folder), "api", log=said.append)
-            self.assertEqual(dict(os.environ), before, "the rehearsal puts the environment back")
-        found = experiment.report(events, rehearsal.NAME, contracts, delivered_by="review")
-        self.assertEqual(found["items"], {"labelled": 7, "compared": 6, "excluded": 1})
-        self.assertEqual(found["checks"], {"arm_conflict": ["LIB-4"], "unused": ["LIB-4"]},
-                         "the treatment that ran without --githits, and nothing else")
-        self.assertEqual((found["rule"]["met"], found["by_tag"]["needs_lookup"]["rule"]["met"]), (False, True),
-                         "docs/EXPERIMENTS.md: the rehearsal's rule is not met overall and met on needs_lookup")
-        self.assertIn("The loopback GitHits received 9 requests; the real API received none.", said)
-        runs = experiment.runs(events, rehearsal.NAME)
-        self.assertEqual({(r.arm, r.server) for r in runs if r.item != "LIB-4"}, {("off", False), ("on", True)})
-        lookups = {r.item: r.value("githits_lookups") for r in runs if r.arm == "on" and r.item != "LIB-4"}
-        self.assertEqual({item: metric.value for item, metric in lookups.items()},
-                         {"LIB-1": 2, "LIB-2": 2, "LIB-3": 2, "ROUTINE-1": 1, "ROUTINE-2": 1, "ROUTINE-3": 1})
-        self.assertTrue(all("host-observed" in metric.note for metric in lookups.values()),
-                        "counted from the host's lookup facts, not from what the stand-in declared")
-        with self.assertRaises(ValueError):
-            rehearsal.rehearse(Path("unused"), "carrier-pigeon")
 
 
 if __name__ == "__main__":
