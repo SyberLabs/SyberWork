@@ -244,11 +244,17 @@ def tail(text: str, limit: int = 300) -> str:
     return flat if len(flat) <= limit else "..." + flat[-limit:]
 
 
-def git(repo: Path, *args: str) -> str:
+def git_bytes(repo: Path, *args: str) -> bytes:
+    """A git command's stdout exactly as git wrote it (a ``-z`` listing keeps every name's leading and trailing
+    spaces)."""
     done = subprocess.run(["git", "-C", str(repo), *args], stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
     if done.returncode != 0:
         raise RuntimeError(f"git {args[0]}: {tail(done.stderr.decode('utf-8', 'replace'), 200)}")
-    return done.stdout.decode("utf-8", "replace").strip()
+    return done.stdout
+
+
+def git(repo: Path, *args: str) -> str:
+    return git_bytes(repo, *args).decode("utf-8", "replace").strip()
 
 
 # ------------------------------------------------------------------------------------------------------------- plan
@@ -400,8 +406,11 @@ def build_contracts(plan: dict, repo: Path, thread_budget: float) -> tuple[dict,
     canary["evolution"]["evaluation"] = {"checks": {"canary": {"argv": [sys.executable, "-c", "pass"],
                                                                "timeout_seconds": 60}},
                                          "required": ["canary"], "max_age_seconds": 3600}
-    budget = canary["evolution"]["budget"]
-    budget.update({"max_candidates": 2, "max_evaluations": 2, "max_seconds": min(budget.get("max_seconds", 900), 900)})
+    budget = canary["evolution"].get("budget")
+    if isinstance(budget, dict):  # a whole contract without one is left for check_budget to refuse
+        max_seconds = budget.get("max_seconds", 900)
+        max_seconds = max_seconds if isinstance(max_seconds, (int, float)) and not isinstance(max_seconds, bool) else 900
+        budget.update({"max_candidates": 2, "max_evaluations": 2, "max_seconds": min(max_seconds, 900)})
     return main, canary
 
 
@@ -548,19 +557,21 @@ def check_lane(env) -> Check:
                                           "third-party routing switch set", {"lane": "api", "cost_basis": "billed"})
 
 
-def scan_paths(repo: Path, extra: list) -> list[Path]:
+def scan_paths(repo: Path, extra: list) -> tuple[list[Path], bool]:
     """Where the token must not be: every tracked and untracked (not ignored) file of the repository, the usual
-    credential files beside it and beside the host checkout whether ignored or not, and ``extra``."""
-    paths = set()
+    credential files beside it and beside the host checkout whether ignored or not, and ``extra``; and whether git
+    listed the repository's files. The listing is split on NUL from git's own bytes, so a name that starts or ends
+    with a space is opened under its own name."""
+    paths, listed = set(), True
     try:
-        names = git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
-        paths |= {repo / name for name in names if name}
-    except (RuntimeError, OSError):
-        pass
+        names = git_bytes(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split(b"\0")
+        paths |= {repo / os.fsdecode(name) for name in names if name}
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        listed = False
     for root in {repo.resolve(), ROOT}:
         paths |= {root / name for name in SECRET_FILES} | set(root.glob(".env.*"))
     paths |= {Path(p) for p in extra}
-    return sorted(p for p in paths if p.is_file())
+    return sorted(p for p in paths if p.is_file()), listed
 
 
 def holds(path: Path, needle: bytes, block: int = 1 << 20) -> bool:
@@ -602,16 +613,23 @@ def check_token(env, repo: Path, plan_path: Path | None) -> Check:
         return Check("githits token", FAIL, f"{githits.TOKEN_ENV} is not set in the environment")
     if not token.isprintable() or any(ch.isspace() for ch in token):
         return Check("githits token", FAIL, f"{githits.TOKEN_ENV} holds whitespace or a control character")
-    found, read, skipped = files_holding(token, scan_paths(repo, [plan_path] if plan_path else []))
+    paths, listed = scan_paths(repo, [plan_path] if plan_path else [])
+    found, read, skipped = files_holding(token, paths, MAX_SCAN_BYTES)
     if found:
         names = ", ".join(str(p) for p in found[:5]) + (f" and {len(found) - 5} more" if len(found) > 5 else "")
         return Check("githits token", FAIL, f"the token is written in {names}: remove it there and keep it in the "
                                             "environment only")
-    unread = f"; {skipped} not read (over {MAX_SCAN_BYTES >> 20} MB or unreadable)" if skipped else ""
+    facts = {"files_scanned": read, "files_unread": skipped, "repository_listed": listed}
+    if not listed:
+        return Check("githits token", FAIL, "git could not list the repository's files, so they were not scanned for "
+                                            "the token", facts)
+    if skipped:
+        return Check("githits token", FAIL, f"{skipped} file(s) could not be scanned for the token (over "
+                                            f"{MAX_SCAN_BYTES >> 20} MB or unreadable): move them out of the "
+                                            "repository or make them readable", facts)
     return Check("githits token", PASS, f"in the environment only: in none of the {read} files scanned (the "
                                         "repository's tracked and untracked files, .env*, .mcp.json, local Claude "
-                                        f"settings, the plan){unread}",
-                 {"files_scanned": read, "files_unread": skipped})
+                                        "settings, the plan)", facts)
 
 
 def check_doctor(sy: Syberlabs) -> Check:
@@ -776,7 +794,8 @@ def unmetered(events: list) -> str | None:
 def spend_of(events: list, contracts: dict) -> float | None:
     """Host-observed dollars over the threads in ``events``: a thread whose calls crossed the meter at a model the
     prices name counts its dollars, and one where nothing crossed it counts nothing. A model the prices do not name,
-    or a call the meter missed (``unmetered``), makes the whole sum unknown."""
+    a call the meter missed (``unmetered``), or a thread with a spend record the host did not observe (a call that
+    returned a result but no metered usage) makes the whole sum unknown."""
     if unmetered(events):
         return None
     total = 0.0
@@ -785,7 +804,7 @@ def spend_of(events: list, contracts: dict) -> float | None:
             if not item.cost.known:
                 return None
             total += float(item.cost.value)
-        elif item.cost_basis == "declared":
+        elif item.cost_basis == "declared" or item.cost.basis:  # spend recorded, but not by the host's meter
             return None
     return round(total, 6)
 
@@ -1502,6 +1521,7 @@ class DryRun:
             text = json.dumps(receipt, indent=2, sort_keys=True)
             for name, value in credentials:
                 text = text.replace(value, f"[{name} redacted]")
+            self.receipt = receipt = json.loads(text)  # the table prints what the file holds, never the credential
         (out / "receipt.json").write_text(text + "\n", encoding="utf-8")
         say("")
         say(render(receipt, out))
@@ -1570,18 +1590,21 @@ def main(argv: list | None = None, *, ask: Ask | None = None, runner: Runner | N
     exclude_from_git(repo, out if args.out else runs_dir)
     dry = DryRun(args, out, seed, ask or input, runner or subprocess_runner)
     try:
-        return dry.run()
+        code = dry.run()
     except KeyboardInterrupt:
         dry.receipt["verdict"] = "ABORTED"
         dry.receipt["reasons"].append("interrupted by the operator")
-        return 1
+        code = 1
     except Exception as exc:  # a fault here or in a command: the receipt says so, the traceback follows on stderr
         traceback.print_exc()
         dry.receipt["verdict"] = FAIL
         dry.receipt["reasons"].append(f"internal error: {type(exc).__name__}: {tail(str(exc), 200)}")
-        return 1
+        code = 1
     finally:
         dry.finish()
+    if code == 0 and dry.receipt.get("verdict") != PASS:  # finish's credential scan can still fail a passing run
+        code = 1
+    return code
 
 
 if __name__ == "__main__":
