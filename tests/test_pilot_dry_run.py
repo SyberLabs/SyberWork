@@ -710,6 +710,64 @@ sys.exit(code)
                     self.assertNotIn(secret, text)
 
 
+class ReviewFindings(DryRunCase):
+    """The six findings of the 2026-11-07 review of #143, each pinned."""
+
+    def test_unmetered_spend_on_a_thread_is_unknown_not_zero(self):
+        item = lambda basis, hashes: mock.Mock(cost_basis=basis, cost=metrics.Metric(None, hashes, ""))
+        with mock.patch.object(pilot, "unmetered", return_value=None):
+            with mock.patch.object(metrics, "work_items", return_value=[item("none", ("h1",))]):
+                self.assertIsNone(pilot.spend_of([], {}), "a spend record the host did not observe is unknown")
+            with mock.patch.object(metrics, "work_items", return_value=[item("none", ())]):
+                self.assertEqual(pilot.spend_of([], {}), 0.0, "a thread nothing crossed the meter for counts nothing")
+        self.assertIn("unknown", pilot.gate(None, 1.0, 8.0))
+
+    def test_the_token_check_fails_when_any_file_was_not_scanned(self):
+        paths, _ = pilot.scan_paths(self.root, [])
+        limit = max(p.stat().st_size for p in paths if p.is_file())
+        with self.subTest("a file over the scan limit"), mock.patch.object(pilot, "MAX_SCAN_BYTES", limit):
+            big = self.root / "big.bin"
+            big.write_bytes(b"0" * (limit + 1))
+            check = pilot.check_token(os.environ, self.root, None)
+            self.assertEqual((check.status, check.data["files_unread"]), ("FAIL", 1), check.detail)
+            big.unlink()
+        with self.subTest("git could not list the repository"), \
+                mock.patch.object(pilot, "git_bytes", side_effect=RuntimeError("git ls-files: broken")):
+            check = pilot.check_token(os.environ, self.root, None)
+            self.assertEqual((check.status, check.data["repository_listed"]), ("FAIL", False), check.detail)
+        with self.subTest("a name that starts with a space"):
+            odd = self.root / " aaa.txt"
+            odd.write_text(f"token={self.token}\n", encoding="utf-8")
+            check = pilot.check_token(os.environ, self.root, None)
+            self.assertEqual(check.status, "FAIL", check.detail)
+            self.assertIn(" aaa.txt", check.detail)
+            odd.unlink()
+        self.assertEqual(pilot.check_token(os.environ, self.root, None).status, "PASS")
+
+    def test_a_whole_contract_without_a_budget_is_refused_by_the_budget_check_not_a_crash(self):
+        main, _ = pilot.build_contracts(self.plan_doc(), ROOT, 1.0)
+        del main["evolution"]["budget"]
+        own, canary = pilot.build_contracts(self.plan_doc(prices=None, contract=main), ROOT, 1.0)
+        self.assertNotIn("budget", canary["evolution"])
+        self.assertEqual(pilot.check_budget(8.0, own, 6).status, "FAIL")
+
+    def plan_doc(self, **changes):
+        return Pieces.plan(self, **changes)
+
+    def test_a_credential_found_at_the_end_fails_the_exit_code_and_never_prints(self):
+        def run(dry):
+            (dry.out / "leak.txt").write_text(self.token, encoding="utf-8")
+            dry.receipt["verdict"] = "PASS"
+            dry.receipt["reasons"].append(f"a reason that quotes {self.token}")
+            return 0
+        with mock.patch.object(pilot.DryRun, "run", run):
+            code, printed, receipt = self.dry_run()
+        self.assertEqual((code, receipt["verdict"]), (1, "FAIL"), "the exit code follows the final verdict")
+        self.assertNotIn(self.token, printed, "the table prints the redacted receipt")
+        self.assertNotIn(self.token, (self.out / "receipt.json").read_text(encoding="utf-8"))
+        self.assertIn("pilot dry run: FAIL", printed)
+
+
 class OneCommand(DryRunCase):
     def test_the_script_as_the_operator_runs_it(self):
         """``python scripts/pilot_dry_run.py --plan ...``: every ``syberlabs`` command a subprocess of this Python,
