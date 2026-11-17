@@ -350,6 +350,15 @@ host already trusts it. Two further gaps are named in `spec/GAPS.md` 58:
   (above), unless it is made and undone within one test; a `try`/`except`
   around its own assertions, an assertion removed, or a helper or assertion
   method a test calls replaced at run time, is not.
+  Since reviewer `rules@6` the reference critic reports the plain ways in
+  the diff: an assertion removed or swallowed, a test newly skipped or
+  expected to fail, and a test removed (which the floor excuses). It reports
+  them at medium, so a person reads them, and at high when the contract's
+  critic command carries `--block-weakened-tests` (`docs/CRITIC.md`, "A
+  weakened test"). The runner sees none of them, because nothing false is
+  reported: `tests/test_critic.py::WeakenedThroughTheThread` has a candidate
+  whose `tests` check passes with the failing test skipped. An assertion made
+  weaker without being removed, and a helper replaced at run time, stay open.
 - Outside test files, the patterns that end the process or write to raw
   descriptors do not apply, because production code does both.
 
