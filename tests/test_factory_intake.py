@@ -26,6 +26,7 @@ HUMAN = {"kind": "human", "id": "tester"}
 BUG_BODY = ("Steps: run the order path with quantity 0.\nExpected: no order is posted.\n"
             "Instead the rules module raises ZeroDivisionError.")
 KEY = "ghp_" + "a1B2c3D4e5F6g7H8i9J0"  # the shape of a token; not one
+AUTHOR = "wilhelmina"
 
 
 def decider(*mode: str) -> tuple[str, list[str]]:
@@ -33,7 +34,8 @@ def decider(*mode: str) -> tuple[str, list[str]]:
 
 
 def request(ref="acme/app#1", title="rules crash on quantity zero", body=BUG_BODY, kind="github_issue"):
-    return intake.new_request(kind, ref, title, body, author="ada")
+    # An author whose name no hexadecimal digest can spell, so "the name is not on the ledger" is a real check.
+    return intake.new_request(kind, ref, title, body, author=AUTHOR)
 
 
 def screened(title="", body="", policy=None):
@@ -499,7 +501,7 @@ class Triage(Scratch):
         hidden = "<!-- a note for the triager -->"
         intake.triage(home, request(body=BUG_BODY + "\n" + hidden), human_owner=OWNER, decider=decider())
         log = home.log.read_text(encoding="utf-8")
-        for text in ("ZeroDivisionError", "quantity zero", "note for the triager", "ada"):
+        for text in ("ZeroDivisionError", "quantity zero", "note for the triager", AUTHOR):
             self.assertNotIn(text, log, text)
         decision = self.notes(home)[0]["body"]
         self.assertEqual(decision["screen"]["hidden"]["comments"], 1)
@@ -741,7 +743,7 @@ class Comment(Scratch):
         self.assertIn("| injection | no | 0.97 |", text)
         self.assertIn("Removed before anything read the request: 1 HTML comment, 1 invisible character.", text)
         self.assertIn("A person decides anything under 0.80.", text)
-        for quoted in ("ZeroDivisionError", "quantity", "ada"):
+        for quoted in ("ZeroDivisionError", "quantity", AUTHOR):
             self.assertNotIn(quoted, text)
 
     def test_the_comment_says_when_nobody_was_asked_or_nobody_answered(self):
