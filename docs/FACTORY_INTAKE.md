@@ -24,7 +24,7 @@ comes out, with a person keeping the merge. The stations, and what SyberWork has
 | One agent, one ticket, inside the plan | A claim on the ledger; a Build Thread whose mutable scope is the plan's files and whose objective names the request | [FACTORY_WORK.md](FACTORY_WORK.md) |
 | Build | A Build Thread: a model proposes commits, the repair loop feeds it SyberWork's own check results | [BUILD_THREAD.md](BUILD_THREAD.md) |
 | Review by someone who did not write it | The critic station: findings in the chain, a high finding refuses acceptance | [CRITIC.md](CRITIC.md) |
-| A person decides | Accepting moves one branch; pushing, a pull request and a merge are separate acts | [BUILD_THREAD.md](BUILD_THREAD.md), `AGENTS.md` classes |
+| A person decides | Accepting moves one branch; pushing, a pull request and a merge are separate acts. `factory work queue` orders what waits for them and says how to read each change | [BUILD_THREAD.md](BUILD_THREAD.md), `AGENTS.md` classes, [FACTORY_WORK.md](FACTORY_WORK.md) |
 
 The station names follow Daniel Moka's "Build Your Own Software Factory" (craftbettersoftware.com). Two things
 differ on purpose. The state of a request is an event on the hash-chained ledger, not a label; `label()` gives
@@ -262,5 +262,3 @@ repository. That naming is the owner's to confirm or change at admission.
 
 - **`critic-weakened-tests`**: reference-critic rules for a newly skipped test, assertions removed from an
   existing test, and a credential shape on an added line.
-- **A queue for the person who merges**: ready work ordered by what it unblocks, with a reading order by
-  component.

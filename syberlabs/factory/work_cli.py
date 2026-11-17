@@ -9,6 +9,8 @@
     syberlabs factory work start acme/app#12 --by model:claude-1 --check "tests=/abs/python -m unittest -q"
     syberlabs factory work settle acme/app#12                                 # record that its thread holds an accepted change
     syberlabs factory work release acme/app#12 --by model:claude-1 --reason "blocked on a decision"
+    syberlabs factory work settle                                             # the same for every ticket that has a thread
+    syberlabs factory work queue                                              # ready work, first to read first
 
 Registered through ``extend`` from one hook line at the end of ``cli.py``. ``--home`` is the factory ledger and
 ``--root`` the repository, as for every ``factory`` command. A ticket is named by its id, by the first characters
@@ -23,7 +25,7 @@ import sys
 from pathlib import Path
 
 from syberlabs.errors import Rejected
-from syberlabs.factory import work
+from syberlabs.factory import review_queue, work
 from syberlabs.factory import plan as planmod
 from syberlabs.factory import spec as specmod
 from syberlabs.providers import split_command
@@ -103,9 +105,14 @@ def add_commands(steps) -> None:
     start.add_argument("--kit-home", default=".syberlabs", help="the Build Thread home under --root (default .syberlabs)")
     start.add_argument("--max-candidates", type=int, default=6)
 
-    settle = sub.add_parser("settle", help="record, once, that a ticket's thread holds an accepted change; nothing is merged")
-    settle.add_argument("ticket")
+    settle = sub.add_parser("settle", help="record, once, that a ticket's thread holds an accepted change; nothing is merged. "
+                                           "Without a ticket: every ticket that has a thread")
+    settle.add_argument("ticket", nargs="?")
     settle.add_argument("--kit-home", default=".syberlabs")
+
+    queue = sub.add_parser("queue", help="every ready change, first to read first, with the reasons for the order and a "
+                                         "reading order by component; nothing is pushed, split or merged")
+    queue.add_argument("--json", action="store_true")
 
 
 def _read_json(path: str, what: str):
@@ -221,6 +228,16 @@ def _run(args) -> int:
         if found["objective"]:
             print(f"objective {found['objective'].splitlines()[0]}")
         print(f"next      syberlabs use {found['thread']}; then propose, check, and a person accepts. Nothing was proposed or merged.")
+        return 0
+    if command == "queue":
+        rows = review_queue.queue(home, repo_root=args.root)
+        print(json.dumps(rows, indent=2, sort_keys=True) if args.json else review_queue.text(rows), end="" if not args.json else "\n")
+        return 0
+    if command == "settle" and args.ticket is None:
+        looked = work.settle_all(home, repo_root=args.root, kit_home=args.kit_home)
+        for current in looked:
+            print(_line(current))
+        print(f"{sum(1 for current in looked if current['status'] == 'ready')} of {len(looked)} thread(s) hold an accepted change")
         return 0
     if command == "settle":
         current = work.settle(home, args.ticket, repo_root=args.root, kit_home=args.kit_home)

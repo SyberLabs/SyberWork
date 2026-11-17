@@ -14,8 +14,9 @@ who declines it.
 
 Part four is the work line: in a Git repository, a ticket from intake is planned by the stand-in planner in a
 temporary checkout, claimed by one agent, refused to a second, and started as a Build Thread whose scope is the
-plan's files; a plan that names a credentials file waits for a person. Nothing leaves loopback; every step runs in
-a scratch folder.
+plan's files; a plan that names a credentials file waits for a person. A patch is proposed and a person accepts
+it, and the queue for the person who merges then lists that one change. Nothing leaves loopback; every step runs
+in a scratch folder.
 """
 
 from __future__ import annotations
@@ -233,7 +234,25 @@ def _work_path(project: Path) -> None:
         raise AssertionError(started)
     if "1 ticket(s) working" not in _cli(project, "work", "list", "--status", "working"):
         raise AssertionError("the started ticket is not working")
-    _cli(project, "work", "release", "acme/app#5", "--by", "human:tester", "--reason", "campaign over")
+    if "nothing is ready" not in _cli(project, "work", "queue"):
+        raise AssertionError("a thread with no accepted change is in the queue")
+    from syberlabs.build import Kit
+    from syberlabs.providers import PatchProvider
+
+    kit = Kit.local(project / ".syberlabs", project)
+    try:
+        thread = kit.open(work.state(home, "acme/app#5")["work"]["thread"])
+        rules = (project / "fxapp" / "rules.py").read_text(encoding="utf-8")
+        [candidate] = thread.propose(PatchProvider({"fxapp/rules.py": rules + "\n# guarded\n"}))
+        thread.check(candidate.id)
+        if thread.accept(candidate.id).status != "succeeded":
+            raise AssertionError("the change inside the plan was not accepted")
+    finally:
+        kit.close()
+    _cli(project, "work", "settle", "acme/app#5")
+    queued = _cli(project, "work", "queue")
+    if "1. github_issue:acme/app#5" not in queued or "1. rules: fxapp/rules.py" not in queued or "1 change(s) ready" not in queued:
+        raise AssertionError(queued)
     after = subprocess.run(["git", "-C", str(project), "rev-parse", "main"], check=True, capture_output=True, text=True, env=env).stdout.strip()
     if after != base or not home.verify():
         raise AssertionError("the work line moved main or left a ledger that does not verify")
