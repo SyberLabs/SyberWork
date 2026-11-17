@@ -248,6 +248,11 @@ non-POSIX there, as [FACTORY_AUTONOMY.md](FACTORY_AUTONOMY.md) notes).
   writes one.
 - One ledger, one machine. Two operators triaging the same repository from two machines do not see each other's
   decisions.
+- An actor is a name. `--by human:ID` and `--owner ID` are what the command was given, and nothing here checks
+  who typed them: a process with a shell on the machine that holds the ledger can type a person's name, as it
+  could append to the ledger's file. A spec's promotion is bound to the owner key the ledger pins
+  ([FACTORY.md](FACTORY.md)); a resolution here is not. Until it is, an `intake_resolved` event says that someone
+  who could run the command named a person, so keep an agent's shell away from the ledger home.
 - The stand-in decider's rules exist to drive the tests. Nothing about its answers says how a model would do.
 
 ## Class and first consumer
