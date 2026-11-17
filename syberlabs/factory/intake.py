@@ -375,6 +375,25 @@ def _terms(text: str, families: dict) -> list[str]:
     return found
 
 
+def credential_shapes(text: str) -> list[str]:
+    """The shapes of credentials in ``text``, named and never quoted: the prefixes of ``syberlabs/_patterns.py``
+    (``ghp_``, ``sk-ant-``, ...), ``url_credentials`` for a URL with a password in it, and ``key_or_bearer`` for a
+    PEM private-key header or a bearer token. Empty when there is none."""
+    shapes = sorted(set(credential_prefixes(text)))
+    if _URL_CREDENTIALS.search(text):
+        shapes.append("url_credentials")
+    if _OTHER_SECRET.search(text):
+        shapes.append("key_or_bearer")
+    return shapes
+
+
+def directive_shapes(text: str, *, hidden: bool = False) -> list[str]:
+    """The names of the order-to-an-agent patterns ``text`` matches once folded: ``DIRECTIVES``, and for text
+    that was hidden from the reader also ``HIDDEN_DIRECTIVES``."""
+    folded = fold(text)
+    return sorted(name for name, pattern in DIRECTIVES + (HIDDEN_DIRECTIVES if hidden else ()) if pattern.search(folded))
+
+
 def visible_text(text: str) -> str:
     """One piece of text as a reader would see it: hidden markup and invisible characters removed, nothing counted
     or reported. For text that enters a menu from somewhere other than a screened request (an operator's list of
@@ -400,19 +419,14 @@ def screen(request: dict, policy: dict) -> dict:
     flags: list[dict] = []
     if not visible["title"] and not visible["body"]:
         flags.append({"rule": "empty"})
-    shapes = sorted(set(credential_prefixes(whole)))
-    if _URL_CREDENTIALS.search(whole):
-        shapes.append("url_credentials")
-    if _OTHER_SECRET.search(whole):
-        shapes.append("key_or_bearer")
+    shapes = credential_shapes(whole)
     if shapes:
         flags.append({"rule": "secret", "shapes": shapes})
-    hidden_text = fold("\n".join(removed))
-    patterns = sorted(name for name, pattern in DIRECTIVES + HIDDEN_DIRECTIVES if pattern.search(hidden_text))
+    patterns = directive_shapes("\n".join(removed), hidden=True)
     if patterns:
         flags.append({"rule": "hidden_directive", "patterns": patterns})
-    visible_text = fold(visible["title"] + "\n" + visible["body"])
-    patterns = sorted(name for name, pattern in DIRECTIVES if pattern.search(visible_text))
+    shown = visible["title"] + "\n" + visible["body"]
+    patterns = directive_shapes(shown)
     if patterns:
         flags.append({"rule": "directive", "patterns": patterns})
     channels = [name for name in ("tag_characters", "bidi_controls", "variation_selectors") if counts[name]]
@@ -421,7 +435,7 @@ def screen(request: dict, policy: dict) -> dict:
     if len(visible["title"]) > limits["title_chars"] or len(visible["body"]) > limits["body_chars"]:
         flags.append({"rule": "too_long", "title_chars": len(visible["title"]), "body_chars": len(visible["body"])})
     return {"version": SCREEN_VERSION, "flags": flags, "hidden": counts, "visible": visible,
-            "sensitive": _terms(visible_text, policy["sensitive_terms"])}
+            "sensitive": _terms(fold(shown), policy["sensitive_terms"])}
 
 
 def snapshot(request: dict, screened: dict) -> dict:
@@ -522,6 +536,9 @@ def _strict_loads(raw: bytes | str):
     return json.loads(raw, object_pairs_hook=no_repeats, parse_constant=no_constant)
 
 
+strict_loads = _strict_loads  # the same parser for the other documents a command prints (a plan)
+
+
 def _probability(value) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and 0 <= value <= 1
 
@@ -586,16 +603,18 @@ def _passthrough(env: dict) -> dict:
     return {key: os.environ[key] for key in names if key and key != ENV_LIST and key not in env and key in os.environ}
 
 
-def run_decider(argv: list[str], payload: dict, *, timeout: int = 60) -> tuple[str, bytes | None, str]:
-    """Run one decider command with ``payload`` on stdin. Returns ``(outcome, output, output digest)`` where
-    ``outcome`` is ``answered``, ``timeout``, ``failed`` (a non-zero exit) or ``error`` (it could not start, or
-    printed more than 256 KiB).
+def run_reader(argv: list[str], payload: dict, *, timeout: int = 60, cwd: str | Path | None = None,
+               max_bytes: int = MAX_ANSWER_BYTES) -> tuple[str, bytes | None, str]:
+    """Run one command that reads text nobody here trusts, with ``payload`` on stdin. Returns ``(outcome, output,
+    output digest)`` where ``outcome`` is ``answered``, ``timeout``, ``failed`` (a non-zero exit) or ``error`` (it
+    could not start, or printed more than ``max_bytes``).
 
-    The command runs as a Build Thread check runs (``checks.run_check``): argv without a shell, in a scratch
-    directory that is not the repository or the ledger, with ``HOME`` and ``TMP`` inside it, under the scrubbed
-    environment plus the operator's ``SYBERLABS_INTAKE_ENV`` names, ended with everything it started at
-    ``timeout`` seconds. It reads text nobody here trusts, so it gets nothing it does not need. This is a
-    narrowed environment, not a sandbox: the command runs with the operator's permissions."""
+    The command runs as a Build Thread check runs (``checks.run_check``): argv without a shell, with ``HOME`` and
+    ``TMP`` in a scratch directory, under the scrubbed environment plus the operator's ``SYBERLABS_INTAKE_ENV``
+    names, ended with everything it started at ``timeout`` seconds. Its working directory is that scratch
+    directory unless ``cwd`` names another (a temporary checkout, for a command that has to read code); it is
+    never told where the repository or the ledger is. It gets nothing it does not need. This is a narrowed
+    environment, not a sandbox: the command runs with the operator's permissions."""
     from syberlabs.checks import run_check, scrubbed_environment  # here, not at the top: checks loads the critic and Git
 
     with tempfile.TemporaryDirectory(prefix="syberlabs-intake-") as folder:
@@ -605,9 +624,14 @@ def run_decider(argv: list[str], payload: dict, *, timeout: int = 60) -> tuple[s
         env.update(_passthrough(env))
         feed, log = scratch / "request.json", scratch / "answer.json"
         feed.write_bytes(json.dumps(payload).encode())
-        found = run_check(list(argv), scratch, env, timeout, MAX_ANSWER_BYTES, log, stdin=feed)
+        found = run_check(list(argv), Path(cwd) if cwd is not None else scratch, env, timeout, max_bytes, log, stdin=feed)
         outcome = {"passed": "answered", "timed_out": "timeout", "failed": "failed"}.get(found["state"], "error")
         return outcome, (log.read_bytes() if outcome == "answered" else None), found["output_digest"]
+
+
+def run_decider(argv: list[str], payload: dict, *, timeout: int = 60) -> tuple[str, bytes | None, str]:
+    """One decider command, run by :func:`run_reader` in its scratch directory."""
+    return run_reader(argv, payload, timeout=timeout)
 
 
 def ask(name: str, argv: list[str], payload: dict, *, model: str | None = None, timeout: int = 60) -> dict:
@@ -834,7 +858,9 @@ def ticket_of(ledger, item: dict) -> dict | None:
     return ticket
 
 
-def _party(entry, what: str) -> tuple[str, list[str]]:
+def named_command(entry, what: str) -> tuple[str, list[str]]:
+    """``(name, argv)`` for a command that answers at a process boundary (a decider, a shadow, a planner): a
+    lowercase name the ledger records it under, and a non-empty argv."""
     if not isinstance(entry, (tuple, list)) or len(entry) != 2 or not _NAME.match(str(entry[0])) \
             or not isinstance(entry[1], (list, tuple)) or not entry[1] or not all(isinstance(a, str) and a for a in entry[1]):
         raise Rejected("intake_decider", f"{what} is (name, argv): a lowercase name of letters, digits and _.- and a command")
@@ -858,8 +884,8 @@ def triage(ledger, request: dict, *, human_owner: str, policy: dict | None = Non
         raise Rejected("ticket_owner", "intake names the accountable human before it reads a request; none given")
     policy = check_policy(policy if policy is not None else default_policy())
     request = check_request(request)
-    acting_party = _party(decider, "a decider") if decider is not None else None
-    shadow_parties = [_party(entry, "a shadow decider") for entry in shadows or []]
+    acting_party = named_command(decider, "a decider") if decider is not None else None
+    shadow_parties = [named_command(entry, "a shadow decider") for entry in shadows or []]
     if model is not None and (not isinstance(model, str) or not model.strip()):
         raise Rejected("intake_decider", "a model pin is the exact model id the decider must report")
     sha, key = request_digest(request), item_key(request["source"])
@@ -924,7 +950,7 @@ def resolve(ledger, text: str, route: str, actor: dict, *, reason: str, human_ow
         raise Rejected("intake_route", f"a resolution is one of {RESOLUTIONS}, not {route!r}")
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 300 or not reason.isprintable():
         raise Rejected("intake_reason", "a resolution says why, on one line of at most 300 characters")
-    if credential_prefixes(reason) or _OTHER_SECRET.search(reason):
+    if credential_shapes(reason):
         raise Rejected("intake_reason", "the reason looks like it holds a credential; it would stay on the ledger")
     if route == "duplicate" and (not isinstance(duplicate_of, str) or not _REF.match(duplicate_of)):
         raise Rejected("intake_route", "a duplicate names the request it repeats")
