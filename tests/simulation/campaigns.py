@@ -95,9 +95,12 @@ CAMPAIGNS = {
         "syberlabs.factory.intake_cli",
         "syberlabs.factory.ledger",
         "syberlabs.factory.loop",
+        "syberlabs.factory.plan",
         "syberlabs.factory.policy",
         "syberlabs.factory.space",
         "syberlabs.factory.spec",
+        "syberlabs.factory.work",
+        "syberlabs.factory.work_cli",
     ),
     "libraries": (
         "syberlabs.mappings",

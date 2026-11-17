@@ -1037,3 +1037,7 @@ populate, run = _autonomy_cli.extend(populate, run)
 # Intake (docs/FACTORY_INTAKE.md) registers the same way: one more hook line, no other edit here.
 from syberlabs.factory import intake_cli as _intake_cli  # noqa: E402
 populate, run = _intake_cli.extend(populate, run)
+
+# Plan, claim and work (docs/FACTORY_WORK.md): the same hook once more.
+from syberlabs.factory import work_cli as _work_cli  # noqa: E402
+populate, run = _work_cli.extend(populate, run)

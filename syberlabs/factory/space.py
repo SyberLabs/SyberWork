@@ -67,6 +67,10 @@ def _glob_to_regex(pattern: str) -> re.Pattern:
     return re.compile("^" + "".join(out) + "$")
 
 
+# The same matcher under a public name, for another module that maps paths to rules (``plan.class_floor``).
+glob_to_regex = _glob_to_regex
+
+
 def _module_name(relpath: str) -> str:
     parts = PurePosixPath(relpath).with_suffix("").parts
     if parts and parts[-1] == "__init__":

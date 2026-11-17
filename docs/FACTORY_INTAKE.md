@@ -20,7 +20,8 @@ comes out, with a person keeping the merge. The stations, and what SyberWork has
 | --- | --- | --- |
 | Request in, sorted by closed questions | Intake: `factory intake triage` | this page |
 | Text nobody trusts | The screen, the decider's environment, the snapshot | this page |
-| Plan before code | Not built; the next packet | below, "Next packets" |
+| Plan before code | A planner command names files, steps and risks; code checks them against the repository and the class floors, and routes the plan | [FACTORY_WORK.md](FACTORY_WORK.md) |
+| One agent, one ticket, inside the plan | A claim on the ledger; a Build Thread whose mutable scope is the plan's files and whose objective names the request | [FACTORY_WORK.md](FACTORY_WORK.md) |
 | Build | A Build Thread: a model proposes commits, the repair loop feeds it SyberWork's own check results | [BUILD_THREAD.md](BUILD_THREAD.md) |
 | Review by someone who did not write it | The critic station: findings in the chain, a high finding refuses acceptance | [CRITIC.md](CRITIC.md) |
 | A person decides | Accepting moves one branch; pushing, a pull request and a merge are separate acts | [BUILD_THREAD.md](BUILD_THREAD.md), `AGENTS.md` classes |
@@ -219,8 +220,8 @@ non-POSIX there, as [FACTORY_AUTONOMY.md](FACTORY_AUTONOMY.md) notes).
 
 - **Call a model, open a socket, post a comment or apply a label.** `--github-issue` reads a file, `--comment`
   writes one. Posting is an external effect and stays a named person's act (`AGENTS.md`, Class X).
-- **Start an agent.** Nothing reads `agent_ready` yet. The ticket is a work order on the ledger; the packet that
-  plans, claims and builds from it is next.
+- **Start an agent.** The ticket is a work order on the ledger. Planning it, claiming it and starting its Build
+  Thread are [FACTORY_WORK.md](FACTORY_WORK.md), and each is a command someone runs; nothing starts by itself.
 - **Let a decision model act.** The acting decider is whatever command the operator names, and this packet ran
   only the stand-in. Whether Jev, Kev or a rule set decides is an owner decision; until it is made, `--shadow`
   records what a model would have said.
@@ -238,8 +239,8 @@ non-POSIX there, as [FACTORY_AUTONOMY.md](FACTORY_AUTONOMY.md) notes).
   second layer, and it is a model's answer.
 - A decider reads the visible text, so the text can argue with it. What bounds a decider that was talked into
   `agent_ready`: the rules that need no decider ran first, its answers must sit in menus code built, and
-  everything after the ticket (a Build Thread's scope, the checks, the critic, a person's acceptance) is
-  unchanged by anything intake recorded.
+  everything after the ticket (a plan checked by code, a Build Thread's scope, the checks, the critic, a person's
+  acceptance) is unchanged by anything intake recorded.
 - The sensitive terms are a starting list. `token` alone is not on it, because here it usually means a model's
   tokens; `deploy` is, and will send ordinary requests to a person. Tune the policy file.
 - The word overlap that picks the duplicate menu is crude. Two requests for the same thing in different words are
@@ -259,10 +260,6 @@ repository. That naming is the owner's to confirm or change at admission.
 
 ## Next packets
 
-- **`factory-plan-claim`**: a plan for a ticket (the files, the steps, the risks) written by a planner command
-  and checked by code against the Space graph and `policy.json`'s class floors; a claim so two agents never take
-  one ticket; a Build Thread whose mutable scope is the plan's files, so "follow the plan" is the scope rule the
-  kernel already enforces.
 - **`critic-weakened-tests`**: reference-critic rules for a newly skipped test, assertions removed from an
   existing test, and a credential shape on an added line.
 - **A queue for the person who merges**: ready work ordered by what it unblocks, with a reading order by

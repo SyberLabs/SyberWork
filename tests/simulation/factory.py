@@ -10,7 +10,12 @@ with the stand-in proposer inside an envelope, then walks a ticket back with ``w
 
 Part three is intake: a request for work arrives as a GitHub issue document, the stand-in decider answers the six
 questions and the request becomes a ticket; a second request hides an order in a comment and waits for a person,
-who declines it. Nothing leaves loopback; every step runs in a scratch folder.
+who declines it.
+
+Part four is the work line: in a Git repository, a ticket from intake is planned by the stand-in planner in a
+temporary checkout, claimed by one agent, refused to a second, and started as a Build Thread whose scope is the
+plan's files; a plan that names a credentials file waits for a person. Nothing leaves loopback; every step runs in
+a scratch folder.
 """
 
 from __future__ import annotations
@@ -184,6 +189,56 @@ def _intake_path(scratch: Path) -> None:
         raise AssertionError("request text reached the ledger")
 
 
+def _work_path(project: Path) -> None:
+    import subprocess
+
+    from syberlabs.errors import Rejected
+    from syberlabs.factory import work
+    from tests.test_factory_autonomy import GIT_ENV
+
+    shutil.copytree(APP, project)
+    env = {**os.environ, **GIT_ENV}
+    for args in (("init", "-q", "-b", "main"), ("add", "."), ("-c", "commit.gpgsign=false", "commit", "-qm", "base")):
+        subprocess.run(["git", "-C", str(project), *args], check=True, capture_output=True, env=env)
+    base = subprocess.run(["git", "-C", str(project), "rev-parse", "main"], check=True, capture_output=True, text=True, env=env).stdout.strip()
+    fixtures = ROOT / "tests" / "fixtures" / "intake"
+
+    def command(script: str, *mode: str) -> str:
+        return "standin=" + " ".join((sys.executable, str(fixtures / script), *mode))
+
+    _cli(project, "index", "--declared", "architecture.json", "--revision", "base")
+    issue = {"number": 5, "title": "rules crash on quantity zero", "repository_url": "https://api.github.com/repos/acme/app",
+             "body": "Steps: run with quantity 0. Expected: no order is posted. Instead the rules module raises an error."}
+    (project.parent / "issue.json").write_text(json.dumps(issue), encoding="utf-8")
+    _cli(project, "intake", "triage", "--github-issue", str(project.parent / "issue.json"), "--owner", "tester",
+         "--decider", command("standin_decider.py"))
+    held = _cli(project, "work", "plan", "acme/app#5", "--planner", command("standin_planner.py", "--keys"))
+    if "class_floor:keys" not in held or "plan_held" not in _cli(project, "work", "list"):
+        raise AssertionError(held)
+    planned = _cli(project, "work", "plan", "acme/app#5", "--planner", command("standin_planner.py"))
+    if "route     planned" not in planned:
+        raise AssertionError(planned)
+    _cli(project, "work", "claim", "acme/app#5", "--by", "model:claude-1")
+    home = ledger.Ledger(project / ".syberlabs" / "factory")
+    try:
+        work.claim(home, "acme/app#5", {"kind": "model", "id": "codex-2"})
+    except Rejected as exc:  # the second agent is refused
+        if exc.code != "ticket_claimed":
+            raise
+    else:
+        raise AssertionError("two agents claimed one ticket")
+    check = f"tests={sys.executable} -m compileall -q fxapp"
+    started = _cli(project, "work", "start", "acme/app#5", "--by", "model:claude-1", "--check", check)
+    if "scope     fxapp/rules.py, tests/test_rules_request.py" not in started or "objective Fixes acme/app#5:" not in started:
+        raise AssertionError(started)
+    if "1 ticket(s) working" not in _cli(project, "work", "list", "--status", "working"):
+        raise AssertionError("the started ticket is not working")
+    _cli(project, "work", "release", "acme/app#5", "--by", "human:tester", "--reason", "campaign over")
+    after = subprocess.run(["git", "-C", str(project), "rev-parse", "main"], check=True, capture_output=True, text=True, env=env).stdout.strip()
+    if after != base or not home.verify():
+        raise AssertionError("the work line moved main or left a ledger that does not verify")
+
+
 def run_factory() -> None:
     if not factory_package.__doc__:
         raise AssertionError("the factory package lost its docstring")
@@ -192,3 +247,5 @@ def run_factory() -> None:
         _operator_path(scratch / "tree")
         _autonomy_path(scratch / "autonomy")
         _intake_path(scratch / "intake")
+        (scratch / "work").mkdir()
+        _work_path(scratch / "work" / "project")

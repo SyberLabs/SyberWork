@@ -686,6 +686,8 @@ class Resolve(Scratch):
             ("no reason", {"route": "declined", "actor": HUMAN, "reason": "  "}, "intake_reason"),
             ("two lines", {"route": "declined", "actor": HUMAN, "reason": "a\nb"}, "intake_reason"),
             ("a credential in the reason", {"route": "declined", "actor": HUMAN, "reason": f"token {KEY}"}, "intake_reason"),
+            ("a URL with a password in the reason",
+             {"route": "declined", "actor": HUMAN, "reason": "see https://deploy:" + "hunter2pass@git.example.test/x"}, "intake_reason"),
             ("a duplicate of nothing", {"route": "duplicate", "actor": HUMAN, "reason": "dup"}, "intake_route"),
             ("an unknown kind", {"route": "agent_ready", "actor": HUMAN, "reason": "ok", "work": {"kind": "urgent"}}, "intake_route"),
             ("an unknown field", {"route": "agent_ready", "actor": HUMAN, "reason": "ok", "work": {"priority": "p0"}}, "intake_route"),
