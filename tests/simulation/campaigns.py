@@ -97,6 +97,7 @@ CAMPAIGNS = {
         "syberlabs.factory.loop",
         "syberlabs.factory.plan",
         "syberlabs.factory.policy",
+        "syberlabs.factory.review_queue",
         "syberlabs.factory.space",
         "syberlabs.factory.spec",
         "syberlabs.factory.work",

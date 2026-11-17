@@ -4,10 +4,11 @@
 Build Thread: a plan is written before any code and checked by code, one agent claims the ticket, and the thread
 that builds it may change the plan's files and no others.
 
-Package: `syberlabs/factory/plan.py`, `work.py` and `work_cli.py`, on the ledger of [FACTORY.md](FACTORY.md).
-Standard library only. Claim ceiling for this page: **implemented** and **tested** (`tests/test_factory_work.py`,
-35 tests, and the `factory` simulation campaign). Nothing here is measured: no model has written a plan through
-it, and no agent fleet has run on it.
+Package: `syberlabs/factory/plan.py`, `work.py`, `review_queue.py` and `work_cli.py`, on the ledger of
+[FACTORY.md](FACTORY.md). Standard library only. Claim ceiling for this page: **implemented** and **tested**
+(`tests/test_factory_work.py`, 35 tests; `tests/test_factory_review_queue.py`, 15 tests; the `factory` simulation
+campaign). Nothing here is measured: no model has written a plan through it, no agent fleet has run on it, and
+the queue's order has not been compared with the order a person would choose.
 
 ## The four rules
 
@@ -157,6 +158,54 @@ with the thread, the candidate, the commit and the branch. That is the end of th
 accepted change is on `syberlabs/<thread>`. Pushing it and opening a pull request are the thread's own publishing
 actions, and merging is the act [BUILD_THREAD.md](BUILD_THREAD.md) leaves to a person on GitHub.
 
+## The queue for the person who merges
+
+A factory that builds faster than a person can read moves the wait to the merge. `work queue` does not shorten
+the reading; it orders it. It lists every `ready` ticket, first to read first, and for each change the order to
+read its files in. It is computed from the ledger, the Space graph and Git. No model is asked.
+
+**The order of the queue** is an ordered list of keys; the first difference decides (`review_queue.sort_key`):
+
+| Key | First | Why |
+| --- | --- | --- |
+| `blocks` | the change more tickets are waiting on | A ticket that is not ready yet waits on a change when its plan names a path the change touches. Merging that change first is what lets the others build on what will be there |
+| `files` | fewer files | Small before large is shortest job first: the order in which the changes behind wait least in total |
+| `diff_bytes` | the smaller diff | The same, when the file counts are equal |
+| `waiting_since` | the one ready longest | So nothing waits forever behind newer work |
+
+A change whose accepted commit is not in the repository the queue is read from (another clone, a deleted
+branch) keeps its row, lists its plan's paths, and goes last: what cannot be read is not read first. Every row
+carries the keys that placed it, so a person who orders differently sees what they overrule. Kind and size from
+intake are shown and are not keys: nothing here knows which request matters more to the business.
+
+**The reading order of one change** (`review_queue.reading_order`) groups the files the accepted commit changes
+by component and puts a component after the ones it depends on (the Space graph's `depends_on`), so the code
+that is called is read before the code that calls it. Each group is a layer; files with no component are the
+last one. Components that depend on each other, and ties, go by name. The paths are the accepted commit's
+against the thread's base, not the plan's: a plan may allow a file the change did not touch.
+
+```text
+1. github_issue:acme/app#12  rules crash on quantity zero
+   ticket 5c0f6f0be7b9d6b4  bug S  class R  owner mateo
+   placed by: blocks 1, 3 file(s), 612 bytes, ready since event 41
+   waiting on it: 9a41c2d07e6f1b35
+   branch syberlabs/7f3a9c at 1e2d3c4b5a; accepted, not pushed or merged here
+   read in 3 layer(s), each after what it depends on:
+     1. rules: fxapp/rules.py
+     2. main: fxapp/main.py
+     3. (no component): tests/test_rules_request.py
+```
+
+A row also names the other ready changes that touch the same files: whichever merges second is rebased.
+
+The queue reads `work_ready` records, and those are written by `work settle`. `work settle` with no ticket looks
+at every ticket that has a thread and records the ones that hold an accepted change, so run it before reading the
+queue.
+
+What it is not: it splits nothing. A change with several layers can be read layer by layer, and a person who
+wants one pull request per layer makes them; the layers say where the cuts are. It pushes and merges nothing,
+appends no event and moves no ref. It reads one ledger, so it lists the work of the agents that share it.
+
 ## From a terminal
 
 ```sh
@@ -168,6 +217,8 @@ python -m syberlabs.factory work claim OWNER/REPO#12 --by model:claude-1
 python -m syberlabs.factory work start OWNER/REPO#12 --by model:claude-1 --check "tests=/abs/python -m unittest -q"
 python -m syberlabs.factory work settle OWNER/REPO#12                  # exit 0 once the thread holds an accepted change
 python -m syberlabs.factory work release OWNER/REPO#12 --by model:claude-1 --reason "blocked on a decision"
+python -m syberlabs.factory work settle                                # the same for every ticket that has a thread
+python -m syberlabs.factory work queue                                 # ready work, first to read first; --json for a tool
 ```
 
 A ticket is named by its id, the first eight or more characters of it, or its request. `--home` is the factory
@@ -182,8 +233,8 @@ or put it in a script file.
 - **Call a model.** The planner is a command; this packet ran only the stand-in
   (`tests/fixtures/intake/standin_planner.py`). A planning agent behind it, Claude Code with read-only tools for
   example, is an adapter nobody has written here.
-- **Choose which ticket an agent takes.** `work list --status planned` shows what may be taken. Ordering it is
-  the queue packet.
+- **Choose which ticket an agent takes.** `work list --status planned` shows what may be taken, in the order the
+  requests were decided. The queue orders what a person merges, not what an agent starts.
 - **Enforce a class.** The floors route a plan and name the thread's class, so a plan a person approved above
   `auto` does not become a pull request that says R. The class is still recorded, not enforced (`AGENTS.md`):
   neither the kit nor a ruleset asks for the key it names. What a candidate cannot do is leave the plan's paths.
@@ -221,8 +272,6 @@ one proposed here. The `AGENTS.md` section it adds is canonical text and waits f
 
 ## Next packets
 
-- **A queue for the person who merges**: `ready` work ordered by what it unblocks and how much it touches, with
-  a reading order by component from the Space graph.
 - **A planning agent**: Claude Code with read-only tools behind the planner command, on its own credential lane
   ([CLAUDE_CODE.md](CLAUDE_CODE.md)).
 - **Claims across machines**: the ledger anchored somewhere two operators can both read.

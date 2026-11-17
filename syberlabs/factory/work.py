@@ -470,3 +470,10 @@ def settle(ledger, text: str, *, repo_root: str | Path, kit_home: str | Path, no
                                 "refs": {"thread": status["thread"], "candidate": status["accepted"], "commit": status["target"],
                                          "target_ref": status["target_ref"]}}, once)
     return state(ledger, tid, now=now)
+
+
+def settle_all(ledger, *, repo_root: str | Path, kit_home: str | Path, now: int | None = None) -> list[dict]:
+    """``settle`` for every ticket that has a thread and no ``work_ready`` yet, whether or not its claim is still
+    live: the step before reading the queue. Returns the state of each ticket it looked at."""
+    return [settle(ledger, row["ticket_id"], repo_root=repo_root, kit_home=kit_home, now=now)
+            for row in tickets(ledger, now=now) if row["work"] is not None and row["ready"] is None]
