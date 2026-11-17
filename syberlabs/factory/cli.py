@@ -1033,3 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
 # only edit this file takes for it. ``main`` and ``syberlabs/cli.py`` look ``populate`` and ``run`` up at call time.
 from syberlabs.factory import autonomy_cli as _autonomy_cli  # noqa: E402
 populate, run = _autonomy_cli.extend(populate, run)
+
+# Intake (docs/FACTORY_INTAKE.md) registers the same way: one more hook line, no other edit here.
+from syberlabs.factory import intake_cli as _intake_cli  # noqa: E402
+populate, run = _intake_cli.extend(populate, run)
