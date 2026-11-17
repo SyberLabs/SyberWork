@@ -41,7 +41,8 @@ the ticket is `open` or `held` again. A claim lapses when its `ttl` runs out, wi
 
 The label column is `work.label`: the status as a tracker would show it, for an operator who mirrors the ledger
 onto issues. `work show` and `work list --json` carry it. The ledger is the record, and nothing here applies a
-label: a label on an issue can be set by anyone who can edit the issue, an event on the chain cannot.
+label. A label can be set or removed by anyone who can edit the issue and keeps no reason; an event is appended
+to a hash chain with its rule and reason, so a later edit shows. Neither says who really acted (see "Limits").
 
 ## The plan
 
@@ -201,6 +202,11 @@ or put it in a script file.
 - `work start` starts the thread and then records it. If the ticket changed in between (its claim lapsed and
   another agent took it), the thread exists and is not recorded as the ticket's; the refusal names it, and
   `syberlabs forget` removes it.
+- An actor is a name. `--by human:ID` is what the command was given, and nothing here checks who typed it: a
+  process with a shell on the machine that holds the ledger can approve a plan in a person's name, as it could
+  append to the ledger's file. A spec's promotion is bound to the owner key the ledger pins
+  ([FACTORY.md](FACTORY.md)); a plan's approval is not. Until it is, "a person approved this plan" means that
+  someone who could run the command named a person, so keep an agent's shell away from the ledger home.
 - A claim is a record on one ledger. Agents on two machines with two ledgers do not see each other's claims. A
   claim that lapsed while its holder was still working lets a second agent start a second thread.
 - `work settle` is asked for; nothing polls. A thread accepted yesterday is `working` until someone settles it.
