@@ -7,7 +7,7 @@ path of this file in the host's own checkout, so a candidate cannot rewrite its 
 
 It reads the host's request on stdin (``syberlabs.critic.request``: the candidate, the earlier
 check results, the unified diff, the changed paths, the objective, and the contract's acceptance
-clauses and mutable scope) and prints a findings document (``spec/finding.schema.json``). Three rules:
+clauses and mutable scope) and prints a findings document (``spec/finding.schema.json``). Five rules:
 
 - high: a changed path outside the contract's mutable scope. The scope rule already refuses such
   a candidate, so this proves the plumbing rather than adding a judgment.
@@ -22,6 +22,14 @@ clauses and mutable scope) and prints a findings document (``spec/finding.schema
   test-scoped (``TEST_ONLY_RULES``): production code legitimately exits. A compiled module the
   candidate adds (``.pyc``, ``.pyd``, ``.so``) is a high finding: Python can import it and this rule
   cannot read it.
+- high, secret added: a line the candidate adds to any file holds a value in the shape of a credential
+  (a key prefix, a private-key header) that looks generated; low when it has the shape and looks typed
+  by hand, as a fixture does. The finding names the shape and the line and never repeats the value.
+- medium, test weakened: a test that was on the base is gone, a test gains a skip or an expected
+  failure, or a test asserts less than it did on the base (``WEAKENED``). Each has honest uses, so by
+  default it is for the person who accepts to read. With ``--block-weakened-tests`` after the file's
+  path in the check's argv these findings are high and refuse acceptance; the reviewer then declares
+  another revision, so a ``Reviewed-by`` line says which one ran.
 
 Every finding names what would falsify it. No model is called. The integrity rule reads each changed
 Python file's content at the candidate commit and the lines the candidate added from Git
@@ -35,6 +43,7 @@ shape and declare a ``reviewer`` that is not the candidate's provider.
 """
 
 import ast
+import difflib
 import json
 import re
 import subprocess
@@ -47,7 +56,11 @@ import sys
 # subtests, and unittest_patch an assignment of one of them on anything.
 # Revision 5: test_replaced, an assignment, deletion or patch of a test method (an attribute named test...) on
 # anything other than ``self``.
-REVIEWER = {"name": "rules", "revision": "5"}
+# Revision 6: secret_added (high) and the test-weakened rule (medium; high under ``--block-weakened-tests``, which
+# declares revision ``6-block-weakened``).
+REVIEWER = {"name": "rules", "revision": "6"}
+BLOCK_WEAKENED = "--block-weakened-tests"
+BLOCKING_REVISION = "6-block-weakened"
 TEST_MARKERS = ("tests/", "test/", "/test_", "_test.", "spec/")
 SOURCE_SUFFIXES = (".py", ".js", ".ts", ".go", ".rs", ".java", ".rb", ".c", ".h", ".cs", ".mjs")
 MAX_INTEGRITY_FINDINGS = 40  # per candidate; the summary counts the rest
@@ -120,6 +133,43 @@ TEST_PREFIX = "test"
 PYTHON_SOURCE = (".py", ".pyw")
 PYTHON_COMPILED = (".pyc", ".pyd", ".so")
 
+# The test-weakened rule: what a candidate may do to a test so that a check passes without the work. Each entry is
+# (rule, claim). Compared with the base, so what the base already had is not reported again.
+WEAKENED = {
+    "test_removed": "the candidate removes {count} test(s) that were on the base: {names}",
+    "test_skipped": "{count} test(s) gain a skip or an expected failure in this candidate: {names}",
+    "assertions_removed": "{count} test(s) that were on the base assert less than they did (assertions that can fail "
+                          "the test, base to candidate): {names}",
+    "test_skipped_by_text": "an added line skips or narrows a test by its text ({marker})",
+}
+WEAKENED_FALSIFIERS = {
+    "test_removed": "the same tests under another name with their assertions, or an objective that removes what they covered",
+    "test_skipped": "the marker removed, or the condition under which the test cannot run stated in the objective",
+    "assertions_removed": "the assertions restored, or shown in a helper the test now calls",
+    "test_skipped_by_text": "the marker removed, or shown to sit in a string or a comment",
+}
+# Decorators are matched by their last name, wherever they come from: unittest.skip, pytest.mark.skip, a team's own.
+SKIP_ALWAYS = {"skip"}                                 # decorators that keep a test from running, whatever happens
+SKIP_SOMETIMES = {"skipIf", "skipUnless", "skipif"}    # ... under a condition
+EXPECTED_TO_FAIL = {"expectedFailure", "xfail"}        # the test runs, and passing is what fails it
+SKIP_CALLS = {"pytest.skip", "pytest.xfail"}           # with ``.skipTest(...)`` on anything and ``raise SkipTest``
+SKIP_ATTRIBUTES = {"__unittest_skip__", "__unittest_expecting_failure__"}
+SKIPPING_FIXTURES = {"setUp", "asyncSetUp", "setUpClass"}  # a skip raised here skips every test of the class
+SWALLOWED = {"AssertionError", "Exception", "BaseException"}
+ASSERTING_CALLS = {"pytest.raises", "pytest.warns", "pytest.fail"}
+SCRIPT_TEST_SUFFIXES = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+SCRIPT_SKIP = re.compile(r"\b(?:it|test|describe|suite|context)\.(?:skip|todo|only|fixme)\s*\(|\bx(?:it|describe|test)\s*\(")
+RENAMED = 0.6                 # two test names in one file this alike (difflib ratio) are one test, renamed
+MAX_NAMES = 8                 # test names listed in one finding; the claim counts the rest
+MAX_WEAKENED_FINDINGS = 40
+# The secret-added rule. The first pattern is ``syberlabs._patterns.SECRET``, copied because this file runs alone, by
+# its path; tests/test_critic.py keeps the two equal.
+SECRET = re.compile(r"(ghp_|gho_|ghs_|github_pat_|sk-ant-|sk-|xox[abprs]-|AKIA)[A-Za-z0-9_\-]{8,}")
+PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----")
+KEY_MATERIAL = re.compile(r"[A-Za-z0-9+/]{40,}")  # a line of a key's base64 body
+GENERATED_LENGTH = 20         # a generated key is at least this long after its prefix, and mixes the two cases
+MAX_SECRET_FINDINGS = 20
+
 
 def _in_scope(scope: dict, path: str) -> bool:
     def matches(entry: str) -> bool:
@@ -143,6 +193,13 @@ def is_test_code(path: str) -> bool:
 def is_python_code(path: str) -> bool:
     """Any Python source file: a test can import it, so it runs in the test process."""
     return path.endswith(PYTHON_SOURCE)
+
+
+def is_script_test(path: str) -> bool:
+    """A JavaScript or TypeScript test file, by its place or its name (``tests/``, ``x.test.ts``, ``x.spec.js``)."""
+    name = path.split("/")[-1]
+    return path.endswith(SCRIPT_TEST_SUFFIXES) and (is_test(path) or ".test." in name or ".spec." in name
+                                                    or "/__tests__/" in "/" + path)
 
 
 # --- reading the candidate's Python files ----------------------------------------------------
@@ -581,7 +638,311 @@ def compiled_findings(request: dict, paths: list) -> list:
     return found
 
 
-def review(request: dict) -> dict:
+# --- added lines of any file -------------------------------------------------------------------
+
+
+def _in_repository(request: dict) -> bool:
+    commit = (request.get("candidate") or {}).get("commit")
+    return bool(commit) and _git(["rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"]) is not None
+
+
+def _added_lines(request: dict) -> dict:
+    """``{path: {line number: text}}`` for every line the candidate adds, to any file: from Git when the candidate
+    commit is in the repository the critic runs in (``git diff -U0 <base> <commit>``), else from the request's diff."""
+    commit, base = (request.get("candidate") or {}).get("commit"), request.get("base")
+    if base and _in_repository(request):
+        diff = _git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", base, commit])
+        if diff is not None:
+            return {path: lines for path, (_, lines) in _hunks(diff).items()}
+    return {path: lines for path, (_, lines) in _hunks(request.get("diff") or "").items()}
+
+
+# --- the secret-added rule -----------------------------------------------------------------------
+
+
+def _generated(body: str) -> bool:
+    """A value a key generator writes and a person rarely types: twenty or more characters after the prefix, with
+    both lower-case and upper-case letters. (An ``AKIA`` id is upper case throughout and never counts: it is an
+    identifier, and the secret that goes with it has no prefix to match.)"""
+    return len(body) >= GENERATED_LENGTH and any(c.islower() for c in body) and any(c.isupper() for c in body)
+
+
+def secret_shapes(text: str) -> dict:
+    """``{shape: looks generated?}`` for the credential shapes in ``text``, named and never quoted: a key prefix
+    that is not glued to a preceding letter or digit (the rule of ``syberlabs._patterns.credential_prefixes``),
+    and ``private_key`` for a PEM header, which looks generated when key material follows it on the line."""
+    found: dict = {}
+    position = 0
+    while True:
+        match = SECRET.search(text, position)
+        if match is None:
+            break
+        if match.start() == 0 or not text[match.start() - 1].isalnum():
+            prefix = match.group(1)
+            found[prefix] = found.get(prefix, False) or _generated(match.group(0)[len(prefix):])
+            position = match.end()
+        else:
+            position = match.start() + 1
+    header = PRIVATE_KEY.search(text)
+    if header:
+        found["private_key"] = bool(KEY_MATERIAL.search(text, header.end()))
+    return dict(sorted(found.items()))
+
+
+def secret_findings(added: dict) -> list:
+    """Findings for added lines that hold the shape of a credential: high when the value looks generated (or a
+    private-key header is followed by key material, on its line or the next added one), low when it has the shape
+    and looks typed by hand, which is what a fixture looks like. The claim names the shape; the value is never
+    copied into the document, which is stored in the thread's chain."""
+    found = []
+    for path in sorted(added):
+        for number in sorted(added[path]):
+            shapes = secret_shapes(added[path][number])
+            if not shapes:
+                continue
+            if shapes.get("private_key") is False and KEY_MATERIAL.search(added[path].get(number + 1, "")):
+                shapes["private_key"] = True
+            if any(shapes.values()):
+                severity, looks = "high", "a value in the shape of a credential that looks generated"
+                falsifier = ("the value removed from the candidate (and revoked, if it was real), or a fixture that "
+                             "is not a credential: one built from parts, so that no line holds the shape")
+            else:
+                severity, looks = "low", "the shape of a credential and looks typed by hand, as a fixture does"
+                falsifier = "nothing to do if it is a fixture; a real value is removed and revoked"
+            found.append({"severity": severity, "file": path, "line": number,
+                          "claim": f"secret added ({', '.join(shapes)}): a line the candidate adds holds {looks}; "
+                                   "the value is not repeated here", "falsifier": falsifier})
+    return found
+
+
+# --- the test-weakened rule ----------------------------------------------------------------------
+
+
+def _marker(names: _Scan, decorator) -> str | None:
+    """``always``, ``sometimes`` or ``expected`` for a decorator that changes what a test's result means
+    (``unittest.skip``, ``pytest.mark.skipif``, ``unittest.expectedFailure``, ...), None for any other."""
+    last = (names.name(decorator.func if isinstance(decorator, ast.Call) else decorator) or "").rsplit(".", 1)[-1]
+    return "always" if last in SKIP_ALWAYS else "sometimes" if last in SKIP_SOMETIMES else \
+        "expected" if last in EXPECTED_TO_FAIL else None
+
+
+def _skip_calls(names: _Scan, node) -> int:
+    """How many places under ``node`` skip the running test: ``.skipTest(...)``, ``pytest.skip(...)``, ``raise SkipTest``."""
+    count = 0
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            func = child.func
+            if (isinstance(func, ast.Attribute) and func.attr == "skipTest") or names.name(func) in SKIP_CALLS:
+                count += 1
+        elif isinstance(child, ast.Raise) and child.exc is not None:
+            raised = child.exc.func if isinstance(child.exc, ast.Call) else child.exc
+            if (names.name(raised) or "").rsplit(".", 1)[-1] == "SkipTest":
+                count += 1
+    return count
+
+
+def _is_assertion(names: _Scan, node) -> bool:
+    """A statement or call that can fail a test: ``assert``, ``.assert...(...)``, ``self.fail(...)``, a function
+    named ``assert...``, ``pytest.raises`` and its kin."""
+    if isinstance(node, ast.Assert):
+        return True
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute) and (func.attr.startswith("assert") or (func.attr == "fail" and _Scan._on_self(func.value))):
+        return True
+    if isinstance(func, ast.Name) and func.id.startswith("assert"):
+        return True
+    return names.name(func) in ASSERTING_CALLS
+
+
+def _swallows(names: _Scan, handler: ast.ExceptHandler) -> bool:
+    """A handler that catches a failed assertion and lets the test go on: bare, or for ``AssertionError``,
+    ``Exception`` or ``BaseException``, with no ``raise`` and no assertion of its own in its body."""
+    kinds = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    if handler.type is not None and not any((names.name(kind) or "").rsplit(".", 1)[-1] in SWALLOWED for kind in kinds):
+        return False
+    return not any(isinstance(node, ast.Raise) or _is_assertion(names, node) for part in handler.body for node in ast.walk(part))
+
+
+def _suppresses(names: _Scan, expression) -> bool:
+    """``contextlib.suppress(AssertionError)`` and wider: the block's failed assertions are dropped."""
+    if not isinstance(expression, ast.Call) or (names.name(expression.func) or "").rsplit(".", 1)[-1] != "suppress":
+        return False
+    return any((names.name(arg) or "").rsplit(".", 1)[-1] in SWALLOWED for arg in expression.args)
+
+
+def _assertions(names: _Scan, node) -> int:
+    """The assertions under ``node`` that can fail the test. Not counted: those in a ``try`` whose handler
+    swallows them, under ``contextlib.suppress`` of the same, or under a constant-false ``if``."""
+    if isinstance(node, ast.Assert):
+        return 1
+    if isinstance(node, (ast.Try, getattr(ast, "TryStar", ast.Try))):
+        kept = [] if any(_swallows(names, handler) for handler in node.handlers) else list(node.body)
+        parts = kept + [part for handler in node.handlers for part in handler.body] + node.orelse + node.finalbody
+        return sum(_assertions(names, part) for part in parts)
+    if isinstance(node, ast.If) and isinstance(node.test, ast.Constant) and not node.test.value:
+        return sum(_assertions(names, part) for part in node.orelse)
+    if isinstance(node, (ast.With, ast.AsyncWith)) and any(_suppresses(names, item.context_expr) for item in node.items):
+        return 0
+    own = 1 if _is_assertion(names, node) else 0
+    return own + sum(_assertions(names, child) for child in ast.iter_child_nodes(node))
+
+
+def _test_assertions(names: _Scan, test) -> int:
+    """The assertions of one test function. Nothing after a ``return`` at the top of its body runs, so nothing
+    after one counts."""
+    total = 0
+    for statement in test.body:
+        if isinstance(statement, ast.Return):
+            break
+        total += _assertions(names, statement)
+    return total
+
+
+def tests_of(source: str) -> dict | None:
+    """``{qualified name: {"line", "skips", "always", "assertions"}}`` for the tests a Python source defines
+    (functions named ``test...`` at module level or in a class, not those nested in a function); None when the
+    source does not parse.
+
+    ``skips`` counts every marker in force for the test: its own decorators and those of the classes around it
+    (a skip, a conditional skip, an expected failure), skip calls in its body, in its class's
+    ``setUp``/``setUpClass`` and in ``setUpModule``, and a class that sets ``__unittest_skip__``. ``always`` says
+    an unconditional skip is among them: the test never runs."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    names = _Scan()
+    names.bind_imports(tree)
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+    found: dict = {}
+
+    def walk(body, prefix, inherited, always):
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                marks = [_marker(names, decorator) for decorator in node.decorator_list]
+                fixtures = sum(_skip_calls(names, item) for item in node.body
+                               if isinstance(item, functions) and item.name in SKIPPING_FIXTURES)
+                flags = sum(1 for item in node.body if isinstance(item, ast.Assign)
+                            and any(isinstance(target, ast.Name) and target.id in SKIP_ATTRIBUTES for target in item.targets)
+                            and not (isinstance(item.value, ast.Constant) and not item.value.value))
+                walk(node.body, f"{prefix}{node.name}.", inherited + sum(1 for mark in marks if mark) + fixtures + flags,
+                     always or "always" in marks or bool(flags))
+            elif isinstance(node, functions) and node.name.startswith(TEST_PREFIX):
+                marks = [_marker(names, decorator) for decorator in node.decorator_list]
+                found[prefix + node.name] = {"line": node.lineno, "always": always or "always" in marks,
+                                             "skips": inherited + sum(1 for mark in marks if mark) + _skip_calls(names, node),
+                                             "assertions": _test_assertions(names, node)}
+
+    module_fixture = sum(_skip_calls(names, node) for node in tree.body if isinstance(node, functions) and node.name == "setUpModule")
+    walk(tree.body, "", module_fixture, False)
+    return found
+
+
+def _test_sides(request: dict, paths: list) -> tuple:
+    """``(base, candidate, compared)``: the tests of each changed Python test file on both sides, ``{path:
+    tests_of(...)}``. From Git when the candidate commit is in the repository (``git show <base>:<path>`` and
+    ``git show <commit>:<path>``); a path one side lacks is absent on that side. Without a repository only a new
+    file can be rebuilt from the request's diff, and it has no base side. ``compared`` is False when the base
+    commit could not be read, so nothing was compared. A candidate file that does not parse is left out: the
+    integrity rule reports it."""
+    commit, base = (request.get("candidate") or {}).get("commit"), request.get("base")
+    before, after = {}, {}
+    if not _in_repository(request):
+        for path, (source, _) in _sources(request, paths).items():
+            tests = tests_of(source) if source is not None else None
+            if tests is not None:
+                after[path] = tests
+        return before, after, True
+    if not base or _git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"]) is None:
+        return before, after, False
+    for path in paths:
+        new, old = _git(["show", f"{commit}:{path}"]), _git(["show", f"{base}:{path}"])
+        tests = tests_of(new) if new is not None else {}
+        if tests is None:
+            continue
+        if new is not None:
+            after[path] = tests
+        if old is not None:
+            before[path] = tests_of(old) or {}
+    return before, after, True
+
+
+def _listed(names: list) -> str:
+    return ", ".join(names[:MAX_NAMES]) + (f" and {len(names) - MAX_NAMES} more" if len(names) > MAX_NAMES else "")
+
+
+def weakened_findings(before: dict, after: dict, severity: str = "medium") -> list:
+    """Findings for tests the candidate removed, newly skipped, or left asserting less. ``before`` and ``after``
+    are ``{path: tests_of(...)}`` for the changed test files on the base and in the candidate.
+
+    A test is the same test when its file and qualified name are. One that kept its method name under another
+    class or in another changed file moved, and one whose name in the same file is ``RENAMED`` alike was
+    renamed; both are compared with what they became. One finding per file and rule."""
+    missing, new, pairs = [], [], []
+    for path in sorted(set(before) | set(after)):
+        old, now = before.get(path) or {}, after.get(path) or {}
+        for name in old:
+            if name in now:
+                pairs.append((path, name, old[name], now[name]))
+            else:
+                missing.append((path, name))
+        new += [(path, name) for name in now if name not in old]
+    for entry in list(missing):
+        path, name = entry
+        method = name.rsplit(".", 1)[-1]
+        moved = next((item for item in sorted(new, key=lambda item: (item[0] != path, item))
+                      if item[1].rsplit(".", 1)[-1] == method), None)
+        if moved is None:  # renamed in place: the most alike new name in the same file, if it is alike enough
+            alike = [(difflib.SequenceMatcher(None, method, item[1].rsplit(".", 1)[-1]).ratio(), item)
+                     for item in new if item[0] == path]
+            ratio, moved = max(alike, key=lambda pair: (pair[0], pair[1]), default=(0.0, None))
+            moved = moved if ratio >= RENAMED else None
+        if moved is not None:
+            missing.remove(entry)
+            new.remove(moved)
+            pairs.append((moved[0], moved[1], before[path][name], after[moved[0]][moved[1]]))
+    grouped: dict = {}
+    for path, name in missing:
+        grouped.setdefault(("test_removed", path), []).append((0, name))
+    for path, name, old, now in pairs:
+        if now["skips"] > old["skips"]:
+            grouped.setdefault(("test_skipped", path), []).append((now["line"], name))
+        if now["assertions"] < old["assertions"]:
+            grouped.setdefault(("assertions_removed", path), []).append((now["line"], f"{name} ({old['assertions']} to {now['assertions']})"))
+    for path, name in new:
+        if after[path][name]["always"]:
+            grouped.setdefault(("test_skipped", path), []).append((after[path][name]["line"], f"{name} (new)"))
+    found = []
+    for (rule, path), entries in sorted(grouped.items(), key=lambda pair: (pair[0][1], list(WEAKENED).index(pair[0][0]))):
+        entries.sort()
+        claim = WEAKENED[rule].format(count=len(entries), names=_listed([name for _, name in entries]))
+        found.append({"severity": severity, "file": path, "line": entries[0][0] or None,
+                      "claim": f"test weakened ({rule}): {claim}", "falsifier": WEAKENED_FALSIFIERS[rule]})
+    return found
+
+
+def script_skip_findings(added: dict, severity: str = "medium") -> list:
+    """Findings for a skip marker on a line added to a JavaScript or TypeScript test file (``it.skip(``,
+    ``describe.only(``, ``xit(``, ...). Matched as text: this file parses Python only, so a marker inside a string
+    or a comment matches too, and the falsifier says so."""
+    found = []
+    for path in sorted(added):
+        if not is_script_test(path):
+            continue
+        for number in sorted(added[path]):
+            match = SCRIPT_SKIP.search(added[path][number])
+            if match:
+                marker = re.sub(r"\s+", "", match.group(0)).rstrip("(")
+                found.append({"severity": severity, "file": path, "line": number,
+                              "claim": "test weakened (test_skipped_by_text): "
+                                       + WEAKENED["test_skipped_by_text"].format(marker=marker),
+                              "falsifier": WEAKENED_FALSIFIERS["test_skipped_by_text"]})
+    return found
+
+
+def review(request: dict, *, block_weakened: bool = False) -> dict:
     changed = list(request.get("changed_paths", []))
     scope = (request.get("contract") or {}).get("scope") or {"paths": ["."], "exclude": []}
     findings = []
@@ -602,20 +963,40 @@ def review(request: dict) -> dict:
         integrity += integrity_findings(path, source, added)
     integrity += compiled_findings(request, [p for p in changed if p.endswith(PYTHON_COMPILED)])
     findings += integrity[:MAX_INTEGRITY_FINDINGS]
+    added = _added_lines(request)
+    secrets = secret_findings({path: lines for path, lines in added.items() if path in changed})
+    findings += secrets[:MAX_SECRET_FINDINGS]
+    severity = "high" if block_weakened else "medium"
+    before, after, compared = _test_sides(request, [p for p in changed if is_test_code(p)])
+    weakened = weakened_findings(before, after, severity)
+    weakened += script_skip_findings({path: lines for path, lines in added.items() if path in changed}, severity)
+    findings += weakened[:MAX_WEAKENED_FINDINGS]
     summary = (f"{len(findings)} finding(s) over {len(changed)} changed path(s)" if findings
                else f"no findings over {len(changed)} changed path(s)")
     if len(integrity) > MAX_INTEGRITY_FINDINGS:
         summary += f"; {len(integrity) - MAX_INTEGRITY_FINDINGS} more test-integrity finding(s) not listed"
-    return {"version": 1, "reviewer": dict(REVIEWER), "findings": findings, "summary": summary}
+    if len(secrets) > MAX_SECRET_FINDINGS:
+        summary += f"; {len(secrets) - MAX_SECRET_FINDINGS} more secret-added finding(s) not listed"
+    if len(weakened) > MAX_WEAKENED_FINDINGS:
+        summary += f"; {len(weakened) - MAX_WEAKENED_FINDINGS} more test-weakened finding(s) not listed"
+    if not compared:
+        summary += ("; the base commit could not be read: no test was compared with its base version, and added lines "
+                    "were taken from the request's diff")
+    reviewer = {**REVIEWER, "revision": BLOCKING_REVISION} if block_weakened else dict(REVIEWER)
+    return {"version": 1, "reviewer": reviewer, "findings": findings, "summary": summary}
 
 
-def main() -> int:
+def main(argv: list | None = None) -> int:
+    options = sys.argv[1:] if argv is None else argv
+    if any(option != BLOCK_WEAKENED for option in options):
+        print(f"critic_rules: the only option is {BLOCK_WEAKENED}", file=sys.stderr)
+        return 2
     try:
         request = json.load(sys.stdin)
     except ValueError:
         print("critic_rules: stdin is not a JSON request", file=sys.stderr)
         return 2
-    sys.stdout.write(json.dumps(review(request), indent=2) + "\n")
+    sys.stdout.write(json.dumps(review(request, block_weakened=BLOCK_WEAKENED in options), indent=2) + "\n")
     return 0
 
 
