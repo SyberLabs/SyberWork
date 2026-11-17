@@ -166,6 +166,18 @@ class Ledger:
         with self._locked() as writer:
             return self._append(writer, self._read(writer), kind, body)
 
+    def append_once(self, kind: str, body: dict, check) -> dict:
+        """Read, decide and append under one acquisition of the journal lock, so two processes cannot both land an
+        event that only one of them may write (a decision for one request, a ticket opened once).
+        ``check(events)`` sees the ledger as it is at that moment: it returns None to append ``body``, returns an
+        event to hand that one back instead (the write already happened), or raises ``Rejected`` to refuse."""
+        with self._locked() as writer:
+            events = self._read(writer)
+            found = check(events)
+            if found is not None:
+                return found
+            return self._append(writer, events, kind, body)
+
     def _append(self, writer: kernel_journal.Journal, events: list[dict], kind: str, body: dict) -> dict:
         """Append under a lock the caller holds, over the ``events`` it read under that same lock, so a
         read-then-append (``set_owner_key``) is one acquisition and nothing slips in between."""

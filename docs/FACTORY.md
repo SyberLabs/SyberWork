@@ -277,6 +277,10 @@ acceptance criteria and the golden run as the baseline. `factory map moved --bef
 is the third: a component whose symbols' vectors moved past the threshold, with no open ticket or promoted
 spec claiming it, gets a ticket asking for a spec or a revert. All three log `ticket_opened` with a `source`.
 
+A fourth source is a request from outside the factory (an issue, an Attest ticket, an email). It opens a ticket
+with `source: intake` only after its text was screened by code, six closed questions were answered and an ordered
+rule list routed it `agent_ready`; every other route waits for a person. See [FACTORY_INTAKE.md](FACTORY_INTAKE.md).
+
 `factory drift --declared arch.json --max 0 --ticket tickets/` writes one ticket per component over the
 threshold (footprint: the component and the targets of its undeclared edges; acceptance: a clean reflexion
 report; exit criterion: drift evidence; `repro` lists the symbol-level edges) and one for unmapped files,

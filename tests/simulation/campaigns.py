@@ -91,6 +91,8 @@ CAMPAIGNS = {
         "syberlabs.factory.features",
         "syberlabs.factory.harness",
         "syberlabs.factory.independence",
+        "syberlabs.factory.intake",
+        "syberlabs.factory.intake_cli",
         "syberlabs.factory.ledger",
         "syberlabs.factory.loop",
         "syberlabs.factory.policy",
